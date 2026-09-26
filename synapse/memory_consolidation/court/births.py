@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import records
-from ..learning.behavior import SAME, step_similarity
+from ..learning.behavior import SAME, check_binding, step_similarity
 from ..learning.triggers import condition_key, context_template, covers, make_trigger
 from ..quanta import weight
 from ..records import canonical
@@ -98,10 +98,12 @@ def energy_cost(parameters, episodes) -> float:
     return mean(values) * parameters["energy_per_R"] if values else float(parameters["unmeasured_energy_cost"])
 
 
-def make_birth(parameters, consolidation_id, window, *, condition, steps, binding, template, source_episodes,
-               basis_qids, energy, trust, state_name, supersedes=None, basis=None) -> dict[str, Any]:
+def make_birth(parameters, consolidation_id, window, *, condition, applicability, steps, binding, template,
+               source_episodes, basis_qids, energy, trust, state_name, supersedes=None, basis=None) -> dict[str, Any]:
     """The trigger, frozen habit and initial metadata of one birth."""
-    trigger = make_trigger(condition, template=template, born_from=consolidation_id, source_episodes=source_episodes)
+    check_binding(steps, binding)
+    trigger = make_trigger(condition, template=template, born_from=consolidation_id, source_episodes=source_episodes,
+                           applicability=applicability)
     habit = records.make("learned_habit", origin="learned", layer=2, trigger=trigger["id"],
                          action_pattern=[dict(item) for item in steps], binding=binding,
                          expected_outcome=expected_outcome(steps),
@@ -115,8 +117,8 @@ def make_birth(parameters, consolidation_id, window, *, condition, steps, bindin
 
 def _candidate_birth(parameters, consolidation_id, window, key, entry, assessment, relation) -> dict[str, Any]:
     success = assessment["success"]
-    birth = make_birth(parameters, consolidation_id, window, condition=assessment["condition"], steps=entry["steps"],
-                       binding=assessment["binding"],
+    birth = make_birth(parameters, consolidation_id, window, condition=assessment["condition"],
+                       applicability=assessment["applicability"], steps=entry["steps"], binding=assessment["binding"],
                        template=context_template(assessment["condition"], [item["context"] for item in success]),
                        source_episodes=[{"qid": item["qid"], "steps": item["steps"]} for item in success],
                        basis_qids=[item["qid"] for item in success], energy=energy_cost(parameters, success),
@@ -134,9 +136,13 @@ def _candidate_birth(parameters, consolidation_id, window, key, entry, assessmen
 def _waiting(entry, reasons, assessment, report, key) -> dict[str, Any]:
     entry["reasons"] = reasons
     entry["status"] = "arbitration_pending" if "arbitration_unresolved" in reasons else "accumulating"
+    unavailable = {name: value["unavailable"] for name, value in (("binding", assessment["binding"]),
+                                                                  ("boundary", assessment["applicability"]))
+                   if isinstance(value, dict) and "unavailable" in value}
     report["pool_updates"].append({"candidate_key": key, "status": entry["status"],
                                    "episodes_total": len(entry["episodes"]), "reasons": reasons,
-                                   "criteria": assessment["criteria"], "independence": assessment["independence"]})
+                                   "criteria": assessment["criteria"], "independence": assessment["independence"],
+                                   "unavailable": unavailable})
     return entry
 
 

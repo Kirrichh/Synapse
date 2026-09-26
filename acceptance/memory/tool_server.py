@@ -15,7 +15,14 @@ An answer is one of:
 * ``{"lost": true, "effect": "name" | null}`` — applies the effect (if any)
   and dies before answering, so the caller loses the answer;
 * any answer may add ``"delay": seconds`` — the call is recorded in the world
-  first and answered only after the delay (a window for a process crash).
+  first and answered only after the delay (a window for a process crash);
+* ``{"payload": {...}, "act": {...}, "otherwise": {...}}`` — answered from the
+  world's objects: ``create`` stores a new object under a fresh identifier
+  (random, or sequential for a predictable service) and answers it; ``read``
+  answers the object named by an argument; ``transition`` moves it from one
+  state to another; ``consume`` uses up one object matching the call. When the
+  object does not exist (or is not in the required state) the ``otherwise``
+  answer is given and no effect applies.
 """
 from __future__ import annotations
 
@@ -23,6 +30,7 @@ import fcntl
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 
 SCRIPT_V1 = "synapse.acceptance.memory.tool-script/v1"
@@ -47,8 +55,45 @@ def _answer(tool, arguments, count):
     raise ValueError(f"scripted tool {tool['name']} has no answer for {arguments}")
 
 
+def _create(objects, act, arguments, then):
+    ids = act.get("ids", "random")
+    identifier = f"job-{len(objects) + 1}" if ids == "sequential" else f"job-{uuid.uuid4().hex[:12]}"
+    item = {act["key"]: identifier, "state": act["state"], **{name: arguments.get(name) for name in act["keep"]}}
+    objects[identifier] = item
+    return {**then, "payload": {**then["payload"], act["key"]: identifier, "state": act["state"]}}
+
+
+def _consume(objects, act, arguments, then):
+    wanted = {name: arguments.get(value["arg"]) if isinstance(value, dict) else value
+              for name, value in act["match"].items()}
+    for identifier in sorted(objects):
+        item = objects[identifier]
+        if not item.get("consumed") and all(item.get(name) == value for name, value in wanted.items()):
+            item["consumed"] = True
+            return then
+    return None
+
+
+def _act(state, act, arguments, then):
+    """The answer of a rule answered from the world's objects, or ``None`` when its object is missing."""
+    verb = next(name for name in ("create", "read", "transition", "consume") if name in act)
+    objects = state.setdefault("objects", {}).setdefault(act[verb], {})
+    if verb == "create":
+        return _create(objects, act, arguments, then)
+    if verb == "consume":
+        return _consume(objects, act, arguments, then)
+    item = objects.get(arguments.get(act["key"]))
+    if item is None:
+        return None
+    if verb == "transition":
+        if item["state"] != act["from"]:
+            return None
+        item["state"] = act["to"]
+    return {**then, "payload": {**then["payload"], **item}}
+
+
 class World:
-    """The server's own record of calls and applied effects, shared by every run."""
+    """The server's own record of calls, applied effects and objects, shared by every run."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -60,6 +105,10 @@ class World:
             key = _canonical([name, arguments])
             count = sum(1 for item in state["calls"] if _canonical([item["tool"], item["args"]]) == key)
             answer = choose(count)
+            if "act" in answer:
+                acted = _act(state, answer["act"], arguments, {key: value for key, value in answer.items()
+                                                                 if key not in {"act", "otherwise"}})
+                answer = acted if acted is not None else answer["otherwise"]
             state["calls"].append({"tool": name, "args": arguments})
             if answer.get("effect"):
                 state["effects"].append({"tool": name, "args": arguments, "effect": answer["effect"]})

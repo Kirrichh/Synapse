@@ -879,6 +879,20 @@ jobs:
             file: acceptance/memory/test_hypothesis_reuse_acceptance.py
           - shard: palace-admission
             file: acceptance/memory/test_palace_admission_acceptance.py
+          - shard: applicability-contract
+            file: acceptance/memory/test_applicability_generalization_contract.py
+          - shard: applicability-contrast
+            file: acceptance/memory/test_applicability_contrast_acceptance.py
+          - shard: applicability-widening
+            file: acceptance/memory/test_applicability_widening_acceptance.py
+          - shard: result-dependency-contract
+            file: acceptance/memory/test_result_dependency_contract.py
+          - shard: result-dependency
+            file: acceptance/memory/test_result_dependency_acceptance.py
+          - shard: result-dependency-refusal
+            file: acceptance/memory/test_result_dependency_refusal_acceptance.py
+          - shard: result-dependency-driver-literal
+            file: acceptance/memory/test_result_dependency_driver_literal_acceptance.py
           - shard: dependency-direction
             file: tests/test_memory_dependency_direction.py
     steps:

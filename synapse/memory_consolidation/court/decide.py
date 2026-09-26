@@ -23,7 +23,7 @@ from .trust import trust_stage
 
 REPORT_SECTIONS = ("trust_decisions", "pending_evidence", "excluded_signals", "expired_pending",
                    "declared_observations", "recommendations", "conflicts", "votes", "pool_updates",
-                   "supersessions", "transitions", "refused_births")
+                   "supersessions", "boundary_refusals", "transitions", "refused_births")
 
 
 @dataclass

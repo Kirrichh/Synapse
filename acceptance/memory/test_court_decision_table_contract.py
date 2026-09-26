@@ -16,6 +16,7 @@ from synapse.memory_consolidation.configuration import parse_memory_configuratio
 from synapse.memory_consolidation.court.births import make_birth
 from synapse.memory_consolidation.court.decide import decide
 from synapse.memory_consolidation.court.projection import empty_state
+from synapse.memory_consolidation.learning.applicability import explanation_of
 
 CONDITION = {"event_types": ["external_error"], "context": ["search"],
              "when": [{"field": "route_kind", "op": "==", "value": "intl"}], "not_when": []}
@@ -47,8 +48,8 @@ def _world(parameters, *habits):
     state["window"] = 10
     ids = {}
     for label, steps, binding, overrides in habits:
-        birth = make_birth(configuration.parameters, f"con_{label}", 1, condition=CONDITION, steps=steps,
-                           binding=binding, template="external_error: route_kind {route_kind}",
+        birth = make_birth(configuration.parameters, f"con_{label}", 1, condition=CONDITION,
+                           applicability=explanation_of({}), steps=steps, binding=binding, template="external_error: route_kind {route_kind}",
                            source_episodes=[{"qid": f"q_{label}", "steps": steps}], basis_qids=[f"q_{label}"],
                            energy=1.0, trust=0.5, state_name="born")
         habit_id = birth["habit"]["id"]
@@ -196,7 +197,10 @@ def test_t9_idle_threshold(idle, archived):
         ("c", CAPACITY, [{"step": 0, "args": ROUTE}, {"step": 1, "args": ROUTE}, {"step": 2, "failed_action": True}],
          {"state": "active", "idle_windows": idle}))
     moves = _moves(_decide(configuration, state))
-    assert ((ids["q"], "T9", "dormant") in moves) is archived
+    # Covering each other, the first in identity order goes dormant; the other then stays key and is held.
+    first, second = sorted([ids["q"], ids["c"]])
+    assert ((first, "T9", "dormant") in moves) is archived
+    assert ((second, "T9_key_hold", "active") in moves) is archived
 
 
 # -- T7: dormant -> extinct ---------------------------------------------------------------

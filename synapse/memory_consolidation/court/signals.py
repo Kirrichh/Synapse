@@ -40,7 +40,7 @@ def fire_signal(reaction: Mapping[str, Any], event: Mapping[str, Any], parameter
             "conflict_warning": bool(event.get("conflict_warning")),
             "runner_up_habit_id": event.get("runner_up_habit_id"),
             "semantic_score_micros": event.get("semantic_score_micros"), "context": reaction["context"],
-            "steps": reaction["habit_steps"]}
+            "steps": reaction["habit_steps"], "detail": reaction.get("habit_detail")}
     early = _status(reaction)
     if early is not None:
         return {**base, "status": early[0], "why": early[1]}

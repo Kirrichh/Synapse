@@ -114,6 +114,8 @@ class HabitEngine:
                     else int(round(candidate["score"] * 1_000_000)),
                     "outcome": result["outcome"], "recovered": result["recovered"],
                     "action_refs": result["action_refs"],
+                    # Why it applied, and why its body stopped if it did (refinement §12, §13).
+                    "matched": trigger.explain(event), "detail": result.get("detail"),
                     "conflict_warning": bool(warning and position == 0),
                     "runner_up_habit_id": runner.habit_id if warning and position == 0 and runner else None,
                     "activation_count": habit.activation_count}, event))

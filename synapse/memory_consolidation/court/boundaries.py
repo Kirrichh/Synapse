@@ -2,8 +2,11 @@
 
 Verified failures of a habit (three or more) grouped in one typed subcontext,
 while it succeeds elsewhere, narrow it: a successor with ``not_when`` of that
-subcontext. Near misses of one failed condition recovered by the habit's own
-action (three or more) widen it: a successor without that condition. The
+subcontext, whose failures become contrasts of that field. Near misses of one
+failed condition recovered by the habit's own action (three or more) widen
+it: a field condition admits the values they recovered at — it is never
+removed, and it never extends over a value a recorded contrast failed at (a
+refusal is reported); a failed context or forbidden subcontext is lifted. The
 successor keeps the frozen action and binding, is born on probation with its
 predecessor's trust, and supersedes it (TS); Gold records the supersession.
 Self-assessment is never a basis.
@@ -12,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..learning.applicability import BoundaryUnavailable, explanation_of, narrow_explanation, widen
 from ..learning.behavior import step_similarity
 from ..learning.triggers import condition_key, narrowed, widened
 from ..records import canonical
@@ -33,13 +37,23 @@ def _narrowing(parameters, frozen, metadata):
             continue
         subcontext = {"field": name, "op": "==", "value": next(item["fields"][name] for item in failures)}
         try:
-            return "narrow", narrowed(frozen["trigger"], subcontext), f"{len(failures)} verified failures in {name}"
+            condition = narrowed(frozen["trigger"], subcontext)
         except ValueError:
             continue
+        return ("narrow", condition, f"{len(failures)} verified failures in {name}",
+                narrow_explanation(frozen["trigger"], subcontext, failures))
     return None
 
 
-def _widening(parameters, frozen, habit_id, near_misses):
+def _widened(trigger, group):
+    """The successor condition and explanation one group of recovered near misses supports."""
+    failed = group[0]["failed_condition"]
+    if failed.get("forbidden") or failed.get("field") == "context":
+        return widened(trigger, failed), explanation_of(trigger)
+    return widen(trigger, failed, [item["failed_condition"].get("actual") for item in group])
+
+
+def _widening(parameters, frozen, habit_id, near_misses, refusals):
     groups: dict[bytes, list] = {}
     for reaction in near_misses:
         if (reaction["habit_id"] == habit_id and reaction["slow"] is not None and support(reaction) == "success"
@@ -53,16 +67,19 @@ def _widening(parameters, frozen, habit_id, near_misses):
         if len(group) < parameters["min_evidence"]:
             continue
         try:
-            return "widen", widened(frozen["trigger"], group[0]["failed_condition"]), \
-                f"{len(group)} near misses recovered by the same action"
-        except ValueError:
+            condition, explanation = _widened(frozen["trigger"], group)
+        except (BoundaryUnavailable, ValueError) as exc:
+            refusals.append({"habit_id": habit_id, "failed_condition": group[0]["failed_condition"],
+                             "near_misses": len(group), "reason": str(exc)})
             continue
+        return "widen", condition, f"{len(group)} near misses recovered by the same action", explanation
     return None
 
 
 def _successor(context, habit_id, metadata, frozen, change) -> dict[str, Any]:
-    kind, condition, basis = change
+    kind, condition, basis, explanation = change
     birth = make_birth(context.parameters, context.draft["consolidation_id"], context.window, condition=condition,
+                       applicability=explanation,
                        steps=frozen["habit"]["action_pattern"], binding=frozen["habit"]["binding"],
                        template=frozen["trigger"]["context_template"],
                        source_episodes=frozen["trigger"]["source_episodes"],
@@ -82,7 +99,8 @@ def boundary_stage(context, habits, births, forced, refused) -> None:
             continue
         frozen = context.state["frozen"][habit_id]
         change = (_narrowing(context.parameters, frozen, metadata)
-                  or _widening(context.parameters, frozen, habit_id, context.draft["near_misses"]))
+                  or _widening(context.parameters, frozen, habit_id, context.draft["near_misses"],
+                               context.report["boundary_refusals"]))
         if change is None or canonical(change[1]) in known:
             continue
         birth = _successor(context, habit_id, metadata, frozen, change)

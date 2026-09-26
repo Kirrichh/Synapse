@@ -20,8 +20,11 @@ COMPOSITION_ROOTS = frozenset({"synapse/cli.py"})
 
 #: Outbound edge -> the subsystem modules that own it (relative to the package).
 APPROVED_OUTBOUND = {
-    "synapse.memory_points": {"factory.py", "session.py", "learning/behavior.py", "learning/triggers.py"},
-    "synapse.habit_triggers": {"learning/triggers.py"},
+    "synapse.memory_points": {"factory.py", "session.py", "learning/behavior.py", "learning/triggers.py",
+                              "learning/applicability.py"},
+    "synapse.habit_triggers": {"learning/triggers.py", "learning/applicability.py", "learning/dependencies.py"},
+    # The program's own literals: values a driver or author knew before any answer (result references).
+    "synapse.lexer": {"learning/dependencies.py"},
     "synapse.hardening": {"court/consolidation.py", "court/window.py"},
     "synapse.version": {"factory.py"},
     # The verified re-execution and session reader of durable cognitive runs (court ports).

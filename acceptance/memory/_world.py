@@ -37,6 +37,20 @@ def answer(payload, *, when=None, sequence=(), effect=None):
     return {"when": when or {}, "sequence": list(sequence), "then": then}
 
 
+def stateful(payload, *, act, otherwise=None, effect=None, when=None):
+    """A rule answered from the server's objects: ``act`` creates, reads, moves or consumes one of them.
+
+    ``otherwise`` answers when the object ``act`` needs does not exist; the
+    effect applies only when ``act`` succeeds.
+    """
+    then = {"payload": payload, "act": act}
+    if otherwise is not None:
+        then["otherwise"] = {"payload": otherwise}
+    if effect is not None:
+        then["effect"] = effect
+    return {"when": when or {}, "sequence": [], "then": then}
+
+
 class MemoryWorld:
     """One project, its tool server and its runs."""
 
@@ -87,13 +101,14 @@ class MemoryWorld:
         lines = [line for line in completed.stdout.splitlines() if line.startswith("{")]
         return completed.returncode, json.loads(lines[-1]) if lines else None, completed.stderr
 
-    def _run_arguments(self, source: str, run_id: str, bindings: dict, exam=None) -> list:
+    def _run_arguments(self, source: str, run_id: str, bindings: dict, exam=None, configuration=None) -> list:
         program = self.root / f"{run_id}.syn"
         program.write_text(source)
         inputs = self.root / f"{run_id}.input.json"
         inputs.write_text(json.dumps(bindings, sort_keys=True))
         arguments = ["run", program, "--durable", "--state-dir", self.runs, "--run-id", run_id,
-                     "--input-file", inputs, "--project-state", self.state, "--memory-config", self.configuration_path]
+                     "--input-file", inputs, "--project-state", self.state,
+                     "--memory-config", configuration or self.configuration_path]
         if exam is not None:
             mode, snapshot = exam
             arguments += ["--exam-mode", mode, "--exam-snapshot", snapshot]
@@ -104,6 +119,10 @@ class MemoryWorld:
         code, payload, stderr = self._cli(*self._run_arguments(source, run_id, bindings, exam))
         assert code == 0 and payload is not None and payload["status"] == "COMPLETED", (code, payload, stderr)
         return payload
+
+    def attempt(self, source: str, run_id: str, bindings: dict, *, configuration: Path) -> tuple[int, dict | None, str]:
+        """A launch with another memory configuration, whatever its outcome."""
+        return self._cli(*self._run_arguments(source, run_id, bindings, configuration=configuration))
 
     def start(self, source: str, run_id: str, bindings: dict) -> subprocess.Popen:
         """The same launch as its own process group, for a crash or a concurrent stream."""

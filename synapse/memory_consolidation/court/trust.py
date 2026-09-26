@@ -66,6 +66,7 @@ def _remember(parameters, metadata, fires) -> None:
             continue
         count_fire(metadata["exec_summary"], fire["outcome"])
         metadata["recent"] = (metadata["recent"] + [{"outcome": fire["outcome"], "task_id": fire["task_id"],
+                                                     "run_id": fire["run_id"], "event_id": fire["event_id"],
                                                      "segment_verdict": fire["segment_verdict"],
                                                      "fields": fire["context"]["fields"]}])[-parameters["recent_fires"]:]
 

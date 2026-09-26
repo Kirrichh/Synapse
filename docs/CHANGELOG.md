@@ -1,5 +1,35 @@
 # Synapse Changelog
 
+## Memory stage 5a — learned applicability (D1) and result references (D2) — 2026-09-26
+
+Learned habit triggers use record schema 1.2 (`applicability` explanation in
+their identity; 1.1 records stay verifiable). The typed trigger vocabulary adds
+`is` (a present field of one JSON kind).
+
+- Applicability from contrasting episodes (refinement §12): a verified failure
+  of the same procedure is a contrast; its one discriminating field is
+  essential, a contrast inside the positives' generalization gets a boundary
+  drawn from their values (range side or value set), a field the binding reads
+  must be present with its kind, and a contradiction the boundary cannot
+  explain still blocks the birth. Completion is judged inside the learned
+  scope. Widening extends a condition by the values its recovered near misses
+  failed at, never removes it, and refuses to cross a recorded contrast
+  (`boundary_refusals`). `habit_activated` records every checked condition with
+  its actual value (`matched`).
+- Result references (refinement §13): a binding argument may read a field of
+  an earlier successful answer of the same body. It is derived only from
+  values that first appeared in that answer and vary between basis episodes;
+  a value known in advance (program literal, input, event, earlier argument or
+  answer) is an echo and never a dependency. Execution binds everything else
+  before the first effect and stops before a dependent call on a failed or
+  uncertain producer, a missing, empty or differently typed field
+  (`habit_activated.detail`); the court re-derives the fast path's outcome with
+  the same executor over the recorded answers.
+- Acceptance: 7 new files in `acceptance/memory/` (two plain-data contracts,
+  contrast boundary and the admissible/near/unknown triple, widening, result
+  dependency with a similar foreign job and replay, dependency refusals, driver
+  literal); the scripted tool server keeps stateful objects.
+
 ## Memory stage 4 — retained experience, hypotheses and palace admission — 2026-09-25
 
 Court policy `synapse.memory.court-policy/v2` (declared `raw_capacity`,

@@ -77,6 +77,14 @@ record (`reproduce_cognitive_session`); it never reaches a live effect.
 Retention compacts a case's raw trace only when a reproduction yields the
 case's exact events at their recorded positions.
 
+A learned habit's `habit_activated` event records every condition its typed
+trigger checked with the value it saw (`matched`) and why its body stopped
+before its end (`detail`); both follow deterministically from the recorded
+event and answers, so a re-execution reproduces them. A learned body that
+passes a result between its steps reads the earlier answer from the record,
+so neither a re-execution nor recovery creates a new external object. The
+typed trigger vocabulary adds `is`, a field present with one JSON kind.
+
 # 6. Boundaries
 
 The runtime core offers only the typed adapter points of

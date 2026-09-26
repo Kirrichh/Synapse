@@ -11,6 +11,10 @@ widened trigger, or a habit with another body or binding, is a new record. A
 learned behavior's Gold admission is bound to the frozen habit, never inside it:
 the admitted behavior is derived from the frozen identity, so a reference back
 from the frozen part would be circular.
+
+A kind's shape is versioned: a record keeps the schema version it was made
+with, and every version a kind ever had stays verifiable. A trigger of schema
+1.2 also carries the explanation of its applicability (refinement §12).
 """
 from __future__ import annotations
 
@@ -25,6 +29,7 @@ from synapse.experiments.gold.canonicalization import (
 from synapse.experiments.gold.contracts import IdentityDomain, compute_record_id
 
 RECORD_SCHEMA_V1 = "1.1"
+RECORD_SCHEMA_V2 = "1.2"
 
 
 def canonical(value: Any) -> bytes:
@@ -76,21 +81,38 @@ KINDS: dict[str, tuple[IdentityDomain, str, frozenset[str]]] = {
         "schema_version", "kind", "aspect", "subject", "statement", "scope", "source", "check"})),
 }
 
+_TRIGGER_V1 = KINDS["habit_trigger"][2]
+#: Kinds whose shape changed: schema version -> exact field set; the last entry is current.
+VERSIONS: dict[str, dict[str, frozenset[str]]] = {
+    "habit_trigger": {RECORD_SCHEMA_V1: _TRIGGER_V1, RECORD_SCHEMA_V2: _TRIGGER_V1 | {"applicability"}},
+}
+
+
+def _fields(kind: str, version: Any) -> frozenset[str] | None:
+    """The exact field set of one kind at one schema version, if that version exists."""
+    return VERSIONS.get(kind, {RECORD_SCHEMA_V1: KINDS[kind][2]}).get(version)
+
+
+def current_version(kind: str) -> str:
+    """The schema version new records of a kind are made with."""
+    return list(VERSIONS.get(kind, {RECORD_SCHEMA_V1: None}))[-1]
+
 
 def identity(kind: str, body: Mapping[str, Any]) -> str:
     """Content identity of one record body (without its ``id``)."""
     try:
-        domain, prefix, fields = KINDS[kind]
+        domain, prefix, _ = KINDS[kind]
     except KeyError as exc:
         raise RecordIntegrityError(f"unknown memory record kind {kind!r}") from exc
-    if set(body) != fields or body.get("kind") != kind or body.get("schema_version") != RECORD_SCHEMA_V1:
+    fields = _fields(kind, body.get("schema_version"))
+    if fields is None or set(body) != fields or body.get("kind") != kind:
         raise RecordIntegrityError(f"{kind} record has an unknown shape")
     return prefix + compute_record_id(domain=domain, canonical_bytes=canonical(dict(body))).digest_sha256
 
 
 def make(kind: str, **fields: Any) -> dict[str, Any]:
     """A new record with its identity."""
-    body = {"schema_version": RECORD_SCHEMA_V1, "kind": kind, **fields}
+    body = {"schema_version": current_version(kind), "kind": kind, **fields}
     return {**body, "id": identity(kind, body)}
 
 

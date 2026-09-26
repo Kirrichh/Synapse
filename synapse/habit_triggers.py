@@ -6,6 +6,11 @@ exact and ordered: all conditions hold — applicable; exactly one fails — a n
 miss that names the failed condition; more fail — the candidate drops. A
 missing field or a value of another JSON kind is undecidable and never counts
 as a match: automation is not granted by missing information.
+
+Besides comparisons and ``in``, ``is`` states that a field is present with one
+JSON kind (``string``, ``number``, ``bool``, ``object``, ``array``, ``null``):
+the condition a learned trigger keeps for a field whose value its body reads
+but whose value does not matter (refinement §12).
 """
 from __future__ import annotations
 
@@ -16,16 +21,24 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .memory_points import TypedCondition
 
-TYPED_CONDITION_OPS = ("==", "!=", ">", ">=", "<", "<=", "in")
+TYPED_CONDITION_OPS = ("==", "!=", ">", ">=", "<", "<=", "in", "is")
+JSON_KINDS = ("string", "number", "bool", "object", "array", "null")
 
 
-def _json_kind(value: Any) -> str:
+def json_kind(value: Any) -> str:
+    """The JSON kind of one strict JSON value."""
     if isinstance(value, bool):
         return "bool"
     if isinstance(value, (int, float)):
         return "number"
     if isinstance(value, str):
         return "string"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if value is None:
+        return "null"
     return type(value).__name__
 
 
@@ -39,17 +52,19 @@ def typed_condition_holds(condition: TypedCondition, fields: Dict[str, Any]) -> 
         return None
     actual = fields[condition.field]
     expected = condition.value
+    if condition.op == "is":
+        return json_kind(actual) == expected
     if condition.op == "in":
-        if not isinstance(expected, list) or any(_json_kind(item) != _json_kind(actual) for item in expected):
+        if not isinstance(expected, list) or any(json_kind(item) != json_kind(actual) for item in expected):
             return None
         return actual in expected
-    if _json_kind(actual) != _json_kind(expected):
+    if json_kind(actual) != json_kind(expected):
         return None
     if condition.op == "==":
         return actual == expected
     if condition.op == "!=":
         return actual != expected
-    if _json_kind(actual) not in {"number", "string"}:
+    if json_kind(actual) not in {"number", "string"}:
         return None
     return {">": actual > expected, ">=": actual >= expected,
             "<": actual < expected, "<=": actual <= expected}[condition.op]
@@ -71,6 +86,10 @@ class TypedTrigger:
         for condition in self.when + self.not_when:
             if type(condition) is not TypedCondition or condition.op not in TYPED_CONDITION_OPS:
                 raise ValueError("typed trigger condition is outside its closed vocabulary")
+            if condition.op == "is" and condition.value not in JSON_KINDS:
+                raise ValueError("an is-condition names a JSON kind")
+            if condition.op == "in" and not isinstance(condition.value, list):
+                raise ValueError("an in-condition lists its admitted values")
 
     def canonical(self) -> Dict[str, Any]:
         return {"event_types": list(self.event_types), "context": list(self.context) or "any",
@@ -102,6 +121,15 @@ class TypedTrigger:
         if len(failed) == 1:
             return "near_miss", failed[0]
         return "drop", None
+
+    def explain(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Every condition this trigger checked on the event, with the value it saw."""
+        fields = event.get("fields") or {}
+        return {"context": list(self.context) or "any", "labels": sorted(set(event.get("context_labels") or ())),
+                "when": [{**item.to_dict(), "actual": fields.get(item.field),
+                          "holds": typed_condition_holds(item, fields)} for item in self.when],
+                "not_when": [{**item.to_dict(), "actual": fields.get(item.field),
+                              "holds": typed_condition_holds(item, fields)} for item in self.not_when]}
 
 
 def declared_identity(canonical: Dict[str, Any]) -> str:

@@ -306,13 +306,15 @@ class MemoryEngine:
         frame = {"kind": "habit", "habit_id": habit.habit_id, "episode": f"{event['event_id']}|habit",
                  "op_scope": event["action_scope"], "actions": [], "outcomes": []}
         self.frames.append(frame)
+        detail = None
         try:
             if habit.layer == 2:
                 ports = ActionPorts(
                     invoke=lambda tool, arguments, retry_of=None: copy.deepcopy(
                         self.recorded_action(tool, copy.deepcopy(dict(arguments)), retry_of, frame)["outcome"]["view"]),
                     wait=self._wait)
-                outcome = self.session.run_learned_body(habit.habit_id, copy.deepcopy(event), ports)["outcome"]
+                body = self.session.run_learned_body(habit.habit_id, copy.deepcopy(event), ports)
+                outcome, detail = body["outcome"], body.get("detail")
             else:
                 try:
                     h.execute_block(habit.body, h.make_environment(h.global_env))
@@ -325,7 +327,7 @@ class MemoryEngine:
         final = next((item for item in reversed(frame["outcomes"])
                       if item["tool"] == failed["tool"] and item["op"] == failed["op"]), None)
         return {"outcome": outcome, "recovered": bool(final is not None and final["ok"]),
-                "action_refs": list(frame["actions"]), "final": final}
+                "action_refs": list(frame["actions"]), "final": final, "detail": copy.deepcopy(detail)}
 
     @staticmethod
     def _declared_outcome(outcomes: List[Dict[str, Any]]) -> str:

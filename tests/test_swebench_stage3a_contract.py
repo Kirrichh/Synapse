@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,13 +17,18 @@ from synapse.experiments.swebench.contract import (
     BaselineTask,
     ExperimentArm,
 )
-from synapse.experiments.swebench.mini_config import MiniInvocationConfig
 from synapse.worker import ExternalWorkerStatus
 
 
 class NeverOracle:
     def verify(self, worktree_path: Path, task: BaselineTask):
         raise AssertionError("oracle should not run")
+
+
+# The dispatch owner is replaced in these product-path tests; only the
+# admitted profile identity written to the Baseline manifest is read.
+FAKE_AGENT = SimpleNamespace(registry=SimpleNamespace(adapters=(SimpleNamespace(
+    profile=SimpleNamespace(provider_name="fake-agent", model_name="fake-model")),)))
 
 
 def test_experiment_arm_schema_values_are_explicit():
@@ -69,7 +75,7 @@ def test_gold_is_schema_only_and_not_executable(tmp_path):
             repo_root=tmp_path,
             base_revision="HEAD",
             replicate_id=1,
-            mini=MiniInvocationConfig(),
+            agent=FAKE_AGENT,
             oracle=NeverOracle(),
             run_root=tmp_path / "runs",
             arm=ExperimentArm.GOLD,

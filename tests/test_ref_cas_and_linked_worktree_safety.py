@@ -384,6 +384,8 @@ def test_failed_evidence_update_with_absent_observation_reports_absent_reason(tm
             return subprocess.CompletedProcess(args=["git", *args], returncode=1, stdout="", stderr="synthetic update failure")
         if args[0] == "for-each-ref":
             return subprocess.CompletedProcess(args=["git", *args], returncode=0, stdout="", stderr="")
+        if args[0] == "symbolic-ref":
+            return subprocess.CompletedProcess(args=["git", *args], returncode=1, stdout="", stderr="")
         raise AssertionError(f"unexpected git call: {args}")
 
     monkeypatch.setattr(runner_module, "git", fake_git)
@@ -400,6 +402,7 @@ def test_failed_evidence_update_with_absent_observation_reports_absent_reason(tm
     assert calls == [
         ["update-ref", "--no-deref", exc.attempted_ref, verified, ZERO_OID],
         ["for-each-ref", "--format=%(refname)%09%(objectname)%09%(symref)", "--", exc.attempted_ref],
+        ["symbolic-ref", "-q", exc.attempted_ref],
     ]
 
 
@@ -476,6 +479,8 @@ def test_failed_evidence_observation_ignores_child_ref_when_exact_ref_absent(tmp
                 stdout=f"refs/synapse/change/evidence/child-contract/child\t{child_oid}\t\n",
                 stderr="",
             )
+        if args[0] == "symbolic-ref":
+            return subprocess.CompletedProcess(args=["git", *args], returncode=1, stdout="", stderr="")
         raise AssertionError(f"unexpected git call: {args}")
 
     monkeypatch.setattr(runner_module, "git", fake_git)

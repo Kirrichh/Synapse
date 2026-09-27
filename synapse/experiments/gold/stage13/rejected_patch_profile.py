@@ -1,4 +1,4 @@
-"""Pure identity and program contract for the exact rejected-patch fingerprint.
+"""Pure identity and program contracts for exact verified patch outcomes.
 
 Evidence derivation remains with the C1 verifier. Its future-use attestation
 passes the ordinary compatibility policy without a profile-specific exception.
@@ -9,11 +9,16 @@ from ..behavior import (
     ContractField, DefaultKind, DefaultValue, InlineProgram, InputContract,
     OutputContract, ReplayContract, ReplayResultClass, ValueType,
     VerificationContract, VerificationResultClass, create_behavior_unit,
+    TYPED_PURE_REPLAY_PROFILE_V1,
 )
 from ..canonicalization import HashBoundRef, RefKind
 
 REJECTED_PATCH_DOMAIN_V2 = "synapse.stage4.gold.rejected-patch-domain/v2"
 REJECTED_PATCH_GUARD_V3 = "synapse.stage4.gold.rejected-patch-guard/v3"
+REJECTED_PATCH_GUARD_V4 = "synapse.stage4.gold.rejected-patch-guard/v4"
+REJECTED_PATCH_GUARD_V5 = "synapse.stage4.gold.rejected-patch-guard/v5"
+VERIFIED_PATCH_DOMAIN_V1 = "synapse.stage4.gold.verified-patch-domain/v1"
+VERIFIED_PATCH_GUARD_V1 = "synapse.stage4.gold.verified-patch-guard/v1"
 
 
 def fingerprint_words(digest):
@@ -48,3 +53,97 @@ def build_rejected_patch_guard(*, domain_ref, report, oracle, transitions=()):
             ("exact-patch-did-not-resolve-task",), (report,), (oracle,),
         ),
     )
+
+
+def rejected_guard_inputs(*, repository_revision, task_contract_sha256):
+    """Translate the frozen task/revision into lossless bounded CVM values."""
+    if (type(repository_revision) is not str or len(repository_revision) != 40
+            or any(char not in "0123456789abcdef" for char in repository_revision)):
+        raise ValueError("guard inputs require an exact Git commit")
+    revision = [int(repository_revision[index:index + 13], 16) for index in range(0, 40, 13)]
+    return {**{f"revision_word_{index}": word for index, word in enumerate(revision)},
+            **{f"task_word_{index}": word for index, word in enumerate(fingerprint_words(task_contract_sha256))}}
+
+
+def build_conditional_rejected_patch_guard(*, domain, domain_ref, report, oracle, transitions=()):
+    """Compute whether a verified negative fact applies to the current task/base.
+
+    The complete domain, including patch, C1 policy and oracle configuration,
+    remains independently checked at use. This computation narrows relevance;
+    it never generalizes a failed patch to other methods or tasks.
+    """
+    return _conditional_patch_fact(domain=domain, domain_ref=domain_ref, report=report, oracle=oracle,
+        transitions=transitions, behavior_kind=BehaviorKind.REJECTED_HYPOTHESIS_GUARD,
+        output_name="applicable_rejected_domain", profile=REJECTED_PATCH_GUARD_V4,
+        result=VerificationResultClass.BEHAVIOR_REJECTED, claim="exact-patch-did-not-resolve-task")
+
+
+def build_partial_patch_guard(*, domain, domain_ref, report, oracle, patch_ref, transitions=()):
+    """Retain a C1-checked change whose whole-task oracle still failed.
+
+    This describes the exact old C1 contract only. It cannot establish a root
+    cause, a successful whole task, or the correctness of a composed change.
+    The independent evidence owner must verify both claims before publication.
+    """
+    _require_patch_reference(domain, patch_ref)
+    return _conditional_patch_fact(domain=domain, domain_ref=domain_ref, report=report, oracle=oracle,
+        transitions=transitions, behavior_kind=BehaviorKind.REJECTED_HYPOTHESIS_GUARD,
+        output_name="applicable_checked_partial_patch", profile=REJECTED_PATCH_GUARD_V5,
+        result=VerificationResultClass.BEHAVIOR_REJECTED, claim="exact-patch-did-not-resolve-task",
+        patch_ref=patch_ref, additional_claims=("exact-patch-passed-c1-contract",))
+
+
+def _require_patch_reference(domain, patch_ref):
+    if (type(patch_ref) is not HashBoundRef or patch_ref.kind is not RefKind.ARTIFACT
+            or patch_ref.schema_id != "synapse.stage4.gold.c1-patch-bytes/v1"
+            or patch_ref.ref_id != patch_ref.sha256 or not patch_ref.byte_length
+            or patch_ref.sha256 != domain["patch_sha256"]):
+        raise ValueError("retained patch differs from its verified domain")
+
+
+def build_verified_patch_guard(*, domain, domain_ref, report, oracle, transitions=(), patch_ref=None):
+    """A scoped positive observation, never permission to repeat its effects.
+
+    The C1 evidence owner must independently establish the original successful
+    patch. Replay only computes whether its task/base identity matches; fresh
+    execution and verification remain required for the new task occurrence.
+    """
+    if patch_ref is not None:
+        _require_patch_reference(domain, patch_ref)
+    return _conditional_patch_fact(domain=domain, domain_ref=domain_ref, report=report, oracle=oracle,
+        transitions=transitions, behavior_kind=BehaviorKind.REPOSITORY_FACT_CHECK,
+        output_name="applicable_verified_patch", profile=VERIFIED_PATCH_GUARD_V1,
+        result=VerificationResultClass.CONTRACT_SATISFIED, claim="exact-patch-resolved-task", patch_ref=patch_ref)
+
+
+def _conditional_patch_fact(*, domain, domain_ref, report, oracle, transitions,
+                            behavior_kind, output_name, profile, result, claim, patch_ref=None,
+                            additional_claims=()):
+    inputs = rejected_guard_inputs(repository_revision=domain["base_revision"],
+                                   task_contract_sha256=domain["task_contract_ref"]["sha256"])
+    def words(values):
+        return {"node": "list", "elements": [{"node": "literal", "value_kind": "INT", "value": item}
+                                              for item in values]}
+    comparisons = [{"node": "binary", "operator": "EQ", "left": {"node": "variable", "name": name},
+                    "right": {"node": "literal", "value_kind": "INT", "value": value}}
+                   for name, value in sorted(inputs.items())]
+    condition = comparisons[0]
+    for comparison in comparisons[1:]:
+        condition = {"node": "binary", "operator": "AND", "left": condition, "right": comparison}
+    program = InlineProgram.from_dict({"form": "INLINE_IR_V1", "ir": {
+        "schema_version": "synapse.stage4.gold.canonical-program-ir/v1",
+        "program": {"node": "program", "statements": [{"node": "if",
+            "condition": condition,
+            "then_body": [{"node": "return", "value": words(fingerprint_words(domain_ref.sha256))}],
+            "else_body": [{"node": "return", "value": words([])}]}]}}})
+    fields = tuple(ContractField(name, ValueType.INTEGER, AbsencePolicy.DEFAULTED,
+        DefaultValue(DefaultKind.VALUE, value), AbsenceDetail(AbsenceDetailKind.NONE))
+        for name, value in sorted(inputs.items()))
+    output = ContractField(output_name, ValueType.LIST, AbsencePolicy.REQUIRED,
+        DefaultValue(DefaultKind.ABSENT), AbsenceDetail(AbsenceDetailKind.NONE))
+    return create_behavior_unit(behavior_kind=behavior_kind,
+        canonical_program=program, input_contract=InputContract(fields, ()),
+        output_contract=OutputContract((output,), ()), capability_requirements=(),
+        binding_refs=(), source_evidence_refs=(report,), artifact_refs=(oracle,) if patch_ref is None else (oracle, patch_ref),
+        replay_contract=ReplayContract(TYPED_PURE_REPLAY_PROFILE_V1, tuple(transitions), (), (), (ReplayResultClass.MATCH,)),
+        verification_contract=VerificationContract(profile, result, (claim, *additional_claims), (report,), (oracle,)))

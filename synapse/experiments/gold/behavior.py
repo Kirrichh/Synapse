@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from functools import lru_cache
 import hashlib
 import re
 from typing import Any
@@ -45,6 +46,7 @@ from .canonicalization import (
     decode_canonical_program_ir,
     validate_canonical_behavior_core,
     validate_ref_collection,
+    library_subject_ref,
 )
 from .contracts import (
     ActorIdentity,
@@ -66,6 +68,10 @@ _VERSIONED_RE = re.compile(
 )
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 MAX_INLINE_TYPED_VALUE_BYTES_V1 = 262_144
+TYPED_PURE_REPLAY_PROFILE_V1 = "synapse.stage4.gold.typed-pure-replay/v1"
+TYPED_PURE_REPLAY_PROFILE_V2 = "synapse.stage4.gold.typed-pure-replay/v2"
+TYPED_PURE_REPLAY_PROFILES = frozenset((TYPED_PURE_REPLAY_PROFILE_V1, TYPED_PURE_REPLAY_PROFILE_V2))
+BEHAVIOR_INVOCATION_SCHEMA_V1 = "synapse.stage4.gold.behavior-invocation/v1"
 _FORBIDDEN_PAYLOAD_KEYS = frozenset(
     {"password", "passwd", "secret", "token", "api_key", "private_key", "transcript", "raw_python", "source_code"}
 )
@@ -664,6 +670,104 @@ class OutputContract:
         return cls(tuple(_exact_list(data["fields"], "output_contract.fields")), tuple(_exact_list(data["postconditions"], "output_contract.postconditions")))
 
 
+def bind_contract_values(fields: tuple[ContractField, ...], values: object) -> dict[str, object]:
+    """Apply declared absence semantics without conflating absence and a value.
+
+    Absent optional/unknown/unavailable/redacted fields stay absent from the VM
+    namespace. Their distinct reasons remain in the immutable contract. Reading
+    such a name is therefore a machine failure, never an implicit false or null.
+    Defaults are copied from their canonical bytes, not shared with the caller.
+    """
+    fields = _normalize_fields(fields, "invocation contract")
+    if type(values) is not dict or any(type(name) is not str for name in values):
+        raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "contract values must be an exact named mapping")
+    names = {field.name for field in fields}
+    if set(values) - names:
+        raise _fail(BehaviorFailureCode.UNKNOWN_FIELD, "invocation contains undeclared fields")
+    bound = {}
+    absent_only = {AbsencePolicy.UNKNOWN, AbsencePolicy.UNAVAILABLE,
+                   AbsencePolicy.NOT_APPLICABLE, AbsencePolicy.REDACTED}
+    for field in fields:
+        present = field.name in values
+        policy = field.absence_policy
+        if policy in absent_only:
+            if present:
+                raise _fail(BehaviorFailureCode.INVALID_ABSENCE_POLICY, "an absent-only field cannot carry a value")
+            continue
+        if not present:
+            if policy is AbsencePolicy.OPTIONAL_ABSENT_ALLOWED:
+                continue
+            if policy is not AbsencePolicy.DEFAULTED:
+                raise _fail(BehaviorFailureCode.MISSING_REQUIRED_FIELD, "a required invocation field is absent")
+            item = field.default.value
+        else:
+            item = values[field.name]
+        nullable = (policy is AbsencePolicy.OPTIONAL_NULL_ALLOWED
+                    or policy is AbsencePolicy.DEFAULTED and field.value_type is ValueType.NULL)
+        if item is None:
+            if not nullable:
+                raise _fail(BehaviorFailureCode.INVALID_ABSENCE_POLICY, "null is not an admitted value for this field")
+        elif not _value_matches_type(item, field.value_type):
+            raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "invocation value differs from its declared type")
+        _check_no_secret_or_large_inline(item)
+        bound[field.name] = item
+    raw = canonicalize_stage4_payload(bound, profile_id=STAGE4_CANONICAL_PROFILE_V1,
+                                     codec_id=STABLE_CANONICAL_CODEC_ID)
+    if len(raw) > MAX_INLINE_TYPED_VALUE_BYTES_V1:
+        raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, "invocation exceeds the typed-value byte budget")
+    return decode_stage4_canonical_bytes(raw, profile_id=STAGE4_CANONICAL_PROFILE_V1,
+                                        codec_id=STABLE_CANONICAL_CODEC_ID)
+
+
+def create_behavior_invocation(unit: "SynapseBehaviorUnit", values: object) -> bytes:
+    """Bind data to one exact typed pure behavior; grant no execution authority.
+
+    This explicit profile uses one CVM return value for one output field. It
+    refuses external conditions until a condition evaluator is connected; merely
+    listing a ConditionRef does not prove that its predicate was checked.
+    Historical replay profiles retain their original execution semantics.
+    """
+    validate_behavior_unit(unit)
+    core = unit.core
+    if (core.replay_contract.profile_id not in TYPED_PURE_REPLAY_PROFILES
+            or type(core.canonical_program) is not InlineProgram
+            or core.capability_requirements):
+        raise _fail(BehaviorFailureCode.CAPABILITY_MISMATCH, "typed invocation requires the explicit pure IR profile")
+    if core.input_contract.preconditions or core.output_contract.postconditions:
+        raise _fail(BehaviorFailureCode.INVALID_REPLAY_CONTRACT, "typed pure invocation has no external condition evaluator")
+    if len(core.output_contract.fields) != 1:
+        raise _fail(BehaviorFailureCode.INVALID_REPLAY_CONTRACT, "typed pure invocation requires one declared return field")
+    # A VM return physically supplies a value; it cannot certify that a missing
+    # return is UNKNOWN, REDACTED, or any other absence state.
+    output = core.output_contract.fields[0]
+    if output.absence_policy not in (AbsencePolicy.REQUIRED, AbsencePolicy.OPTIONAL_NULL_ALLOWED):
+        raise _fail(BehaviorFailureCode.INVALID_ABSENCE_POLICY, "typed pure return must declare a present value")
+    bound = bind_contract_values(core.input_contract.fields, values)
+    payload = {"schema_version": BEHAVIOR_INVOCATION_SCHEMA_V1,
+        "behavior_content_key": unit.content_key.value,
+        "input_contract": core.input_contract.to_dict(),
+        "output_contract": core.output_contract.to_dict(),
+        "supplied_values": values, "bound_values": bound}
+    raw = canonicalize_stage4_payload(payload, profile_id=STAGE4_CANONICAL_PROFILE_V1,
+                                     codec_id=STABLE_CANONICAL_CODEC_ID)
+    if len(raw) > 2 * MAX_INLINE_TYPED_VALUE_BYTES_V1:
+        raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, "invocation record exceeds its byte budget")
+    return raw
+
+
+def inspect_behavior_invocation(raw: bytes, *, unit: "SynapseBehaviorUnit") -> dict[str, object]:
+    """Recompute an invocation from its behavior, including absence/defaults."""
+    if type(raw) is not bytes or len(raw) > 2 * MAX_INLINE_TYPED_VALUE_BYTES_V1:
+        raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "invocation must be bounded canonical bytes")
+    payload = decode_stage4_canonical_bytes(raw, profile_id=STAGE4_CANONICAL_PROFILE_V1,
+                                           codec_id=STABLE_CANONICAL_CODEC_ID)
+    if type(payload) is not dict or "supplied_values" not in payload:
+        raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "invocation record is malformed")
+    if raw != create_behavior_invocation(unit, payload["supplied_values"]):
+        raise _fail(BehaviorFailureCode.REF_KIND_MISMATCH, "invocation differs from its exact behavior or supplied data")
+    return payload
+
+
 def _validate_contract_context(
     input_contract: InputContract,
     output_contract: OutputContract,
@@ -859,6 +963,11 @@ def _validate_replay_contract(value: ReplayContract) -> tuple[tuple[str, ...], t
     if any(type(item) is not ReplayResultClass for item in value.allowed_result_classes) or len(set(value.allowed_result_classes)) != len(value.allowed_result_classes):
         raise _fail(BehaviorFailureCode.INVALID_REPLAY_CONTRACT, "replay result classes are invalid or duplicate")
     results = tuple(sorted(value.allowed_result_classes, key=lambda item: item.value))
+    if value.profile_id == TYPED_PURE_REPLAY_PROFILE_V2 and (
+        transitions or observations or activities or results != (ReplayResultClass.MATCH,)
+    ):
+        raise _fail(BehaviorFailureCode.INVALID_REPLAY_CONTRACT,
+                    "typed pure v2 binds its transcript to the captured invocation, not a fixed path")
     return transitions, observations, activities, results
 
 
@@ -1191,6 +1300,51 @@ def create_behavior_unit(
         artifact_refs=artifact_refs,
     )
     return _seal_unit(core)
+
+
+def _verified_behavior_evidence_subject(proof: bytes, content_bytes: bytes) -> bytes:
+    """Pure proof computation: no physical-store, lifecycle or admission read."""
+    content_ref = HashBoundRef.from_dict(decode_stage4_canonical_bytes(content_bytes,
+        profile_id=STAGE4_CANONICAL_PROFILE_V1, codec_id=STABLE_CANONICAL_CODEC_ID))
+    data = decode_stage4_canonical_bytes(proof, profile_id=STAGE4_CANONICAL_PROFILE_V1,
+                                         codec_id=STABLE_CANONICAL_CODEC_ID)
+    _exact_dict(data, ("unit", "manifest"), "behavior evidence")
+    unit = behavior_unit_from_dict(data["unit"])
+    blob = create_behavior_blob(unit)
+    manifest = create_behavior_manifest(unit, blob, compiler_binding=compile_behavior_unit(unit))
+    if manifest.to_dict(unit=unit, blob=blob) != data["manifest"]:
+        raise ValueError("evidence projection substitutes the admitted behavior manifest")
+    if content_ref not in (*unit.core.source_evidence_refs, *unit.core.artifact_refs):
+        raise ValueError("delivered content is not bound by the behavior")
+    subject = library_subject_ref(content_key=unit.content_key.value, manifest_id=manifest.manifest_id.value,
+        blob_digest_sha256=unit.content_key.digest_sha256, manifest_digest_sha256=manifest.manifest_id.digest_sha256)
+    return canonicalize_stage4_payload(subject.to_dict(), profile_id=STAGE4_CANONICAL_PROFILE_V1,
+                                       codec_id=STABLE_CANONICAL_CODEC_ID)
+
+
+# Keys contain complete immutable proof and content-reference bytes, not a path,
+# object identity, digest alone, or an authority verdict. Large proofs still run
+# the same computation without retention. Values are bytes; each caller receives
+# a fresh typed reference. The cache retains at most 64 proofs of 256 KiB each.
+_EVIDENCE_REUSE_MAX_BYTES = 256 * 1024
+_reused_behavior_evidence_subject = lru_cache(maxsize=64)(_verified_behavior_evidence_subject)
+
+
+def behavior_evidence_subject(proof: bytes, content_ref: HashBoundRef) -> HashBoundRef:
+    """Bind exact delivered bytes to their behavior, without granting admission.
+
+    Repeated decoding of the same immutable proof does not recompile its program.
+    Physical retention, freshness and point-of-use authority remain checked by
+    their existing owners on every read; their results are never cached here.
+    """
+    content_bytes = canonicalize_stage4_payload(content_ref.to_dict(),
+        profile_id=STAGE4_CANONICAL_PROFILE_V1, codec_id=STABLE_CANONICAL_CODEC_ID)
+    compute = (_reused_behavior_evidence_subject
+               if type(proof) is bytes and len(proof) <= _EVIDENCE_REUSE_MAX_BYTES
+               else _verified_behavior_evidence_subject)
+    subject_bytes = compute(proof, content_bytes)
+    return HashBoundRef.from_dict(decode_stage4_canonical_bytes(subject_bytes,
+        profile_id=STAGE4_CANONICAL_PROFILE_V1, codec_id=STABLE_CANONICAL_CODEC_ID))
 
 
 def validate_behavior_unit(value: SynapseBehaviorUnit) -> None:
@@ -1608,6 +1762,13 @@ def behavior_manifest_from_dict(
 
 
 __all__ = [
+    "BEHAVIOR_INVOCATION_SCHEMA_V1",
+    "TYPED_PURE_REPLAY_PROFILE_V1",
+    "TYPED_PURE_REPLAY_PROFILE_V2",
+    "TYPED_PURE_REPLAY_PROFILES",
+    "bind_contract_values",
+    "create_behavior_invocation",
+    "inspect_behavior_invocation",
     "AbsenceDetail",
     "AbsenceDetailKind",
     "AbsencePolicy",

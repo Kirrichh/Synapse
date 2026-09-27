@@ -1,4 +1,4 @@
-"""Actual canonical CLI, connected knowledge owners, Mini SDK and restart."""
+"""Actual canonical CLI, connected knowledge owners, an admitted agent and restart."""
 
 import json
 

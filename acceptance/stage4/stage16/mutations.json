@@ -1,0 +1,60 @@
+{
+  "schema_version": "synapse.acceptance.stage16.falsifications/v1",
+  "scope": "Stage 16 additions and canonical-entrypoint regression; existing Stage 4 adversarial suites remain required",
+  "cases": [
+    {
+      "id": "S16-MUT-MISSING-DURATION",
+      "requirement": "Specification v2.2 §§30, 32, 35; missing interval is not zero cost",
+      "path": "acceptance/stage4/stage16/assessment.py",
+      "before": "            missing |= pending\n",
+      "after": "            missing |= False\n",
+      "killer": "acceptance/stage4/stage16/test_comparison_contract.py::test_lost_dispatch_receipt_is_an_unknown_interval_after_successful_resume",
+      "expected_failure": "INCOMPLETE"
+    },
+    {
+      "id": "S16-MUT-FINGERPRINT",
+      "requirement": "Specification v2.2 \u00a733; NR-13",
+      "path": "acceptance/stage4/stage16/assessment.py",
+      "before": "        if mismatches:\n",
+      "after": "        if False:\n",
+      "killer": "acceptance/stage4/stage16/test_fingerprint_acceptance.py",
+      "expected_failure": "INCOMPLETE"
+    },
+    {
+      "id": "S16-MUT-SELECTED-REPLICATES",
+      "requirement": "Specification v2.2 \u00a733; NR-13",
+      "path": "acceptance/stage4/stage16/assessment.py",
+      "before": "for declared in experiment.protocol.payload()[\"pairs\"]:",
+      "after": "for declared in experiment.protocol.payload()[\"pairs\"][:1]:",
+      "killer": "acceptance/stage4/stage16/test_replicates_acceptance.py",
+      "expected_failure": "== 2"
+    },
+    {
+      "id": "S16-MUT-CACHE-AS-REUSE",
+      "requirement": "Specification v2.2 \u00a732; provider cache is not semantic reuse",
+      "path": "acceptance/stage4/stage16/assessment.py",
+      "before": "active = gold is not None and bool(gold[\"mechanisms\"])",
+      "after": "active = gold is not None and any((call[\"usage\"][\"cache_read_tokens\"] or 0) > 0 for call in gold[\"provider_calls\"])",
+      "killer": "acceptance/stage4/stage16/test_paired_execution_acceptance.py",
+      "expected_failure": "MECHANISM_NOT_ACTIVATED"
+    },
+    {
+      "id": "S16-MUT-UNEARNED-ECONOMICS",
+      "requirement": "Specification v2.2 \u00a732; NR-14",
+      "path": "acceptance/stage4/stage16/assessment.py",
+      "before": "\"economic_claim\": \"NOT_AUTHORIZED_BY_ACCEPTANCE\"",
+      "after": "\"economic_claim\": \"ALLOWED\"",
+      "killer": "acceptance/stage4/stage16/test_paired_execution_acceptance.py",
+      "expected_failure": "NOT_AUTHORIZED_BY_ACCEPTANCE"
+    },
+    {
+      "id": "S16-MUT-PRODUCT-BYPASS",
+      "requirement": "NR-01, NR-02; one canonical production entrypoint",
+      "path": "synapse/experiments/gold/__main__.py",
+      "before": null,
+      "after": "from synapse.cli.main import main\n\nmain()\n",
+      "killer": "tests/test_stage4_gold_canonical_entrypoint.py::test_gold_package_has_no_module_entrypoint",
+      "expected_failure": "NR-02 forbids"
+    }
+  ]
+}

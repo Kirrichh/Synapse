@@ -21,6 +21,7 @@ import base64
 import hashlib
 import json
 import math
+import re
 import unicodedata
 from collections.abc import Mapping, Set as AbstractSet
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ PROFILE_VERSION = "v1"
 MAX_NESTING_DEPTH = 128
 SAFE_INTEGER_MIN = -(2**53 - 1)
 SAFE_INTEGER_MAX = 2**53 - 1
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 
 
 class CanonicalValueError(RuntimeError):
@@ -53,6 +55,9 @@ class CanonicalBytes:
 
 
 def _has_lone_surrogate(text: str) -> bool:
+    if type(text) is str:
+        return _SURROGATE_RE.search(text) is not None
+    # Keep the existing iteration semantics of accepted string subclasses.
     return any(0xD800 <= ord(ch) <= 0xDFFF for ch in text)
 
 

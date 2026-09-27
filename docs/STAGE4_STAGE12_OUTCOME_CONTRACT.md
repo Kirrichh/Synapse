@@ -51,7 +51,7 @@ an oracle success. An oracle result for a different commit pair is invalid,
 not a failed test of this candidate. An unimplemented verification kind remains
 undischarged. Rejected/corrupt inputs do not become ordinary negative oracle
 results. Telemetry completeness is orthogonal to correctness: unknown is not
-zero, and Mini's token observations remain visible without certifying total
+zero, and the agent's token observations remain visible without certifying total
 platform accounting.
 
 ## Publication dependency correction
@@ -166,7 +166,7 @@ product code. Cheap record/matrix checks and repository/process/recovery
 scenarios use separate files; heavy files run as independent GitHub matrix
 jobs. Required cases include real successful and unresolved attempts, forged
 labels and refs, missing plan/report/bindings, evidence–oracle disagreement,
-restart after C1, completed-result corruption, and unchanged Mini usage.
+restart after C1, completed-result corruption, and unchanged agent usage.
 
 ## Sources and design limits
 

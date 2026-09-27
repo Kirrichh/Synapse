@@ -37,6 +37,7 @@ Cognitive primitives (`DreamBlock`, `ResonanceStmt`, `CollectiveDreamStmt`) rema
 - `habit_engine.py` — habit registry facade, activation routing, observer suppression.
 - `actor_runtime.py` — mailboxes, receive/send, promises, spawn, migration.
 - `vm_bridge.py` и `vm_routing.py` — CVM boundary, HOST_ABI dispatch, HOST_EVAL fallback visibility.
+- `dataflow.py` — `parallel` graphs: readiness over settled input versions, concurrent observations, superseded and cancelled computations, signals, the single commit and its recorded schedule (`docs/RFC-ASYNC-EXECUTION-AMENDMENT-03.md` §5a).
 
 ### CVM Boundary
 

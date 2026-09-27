@@ -755,6 +755,64 @@ def resolve_python_binding(
         path,
         maximum_bytes=MAX_PYTHON_SOURCE_BYTES_V1,
     )
+    return _resolve_python_snapshot(raw, revision=revision, canonical_path=canonical_path,
+        module=module, qualname=qualname, symbol_kind=symbol_kind,
+        contract_version=contract_version, resolver_version=resolver_version)
+
+
+def inspect_retained_python_binding(value: object, raw: bytes) -> PythonBinding:
+    """Reconstruct a binding from retained source bytes without a live checkout.
+
+    The caller must establish the source's retained hash and Git provenance.
+    Symbol parsing and span identity use the same resolver as live bindings.
+    """
+    if type(value) is not dict or type(raw) is not bytes or len(raw) > MAX_PYTHON_SOURCE_BYTES_V1:
+        raise _fail(BindingFailureCode.INVALID_PYTHON_SOURCE, "retained Python binding needs bounded bytes")
+    binding = _resolve_python_snapshot(raw,
+        revision=_revision_from_dict(value["repository_revision"]), canonical_path=_canonical_path(value["path"]),
+        module=value["module"], qualname=value["qualname"], symbol_kind=PythonSymbolKind(value["symbol_kind"]),
+        contract_version=value["contract_version"], resolver_version=value["resolver_version"])
+    if binding.to_dict() != value:
+        raise _fail(BindingFailureCode.INVALID_PYTHON_SOURCE, "retained source does not reproduce the binding")
+    return binding
+
+
+def discover_python_bindings(repo_root: object, *, repository_revision: RepositoryRevision,
+                             path: str) -> tuple[PythonBinding, ...]:
+    """Discover supported symbols from an exact regular Git blob, never the worktree."""
+    revision, canonical_path, raw = _load_snapshot_bytes(
+        repo_root, repository_revision, path, maximum_bytes=MAX_PYTHON_SOURCE_BYTES_V1,
+    )
+    return discover_retained_python_bindings(raw, repository_revision=revision, path=canonical_path)
+
+
+def discover_retained_python_bindings(raw: bytes, *, repository_revision: RepositoryRevision,
+                                     path: str) -> tuple[PythonBinding, ...]:
+    """Discover the identities supported by this resolver without executing code.
+
+    Discovery and explicit resolution share the same syntax, scope and span
+    semantics. Duplicate declarations are refused rather than guessed. This
+    establishes source identity, not calls, effects or runtime correctness.
+    """
+    if type(raw) is not bytes or len(raw) > MAX_PYTHON_SOURCE_BYTES_V1:
+        raise _fail(BindingFailureCode.RESOURCE_LIMIT_EXCEEDED, "Python discovery needs bounded source bytes")
+    canonical_path = _canonical_path(path)
+    revision = _revision_from_dict(repository_revision.to_dict())
+    module = _module_from_path(canonical_path)
+    declarations = _declarations(_parse_python(_decode_python_source(raw), canonical_path))
+    if len(declarations) >= 128:
+        raise _fail(BindingFailureCode.RESOURCE_LIMIT_EXCEEDED, "Python discovery exceeds its symbol budget")
+    if len({item.qualname for item in declarations}) != len(declarations):
+        raise _fail(BindingFailureCode.SYMBOL_AMBIGUOUS, "Python discovery found duplicate declarations")
+    symbols = ((module, PythonSymbolKind.MODULE), *((item.qualname, item.kind) for item in declarations))
+    return tuple(_resolve_python_snapshot(raw, revision=revision, canonical_path=canonical_path,
+        module=module, qualname=qualname, symbol_kind=kind,
+        contract_version=BINDING_CONTRACT_VERSION_V1, resolver_version=PYTHON_BINDING_RESOLVER_V1)
+        for qualname, kind in symbols)
+
+
+def _resolve_python_snapshot(raw, *, revision, canonical_path, module, qualname, symbol_kind,
+                             contract_version, resolver_version):
     _require_contract_version(contract_version)
     _require_resolver_version(resolver_version, PYTHON_BINDING_RESOLVER_V1)
     expected_module = _module_from_path(canonical_path)
@@ -1307,6 +1365,7 @@ __all__ = [
     "consume_document_binding",
     "consume_python_binding",
     "consume_requirement_binding",
+    "discover_retained_python_bindings",
     "resolve_document_binding",
     "resolve_python_binding",
     "resolve_requirement_binding",

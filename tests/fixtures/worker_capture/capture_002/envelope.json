@@ -1,0 +1,39 @@
+{
+  "diagnostics": {
+    "scope_violations": [
+      "test_import.py"
+    ],
+    "tracked_files": [],
+    "untracked_files": [
+      "src/mul.py",
+      "test_import.py"
+    ]
+  },
+  "diff_text": null,
+  "touched_files": [
+    "src/mul.py",
+    "test_import.py"
+  ],
+  "usage": {
+    "diagnostics": {
+      "reported_fields": [
+        "completion_tokens",
+        "completion_tokens_details",
+        "prompt_tokens",
+        "prompt_tokens_details",
+        "total_tokens"
+      ]
+    },
+    "input_tokens": 1011,
+    "output_tokens": 74,
+    "thinking_included": false,
+    "thinking_tokens": null,
+    "token_status": "TOOL_REPORTED",
+    "total_tokens": 1085
+  },
+  "worker_report": {
+    "failure_reason": null,
+    "summary": null
+  },
+  "worker_status": "PROPOSED_PATCH"
+}

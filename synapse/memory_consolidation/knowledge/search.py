@@ -1,0 +1,130 @@
+"""Search of semantic knowledge: two candidate channels, one budget (refinement §15).
+
+The lexical channel ranks statements by the palace's token overlap
+(``palace-lexical/v2``). The semantic channel ranks them by the cosine of the
+query's embedding and each statement's recorded embedding; the embedding
+model is a ``reason`` tool the gateway records, so a re-execution reads the
+same vectors and the model's choice changes no authority. The two rankings are
+merged by reciprocal rank fusion (Cormack, Clarke and Buettcher, SIGIR 2009):
+ranks, never raw scores, so neither a model's confident score nor a mirror's
+near-identical wording buys priority. Both channels draw from the same
+budget of statements.
+
+Search only proposes. The slots the fused ranking reaches are resolved on the
+timeline at the asked valid time as memory knew it then, and every holding
+version is returned in the shape admission reads (entity, attribute, value,
+polarity, conditions, validity, currency, source); nothing here admits a
+fact. Near-identical wording about another entity, a flipped negation and a
+high similarity are refused by admission's structured checks, which dense
+retrievers are known not to make (negation: NevIR; entities: EntityQuestions).
+
+The cost of the semantic channel is published with every search: embedding
+calls, vectors and dimensions searched, the index's size in bytes, and the
+wall time of the query's embedding.
+"""
+from __future__ import annotations
+
+import math
+from typing import Any, Callable, Iterable, Mapping, Sequence
+
+from synapse.palace_admission import SCORER_VERSION, candidate_score
+
+from .statements import freshness_of, slot
+from .timeline import known_at, resolve
+
+SEARCH_V1 = "synapse.memory.knowledge-search/v1"
+RRF_K = 60  # The constant Cormack, Clarke and Buettcher found robust.
+_BYTES_PER_COMPONENT = 8
+
+
+def searchable(record: Mapping[str, Any]) -> dict[str, Any]:
+    """The content of a statement the lexical channel reads (its structure and its text)."""
+    return {"subject": record["subject"], "property": record["property"], "value": record["value"],
+            "conditions": record["conditions"], "text": record["text"]}
+
+
+def lexical_ranking(query: str, entries: Sequence[Mapping[str, Any]], budget: int) -> list[str]:
+    scored = []
+    for entry in entries:
+        found = candidate_score(query, searchable(entry["record"]))
+        if found is not None and found["score"] > 0:
+            scored.append((-found["score"], entry["record"]["id"]))
+    return [identity for _, identity in sorted(scored)[:budget]]
+
+
+def cosine(left: Sequence[float], right: Sequence[float]) -> float:
+    dot = sum(a * b for a, b in zip(left, right))
+    norm = math.sqrt(sum(a * a for a in left)) * math.sqrt(sum(b * b for b in right))
+    return 0.0 if norm == 0 else dot / norm
+
+
+def semantic_ranking(query_vector: Sequence[float] | None, entries: Sequence[Mapping[str, Any]],
+                     budget: int) -> list[str]:
+    if query_vector is None:
+        return []
+    scored = []
+    for entry in entries:
+        vector = entry.get("vector")
+        if vector is not None and len(vector) == len(query_vector):
+            similarity = cosine(query_vector, vector)
+            if similarity > 0:
+                scored.append((-round(similarity, 12), entry["record"]["id"]))
+    return [identity for _, identity in sorted(scored)[:budget]]
+
+
+def fuse(rankings: Iterable[Sequence[str]], k: int = RRF_K) -> list[str]:
+    """Reciprocal rank fusion of rankings; ties by identity."""
+    scores: dict[str, float] = {}
+    for ranking in rankings:
+        for position, identity in enumerate(ranking, 1):
+            scores[identity] = scores.get(identity, 0.0) + 1.0 / (k + position)
+    return [identity for identity, _ in sorted(scores.items(), key=lambda item: (-item[1], item[0]))]
+
+
+def candidate(resolved: Mapping[str, Any], rank: int, channels: Mapping[str, list[str]]) -> dict[str, Any]:
+    """One holding version in the shape admission reads."""
+    entry = resolved["entry"]
+    record = entry["record"]
+    return {"id": record["id"], "kind": "fact", "entity": record["subject"], "attribute": record["property"],
+            "value": record["value"], "polarity": record["polarity"], "conditions": dict(record["conditions"]),
+            "valid_from": resolved["valid_from"], "valid_until": resolved["valid_until"],
+            "freshness": resolved["freshness"], "text": record["text"],
+            "source": {"tool": record["source"]["tool"], "ref": record["source"]["ref"], "source": entry["source"]},
+            "known_from": entry["known_from"], "known_until": entry["known_until"], "rank": rank,
+            "found_by": sorted(name for name, ranking in channels.items() if record["id"] in ranking)}
+
+
+def search(query: str, versions: Mapping[str, Mapping[str, Any]], policy, *, valid_at: str | None,
+           known_as_of: int | None, embed: Callable[[str], tuple[list[float] | None, float | None]] | None,
+           channels: Sequence[str] = ("lexical", "semantic")) -> dict[str, Any]:
+    """Candidates for ``query`` at ``valid_at`` as known at ``known_as_of``, with each channel's ranking and cost."""
+    budget = policy.budget
+    held = sorted((entry for entry in versions.values() if known_at(entry, known_as_of)),
+                  key=lambda entry: entry["record"]["id"])
+    rankings: dict[str, list[str]] = {}
+    cost = {"embedding_calls": 0, "vectors": 0, "dimensions": None, "index_bytes": 0, "embedding_ms": None}
+    if "lexical" in channels:
+        rankings["lexical"] = lexical_ranking(query, held, budget)
+    if "semantic" in channels and embed is not None:
+        vector, elapsed = embed(query)
+        indexed = [entry["vector"] for entry in held if entry.get("vector") is not None]
+        cost.update(embedding_calls=1, vectors=len(indexed), embedding_ms=elapsed,
+                    dimensions=None if vector is None else len(vector),
+                    index_bytes=sum(len(item) for item in indexed) * _BYTES_PER_COMPONENT)
+        rankings["semantic"] = semantic_ranking(vector, held, budget)
+    fused = fuse(rankings.values())[:budget]
+    slots: list[str] = []
+    by_id = {entry["record"]["id"]: entry for entry in held}
+    for identity in fused:
+        found = slot(by_id[identity]["record"])
+        if found not in slots:
+            slots.append(found)
+    candidates = []
+    for rank, found in enumerate(slots, 1):
+        members = [entry for entry in versions.values() if slot(entry["record"]) == found]
+        rule = freshness_of(policy, members[0]["record"]["property"])
+        for resolved in resolve(members, rule, valid_at=valid_at, known_as_of=known_as_of):
+            candidates.append(candidate(resolved, rank, rankings))
+    return {"schema_version": SEARCH_V1, "lexical_scorer": SCORER_VERSION, "budget": budget,
+            "valid_at": valid_at, "known_as_of": known_as_of, "channels": rankings, "fused": fused,
+            "candidates": candidates, "cost": cost}

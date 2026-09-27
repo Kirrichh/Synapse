@@ -13,8 +13,11 @@ from ..runner.records import RecordKind
 from ..runner.run_progress import load_attempt_progress, AttemptProgressPhase, require_progress_payload
 from ..stage10.context_codec import decode_canonical
 from ..stage12.outcome import restore_attempt_outcome, inspect_outcome
-from ..stage13.publication_store import PublicationResult
+from ..stage13.publication import reference
+from ..stage13.publication_store import PUBLICATION_RESULT_V3, PublicationResult
 from .execution import execution_graph, preparation_graph
+from .sources import read_source_publications
+from .read_traversal import publication_read_scope
 from .graph import (GraphBuilder, LineageGraph, LineageNodeClass as Node, LineageViolation,
                     LineageFailureCode as Failure, LINEAGE_SCHEMA_V1)
 
@@ -29,13 +32,14 @@ def require_stored_graph(store, kind, key, expected):
     return graph
 
 
-def _publication_fragment(publication_root, transaction_id):
+def _publication_fragment(publication_root, transaction_id) -> tuple[HashBoundRef, LineageGraph]:
     if publication_root is None:
         raise LineageViolation(Failure.MISSING_RECORD, "publication has no physical owner")
     result = PublicationResult(publication_root, transaction_id)
-    result.payload()  # Reopens every atomic participant and verifies the graph.
+    payload = result.payload()  # Reopens every atomic participant and verifies the graph.
+    published_ref = reference(payload, PUBLICATION_RESULT_V3)
     _, members = read_committed_snapshot_transaction(publication_root / "committed", transaction_id=transaction_id)
-    return result, LineageGraph.from_dict(decode_canonical(members["lineage.json"]))
+    return published_ref, LineageGraph.from_dict(decode_canonical(members["lineage.json"]))
 
 
 def reconstruct_attempt(*, manifest, context, result, store, verification, publisher):
@@ -53,6 +57,7 @@ def reconstruct_retained_attempt(*, manifest, context, result, store, publicatio
         publication_root=publication_root)
 
 
+@publication_read_scope()
 def _attempt_graph(*, manifest, context, result, store, verification, outcome_ref, publication_root):
     key = str(context.attempt_index)
     sources = store.get(kind=RecordKind.LINEAGE_SOURCES, key=key)
@@ -62,6 +67,17 @@ def _attempt_graph(*, manifest, context, result, store, verification, outcome_re
     b = GraphBuilder("attempt-incomplete/v1" if verification["payload"]["failure_codes"] else "attempt/v1",
                      manifest.run_id.value, context.attempt_id.value)
     b.merge("", execution_graph(catalog, verification))
+    for index, source in enumerate(read_source_publications(catalog)):
+        origin = source["origin"]
+        from pathlib import Path
+        published_ref, fragment = _publication_fragment(Path(origin["publication_root"]), origin["transaction_id"])
+        if published_ref.to_dict() != origin["result_ref"]:
+            raise LineageViolation(Failure.PHYSICAL_MISMATCH, "source knowledge names another publication")
+        prefix = f"source_producer.{index}"
+        b.merge(prefix, fragment)
+        b.add(prefix + ".publication", Node.PUBLICATION_RESULT, published_ref)
+        b.link(prefix + ".manifest", Edge.PUBLISHED_AS, prefix + ".publication")
+        b.link(prefix + ".publication", Edge.DERIVED_FROM, "input.snapshot")
     b.add("outcome", Node.STRUCTURED_OUTCOME, outcome_ref)
     for index, raw_ref in enumerate(result.structured_outcome["payload"]["telemetry_refs"]):
         ref = HashBoundRef.from_dict(raw_ref)
@@ -83,9 +99,9 @@ def _attempt_graph(*, manifest, context, result, store, verification, outcome_re
     publication = store.get(kind=RecordKind.PUBLICATION_RESULT, key=key)
     if publication is not None:
         if publication.payload["state"] == "COMMITTED":
-            published, fragment = _publication_fragment(publication_root, publication.payload["transaction_id"])
+            published_ref, fragment = _publication_fragment(publication_root, publication.payload["transaction_id"])
             b.merge("published", fragment)
-            b.add("publication", Node.PUBLICATION_RESULT, published.reference)
+            b.add("publication", Node.PUBLICATION_RESULT, published_ref)
             # Final outcome depends on publication. The pre-publication proof
             # remains a separate immutable verification occurrence.
             b.link("published.manifest", Edge.PUBLISHED_AS, "publication")
@@ -97,9 +113,9 @@ def _attempt_graph(*, manifest, context, result, store, verification, outcome_re
         raw, ref = require_progress_payload(mechanism)
         record = decode_canonical(raw)
         b.add("mechanism_use", Node.MECHANISM_USE, ref)
-        published, fragment = _publication_fragment(publication_root, record["publication_transaction_id"])
+        published_ref, fragment = _publication_fragment(publication_root, record["publication_transaction_id"])
         b.merge("producer", fragment)
-        b.add("producer.publication", Node.PUBLICATION_RESULT, published.reference)
+        b.add("producer.publication", Node.PUBLICATION_RESULT, published_ref)
         b.link("producer.manifest", Edge.PUBLISHED_AS, "producer.publication")
         b.link("producer.publication", Edge.DERIVED_FROM, "mechanism_use")
         b.link("mechanism_use", Edge.DERIVED_FROM, "verification")

@@ -815,12 +815,12 @@ def _defaults(arguments: dict) -> dict:
     arguments.setdefault("step_limit", 1_000)
     return arguments
 
-def prepare_for(unit, *, compiler=compile_behavior_unit, **arguments) -> Prepared:
+def prepare_for(unit, *, compiler=compile_behavior_unit, inputs=None, **arguments) -> Prepared:
     """One fresh point-of-use attempt over one published behavior."""
 
     core = published_core(unit)
     admission = WORLD.admission_request(core)
-    subjects = (R.replay_subject(subject_ref=admitted_subject(unit), unit=unit),)
+    subjects = (R.replay_subject(subject_ref=admitted_subject(unit), unit=unit, inputs=inputs),)
     return Prepared(admission, subjects, compiler, _defaults(arguments), (unit,), core, ())
 
 def prepare_many(units, *, order=None, **arguments) -> Prepared:

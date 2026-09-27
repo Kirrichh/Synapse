@@ -44,7 +44,9 @@ from .planning import (
     validate_operation_plan_candidate,
 )
 from .repository_scope import RepositoryScope, validate_repository_scope
-from .task_contract import GoverningTaskContract
+from .task_contract import GoverningTaskContract, TASK_CONTRACT_SCHEMA_V3
+from ..task_targets import read_task_targets
+from ..bindings import binding_to_ref
 
 
 PLAN_POLICY_SCHEMA_V1 = "synapse.stage4.gold.stage10.plan-authority-policy/v1"
@@ -184,6 +186,8 @@ def validate_plan_authority_policy(value: PlanAuthorityPolicy) -> None:
 class ConfiguredPlanAuthority:
     task_contract: GoverningTaskContract
     _task_contract_snapshot: bytes
+    resolved_target_bindings: tuple[HashBoundRef, ...]
+    _target_bindings_snapshot: bytes
     policy: PlanAuthorityPolicy
     reviewer_authority: AuthorityIdentity
     governing_human_authority: AuthorityIdentity | None
@@ -205,10 +209,18 @@ def configure_plan_authority(
     governing_human_authority: AuthorityIdentity | None,
     compatibility_validator: CompatibilityEvidenceValidator | None,
     approval_policy: RunApprovalPolicy | None = None,
+    target_resolution: bytes | None = None,
+    repository_root=None,
 ) -> ConfiguredPlanAuthority:
     validate_plan_authority_policy(policy)
     if type(task_contract) is not GoverningTaskContract:
         raise _fail(AuthorityFailureCode.TYPE_MISMATCH, "plan authority requires an independent governing task")
+    targets = task_contract.target_bindings
+    if task_contract.schema_version == TASK_CONTRACT_SCHEMA_V3:
+        targets = tuple(binding_to_ref(item) for item in read_task_targets(
+            target_resolution, task=task_contract, repository_root=repository_root))
+    elif target_resolution is not None or repository_root is not None:
+        raise _fail(AuthorityFailureCode.DECISION_MISMATCH, "historical task cannot acquire automatic targets")
     if type(reviewer_authority) is not AuthorityIdentity:
         raise _fail(AuthorityFailureCode.TYPE_MISMATCH, "reviewer authority must be exact")
     if governing_human_authority is not None and type(governing_human_authority) is not AuthorityIdentity:
@@ -225,6 +237,8 @@ def configure_plan_authority(
     result = object.__new__(ConfiguredPlanAuthority)
     object.__setattr__(result, "task_contract", task_contract)
     object.__setattr__(result, "_task_contract_snapshot", task_contract.canonical_bytes())
+    object.__setattr__(result, "resolved_target_bindings", targets)
+    object.__setattr__(result, "_target_bindings_snapshot", _canonical([item.to_dict() for item in targets]))
     object.__setattr__(result, "policy", policy)
     object.__setattr__(result, "reviewer_authority", reviewer_authority)
     object.__setattr__(result, "governing_human_authority", governing_human_authority)
@@ -243,6 +257,10 @@ def require_configured_plan_authority(value: ConfiguredPlanAuthority) -> None:
     validate_plan_authority_policy(value.policy)
     if type(value.task_contract) is not GoverningTaskContract or value.task_contract.canonical_bytes() != getattr(value, "_task_contract_snapshot", None):
         raise _fail(AuthorityFailureCode.DECISION_MISMATCH, "governing task contract was rewired")
+    if (type(value.resolved_target_bindings) is not tuple
+            or any(type(item) is not HashBoundRef for item in value.resolved_target_bindings)
+            or _canonical([item.to_dict() for item in value.resolved_target_bindings]) != getattr(value, "_target_bindings_snapshot", None)):
+        raise _fail(AuthorityFailureCode.DECISION_MISMATCH, "resolved task targets were rewired")
     if value.approval_policy is not getattr(value, "_approval_policy_snapshot", None):
         raise _fail(AuthorityFailureCode.HUMAN_APPROVAL_INVALID, "approval policy was rewired")
     if type(value.reviewer_authority) is not AuthorityIdentity:
@@ -259,7 +277,7 @@ def require_configured_plan_authority(value: ConfiguredPlanAuthority) -> None:
 
 def _require_governing_task(authority: ConfiguredPlanAuthority, intent: IntentCandidate) -> None:
     try:
-        authority.task_contract.validate_intent(intent)
+        authority.task_contract.validate_intent(intent, resolved_target_bindings=authority.resolved_target_bindings)
     except (TypeError, ValueError) as exc:
         raise _fail(AuthorityFailureCode.DECISION_MISMATCH, str(exc)[:256]) from exc
 

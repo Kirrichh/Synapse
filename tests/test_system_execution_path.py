@@ -42,7 +42,7 @@ def test_package_entry_point_is_thin_adapter_and_help_surfaces_match():
     cli_help = run_cmd([sys.executable, "-m", "synapse.cli", "--help"])
     assert package_help.returncode == cli_help.returncode == 0
     assert package_help.stdout == cli_help.stdout
-    assert "{run,repl,replay,debug,metrics,change}" in package_help.stdout
+    assert "{run,repl,replay,project,memory,debug,metrics,change}" in package_help.stdout
 
 
 def test_synapse_cli_run_delegates_file_execution(monkeypatch, capsys, tmp_path):

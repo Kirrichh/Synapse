@@ -19,6 +19,7 @@ from .. import records
 from .boundary import boundary_record
 from .digest import digest_record
 from .hypotheses import hypothesis_stage
+from .knowledge import known_of
 from .quantization import quantize
 
 REPORT_V1 = "synapse.memory.consolidation-report/v1"
@@ -80,11 +81,16 @@ def assemble(*, state, draft, decision, configuration, inputs_hash, window_sessi
     window = state["window"] + 1
     quantized = quantize(state, draft, decision, configuration, admitted, window, custody)
     hypotheses, hypotheses_section = hypothesis_stage(state, draft, draft["cases"], window)
+    knowledge = decision["knowledge"]
+    # A correction revises what depended on the corrected answer after this window's own checks.
+    hypotheses = {**hypotheses, **knowledge["hypotheses"]}
+    held = known_of(state)
+    known = {"versions": {**held["versions"], **knowledge["versions"]}, "uses": {**held["uses"], **knowledge["uses"]}}
     boundary = digest = None
     if draft["mode"] != "emergency":
         after = {**state, "habits": {**state["habits"], **habits}, "frozen": {**state["frozen"], **frozen},
                  "declared": decision["declared"], "slow_only": decision["slow_only"],
-                 "hypotheses": {**state["hypotheses"], **hypotheses}, "window": window}
+                 "hypotheses": {**state["hypotheses"], **hypotheses}, "knowledge": known, "window": window}
         boundary = boundary_record(after, legitimacy_after, draft["consolidation_id"])
         digest = digest_record(draft, boundary["id"], decision["slow_only"], draft["consolidation_id"])
     report = {
@@ -106,6 +112,8 @@ def assemble(*, state, draft, decision, configuration, inputs_hash, window_sessi
                   "quanta": {**copy.deepcopy(retention["quanta"]), **quantized["quanta"]},
                   "parts": quantized["parts"], "retention": copy.deepcopy(state["retention"]),
                   "hypotheses": hypotheses,
+                  "knowledge": {"versions": copy.deepcopy(knowledge["versions"]),
+                                "uses": copy.deepcopy(knowledge["uses"])},
                   "cursors": {item["run_id"]: {"to": item["to"], "head": item["head"]} for item in window_sessions},
                   "digest": digest}}
     return {"report": records.make("consolidation_report", report=report), "boundary": boundary, "digest": digest}

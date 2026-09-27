@@ -119,6 +119,8 @@ class Parser:
             return self.energy_pool_decl()
         if self.check(TokenType.FLOW):
             return self.flow_def()
+        if self.check(TokenType.PARALLEL):
+            return self.parallel_stmt()
         if self.check(TokenType.POLICY):
             return self.policy_def()
         if self.check(TokenType.AFFECTIVE):
@@ -361,6 +363,52 @@ class Parser:
         name = self.consume(TokenType.IDENTIFIER, "Expected flow name").value
         body = self.block()
         return FlowDef(name=name, body=body, line=token.line, column=token.column)
+
+    def _contextual(self, word: str) -> bool:
+        return self.check(TokenType.IDENTIFIER) and self.peek().value == word
+
+    def parallel_stmt(self) -> ParallelStmt:
+        """``parallel NAME [limit N] { node X [on "e"] = expr … signal "e" when expr … commit X [=> expr] }``."""
+        token = self.advance()  # parallel
+        name = self.consume(TokenType.IDENTIFIER, "Expected parallel graph name").value
+        limit = None
+        if self.match(TokenType.LIMIT):
+            limit = self.consume(TokenType.NUMBER, "Expected a number after 'limit'").value
+        self.consume(TokenType.LBRACE, "Expected '{' after parallel graph name")
+        nodes, signals, commit, effect = [], [], None, None
+        self.skip_newlines()
+        while not self.check(TokenType.RBRACE) and not self.is_at_end():
+            start = self.peek()
+            if self._contextual("node"):
+                self.advance()
+                node_name = self.consume(TokenType.IDENTIFIER, "Expected node name").value
+                event = None
+                if self.match(TokenType.ON):
+                    event = self.consume(TokenType.STRING, "Expected event name after 'on'").value
+                self.consume(TokenType.ASSIGN, "Expected '=' after node name")
+                nodes.append(ParallelNode(name=node_name, event=event, expr=self.expression(), line=start.line,
+                                          column=start.column))
+            elif self._contextual("signal"):
+                self.advance()
+                event = self.consume(TokenType.STRING, "Expected event name after 'signal'").value
+                self.consume(TokenType.WHEN, "Expected 'when' after signalled event")
+                signals.append(ParallelSignal(event=event, condition=self.expression(), line=start.line,
+                                              column=start.column))
+            elif self._contextual("commit"):
+                if commit is not None:
+                    raise ParseError(f"A parallel graph commits once at line {start.line}")
+                self.advance()
+                commit = self.consume(TokenType.IDENTIFIER, "Expected the committed node").value
+                if self.match(TokenType.FATARROW):
+                    effect = self.expression()
+            else:
+                raise ParseError(f"Expected node, signal or commit in parallel graph at line {start.line}")
+            self.skip_newlines()
+        self.consume(TokenType.RBRACE, "Expected '}' after parallel graph")
+        if commit is None:
+            raise ParseError(f"A parallel graph names the node it commits at line {token.line}")
+        return ParallelStmt(name=name, limit=None if limit is None else int(limit), nodes=nodes, signals=signals,
+                            commit=commit, effect=effect, line=token.line, column=token.column)
 
     def policy_def(self) -> PolicyDef:
         token = self.advance()  # policy
@@ -933,6 +981,8 @@ class Parser:
                                    TokenType.ACTION, TokenType.CONTENT, TokenType.SOURCE, TokenType.STATE,
                                    TokenType.BODY, TokenType.CONTEXT, TokenType.MAX, TokenType.PATTERN,
                                    TokenType.MEMORY, TokenType.PROMOTE, TokenType.KEEP, TokenType.TAG,
+                                   # Fields of a parallel graph's result:
+                                   TokenType.STEPS, TokenType.VERSION, TokenType.LIMIT,
                                    }
                 if member_token.type not in allowed_members:
                     self.error("Expected property name after '.'")

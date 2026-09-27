@@ -20,6 +20,7 @@ from .boundaries import boundary_stage
 from .cold import cold_stage
 from .compositions import composition_stage
 from .conflicts import conflict_stage
+from .knowledge import knowledge_stage
 from .trust import trust_stage
 
 REPORT_SECTIONS = ("trust_decisions", "pending_evidence", "excluded_signals", "expired_pending",
@@ -46,6 +47,7 @@ class DecisionContext:
 def _empty_report() -> dict[str, Any]:
     report: dict[str, Any] = {name: [] for name in REPORT_SECTIONS}
     report["cold_checks"] = {"dormant_matches": [], "extinct_matches": []}
+    report["knowledge"] = {"declared": [], "copies": [], "corrections": [], "conflicts": [], "revisions": []}
     return report
 
 
@@ -61,9 +63,11 @@ def decide(state, draft, configuration, legitimacy, refused: Mapping[str, str] |
     habits, declared, signals = trust_stage(configuration.parameters, state, draft, draft["mode"], context.report)
     if draft["mode"] == "emergency":
         return {"sections": context.report, "habits": habits, "declared": declared, "births": [], "pool": {},
-                "slow_only": copy.deepcopy(state["slow_only"])}
+                "slow_only": copy.deepcopy(state["slow_only"]),
+                "knowledge": {"versions": {}, "uses": {}, "hypotheses": {}}}
     forced: dict[str, tuple[str, str]] = {}
     slow_only = conflict_stage(configuration.parameters, state, habits, draft, context.report, forced)
+    knowledge = knowledge_stage(context, habits, forced, configuration)
     wakes, consumed = cold_stage(context, legitimacy)
     births: list[dict[str, Any]] = []
     boundary_stage(context, habits, births, forced, refused)
@@ -74,4 +78,4 @@ def decide(state, draft, configuration, legitimacy, refused: Mapping[str, str] |
             habits[vote["habit_id"]]["votes"] += 1
     automaton(context, habits, signals, forced, wakes, legitimacy)
     return {"sections": context.report, "habits": habits, "declared": declared, "births": births, "pool": pool,
-            "slow_only": slow_only}
+            "slow_only": slow_only, "knowledge": knowledge}

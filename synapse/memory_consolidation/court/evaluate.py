@@ -17,6 +17,7 @@ from ..tools.gateway import Gateway
 from .advice import arbitration, conflict_advice
 from .cases import build_cases
 from .hypotheses import hypothesis_events
+from .knowledge import knowledge_events
 from .counsel import Counsel
 from .reactions import REACTIONS, build_reactions
 from .signals import fire_signal
@@ -41,7 +42,7 @@ def _empty_draft(inputs: DreamInputs, integrity) -> dict[str, Any]:
     return {"consolidation_id": inputs.consolidation_id, "mode": inputs.mode, "integrity": integrity,
             "evidence_problems": [], "replay": {}, "verdicts": [], "fires": [], "declared_fires": [],
             "reactions": [], "near_misses": [], "misses": [], "suppressed": [], "cases": [], "requests": [],
-            "hypotheses": [],
+            "hypotheses": [], "knowledge": {"declared": [], "uses": []},
             "stats": {"events": 0, "activated": 0, "near_miss": 0, "miss": 0, "slow_path": 0}}
 
 
@@ -83,6 +84,8 @@ def _session_into(draft, inputs: DreamInputs, counsel: Counsel, session, gateway
                                 "reason": event.get("reason"), "trigger_event_id": event.get("trigger_event_id")}
                                for _, event in facts.found.get("habit_suppressed", []))
     draft["hypotheses"].extend(hypothesis_events(facts.found, facts.run))
+    for name, items in knowledge_events(facts.found, facts.run).items():
+        draft["knowledge"][name].extend(items)
     reactions = build_reactions(facts, verdicts, replay.get("status"), cases, seconds, inputs.state["frozen"],
                                 configuration)
     _reactions_into(draft, reactions, configuration.parameters, inputs.mode)

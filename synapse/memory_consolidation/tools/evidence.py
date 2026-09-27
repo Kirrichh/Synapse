@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -43,7 +44,7 @@ class EvidenceStore:
                 raise GatewayIntegrityError("evidence address holds other content")
             self._clear_marker(ref)
             return ref, True
-        temp = self.root / f".{ref}.{os.getpid()}.tmp"
+        temp = self.root / f".{ref}.{os.getpid()}.{threading.get_ident()}.tmp"
         self._write(temp, raw)
         try:
             os.link(temp, path)
@@ -61,7 +62,7 @@ class EvidenceStore:
             raise ValueError("a removed body is compacted, or forgotten with its tombstone")
         marker = self.root / f"{ref}.gone.json"
         if not marker.exists():
-            temp = self.root / f".{ref}.gone.{os.getpid()}.tmp"
+            temp = self.root / f".{ref}.gone.{os.getpid()}.{threading.get_ident()}.tmp"
             self._write(temp, canonical({"schema": EVIDENCE_GONE_V1, "ref": ref, "reason": reason,
                                          "tombstone": tombstone}))
             os.replace(temp, marker)

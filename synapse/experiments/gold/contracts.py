@@ -316,6 +316,7 @@ class IdentityDomain(str, Enum):
     MEMORY_CONSOLIDATION_APPLIED = "synapse.memory.consolidation-applied-record/v1"
     MEMORY_SNAPSHOT_BOUNDARY = "synapse.memory.snapshot-boundary-record/v1"
     MEMORY_HYPOTHESIS = "synapse.memory.hypothesis-record/v1"
+    MEMORY_STATEMENT = "synapse.memory.statement-record/v1"
 
 
 class AuthorityRole(str, Enum):

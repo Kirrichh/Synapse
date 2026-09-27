@@ -2,7 +2,9 @@
 
 Each server runs in one asyncio task on a dedicated loop thread and serves the
 gateway's calls through the existing ``McpToolPort`` with the admitted
-descriptor digests. A call returns the decoded answer or reports it lost; a
+descriptor digests; each call is its own request on the server's session, so
+calls from concurrent callers (the observations of a ``parallel`` graph)
+overlap. A call returns the decoded answer or reports it lost; a
 dead server loses every later call. The transport records nothing itself.
 """
 from __future__ import annotations
@@ -75,15 +77,16 @@ class McpToolTransport:
                 port = McpToolPort(client, bindings)
                 if not ready.done():
                     ready.set_result(True)
+                pending: set[asyncio.Task] = set()
                 while True:
                     item = await queue.get()
                     if item is None:
                         return
-                    name, arguments, future = item
-                    try:
-                        future.set_result(await port.invoke(name, arguments))
-                    except BaseException as exc:  # noqa: BLE001 - delivered to the waiting caller
-                        future.set_exception(exc)
+                    # Each call is its own request on the session: concurrent callers overlap, one caller
+                    # waiting for its answer still sees its calls in order.
+                    task = asyncio.get_running_loop().create_task(self._deliver(port, *item))
+                    pending.add(task)
+                    task.add_done_callback(pending.discard)
         except BaseException as exc:  # noqa: BLE001 - a dead server fails every later call as lost
             self._dead.add(server_id)
             if not ready.done():
@@ -92,6 +95,13 @@ class McpToolTransport:
                 item = queue.get_nowait()
                 if item is not None:
                     item[2].set_exception(ConnectionError("tool server stopped"))
+
+    @staticmethod
+    async def _deliver(port, name: str, arguments, future: concurrent.futures.Future) -> None:
+        try:
+            future.set_result(await port.invoke(name, arguments))
+        except BaseException as exc:  # noqa: BLE001 - delivered to the waiting caller
+            future.set_exception(exc)
 
     def call(self, contract: ToolContract, arguments: Mapping[str, Any]) -> tuple[str, Any]:
         """``("ok", payload)`` for an answered call, ``("lost", None)`` otherwise."""

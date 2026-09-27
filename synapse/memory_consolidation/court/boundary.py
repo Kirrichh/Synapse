@@ -4,7 +4,9 @@ After an applied consolidation the boundary lists exactly the learned habits
 that are both admitted by Gold and effective (born, active, probation), minus
 slow-only triggers, with the observed trust of declared habits and the
 statuses of hypotheses a later session may reuse for the same source version
-(with the window they were decided in). The runtime
+(with the window they were decided in) and, from schema v3, every version of
+semantic knowledge with its two times (refinement §15) — corrected versions
+included, so a session can ask what memory knew at an earlier window. The runtime
 reads only a complete boundary; it names the consolidation it was built from,
 so a lagging boundary is detected against the chain head and rebuilt
 idempotently from the same report.
@@ -20,7 +22,7 @@ from ..records import canonical
 from .habit_state import EFFECTIVE
 from .hypotheses import boundary_view
 
-BOUNDARY_V2 = "synapse.memory.snapshot-boundary/v2"
+BOUNDARY_V3 = "synapse.memory.snapshot-boundary/v3"
 
 
 def _entry(habit_id, metadata, frozen) -> dict[str, Any]:
@@ -44,6 +46,7 @@ def boundary_record(state_after: Mapping[str, Any], legitimacy: Mapping[str, Any
     declared = {habit_id: metadata["context_trust"] for habit_id, metadata in sorted(state_after["declared"].items())}
     hypotheses, claims = boundary_view(state_after["hypotheses"])
     return records.make("snapshot_boundary", boundary={
-        "schema_version": BOUNDARY_V2, "consolidation_id": consolidation_id, "window": state_after["window"],
+        "schema_version": BOUNDARY_V3, "consolidation_id": consolidation_id, "window": state_after["window"],
         "habits": habits, "slow_only": copy.deepcopy(state_after["slow_only"]), "declared": declared,
-        "hypotheses": hypotheses, "claims": claims})
+        "hypotheses": hypotheses, "claims": claims,
+        "knowledge": copy.deepcopy(state_after["knowledge"]["versions"])})

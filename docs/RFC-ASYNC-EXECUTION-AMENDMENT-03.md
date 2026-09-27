@@ -24,8 +24,10 @@ statement subset and inside the cognitive profile below (artifact schema
 
 `run --durable` accepts a program in the cognitive profile when its only
 constructs are functions, loops, habits, the memory palace, `dream`,
-`integrate`, `context` blocks (plan segments), the memory builtins `tool`,
-`task_plan`, `hypothesis`, `probe`, `established` and `recover`, the pure builtin `admit`
+`integrate`, `context` blocks (plan segments), `parallel` graphs outside
+`dream` and `integrate` (section 5a), the memory builtins `tool`,
+`task_plan`, `hypothesis`, `probe`, `established`, `recover`, `know` and
+`search_knowledge`, the pure builtin `admit`
 and the slow path `try { … } catch (ACTION_FAILED as name) { … }`.
 Classification is fail-closed (`synapse/durable_profile.py`): an unsupported
 construct refuses the run before any effect. The memory builtins exist only
@@ -98,6 +100,49 @@ no way for a program to make it.
 Every hypothesis (`composition_planned`) and the execution
 (`composition_executed`) are recorded events; a re-execution recomputes them
 from the pinned snapshot and the recorded answers and requires them equal.
+
+`know(statement)` records a statement (subject, property, value, polarity,
+conditions, valid time, text) read from a recorded observation of the run;
+its embedding is a recorded answer of the declared embedder through the
+gateway (`knowledge_declared`). `search_knowledge(query[, options])` returns
+the candidates of the pinned snapshot's knowledge at a valid time as memory
+knew it at a window, with each channel's ranking and the semantic channel's
+cost (`knowledge_searched`); a re-execution answers the embedding from the
+record and requires the same candidates. Neither decides anything:
+`admit` does.
+
+# 5a. Event-driven graphs
+
+`parallel NAME [limit N] { node … ; signal "e" when … ; commit NODE [=> effect] }`
+runs a graph of nodes by readiness (`synapse/runtime/dataflow.py`). A pure node
+evaluates on the interpreter thread; a call node `tool(name, args)` is an
+observation performed concurrently on a worker through the same gateway, under
+its own operation scope and the ordinal `df:<instance>:<node>:<attempt>`; the
+gateway refuses, before any effect, a call whose tool contract does not declare
+`observation` (an observation is also idempotent and leaves no effect on a
+refusal). Every value has a version and every computation the versions it
+read; a node runs only when every input it reads is settled, so it never
+combines versions from different moments. A computation whose inputs move
+while it runs is superseded at once and recorded `stale` when it answers. A
+signal is evaluated once per combination of its inputs' settled versions and
+raises its event for the nodes subscribed to it (`on "e"`); an event that
+never came is not a negative fact. The commit waits for the committed node,
+its inputs and the sources of the events that refresh them, and nothing else;
+the effect acts on the committed value only, once, on the interpreter thread.
+What is still in flight after it is drained and recorded `cancelled`.
+
+The history carries `dataflow_started`, one `dataflow_step` per computation
+(node, attempt, status `integrated`/`stale`/`cancelled`, versions read,
+version produced, timings), `dataflow_signal` and `dataflow_commit` (the
+versions the commit rested on), with each call's `external_action` in the
+order its answer was integrated. Live, answers are integrated in the order the
+gateway journal holds them, so a reproduction answered from that journal
+integrates them in the same order. A re-execution follows the record: each
+answer is taken from it in its recorded order and nothing is performed; past
+the end of the record the graph goes on live, and a call whose answer was lost
+in a crash is asked again under its own identity. Parallelism concerns the
+program's observations; computations inside one process still share one
+interpreter thread.
 
 # 6. Boundaries
 

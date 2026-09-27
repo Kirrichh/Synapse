@@ -22,6 +22,7 @@ from typing import Any
 
 from . import ast as synapse_ast
 from .memory_points import ACTION_FAILED, DURABLE_COGNITIVE_PROFILE
+from .runtime.dataflow import GraphViolation, analyse
 
 COGNITIVE_ARTIFACT_SCHEMA = "1.1.0"
 
@@ -31,7 +32,8 @@ PURE_BUILTINS = frozenset({
     "print", "len", "range", "time", "random", "uuid", "type", "str", "int", "float", "list", "dict",
     "abs", "sum", "max", "min", "sorted", "reversed", "enumerate", "zip", "any", "all", "admit",
 })
-MEMORY_BUILTINS = frozenset({"tool", "task_plan", "hypothesis", "probe", "established", "recover"})
+MEMORY_BUILTINS = frozenset({"tool", "task_plan", "hypothesis", "probe", "established", "recover", "know",
+                             "search_knowledge"})
 _INTEGRATE_FORBIDDEN_BUILTINS = frozenset({"print", "time", "random", "uuid"}) | MEMORY_BUILTINS
 _DEFAULT_PALACE_BACKENDS = frozenset({"sqlite", "memory", ""})
 
@@ -93,6 +95,8 @@ def validate_cognitive_program(root: synapse_ast.Program) -> set[str]:
             owned.add(node.binding)
         elif isinstance(node, synapse_ast.MemoryPalaceDef):
             owned.update({node.name, node.binding})
+        elif isinstance(node, synapse_ast.ParallelStmt):
+            owned.update({node.name, *(item.name for item in node.nodes)})
     return owned
 
 
@@ -223,6 +227,9 @@ def _statement(node: Any, scope: _Scope) -> None:
     if isinstance(node, synapse_ast.DreamBlock):
         _dream(node, scope)
         return
+    if isinstance(node, synapse_ast.ParallelStmt):
+        _parallel(node, scope)
+        return
     raise _fail(f"{type(node).__name__} is not a supported statement")
 
 
@@ -239,6 +246,22 @@ def _integrate(node: synapse_ast.IntegrateBlock, scope: _Scope) -> None:
     if node.reason is not None:
         _expression(node.reason, scope)
     _block(node.body, scope.nested(suspension_allowed=False, in_integrate=True))
+
+
+def _parallel(node: synapse_ast.ParallelStmt, scope: _Scope) -> None:
+    """A graph runs outside dream and integrate; nothing in it suspends; its shape is the executor's."""
+    if scope.in_dream or scope.in_integrate:
+        raise _fail("a parallel graph runs outside dream and integrate")
+    try:
+        analyse(node)
+    except GraphViolation as exc:
+        raise _fail(str(exc)) from None
+    inner = scope.nested(suspension_allowed=False)
+    for item in node.nodes:
+        _expression(item.expr, inner)
+    for signal in node.signals:
+        _expression(signal.condition, inner)
+    _expression(node.effect, inner)
 
 
 def _dream(node: synapse_ast.DreamBlock, scope: _Scope) -> None:

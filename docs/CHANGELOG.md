@@ -1,5 +1,56 @@
 # Synapse Changelog
 
+## Memory stage 6 and language stage 7 — semantic knowledge and event-driven graphs — 2026-09-27
+
+Memory configuration schema v2 adds `knowledge` (embedder, per-property
+freshness, search budget); v1 configurations stay valid. New record kind
+`statement` (`synapse.memory.statement-record/v1`), durable builtins
+`know(statement)` and `search_knowledge(query[, options])`, recorded events
+`knowledge_declared` and `knowledge_searched`, report section `knowledge`,
+snapshot boundary v3 with the knowledge versions. New language statement
+`parallel NAME [limit N] { node … signal … commit … }` with recorded events
+`dataflow_started`, `dataflow_step`, `dataflow_signal` and `dataflow_commit`;
+tool contracts may declare `observation`.
+
+- Statements with two times (refinement §15): valid time from the statement,
+  transaction time from the court (`known_from`, `known_until`,
+  `corrected_by`); a correction closes a version without deleting it, so
+  "what was true at T" and "what memory knew at window K" are both
+  answerable. Copies and repetitions add neither knowledge nor confidence; the
+  same source with other content for the same start is a correction; another
+  source is a conflict with both versions current.
+- Freshness per property kind, declared by the operator: `state` (inertia
+  until the next start or its own end), `bounded` (unknown currency after its
+  days, never false), `event` (its moment only); an undeclared property is of
+  unknown currency. A late report of the past takes its place by its start.
+- A correction returns the hypotheses read from or checked by the corrected
+  version to provisional and sends live habits whose basis admitted it to
+  probation, with the revisions in the report.
+- Hybrid candidate search: the lexical channel and a semantic channel (the
+  declared embedder, a `reason` tool through the gateway, recorded and
+  replayed) fused by reciprocal rank fusion (k = 60) under one budget; each
+  search publishes the semantic channel's cost. Admission reads the
+  statement's structure (entity, polarity, conditions, currency, validity,
+  the statement its confirming hypothesis is about), never its wording.
+- Event-driven graphs (refinement §16, `synapse/runtime/dataflow.py`): call
+  nodes observe concurrently through the gateway (a non-observation call is
+  refused before any effect), pure nodes run on the interpreter thread, a node
+  runs only when every input it reads is settled, a computation whose inputs
+  moved is superseded at once and recorded stale, a signal is raised once per
+  version of its inputs, the commit waits only for what can still move it,
+  the effect acts once on the committed value, and what is still in flight is
+  drained and recorded cancelled. Answers are integrated in the gateway
+  journal's order, so the court's replay and retention's reproduction follow
+  the same schedule; a crash mid-graph resumes from the record and asks lost
+  observations again under their own identities.
+- The MCP tool transport sends each call as its own request on the server's
+  session, so concurrent callers overlap; evidence temporary files are named
+  per thread.
+- Acceptance: 8 new files in `acceptance/memory/` (knowledge contract, search,
+  timeline, correction; dataflow contract, overlap, revision, crash), each its
+  own CI shard; scripted answers may carry a delay and the tool server answers
+  scripted embeddings by concepts.
+
 ## Memory stage 5b — composition of learned procedures — 2026-09-26
 
 Learned habits use record schema 1.2 for a composite (`composition`: base and

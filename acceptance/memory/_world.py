@@ -31,10 +31,20 @@ def tool(name, source, answers, *, contract=None, event_fields=(), role="action"
             "event_fields": list(event_fields), "role": role, "server": server}
 
 
-def answer(payload, *, when=None, sequence=(), effect=None):
-    """A rule: ``sequence`` answers the first calls of one exact request, then ``payload``."""
+def answer(payload, *, when=None, sequence=(), effect=None, delay=None):
+    """A rule: ``sequence`` answers the first calls of one exact request, then ``payload``; ``delay``
+    seconds pass before the answer is given."""
     then = {"payload": payload} if effect is None else {"payload": payload, "effect": effect}
+    if delay is not None:
+        then["delay"] = delay
     return {"when": when or {}, "sequence": list(sequence), "then": then}
+
+
+def embedder(concepts, *, model="concepts-v1"):
+    """The rule of a scripted embedding model: one component per concept, counting its words in the text."""
+    return {"when": {}, "sequence": [], "then": {"payload": {}, "embed": {"concepts": [[name, sorted(members)]
+                                                                            for name, members in concepts],
+                                                                "model": model}}}
 
 
 def stateful(payload, *, act, otherwise=None, effect=None, when=None):
@@ -55,7 +65,7 @@ class MemoryWorld:
     """One project, its tool server and its runs."""
 
     def __init__(self, root: Path, tools, *, provenance, parameters=None, decision_rule="threshold",
-                 state: Path | None = None, advisor: str | None = None) -> None:
+                 state: Path | None = None, advisor: str | None = None, knowledge: dict | None = None) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         # A world connects its own project, or joins the state of one another stream already uses.
@@ -83,15 +93,18 @@ class MemoryWorld:
                      "event_fields": item["event_fields"]}
             admitted.append(entry)
         self.configuration_path = self.root / "memory.json"
-        self.configuration_path.write_text(json.dumps({
+        configuration = {
             "schema_version": "synapse.memory.configuration/v1",
             "tools": {"schema_version": "synapse.memory.tool-configuration/v1", "servers": servers,
                       "tools": admitted, "provenance": provenance},
             "court": {"decision_rule": decision_rule, "parameters": parameters or {}},
             # The advisor, when a scenario has one, is one of its admitted reason tools.
             "advisor": None if advisor is None else {"tool": advisor, "version": "acceptance-v1"},
-            "scorer": None, "element": "acceptance.travel"},
-            sort_keys=True))
+            "scorer": None, "element": "acceptance.travel"}
+        if knowledge is not None:
+            # Semantic knowledge (refinement §15) is declared by configuration schema v2.
+            configuration.update(schema_version="synapse.memory.configuration/v2", knowledge=knowledge)
+        self.configuration_path.write_text(json.dumps(configuration, sort_keys=True))
 
     # -- the canonical launch --------------------------------------------------
     def _cli(self, *arguments) -> tuple[int, dict | None, str]:

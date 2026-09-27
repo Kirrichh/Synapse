@@ -25,7 +25,12 @@ An answer is one of:
   replaces) the object named by an argument; ``flags`` add booleans that say
   whether the object is in a state; ``requires`` names other objects that
   must exist (in a state) first, each with the answer given when one does
-  not. When the object does not exist (or is not in the required state) the
+  not;
+* ``{"payload": {...}, "embed": {...}}`` — answers an embedding of the
+  ``text`` argument: one component per declared concept, counting the words
+  of that concept in the text. Synonyms and translations share a concept;
+  a word of no concept (a negation, a name) changes nothing — as dense
+  retrievers are known to behave. When the object does not exist (or is not in the required state) the
   ``otherwise`` answer is given and no effect applies.
 """
 from __future__ import annotations
@@ -33,6 +38,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -122,6 +128,12 @@ def _act(state, act, arguments, then):
     return {**then, "payload": {**then["payload"], **item, **flags}}
 
 
+def _embedding(embed, arguments) -> dict:
+    words = [word for word in re.findall(r"\w+", str(arguments.get("text", "")).casefold())]
+    vector = [sum(1 for word in words if word in set(members)) for _, members in embed["concepts"]]
+    return {"ok": True, "vector": vector, "model": embed["model"]}
+
+
 class World:
     """The server's own record of calls, applied effects and objects, shared by every run."""
 
@@ -135,6 +147,8 @@ class World:
             key = _canonical([name, arguments])
             count = sum(1 for item in state["calls"] if _canonical([item["tool"], item["args"]]) == key)
             answer = choose(count)
+            if "embed" in answer:
+                answer = {"payload": _embedding(answer["embed"], arguments)}
             if "act" in answer:
                 acted = _act(state, answer["act"], arguments, {key: value for key, value in answer.items()
                                                                  if key not in {"act", "otherwise"}})

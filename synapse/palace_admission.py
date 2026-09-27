@@ -14,9 +14,14 @@ established fact for the claim. Every check is separate and reported:
 * the scope and the time of validity cover the claim; unknown freshness of a
   time-bound record is no admission;
 * the record names its provenance;
-* its status is ``confirmed``: the live status of the hypothesis it names when
-  a memory session knows it, otherwise the status the record states (reported
-  as self-declared);
+* it asserts what the claim asks — a denial (``polarity`` false) never answers
+  an assertion — under the claim's conditions, and a record of unknown
+  currency (``freshness`` unknown or undeclared) is no admission;
+* its status is ``confirmed``: the live status of the hypothesis it names (or
+  the claim's ``verified_by``) when a memory session knows it, otherwise the
+  status the record states (reported as self-declared). The hypothesis must
+  state the record's value; for a statement of semantic knowledge also its
+  subject and property — a confirmation of something else confirms nothing;
 * at least two distinct normalized key tokens of the claim occur in the record
   and its lexical score reaches the threshold — a filter on candidates, never
   a proof of content;
@@ -26,6 +31,7 @@ established fact for the claim. Every check is separate and reported:
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import re
 from typing import Any, Callable, Iterable, Mapping
@@ -39,7 +45,25 @@ METADATA_FIELDS = frozenset({
     "id", "trace_id", "created_at", "confidence", "room", "palace", "score", "matched_tokens", "scorer",
     "source", "status", "hypothesis", "kind", "valid_from", "valid_until", "scope", "source_room",
     "routing_tags", "affective_tag", "affective_tag_id", "affective_tag_snapshot", "affective_expires_at_event",
-    "affective_decay", "affective_decay_original", "affective_expired"})
+    "affective_decay", "affective_decay_original", "affective_expired",
+    # Semantic knowledge candidates: how the statement is held and found, never what it says.
+    "polarity", "conditions", "freshness", "known_from", "known_until", "rank", "found_by"})
+
+
+def instant(value: Any) -> Any:
+    """A validity time in the one form admission compares: ISO 8601 dates and date-times become
+    ``YYYY-MM-DDTHH:MM:SSZ`` (UTC, ordering as text); a number stays a number; ``None`` stays ``None``."""
+    if value is None or (isinstance(value, (int, float)) and not isinstance(value, bool)):
+        return value
+    if type(value) is not str:
+        raise ValueError("a validity time is an ISO 8601 date or date-time, or a number")
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError("a validity time is an ISO 8601 date or date-time, or a number") from None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def tokens(text: str) -> frozenset[str]:
@@ -96,8 +120,11 @@ def _canonical(value: Any) -> str:
 def _claim(value: Any) -> dict[str, Any]:
     required = {"entity", "attribute", "keys"}
     if type(value) is not dict or not required <= set(value) or set(value) - required - {
-            "kind", "scope", "at", "threshold"}:
-        raise ValueError("an admission claim names entity, attribute and keys (kind, scope, at, threshold optional)")
+            "kind", "scope", "at", "threshold", "polarity", "conditions", "verified_by"}:
+        raise ValueError("an admission claim names entity, attribute and keys (kind, scope, at, threshold, "
+                         "polarity, conditions and verified_by optional)")
+    if type(value.get("polarity", True)) is not bool or type(value.get("conditions") or {}) is not dict:
+        raise ValueError("an admission claim's polarity is a boolean and its conditions an object")
     keys = value["keys"]
     if type(keys) is not list or any(type(item) is not str for item in keys):
         raise ValueError("admission keys are strings")
@@ -105,10 +132,24 @@ def _claim(value: Any) -> dict[str, Any]:
     if type(threshold) not in {int, float} or not 0 < threshold <= 1:
         raise ValueError("an admission threshold is in (0, 1]")
     return {"entity": str(value["entity"]), "attribute": str(value["attribute"]), "kind": value.get("kind", "fact"),
-            "scope": value.get("scope"), "at": value.get("at"), "keys": keys, "threshold": float(threshold)}
+            "scope": value.get("scope"), "at": instant(value.get("at")), "keys": keys, "threshold": float(threshold),
+            "polarity": value.get("polarity", True), "conditions": dict(value.get("conditions") or {}),
+            "verified_by": value.get("verified_by")}
 
 
-def _checks(record, claim, key_tokens, status_of) -> tuple[list[str], dict[str, Any]]:
+def _states_record(hypothesis: Mapping[str, Any], record: Mapping[str, Any]) -> bool:
+    """Whether a hypothesis states this record's value (and, for a statement, its subject and property)."""
+    statement = hypothesis.get("statement") or {}
+    values = {_canonical(value) for value in statement.values()}
+    if _canonical(record.get("value")) not in values:
+        return False
+    if str(record.get("id", "")).startswith("stm_"):
+        return (tokens(str(hypothesis.get("subject", ""))) == tokens(str(record.get("entity", "")))
+                and _canonical(statement.get(record.get("attribute"))) == _canonical(record.get("value")))
+    return True
+
+
+def _checks(record, claim, key_tokens, hypothesis_of) -> tuple[list[str], dict[str, Any]]:
     reasons = []
     if tokens(str(record.get("entity", ""))) != tokens(claim["entity"]):
         reasons.append("another_entity")
@@ -121,18 +162,28 @@ def _checks(record, claim, key_tokens, status_of) -> tuple[list[str], dict[str, 
     scope = record.get("scope")
     if claim["scope"] is not None and scope not in (None, "any", claim["scope"]):
         reasons.append("another_scope")
-    bounded = record.get("valid_from") is not None or record.get("valid_until") is not None
+    start, end = instant(record.get("valid_from")), instant(record.get("valid_until"))
+    bounded = start is not None or end is not None
     if bounded and claim["at"] is None:
         reasons.append("freshness_unknown")
-    elif bounded and ((record.get("valid_from") is not None and claim["at"] < record["valid_from"])
-                      or (record.get("valid_until") is not None and claim["at"] > record["valid_until"])):
+    elif bounded and ((start is not None and claim["at"] < start) or (end is not None and claim["at"] >= end)):
         reasons.append("outside_validity")
     if not record.get("source"):
         reasons.append("no_provenance")
+    if record.get("polarity", True) != claim["polarity"]:
+        reasons.append("another_polarity")
+    conditions = record.get("conditions") or {}
+    if _canonical(conditions) != _canonical(claim["conditions"]):
+        reasons.append("other_conditions")
+    if record.get("freshness") in {"unknown", "undeclared"}:
+        reasons.append("freshness_unknown")
     status, basis = record.get("status"), "self_declared"
-    if record.get("hypothesis") is not None:
-        known = status_of(record["hypothesis"]) if status_of is not None else None
-        status, basis = (known, "hypothesis") if known is not None else (None, "hypothesis_unknown")
+    named = record.get("hypothesis") or claim["verified_by"]
+    if named is not None:
+        known = hypothesis_of(named) if hypothesis_of is not None else None
+        status, basis = (known["status"], "hypothesis") if known is not None else (None, "hypothesis_unknown")
+        if known is not None and not _states_record(known, record):
+            reasons.append("hypothesis_about_another_statement")
     if status != "confirmed":
         reasons.append(f"not_confirmed:{status}")
     matched = sorted(key_tokens & content_tokens(record))
@@ -145,13 +196,13 @@ def _checks(record, claim, key_tokens, status_of) -> tuple[list[str], dict[str, 
 
 
 def admit(candidates: Iterable[Mapping[str, Any]], claim: Any,
-          status_of: Callable[[str], str | None] | None = None) -> dict[str, Any]:
+          hypothesis_of: Callable[[str], Mapping[str, Any] | None] | None = None) -> dict[str, Any]:
     """Admit at most one candidate as an established fact for ``claim``, with every reason."""
     claim = _claim(claim)
     key_tokens = frozenset().union(*(tokens(item) for item in claim["keys"])) if claim["keys"] else frozenset()
     checked, passing = [], {}
     for record in candidates:
-        reasons, facts = _checks(record, claim, key_tokens, status_of)
+        reasons, facts = _checks(record, claim, key_tokens, hypothesis_of)
         checked.append({"id": record.get("id"), "reasons": reasons, **facts})
         if not reasons:
             statement = _canonical(record["value"])

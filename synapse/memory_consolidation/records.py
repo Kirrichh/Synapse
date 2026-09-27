@@ -80,6 +80,9 @@ KINDS: dict[str, tuple[IdentityDomain, str, frozenset[str]]] = {
         "schema_version", "kind", "boundary"})),
     "hypothesis": (IdentityDomain.MEMORY_HYPOTHESIS, "hyp_", frozenset({
         "schema_version", "kind", "aspect", "subject", "statement", "scope", "source", "check"})),
+    "statement": (IdentityDomain.MEMORY_STATEMENT, "stm_", frozenset({
+        "schema_version", "kind", "subject", "property", "value", "polarity", "conditions", "valid", "text",
+        "source"})),
 }
 
 _TRIGGER_V1 = KINDS["habit_trigger"][2]

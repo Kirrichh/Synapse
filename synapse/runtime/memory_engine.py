@@ -25,6 +25,18 @@ external actions — and implements the language points:
   from its recorded answers and the parts it already tried, parts join the
   impasses whose failures they recover (alternatives in order, nested inside
   parts), and every hypothesis and the execution are recorded;
+* ``know(statement)`` records a statement read from a recorded observation of
+  this run (subject, property, value, polarity, conditions, valid time, text),
+  embedded by the declared embedder through the gateway; the court folds it
+  into memory's timeline (refinement §15);
+* ``search_knowledge(query[, options])`` returns candidates from the pinned
+  snapshot's knowledge at a valid time as memory knew it at a window, with
+  each channel's ranking and the semantic channel's cost; ``admit`` decides;
+* the call nodes of a ``parallel`` graph (``synapse/runtime/dataflow.py``) are
+  observations: each gets its own operation scope and an ordinal naming the
+  graph instance, the node and the attempt, is performed on a worker through
+  the gateway and recorded on the interpreter thread in the order its answer
+  is integrated (refinement §16);
 * ``consolidate`` and the end of the session run the court through the session.
 
 A reaction (habit body or slow path) shares the operation scope of the action
@@ -215,6 +227,43 @@ class MemoryEngine:
             self.observed[self._canonical({"tool": tool, "args": arguments})] = recorded["outcome"]["ref"]["evidence"]
         return recorded
 
+    # -- parallel graphs (refinement §16) -------------------------------------
+    def parallel_request(self, tool: str, arguments: Dict[str, Any], ordinal: str, scope: str) -> Dict[str, Any]:
+        """The request of one call node of a ``parallel`` graph: its own operation scope, a deterministic
+        ordinal, and the task fields of the working memory (main thread)."""
+        self.require("a parallel call node")
+        return self.bind_event({"type": "external_action", "tool": tool, "args": copy.deepcopy(arguments),
+                                "retry_of": None, "ordinal": ordinal, "path": "parallel", "habit_id": None,
+                                "episode": scope, "op_scope": scope})
+
+    def perform_parallel(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Perform one call node's request through the gateway (a worker thread; nothing is recorded here)."""
+        return self.session.invoke_action(copy.deepcopy(request))
+
+    def parallel_answered(self, requests: List[Dict[str, Any]]) -> Dict[str, int]:
+        """The gateway's journal positions of the answers these call nodes already have (any thread)."""
+        return self.session.answered([request["ordinal"] for request in requests])
+
+    def record_parallel(self, request: Dict[str, Any], outcome: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Record a call node's performed request (main thread, in completion order); a re-execution consumes
+        the recorded one instead and ``outcome`` is ``None``."""
+        h = self.host
+        recorded = h.next_history_event("external_action")
+        if recorded is not None:
+            if self._canonical(recorded.get("request")) != self._canonical(request):
+                raise ReplayIntegrityError("REPLAY_INTEGRITY_ERROR: external action differs from its record")
+        else:
+            if outcome is None:
+                raise ReplayIntegrityError("REPLAY_INTEGRITY_ERROR: a parallel call has no recorded answer")
+            recorded = h.record_history_event({"type": "external_action", "request": request, "outcome": outcome})
+            if h.durable_checkpoint is not None and h.runtime_mode == self.live_mode:
+                h.durable_checkpoint()
+        view = recorded["outcome"]["view"]
+        if view["ok"] and recorded["outcome"]["ref"]["evidence"] is not None:
+            self.observed[self._canonical({"tool": request["tool"], "args": request["args"]})] = \
+                recorded["outcome"]["ref"]["evidence"]
+        return recorded
+
     # -- hypotheses -----------------------------------------------------------
     def _hypothesis(self, handle) -> Dict[str, Any]:
         entry = self.hypotheses.get(handle.get("id")) if isinstance(handle, dict) else None
@@ -222,7 +271,7 @@ class MemoryEngine:
             raise self._runtime_error("a hypothesis handle names no hypothesis of this run")
         return entry
 
-    def _recorded_event(self, kind: str, event: Dict[str, Any], compared: Dict[str, Any]) -> Dict[str, Any]:
+    def recorded_event(self, kind: str, event: Dict[str, Any], compared: Dict[str, Any]) -> Dict[str, Any]:
         h = self.host
         recorded = h.next_history_event(kind)
         if recorded is not None:
@@ -244,7 +293,7 @@ class MemoryEngine:
         except ValueError as exc:
             raise self._runtime_error(str(exc)) from None
         reason = "declared" if source_ref is not None else "source_absent"
-        recorded = self._recorded_event("hypothesis_declared", {
+        recorded = self.recorded_event("hypothesis_declared", {
             "hypothesis": record, "status": "provisional", "reason": reason, "trace_id": self.host.current_trace_id()},
             {"hypothesis": record})
         self.hypotheses[record["id"]] = {"record": recorded["hypothesis"], "status": "provisional",
@@ -263,17 +312,73 @@ class MemoryEngine:
             action = self.recorded_action(record["check"]["tool"], copy.deepcopy(record["check"]["args"]), None, frame)
             view, check_ref = action["outcome"]["view"], action["outcome"]["ref"]
         result = session.resolve_hypothesis(record, view)
-        self._recorded_event("hypothesis_probed", {
+        self.recorded_event("hypothesis_probed", {
             "hypothesis": record["id"], "status": result["status"], "reason": result["reason"],
             "check_ref": check_ref, "trace_id": self.host.current_trace_id()},
             {"hypothesis": record["id"], "status": result["status"], "reason": result["reason"]})
         entry.update(status=result["status"], reason=result["reason"], decided_by="probe")
         return {"id": record["id"], "status": result["status"], "reason": result["reason"]}
 
-    def hypothesis_status(self, hypothesis_id: str) -> Optional[str]:
-        """The live status of one of this run's hypotheses, for palace admission; ``None`` if unknown."""
+    def hypothesis_of(self, hypothesis_id: str) -> Optional[Dict[str, Any]]:
+        """The live status and content of one of this run's hypotheses, for admission; ``None`` if unknown."""
         entry = self.hypotheses.get(hypothesis_id) if self.session is not None else None
-        return None if entry is None else entry["status"]
+        if entry is None:
+            return None
+        return {"status": entry["status"], "subject": entry["record"]["subject"],
+                "statement": copy.deepcopy(entry["record"]["statement"])}
+
+    # -- semantic knowledge (refinement §15) ---------------------------------
+    def know(self, args: List[Any]) -> Dict[str, Any]:
+        """``know(statement)``: a statement read from an observation this run recorded; the court folds it."""
+        session = self.require("know")
+        if len(args) != 1 or not isinstance(args[0], dict):
+            raise self._runtime_error("know expects one statement object")
+        statement = copy.deepcopy(args[0])
+        source = statement.get("source") if isinstance(statement.get("source"), dict) else {}
+        source_ref = self.observed.get(self._canonical({"tool": source.get("tool"), "args": source.get("args")}))
+        if source_ref is None:
+            raise self._runtime_error("a statement is read from an observation this run recorded")
+        try:
+            record = session.declare_statement(statement, source, source_ref)
+        except ValueError as exc:
+            raise self._runtime_error(str(exc)) from None
+        vector = session.embed(record["text"])
+        recorded = self.recorded_event("knowledge_declared", {
+            "statement": record, "vector": vector, "trace_id": self.host.current_trace_id()},
+            {"statement": record, "vector": vector})
+        return {"id": recorded["statement"]["id"], "embedded": recorded["vector"] is not None}
+
+    def search_knowledge(self, args: List[Any]) -> Dict[str, Any]:
+        """``search_knowledge(query[, {valid_at, known_as_of, channels}])``: candidates, never facts."""
+        session = self.require("search_knowledge")
+        if not 1 <= len(args) <= 2 or not isinstance(args[0], str) or (len(args) == 2 and not isinstance(args[1], dict)):
+            raise self._runtime_error("search_knowledge expects a query and optional options")
+        options = copy.deepcopy(args[1]) if len(args) == 2 else {}
+        if set(options) - {"valid_at", "known_as_of", "channels"}:
+            raise self._runtime_error("search_knowledge options are valid_at, known_as_of and channels")
+        channels = options.get("channels", ["lexical", "semantic"])
+        known_as_of = options.get("known_as_of")
+        if (not isinstance(channels, list) or not set(channels) <= {"lexical", "semantic"}
+                or (known_as_of is not None and type(known_as_of) is not int)):
+            raise self._runtime_error("channels are lexical and semantic; known_as_of is a window")
+
+        def embed(text):
+            import time as _time
+            began = _time.perf_counter()
+            vector = session.embed(text)
+            return vector, round((_time.perf_counter() - began) * 1000.0, 3)
+
+        try:
+            result = session.search_knowledge(args[0], valid_at=options.get("valid_at"), known_as_of=known_as_of,
+                                              channels=channels, embed=embed)
+        except ValueError as exc:
+            raise self._runtime_error(str(exc)) from None
+        identities = [item["id"] for item in result["candidates"]]
+        recorded = self.recorded_event("knowledge_searched", {
+            "query": args[0], "options": options, **result, "candidate_ids": identities,
+            "trace_id": self.host.current_trace_id()},
+            {"query": args[0], "options": options, "fused": result["fused"], "candidate_ids": identities})
+        return {key: copy.deepcopy(recorded[key]) for key in result}
 
     def established(self, args: List[Any]) -> bool:
         """``established(h)``: confirmed in this run, or offered fresh by the pinned snapshot."""
@@ -283,7 +388,7 @@ class MemoryEngine:
         entry = self._hypothesis(args[0])
         if entry["decided_by"] is None:
             known = session.known_hypothesis(entry["record"])
-            self._recorded_event("hypothesis_reused", {
+            self.recorded_event("hypothesis_reused", {
                 "hypothesis": entry["record"]["id"], "status": known["status"], "reason": known["reason"],
                 "trace_id": self.host.current_trace_id()},
                 {"hypothesis": entry["record"]["id"], "status": known["status"], "reason": known["reason"]})
@@ -361,7 +466,7 @@ class MemoryEngine:
         event_id = failure["event_id"]
 
         def hypothesis(entry: Dict[str, Any]) -> None:
-            self._recorded_event("composition_planned", {"trigger_event_id": event_id, **copy.deepcopy(entry),
+            self.recorded_event("composition_planned", {"trigger_event_id": event_id, **copy.deepcopy(entry),
                                                          "trace_id": self.host.current_trace_id()},
                                  {"trigger_event_id": event_id, "path": entry["path"], "join": entry["join"]})
 
@@ -378,7 +483,7 @@ class MemoryEngine:
                    "detail": None if result is None else result["detail"],
                    "parts": [] if result is None else result["parts"],
                    "recovered": bool(final is not None and final["ok"])}
-        recorded = self._recorded_event("composition_executed", {**summary, "trace_id": self.host.current_trace_id()},
+        recorded = self.recorded_event("composition_executed", {**summary, "trace_id": self.host.current_trace_id()},
                                         summary)
         return {key: copy.deepcopy(recorded[key]) for key in summary}
 

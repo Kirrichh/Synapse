@@ -24,6 +24,8 @@ from synapse.memory_points import ActionPorts, LearnedHabitEntry, ReplayHorizon,
 
 from .formation import bind_event, plan_task
 from .hypotheses import declare, resolve, reuse
+from .knowledge import search as knowledge_search
+from .knowledge.statements import declare as declare_statement, instant
 from .learning.behavior import execute
 from .learning.composition import (joins_of, merge_joins, planning_contingency, ranked, recorded_contingency,
                                    stack_of)
@@ -66,6 +68,7 @@ class MemorySession:
         self.exam = exam
         self.learns = exam is None
         self.scores = 0
+        self.embeddings = 0
         habits = [] if boundary is None else boundary["boundary"]["habits"]
         self._habits = {item["habit_id"]: item for item in habits}
         # The learned habits this session loaded (Gold admitted them at its start): its parts too.
@@ -104,10 +107,11 @@ class MemorySession:
         template = item["trigger"]["context_template"]
         typical = {"fields": {condition["field"]: condition["value"] for condition in item["trigger"]["when"]}}
         self.scores += 1
-        outcome = self._score({"run_id": self.run["run_id"], "ordinal": f"score:{self.scores}", "episode": "score",
-                               "op_scope": "score", "path": "score", "tool": scorer.tool, "retry_of": None,
-                               "args": {"a": render_template(template, event), "b": render_template(template, typical)},
-                               "task_id": None, "segment_marker_id": None, "habit_id": item["habit_id"]})
+        outcome = self._reason({"run_id": self.run["run_id"], "ordinal": f"score:{self.scores}", "episode": "score",
+                                "op_scope": "score", "path": "score", "tool": scorer.tool, "retry_of": None,
+                                "args": {"a": render_template(template, event),
+                                         "b": render_template(template, typical)},
+                                "task_id": None, "segment_marker_id": None, "habit_id": item["habit_id"]})
         value = outcome["view"]["payload"].get("similarity") if outcome["view"]["ok"] and isinstance(
             outcome["view"]["payload"], dict) else None
         if type(value) not in {int, float} or not 0.0 <= value <= 1.0:
@@ -115,8 +119,39 @@ class MemorySession:
         threshold = self.factory.configuration.parameters["semantic_veto_below"]
         return {"score": float(value), "veto": value < threshold, "threshold": threshold}
 
-    def _score(self, request):
+    def _reason(self, request):
+        """One call of a ``reason`` component (similarity scorer, embedder), recorded by the gateway."""
         return self.factory.gateway.invoke(request)
+
+    # -- semantic knowledge (refinement §15) ------------------------------------------
+    def embed(self, text: str) -> list[float] | None:
+        """The embedding of ``text`` by the declared embedder, or ``None`` without one or without an answer."""
+        policy = self.factory.configuration.knowledge
+        if policy is None or policy.embedder is None:
+            return None
+        self.embeddings += 1
+        outcome = self._reason({"run_id": self.run["run_id"], "ordinal": f"embed:{self.embeddings}",
+                                "episode": "embed", "op_scope": "embed", "path": "embed",
+                                "tool": policy.embedder.tool, "retry_of": None, "args": {"text": text},
+                                "task_id": None, "segment_marker_id": None, "habit_id": None})
+        payload = outcome["view"]["payload"] if outcome["view"]["ok"] else None
+        vector = payload.get("vector") if isinstance(payload, dict) else None
+        if (type(vector) is not list or not vector
+                or any(type(item) not in {int, float} or item != item for item in vector)):
+            return None
+        return [float(item) for item in vector]
+
+    def declare_statement(self, statement, source, source_ref) -> dict[str, Any]:
+        return declare_statement(statement, source, source_ref)
+
+    def search_knowledge(self, query: str, *, valid_at, known_as_of, channels, embed) -> dict[str, Any]:
+        """Candidates from the pinned snapshot's knowledge; nothing is admitted here."""
+        policy = self.factory.configuration.knowledge
+        if policy is None:
+            raise ValueError("this memory declares no knowledge policy")
+        versions = {} if self.boundary is None else self.boundary["boundary"].get("knowledge") or {}
+        return knowledge_search.search(query, versions, policy, valid_at=instant(valid_at), known_as_of=known_as_of,
+                                       embed=embed, channels=channels)
 
     # -- actions ----------------------------------------------------------------
     def invoke_action(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -126,9 +161,17 @@ class MemorySession:
             return self.factory.gateway.refuse(request, refusal)
         return self.factory.gateway.invoke(request)
 
+    def answered(self, ordinals) -> dict[Any, int]:
+        """Where the gateway's journal holds the final answers of these ordinals of this run, if it does."""
+        return self.factory.gateway.finals(self.run["run_id"], ordinals)
+
     def _precondition(self, request: Mapping[str, Any]) -> str | None:
-        """Why an action that relies on hypotheses may not act yet (refinement §10)."""
+        """Why an action may not act: a graph's call that is no observation, or an action that relies on
+        hypotheses not yet established (refinement §10)."""
         contract = self.factory.configuration.tools.tools.get(request["tool"])
+        if request["path"] == "parallel" and contract is not None and not contract.observation:
+            # A graph's concurrent calls only observe; its effect happens once, at its commit (refinement §16).
+            return "a parallel graph calls only observations; its effect belongs to its commit"
         requires = request.get("requires")
         if requires is None and not (contract is not None and contract.requires_established):
             return None
@@ -225,10 +268,10 @@ class ReplaySession(MemorySession):
         self._loaded = {entry.habit_id for entry in entries}
         return tuple(entries)
 
-    def _score(self, request):
+    def _reason(self, request):
         recorded = self.factory.gateway.recorded(request["run_id"], request["ordinal"])
         if recorded is None:
-            raise ReplayHorizon("a re-execution asked for an unrecorded similarity")
+            raise ReplayHorizon("a re-execution asked for an unrecorded similarity or embedding")
         return recorded
 
     def invoke_action(self, request: Mapping[str, Any]) -> dict[str, Any]:

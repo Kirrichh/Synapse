@@ -25,6 +25,8 @@ APPROVED_OUTBOUND = {
     "synapse.habit_triggers": {"learning/triggers.py", "learning/applicability.py", "learning/dependencies.py"},
     # The program's own literals: values a driver or author knew before any answer (result references).
     "synapse.lexer": {"learning/dependencies.py"},
+    # Palace admission owns the lexical scorer and the validity-time form semantic knowledge is searched with.
+    "synapse.palace_admission": {"knowledge/statements.py", "knowledge/search.py"},
     "synapse.hardening": {"court/consolidation.py", "court/window.py"},
     "synapse.version": {"factory.py"},
     # The verified re-execution and session reader of durable cognitive runs (court ports).

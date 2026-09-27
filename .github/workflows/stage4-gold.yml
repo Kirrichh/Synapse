@@ -909,6 +909,22 @@ jobs:
             file: acceptance/memory/test_composition_nested_acceptance.py
           - shard: composition-sequence
             file: acceptance/memory/test_composition_sequence_acceptance.py
+          - shard: knowledge-contract
+            file: acceptance/memory/test_knowledge_contract.py
+          - shard: knowledge-search
+            file: acceptance/memory/test_knowledge_search_acceptance.py
+          - shard: knowledge-timeline
+            file: acceptance/memory/test_knowledge_timeline_acceptance.py
+          - shard: knowledge-correction
+            file: acceptance/memory/test_knowledge_correction_acceptance.py
+          - shard: dataflow-contract
+            file: acceptance/memory/test_dataflow_contract.py
+          - shard: dataflow-overlap
+            file: acceptance/memory/test_dataflow_overlap_acceptance.py
+          - shard: dataflow-revision
+            file: acceptance/memory/test_dataflow_revision_acceptance.py
+          - shard: dataflow-crash
+            file: acceptance/memory/test_dataflow_crash_acceptance.py
           - shard: dependency-direction
             file: tests/test_memory_dependency_direction.py
     steps:

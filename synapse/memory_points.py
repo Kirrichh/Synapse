@@ -153,6 +153,17 @@ class MemorySession(Protocol):
     def run_learned_body(self, habit_id: str, event: Mapping[str, Any], ports: ActionPorts) -> dict[str, Any]:
         """Execute a learned habit's frozen action pattern through ``ports``."""
 
+    def declare_statement(self, statement: Mapping[str, Any], source: Mapping[str, Any],
+                          source_ref: str) -> dict[str, Any]:
+        """Validate a statement read from the recorded answer ``source_ref`` and fix its record."""
+
+    def embed(self, text: str) -> list[float] | None:
+        """The declared embedder's vector for ``text`` (a recorded ``reason`` call), or ``None``."""
+
+    def search_knowledge(self, query: str, *, valid_at: Any, known_as_of: int | None, channels: Any,
+                         embed: Callable[[str], Any] | None) -> dict[str, Any]:
+        """Candidates from the pinned snapshot's knowledge at a valid time as known at a window."""
+
     def consolidate(self, mode: str, *, history: list[dict[str, Any]]) -> dict[str, Any]:
         """Run the court for this session (``full`` or ``summary``)."""
 

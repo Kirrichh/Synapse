@@ -28,10 +28,14 @@ EMPTY_STATE: dict[str, Any] = {
     # applied retention passes, rollup aggregates of tail quanta and tombstones of forgotten ones
     "retention": {"cursor": 0, "rollups": [], "tombstones": {}},
     "hypotheses": {},      # hypothesis id -> the status its latest recorded check gave it
+    # statement id -> its version (record, embedding, transaction time); statement id -> runs that admitted it
+    "knowledge": {"versions": {}, "uses": {}},
     "consolidations": [],  # applied consolidation ids, in order
 }
 APPLY_FIELDS = frozenset({"habits", "frozen", "declared", "slow_only", "pool", "quanta", "parts", "cursors",
-                          "digest", "retention", "hypotheses"})
+                          "digest", "retention", "hypotheses", "knowledge"})
+#: Reports applied before semantic knowledge existed carry no knowledge section.
+_APPLY_FIELDS_BEFORE_KNOWLEDGE = APPLY_FIELDS - {"knowledge"}
 
 
 def empty_state() -> dict[str, Any]:
@@ -41,7 +45,7 @@ def empty_state() -> dict[str, Any]:
 def apply_report(state: Mapping[str, Any], report: Mapping[str, Any]) -> dict[str, Any]:
     """The state after one applied report (pure)."""
     section = report["apply"]
-    if type(section) is not dict or set(section) != APPLY_FIELDS:
+    if type(section) is not dict or set(section) not in (APPLY_FIELDS, _APPLY_FIELDS_BEFORE_KNOWLEDGE):
         raise ValueError("report apply section has an unknown shape")
     result = copy.deepcopy(dict(state))
     for habit_id, entry in section["frozen"].items():
@@ -77,6 +81,14 @@ def apply_report(state: Mapping[str, Any], report: Mapping[str, Any]) -> dict[st
     result["retention"] = copy.deepcopy(section["retention"])
     for hypothesis_id, entry in section["hypotheses"].items():
         result["hypotheses"][hypothesis_id] = copy.deepcopy(entry)
+    knowledge = section.get("knowledge") or {"versions": {}, "uses": {}}
+    for statement_id, entry in knowledge["versions"].items():
+        records.verify(entry["record"], "statement")
+        if entry["record"]["id"] != statement_id:
+            raise ValueError("a knowledge version names another statement")
+        result["knowledge"]["versions"][statement_id] = copy.deepcopy(entry)
+    for statement_id, runs in knowledge["uses"].items():
+        result["knowledge"]["uses"][statement_id] = sorted(runs)
     result["window"] += 1
     result["consolidations"].append(report["consolidation_id"])
     return result

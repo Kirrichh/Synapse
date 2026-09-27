@@ -94,6 +94,13 @@ class Gateway:
                  and item["body"].get("final")]
         return None if not final else final[-1]["body"]["request_canon"]
 
+    def finals(self, run_id: str, ordinals) -> dict[Any, int]:
+        """The journal position of each ordinal's final record, for the ordinals of one run that have one."""
+        wanted = set(ordinals)
+        return {item["body"]["ordinal"]: item["seq"] for item in self.records()
+                if item["body"].get("run_id") == run_id and item["body"].get("ordinal") in wanted
+                and item["kind"] in {"RESULT", "REJECTED"} and item["body"].get("final")}
+
     def recorded_outcome(self, seq: int, records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         """The outcome a run recorded for one final journal record, recomputed from the journal."""
         records = self.records() if records is None else records

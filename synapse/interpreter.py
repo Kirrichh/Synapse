@@ -16,6 +16,7 @@ from .ast import *
 from .builtins import BUILTINS, LLMBackend, Memory, AgentRuntime, DurableActorRef, DurablePromise
 from .metrics import SynapseMetrics
 from .hardening import hash_event_chain, verify_event_chain, canonical_json
+from .runtime.dataflow import Executor as GraphExecutor, GraphViolation
 from .memory import MemoryPalace
 from .intention import IntentionCascade, weave_plan
 from .habit import form_habit, EnergyPool, ContextTracker, AgentMode, ContextStackError, HabitRegistry, HabitEvaluator, HabitRuntimeRecord, HabitActivationEngine, HabitState, HabitRecursionError, PRIORITY_RANK
@@ -706,6 +707,8 @@ class Interpreter:
         self._observer_depth = 0
         self.dream_depth = 0
         self.integrate_depth = 0
+        # Instances of ``parallel`` graphs this run has started: the identity of their recorded steps.
+        self.parallel_instances = 0
         # Alpha3g I2 skeleton is opt-in so legacy v1.4/v1.4.1 integrate
         # tests keep their historical event-emission behavior until the
         # implementation plan explicitly flips the default.
@@ -1222,6 +1225,20 @@ class Interpreter:
         env.define(node.name, value)
         return value
 
+    def _evaluate_ParallelStmt(self, node, env):
+        """Run a ``parallel`` graph to its commit and bind its result (refinement §16)."""
+        if self.dream_depth > 0:
+            raise DreamIsolationViolation("dream cannot run a parallel graph; it has no external effects")
+        if self.integrate_depth > 0:
+            raise IntegrateIsolationViolation("a parallel graph is forbidden inside integrate transaction")
+        self.parallel_instances += 1
+        try:
+            result = GraphExecutor(self, node, env, f"{node.name}-{self.parallel_instances}").run()
+        except GraphViolation as exc:
+            raise RuntimeError(str(exc)) from None
+        env.define(node.name, result)
+        return result
+
     def _evaluate_AssignStmt(self, node, env):
         if self.is_in_subagent():
             raise OrphanedIdentityException("assignment is forbidden inside sub-agent")
@@ -1335,6 +1352,9 @@ class Interpreter:
             return handler(self, node, env)
         if isinstance(node, LetStmt):
             return self._evaluate_LetStmt(node, env)
+
+        if isinstance(node, ParallelStmt):
+            return self._evaluate_ParallelStmt(node, env)
 
         if isinstance(node, AssignStmt):
             return self._evaluate_AssignStmt(node, env)
@@ -4819,7 +4839,7 @@ class Interpreter:
         if len(args) != 2 or not isinstance(args[0], list) or not isinstance(args[1], dict):
             raise RuntimeError("admit expects the recalled candidates and a claim")
         try:
-            decision = admit(args[0], args[1], status_of=self.runtime.memory.hypothesis_status)
+            decision = admit(args[0], args[1], hypothesis_of=self.runtime.memory.hypothesis_of)
         except ValueError as exc:
             raise RuntimeError(str(exc)) from None
         event = {"type": "memory_admission", "decision": decision["decision"],
@@ -5699,10 +5719,15 @@ class Interpreter:
                 return self.execute_side_effect(fn_name, args)
 
             if self.runtime.memory.session is not None and fn_name in {
-                    "tool", "task_plan", "memory_digest", "hypothesis", "probe", "established", "recover"}:
+                    "tool", "task_plan", "memory_digest", "hypothesis", "probe", "established", "recover", "know",
+                    "search_knowledge"}:
                 memory = self.runtime.memory
                 if fn_name == "tool":
                     return memory.invoke_tool(args, env)
+                if fn_name == "know":
+                    return memory.know(args)
+                if fn_name == "search_knowledge":
+                    return memory.search_knowledge(args)
                 if fn_name == "recover":
                     return memory.recover_failure(args)
                 if fn_name == "hypothesis":

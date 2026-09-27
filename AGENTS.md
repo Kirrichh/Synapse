@@ -108,7 +108,28 @@ Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:
 No Linux full suite was run for Patch 2. A recorded baseline is evidence of an
 observed run, not a command to rerun the full suite before each patch.
 
-The latest observed Linux run is the memory stage 6 and language stage 7
+The latest observed Linux run is the memory review package on PR #108
+(exact entity identity and admission bases, operation-bound state checks,
+unknown effects and gateway-issued idempotency keys, verified conflict
+comparison with blocking before any effect, the experience-based automaton,
+reassessment of recorded memory; court policy v3, tool configuration v2;
+Python 3.11, every `tests/` and `acceptance/` file in its own process, four
+files in parallel, on the uncommitted working tree):
+
+```text
+tests/:       2 failed, 5228 passed, 12 skipped
+acceptance/:  1 failed, 999 passed, 1 skipped
+```
+
+All three failures were diagnosed:
+
+- `acceptance/stage4/stage16/test_live_gemini_worker.py` is the explicit live
+  job that requires `GEMINI_API_KEY` (absent here).
+- Two tests of `tests/test_swebench_measurement_output_boundary.py` are scope
+  tripwires over fixed historical commit ranges that also count uncommitted
+  and untracked files; they fail on a dirty working tree only.
+
+The previous observed Linux run is the memory stage 6 and language stage 7
 package on PR #108 (semantic knowledge with two times and hybrid search;
 event-driven `parallel` graphs; Python 3.11, every `tests/` and `acceptance/`
 file in its own process, four files in parallel, on the committed tree):

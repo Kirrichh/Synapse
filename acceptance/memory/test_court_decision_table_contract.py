@@ -34,7 +34,7 @@ def _configuration(parameters):
               "event_fields": []} for name in ("flights", "quota_status", "capacity_status", "reserve_slot")]
     return parse_memory_configuration({
         "schema_version": "synapse.memory.configuration/v1",
-        "tools": {"schema_version": "synapse.memory.tool-configuration/v1",
+        "tools": {"schema_version": "synapse.memory.tool-configuration/v2",
                   "servers": [{"id": "ops", "argv": ["ops"]}], "tools": tools,
                   "provenance": {f"{item['name']}:ops": {"ancestors": []} for item in tools}},
         "court": {"decision_rule": "threshold", "parameters": parameters}, "advisor": None, "scorer": None,
@@ -74,7 +74,7 @@ def _fire(habit_id, trigger_id, index, *, signal=1.0, task="task"):
 def _draft(fires=(), advice=None):
     return {"consolidation_id": "con_table", "mode": "full", "fires": list(fires), "declared_fires": [],
             "reactions": [], "near_misses": [], "misses": [], "requests": [], "cases": [], "replay": {},
-            "conflict_advice": advice or {}, "arbitration": {}}
+            "conflict_advice": advice or {}, "arbitration": {}, "suppressed": []}
 
 
 def _decide(configuration, state, fires=(), advice=None):
@@ -101,8 +101,9 @@ def test_trust_changes_only_at_the_declared_minimum_evidence(ready, updated):
     assert bool(decisions) is updated
     metadata = decision["habits"][ids["q"]]
     if updated:
-        assert decisions[0]["counted"] == ready and metadata["trust"] == 0.5 + 0.5 * (1.0 - 0.5)
-        assert metadata["pending"] == []
+        # One update per declared batch of ready signals; a remainder waits for the next batch.
+        assert decisions[0]["counted"] == 3 and metadata["trust"] == 0.5 + 0.5 * (1.0 - 0.5)
+        assert len(metadata["pending"]) == ready - 3
     else:
         assert metadata["trust"] == 0.5 and len(metadata["pending"]) == ready
 
@@ -139,7 +140,7 @@ def test_t1_tasks_threshold(earlier_tasks, promoted):
     assert ((ids["q"], "T1", "active") in moves) is promoted
 
 
-# -- T3: active -> probation (window mean below t3_signal over at least t3_fires) --------
+# -- T3: active -> probation (the last t3_fires counted signals average below t3_signal) --------
 @pytest.mark.parametrize("fires, demoted", [(2, False), (3, True), (4, True)])
 def test_t3_fire_count_threshold(fires, demoted):
     configuration, state, ids = _world({**_NO_UPDATE, "t3_fires": 3, "t3_signal": 0.65},

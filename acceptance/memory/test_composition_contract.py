@@ -33,7 +33,7 @@ def _configuration():
               "event_fields": []} for name, contract in TOOLS.items()]
     return parse_memory_configuration({
         "schema_version": "synapse.memory.configuration/v1",
-        "tools": {"schema_version": "synapse.memory.tool-configuration/v1", "servers": [{"id": "ops", "argv": ["x"]}],
+        "tools": {"schema_version": "synapse.memory.tool-configuration/v2", "servers": [{"id": "ops", "argv": ["x"]}],
                   "tools": tools, "provenance": {f"{name}:ops": {"ancestors": []} for name in TOOLS}},
         "court": {"decision_rule": "threshold", "parameters": {}}, "advisor": None, "scorer": None,
         "element": "acceptance.composition"})

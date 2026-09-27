@@ -2,7 +2,9 @@
 
 A tool contract states the documented semantics of one operation and its
 answer: how the service reports a result, which effect a refusal leaves
-(none, partial, applied, unknown), whether the operation is idempotent, what
+(none, partial, applied; a code it does not describe leaves the effect
+unknown), whether the operation is idempotent or the provider deduplicates
+requests by a key the gateway issues, what
 compensates it, which state check resolves its uncertainty and which refusals
 are the service's own unavailability. It cannot redefine a task's goal. The
 configuration is strict JSON fixed before a run; the run records its digest and
@@ -19,6 +21,11 @@ from typing import Any, Mapping
 from ..records import digest
 
 TOOL_CONFIGURATION_V1 = "synapse.memory.tool-configuration/v1"
+#: v2 (review R1, R2): a refusal code the contract does not describe leaves the effect unknown, a state check
+#: names what it binds and what it attests, and a provider's idempotency key may be declared. A v1
+#: configuration read its contracts otherwise; it is refused, and an owner bound to one is migrated by
+#: ``synapse memory reassess`` with its v2 successor.
+TOOL_CONFIGURATION_V2 = "synapse.memory.tool-configuration/v2"
 EFFECTS = ("none", "partial", "applied", "unknown")
 ROLES = ("action", "reason")
 _NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}\Z")
@@ -26,7 +33,7 @@ _SOURCE_RE = re.compile(r"[a-z0-9][a-z0-9_.-]*:[A-Za-z0-9@_.+-]+\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _CONTRACT_FIELDS = {"idempotent", "effect_on_err", "repeatable_on_partial", "compensates", "compensation_signs",
                     "state_check_for", "resolve_state", "environmental_errors", "doc", "requires_established",
-                    "observation"}
+                    "observation", "idempotency_key", "binds", "attests", "operation_field"}
 
 
 class ToolConfigurationViolation(ValueError):
@@ -68,6 +75,17 @@ class ToolContract:
     requires_established: bool = False
     #: The operation only reads its source and changes nothing: a ``parallel`` graph may call it concurrently.
     observation: bool = False
+    #: The provider deduplicates requests carrying one key: the argument that carries it and how long the
+    #: provider keeps a key (``{"field": name, "retention_s": seconds}``). The gateway issues the key.
+    idempotency_key: Mapping[str, Any] | None = None
+    #: A state check's typed binding to the operation it checks: which of its own arguments (``request``)
+    #: and which fields of its answer (``answer``) name the same resource as which argument of the operation.
+    binds: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    #: What a bound answer of this state check establishes: that the state exists (``state``) or that the
+    #: checked operation itself took effect (``operation``) — by the operation's idempotency key echoed in
+    #: ``operation_field``, or, without one, by the operator's declaration that the state is that operation's.
+    attests: str = "state"
+    operation_field: str | None = None
 
     @property
     def service(self) -> str:
@@ -84,7 +102,10 @@ class ToolContract:
                 "event_fields": list(self.event_fields), "doc": self.doc,
                 # Present only when declared, so contracts without it keep their identity.
                 **({"requires_established": True} if self.requires_established else {}),
-                **({"observation": True} if self.observation else {})}
+                **({"observation": True} if self.observation else {}),
+                **({"idempotency_key": dict(self.idempotency_key)} if self.idempotency_key else {}),
+                **({"binds": {key: dict(value) for key, value in self.binds.items()}, "attests": self.attests,
+                    "operation_field": self.operation_field} if self.state_check_for is not None else {})}
 
     @property
     def contract_ref(self) -> str:
@@ -179,7 +200,31 @@ def _parse_semantics(name: str, value: Any) -> dict[str, Any]:
             "compensates") is not None or any(effect != "none" for effect in effect_on_err.values())):
         # Reading changes nothing: a lost answer is read again, and no refusal leaves anything to compensate.
         raise _fail(f"tool {name} is an observation: idempotent, no refusal leaves an effect, it compensates nothing")
+    checks = contract.get("state_check_for")
+    binds = contract.get("binds", {})
+    if (type(binds) is not dict or set(binds) - {"request", "answer"}
+            or any(type(mapping) is not dict or any(type(k) is not str or type(v) is not str
+                                                    for k, v in mapping.items()) for mapping in binds.values())):
+        raise _fail(f"tool {name} binds its request arguments and answer fields to the checked operation's")
+    if checks is not None and not any(binds.values()):
+        raise _fail(f"state check {name} binds the resource it reads to the operation it checks")
+    if checks is None and (binds or "attests" in contract or "operation_field" in contract):
+        raise _fail(f"tool {name} binds, attests and echoes an operation only as a state check")
+    attests = contract.get("attests", "state")
+    if attests not in ("state", "operation"):
+        raise _fail(f"state check {name} attests a state or the operation itself")
+    operation_field = contract.get("operation_field")
+    if operation_field is not None and (attests != "operation" or type(operation_field) is not str):
+        raise _fail(f"state check {name} echoes the operation's key only when it attests the operation")
+    key = contract.get("idempotency_key")
+    if key is not None and (type(key) is not dict or set(key) != {"field", "retention_s"}
+                            or type(key["field"]) is not str or _NAME_RE.fullmatch(key["field"]) is None
+                            or type(key["retention_s"]) is not int or key["retention_s"] < 1):
+        raise _fail(f"tool {name} idempotency key names its argument and the provider's retention in seconds")
     return {"idempotent": contract.get("idempotent", False), "effect_on_err": effect_on_err,
+            "idempotency_key": None if key is None else dict(key),
+            "binds": {part: dict(mapping) for part, mapping in sorted(binds.items())}, "attests": attests,
+            "operation_field": operation_field,
             "repeatable_on_partial": contract.get("repeatable_on_partial", False),
             "compensates": contract.get("compensates"), "compensation_signs": signs,
             "state_check_for": contract.get("state_check_for"), "resolve_state": resolve_state,
@@ -225,7 +270,10 @@ def _parse_provenance(value: Any) -> dict[str, tuple[str, ...]]:
 def parse_tool_configuration(value: Any) -> ToolConfiguration:
     """Validate the operator's frozen tool configuration (strict JSON)."""
     root = _mapping(value, "configuration", required={"schema_version", "servers", "tools", "provenance"})
-    if root["schema_version"] != TOOL_CONFIGURATION_V1:
+    if root["schema_version"] == TOOL_CONFIGURATION_V1:
+        raise _fail("tool configuration v1 predates bound state checks and unknown undescribed refusals: "
+                    "declare v2 and migrate the memory owner with 'synapse memory reassess'")
+    if root["schema_version"] != TOOL_CONFIGURATION_V2:
         raise _fail("unsupported schema version")
     if type(root["servers"]) is not list or not root["servers"]:
         raise _fail("servers must be a non-empty list")

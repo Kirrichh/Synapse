@@ -18,6 +18,7 @@ any live effect.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Mapping
 
 from synapse.memory_points import ActionPorts, LearnedHabitEntry, ReplayHorizon, TypedCondition
@@ -26,7 +27,7 @@ from .formation import bind_event, plan_task
 from .hypotheses import declare, resolve, reuse
 from .knowledge import search as knowledge_search
 from .knowledge.statements import declare as declare_statement, instant
-from .learning.behavior import execute
+from .learning.behavior import execute, rivals
 from .learning.composition import (joins_of, merge_joins, planning_contingency, ranked, recorded_contingency,
                                    stack_of)
 from .learning.triggers import matches, render_template, typed_context
@@ -52,6 +53,38 @@ def _entry(item: Mapping[str, Any], trust: float | None = None, *, slow_only: bo
         not_when=tuple(TypedCondition(**condition) for condition in trigger["not_when"]),
         priority=item["priority"], context_trust=item["context_trust"] if trust is None else trust,
         energy_cost=item["energy_cost"], slow_only=slow_only)
+
+
+def rivalry(entries: tuple[LearnedHabitEntry, ...], boundary_habits: Mapping[str, Mapping[str, Any]],
+            parameters: Mapping[str, Any]) -> tuple[LearnedHabitEntry, ...]:
+    """Who gives way to whom among the loaded rivals when both apply to one event (review R5).
+
+    A rival that lost a verified comparison yields to its winner (the boundary's
+    ``yields_to``); otherwise an established trust gap makes the junior yield;
+    otherwise the conflict is unresolved and neither acts. The runtime never
+    compares outcomes itself: it holds an unresolved pair back before any
+    external effect, including rivals whose triggers overlap only partly.
+    """
+    loaded = {entry.habit_id: entry for entry in entries}
+    yields = {habit_id: set() for habit_id in loaded}
+    unresolved = {habit_id: set() for habit_id in loaded}
+    ordered = sorted(loaded)
+    for index, left in enumerate(ordered):
+        for right in ordered[index + 1:]:
+            a, b = boundary_habits[left], boundary_habits[right]
+            if not rivals(a["habit"], b["habit"], parameters["action_same"]):
+                continue
+            if right in a.get("yields_to", ()) or left in b.get("yields_to", ()):
+                winner = right if right in a.get("yields_to", ()) else left
+                yields[left if winner == right else right].add(winner)
+            elif abs(loaded[left].context_trust - loaded[right].context_trust) >= parameters["conflict_gap"]:
+                senior, junior = sorted((left, right), key=lambda item: (-loaded[item].context_trust, item))
+                yields[junior].add(senior)
+            else:
+                unresolved[left].add(right)
+                unresolved[right].add(left)
+    return tuple(replace(entry, yields_to=tuple(sorted(yields[entry.habit_id])),
+                         unresolved_with=tuple(sorted(unresolved[entry.habit_id]))) for entry in entries)
 
 
 class MemorySession:
@@ -91,7 +124,7 @@ class MemorySession:
         entries = tuple(_entry(item, slow_only=self.exam == "C") for habit_id, item in sorted(self._habits.items())
                         if self.factory.admitted_now(habit_id, item))
         self._loaded = {entry.habit_id for entry in entries}
-        return entries
+        return rivalry(entries, self._habits, self.factory.configuration.parameters)
 
     def declared_trust(self, habit_identity: str) -> Mapping[str, float] | None:
         if self.boundary is None:
@@ -160,6 +193,10 @@ class MemorySession:
         if refusal is not None:
             return self.factory.gateway.refuse(request, refusal)
         return self.factory.gateway.invoke(request)
+
+    def identity_rules(self) -> dict[str, str]:
+        """The operator's case rule of each entity namespace (``identity`` of the memory configuration)."""
+        return dict(self.factory.configuration.identity)
 
     def answered(self, ordinals) -> dict[Any, int]:
         """Where the gateway's journal holds the final answers of these ordinals of this run, if it does."""
@@ -266,7 +303,7 @@ class ReplaySession(MemorySession):
                 raise ReplayHorizon("a recorded learned habit is not in its pinned boundary")
             entries.append(_entry(habit, item["context_trust"], slow_only=item["slow_only"]))
         self._loaded = {entry.habit_id for entry in entries}
-        return tuple(entries)
+        return rivalry(tuple(entries), self._habits, self.factory.configuration.parameters)
 
     def _reason(self, request):
         recorded = self.factory.gateway.recorded(request["run_id"], request["ordinal"])

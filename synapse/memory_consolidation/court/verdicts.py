@@ -13,7 +13,7 @@ from typing import Any, Mapping
 
 from .. import records
 from ..records import canonical
-from ..tools.episodes import environmental_failure, observed_applied, requirement_outcome
+from ..tools.episodes import environmental_failure, observed_applied, observed_state, requirement_outcome
 from .counsel import Counsel
 from .window import BOUND_KINDS, SessionFacts
 
@@ -31,12 +31,15 @@ def decoded_form(scope: Mapping[str, Any]) -> str:
 
 
 def anchor_evidence(marker, scopes) -> list[str]:
-    """Recorded results of the anchor tool that carry every anchored field, or the state
-    checks that established a lost or refused anchor operation as applied."""
+    """Recorded results of the anchor tool that carry every anchored field, or the bound state
+    checks that established a lost or refused anchor operation as applied (for a state goal: the state)."""
     anchor = marker["external_anchor"]
+    # A state goal is anchored by a bound check showing the state; any other goal only by one attesting the
+    # operation itself.
+    observe = observed_state if (marker.get("requirement") or {}).get("kind") == "reach_state" else observed_applied
     found = []
     for scope in scopes:
-        observed = {item["resolution"]["gw_seq"] for item in observed_applied(scope, anchor["tool"])}
+        observed = {item["resolution"]["gw_seq"] for item in observe(scope, anchor["tool"])}
         found.extend(attempt["evidence_ref"] for attempt in scope["attempts"] if attempt["gw_seq"] in observed)
         for attempt in scope["attempts"]:
             payload = scope["payloads"].get(attempt["gw_seq"])
@@ -48,7 +51,7 @@ def anchor_evidence(marker, scopes) -> list[str]:
     return found
 
 
-def _stage_one(base, parameters, marker, scopes, replay):
+def stage_one(base, parameters, marker, scopes, replay):
     """Environment, requirement and anchor; ``None`` passes on to stages 2 and 3."""
     environment = environmental_failure(scopes, parameters["environmental_run"])
     if environment is not None:
@@ -105,8 +108,17 @@ def _verdict(counsel, parameters, marker, plan, scopes, events, run, replay, lat
             return None
         return {**base, "verdict": "failed" if later_executed else "skipped", "stage": "1",
                 "criterion": "session moved past the segment" if later_executed else "segment not reached"}
-    return (_stage_one(base, parameters, marker, scopes, replay)
+    return (stage_one(base, parameters, marker, scopes, replay)
             or _later_stages(base, counsel, parameters, marker, plan, scopes))
+
+
+def scopes_by_marker(facts: SessionFacts) -> dict[str, list]:
+    """The operation scopes of each segment marker, in journal order."""
+    by_marker: dict[str, list] = {}
+    for scope in facts.scopes.values():
+        if scope["segment"] is not None:
+            by_marker.setdefault(scope["segment"], []).append(scope)
+    return {marker_id: sorted(scopes, key=lambda item: item["gw_refs"][0]) for marker_id, scopes in by_marker.items()}
 
 
 def _executed_positions(facts: SessionFacts, by_marker, events_by_marker) -> dict[str, set[int]]:
@@ -121,10 +133,7 @@ def _executed_positions(facts: SessionFacts, by_marker, events_by_marker) -> dic
 def judge_markers(counsel: Counsel, parameters, facts: SessionFacts, replay: str | None,
                   ending: bool) -> dict[str, dict[str, Any]]:
     """Verdict records of one session's markers, by marker id."""
-    by_marker: dict[str, list] = {}
-    for scope in facts.scopes.values():
-        if scope["segment"] is not None:
-            by_marker.setdefault(scope["segment"], []).append(scope)
+    by_marker = scopes_by_marker(facts)
     events_by_marker: dict[str, list] = {}
     for kind in BOUND_KINDS:
         for _, event in facts.found.get(kind, []):
@@ -135,7 +144,7 @@ def judge_markers(counsel: Counsel, parameters, facts: SessionFacts, replay: str
     for marker_id, (marker, plan) in sorted(facts.markers.items()):
         position = [item["id"] for item in plan["markers"]].index(marker_id)
         later = any(index > position for index in executed.get(plan["task_id"], ()))
-        scopes = sorted(by_marker.get(marker_id, []), key=lambda item: item["gw_refs"][0])
+        scopes = by_marker.get(marker_id, [])
         verdict = _verdict(counsel, parameters, marker, plan, scopes, events_by_marker.get(marker_id, []),
                            facts.run, replay, later, ending)
         if verdict is not None:

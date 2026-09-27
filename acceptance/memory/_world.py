@@ -25,10 +25,11 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 OBJECT = {"type": "object"}
 
 
-def tool(name, source, answers, *, contract=None, event_fields=(), role="action", server="scripted"):
-    """One scripted tool: its server, the server's answers and the operator's contract for it."""
+def tool(name, source, answers, *, contract=None, event_fields=(), role="action", server="scripted", dedupe=None):
+    """One scripted tool: its server, the server's answers, the operator's contract for it and, when the
+    provider deduplicates by an idempotency key, how (``{"field", "retention_s"}``)."""
     return {"name": name, "source": source, "answers": answers, "contract": contract or {},
-            "event_fields": list(event_fields), "role": role, "server": server}
+            "event_fields": list(event_fields), "role": role, "server": server, "dedupe": dedupe}
 
 
 def answer(payload, *, when=None, sequence=(), effect=None, delay=None):
@@ -76,7 +77,8 @@ class MemoryWorld:
         servers, served = [], {}
         for server_id in sorted({item["server"] for item in tools}):
             script = {"schema_version": SCRIPT_V1, "tools": [
-                {"name": item["name"], "input_schema": OBJECT, "output_schema": OBJECT, "answers": item["answers"]}
+                {"name": item["name"], "input_schema": OBJECT, "output_schema": OBJECT, "answers": item["answers"],
+                 **({"dedupe": item["dedupe"]} if item.get("dedupe") else {})}
                 for item in tools if item["server"] == server_id]}
             served.update((entry["name"], entry) for entry in script["tools"])
             script_path = self.root / f"{server_id}.tools.json"
@@ -95,7 +97,7 @@ class MemoryWorld:
         self.configuration_path = self.root / "memory.json"
         configuration = {
             "schema_version": "synapse.memory.configuration/v1",
-            "tools": {"schema_version": "synapse.memory.tool-configuration/v1", "servers": servers,
+            "tools": {"schema_version": "synapse.memory.tool-configuration/v2", "servers": servers,
                       "tools": admitted, "provenance": provenance},
             "court": {"decision_rule": decision_rule, "parameters": parameters or {}},
             # The advisor, when a scenario has one, is one of its admitted reason tools.
@@ -133,6 +135,16 @@ class MemoryWorld:
         assert code == 0 and payload is not None and payload["status"] == "COMPLETED", (code, payload, stderr)
         return payload
 
+    def reconfigured(self, name: str, contracts: dict) -> Path:
+        """The same configuration with other operator contracts for the named tools (a contract correction)."""
+        configuration = json.loads(self.configuration_path.read_text())
+        for item in configuration["tools"]["tools"]:
+            if item["name"] in contracts:
+                item["contract"] = contracts[item["name"]]
+        path = self.root / f"memory.{name}.json"
+        path.write_text(json.dumps(configuration, sort_keys=True))
+        return path
+
     def attempt(self, source: str, run_id: str, bindings: dict, *, configuration: Path) -> tuple[int, dict | None, str]:
         """A launch with another memory configuration, whatever its outcome."""
         return self._cli(*self._run_arguments(source, run_id, bindings, configuration=configuration))
@@ -147,10 +159,10 @@ class MemoryWorld:
     def resume(self, run_id: str) -> tuple[int, dict | None, str]:
         return self._cli("resume", "--state-file", self.runs / f"{run_id}.json")
 
-    def memory(self, act: str, *arguments) -> tuple[int, dict | None, str]:
-        """An operator act on the owner's retained experience (``synapse memory forget|restore``)."""
-        return self._cli("memory", act, "--project-state", self.state, "--memory-config", self.configuration_path,
-                         *arguments)
+    def memory(self, act: str, *arguments, configuration: Path | None = None) -> tuple[int, dict | None, str]:
+        """An operator act on the owner's memory (``synapse memory forget|restore|reassess``)."""
+        return self._cli("memory", act, "--project-state", self.state, "--memory-config",
+                         configuration or self.configuration_path, *arguments)
 
     # -- observations ------------------------------------------------------------
     def history(self, run_id: str) -> list[dict]:
@@ -167,6 +179,10 @@ class MemoryWorld:
     def world(self) -> dict:
         return json.loads(self.world_path.read_text()) if self.world_path.exists() else {"calls": [], "effects": []}
 
+    def restore(self, environment: dict) -> None:
+        """Put the environment back into a recorded state (a paired experiment's common start)."""
+        self.world_path.write_text(json.dumps(environment, sort_keys=True))
+
     def calls(self, name: str) -> list[dict]:
         return [item["args"] for item in self.world()["calls"] if item["tool"] == name]
 
@@ -178,6 +194,21 @@ class MemoryWorld:
 
     def journal(self) -> list:
         return self.owner().store.inventory()
+
+    def failures(self, run_id: str) -> list[dict]:
+        """The failed operations of one session as the court derives them from the gateway's journal."""
+        from synapse.memory_consolidation.configuration import read_memory_configuration
+        from synapse.memory_consolidation.tools.episodes import derive_scope, group_scopes
+        from synapse.memory_consolidation.tools.gateway import Gateway
+
+        configuration = read_memory_configuration(self.configuration_path)
+        reader = Gateway(self.owner().gateway_root, configuration.tools, executor="acceptance-reader",
+                         transport=object())
+        found = []
+        for (run, _), records in sorted(group_scopes(reader.records()).items(), key=lambda item: str(item[0])):
+            if run == run_id:
+                found.extend(derive_scope(records, configuration.tools, self.evidence())["failures"])
+        return found
 
     def evidence(self):
         """The owner's store D: recorded results, raw traces and replay data."""

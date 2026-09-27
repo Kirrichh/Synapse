@@ -7,7 +7,11 @@ project journal, so every task stream reaches one writer:
 * ``summary`` — ``consolidate palace`` in a maintenance program, all sessions;
 * ``emergency`` — before a crashed session continues, over its tail only:
   stages 1–2 and 7a, provisional, no trust, births or boundary (fail-closed).
-  An integrity failure of an existing source also runs the court in emergency.
+  An integrity failure of an existing source also runs the court in emergency;
+* ``reassess`` — ``synapse memory reassess``: no session window; the recorded
+  memory is judged again under the configuration and policy now declared
+  (``reassessment.py``) and the owner then adopts that configuration. Memory
+  decided under another court policy is reassessed before any other mode runs.
 
 The consolidation identity is the digest of its inputs (owner, chain head,
 mode, window cursors and heads, the exact-subject tail, the gateway head, the
@@ -31,7 +35,9 @@ from ..tools.gateway import Gateway
 from .apply import assemble
 from .custody import take_custody
 from .decide import decide
-from .evaluate import DreamInputs, evaluate
+from .advice import conflict_advice
+from .evaluate import DreamInputs, empty_draft, evaluate
+from .reassessment import reassess_bases, republication
 from .retention import apply_acts, pending_acts, retention_pass
 from .window import closed_prefix, preflight, significant
 
@@ -153,6 +159,7 @@ def consolidate(owner: MemoryOwner, configuration: MemoryConfiguration, ports: C
     """Run the court once under the owner session ``guard``; returns the summary in force."""
     if mode not in MODES:
         raise ValueError("consolidation mode is full, summary or emergency")
+    owner.require_policy(configuration, guard=guard)
     state = owner.state(guard=guard)
     sessions = _window(owner, ports, state, mode, current, guard)
     tail = establish_tail(owner.store, guard, project_identity=owner.identity)
@@ -205,3 +212,86 @@ def consolidate_exact(owner: MemoryOwner, guard) -> dict[str, Any]:
                               consolidation={"consolidation_id": consolidation_id, "mode": "full", "report": None})
     return _summary({"consolidation_id": consolidation_id, "mode": "full"}, summary["decision"], None)
 
+
+
+def _reassessed(owner, configuration, guard) -> dict[str, Any] | None:
+    """The reassessment under this very configuration and policy that is still in force, if there is one."""
+    if owner.bound_digest(guard=guard) != configuration.configuration_sha256:
+        return None
+    for item in reversed(owner.applied(guard=guard)):
+        report = item["report"]
+        if report is None:
+            continue
+        if (report["policy"] != configuration.policy
+                or report["configuration_sha256"] != configuration.configuration_sha256):
+            return None
+        if report["mode"] == "reassess":
+            return item
+    return None
+
+
+def _republish(ports, state, reports, reassessment, configuration, legitimacy) -> None:
+    """Every kept habit published under another tool binding goes through Gold's gates again."""
+    for item in reassessment["habits"]:
+        publication = state["habits"][item["habit_id"]].get("publication")
+        if (item["verdict"] != "basis_holds" or publication is None
+                or publication.get("tool_binding_sha256") == configuration.tool_binding_sha256):
+            continue
+        verdict = ports.legitimacy.publish(republication(state, reports, item), configuration)
+        item["republication"] = {"admitted": verdict["admitted"], "reason": verdict["reason"],
+                                 "publication": verdict["publication"]}
+        if not verdict["admitted"]:
+            item["verdict"] = "republication_refused"
+            continue
+        ports.legitimacy.supersede(publication, verdict["publication"])
+        legitimacy[item["habit_id"]] = dict(verdict["status"])
+
+
+def reassess(owner: MemoryOwner, configuration: MemoryConfiguration, ports: CourtPorts, guard) -> dict[str, Any]:
+    """Judge the recorded memory again under ``configuration`` and adopt it; nothing outside is called."""
+    previous = owner.bound_digest(guard=guard)
+    if previous is None:
+        raise ValueError("only a bound memory owner is reassessed")
+    done = _reassessed(owner, configuration, guard)
+    if done is not None:
+        report = done["report"]
+        return {**_summary(done["decision"]["consolidation"], done["receipt"], report),
+                "reassessment": report["reassessment"]}
+    state = owner.state(guard=guard)
+    reports = [item["report"] for item in owner.applied(guard=guard) if item["report"] is not None]
+    tail = establish_tail(owner.store, guard, project_identity=owner.identity)
+    passes = owner.retention_passes(guard=guard)
+    acts = pending_acts(passes, state)
+    retained, retention_section = apply_acts(state, acts, len(passes))
+    state = {**state, "quanta": {**state["quanta"], **retained}, "retention": retention_section}
+    gateway_records = ports.gateway.records()
+    head = gateway_records[-1]["hash"] if gateway_records else None
+    consolidation_id = _identity(owner, tail, "reassess", [], configuration, head, len(passes))
+    reassessment = reassess_bases(state, configuration, ports.gateway, gateway_records, owner.sessions(guard=guard),
+                                  ports.read_session, reports)
+    reassessment["configuration"] = {"from": previous, "to": configuration.configuration_sha256}
+    reassessment["policy"] = {"from": reports[-1]["policy"]["policy"] if reports else None,
+                              "to": configuration.policy["policy"]}
+    draft = {**empty_draft(consolidation_id, "reassess", {"ok": True, "problems": []}),
+             "conflict_advice": conflict_advice(None, state, configuration.parameters, [], [], []),
+             "arbitration": {}, "counsel": {"questions": 0, "agreed": 0}, "gateway_head": head,
+             "reassessment": reassessment}
+    legitimacy = _legitimacy(ports, state)
+    _republish(ports, state, reports, reassessment, configuration, legitimacy)
+    decision = decide(state, draft, configuration, legitimacy)
+    result = assemble(state=state, draft=draft, decision=decision, configuration=configuration,
+                      inputs_hash={"sessions": [], "exact_tail": len(tail["entries"]), "gateway_head": head,
+                                   "retention_passes": len(passes)},
+                      window_sessions=[], legitimacy=legitimacy, gates={},
+                      custody=take_custody(ports.gateway.evidence, [], [], ports.executor),
+                      retention={"acts": acts, "quanta": retained})
+    receipt = owner.put_report(guard, result["report"])
+    summary = append_decision(owner.store, guard, project_identity=owner.identity, tail=tail,
+                              consolidation={"consolidation_id": consolidation_id, "mode": "reassess",
+                                             "report": receipt})
+    owner.put_boundary(guard, result["boundary"])
+    retention_pass(owner, configuration, ports, guard)
+    owner.rebind(guard, configuration, reassessment=consolidation_id)
+    report = result["report"]["report"]
+    return {**_summary({"consolidation_id": consolidation_id, "mode": "reassess"}, summary["decision"], report),
+            "reassessment": report["reassessment"]}

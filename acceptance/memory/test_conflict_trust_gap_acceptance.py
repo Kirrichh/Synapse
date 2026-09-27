@@ -1,11 +1,13 @@
 """Step 1 of the conflict ladder: an established trust gap selects the senior habit (refinement §6).
 
 The same pair of competitors, under a declared policy that updates trust on
-every counted fire and learns fast while born. The first shared session fires
-one of them at equal trust; its verified success opens a gap at least the
-declared ``conflict_gap``, so the court selects it by trust alone: nobody goes
-to probation and no trigger loses its fast path. The next session executes
-the senior habit with no conflict warning.
+every counted fire and learns fast while born. The first recovery fires once,
+verified, before its competitor is born: its trust is then at least the
+declared ``conflict_gap`` above the newborn's. The court judges the pair at
+the birth and selects the senior by trust alone: nobody goes to probation and
+no trigger loses its fast path. At run time both are loaded and both apply;
+the junior gives way to the senior before anything is done, and the senior
+acts.
 """
 from __future__ import annotations
 
@@ -15,30 +17,34 @@ POLICY = {"lr": {"born": 0.8}, "min_evidence": 1}
 
 
 def test_an_established_trust_gap_selects_the_senior_competitor(tmp_path):
-    world = competitors.world(tmp_path, parameters=POLICY)
-    first, second = competitors.learn_competitors(world)
+    world = competitors.world(tmp_path, delay=25, hold=25, parameters=POLICY)
 
-    world.run(competitors.PROGRAM, "both", competitors.inputs("both", "VNO", "quota"))
-    fired, = world.events("both", "habit_activated")
-    assert fired["conflict_warning"] is True  # Equal trust when the session opened.
-    senior = fired["habit_id"]
-    junior = next(item for item in (first["habit_id"], second["habit_id"]) if item != senior)
+    def fire_the_first():
+        world.run(competitors.PROGRAM, "fire", competitors.inputs("fire", "VNO", "quota"))
+
+    first, second = competitors.learn_competitors(world, fire_the_first)
+    fired, = world.events("fire", "habit_activated")
+    assert fired["habit_id"] == first["habit_id"] and fired["outcome"] == "success"
 
     report = world.reports()[-1]
-    update, = [item for item in report["trust_decisions"] if item["habit_id"] == senior]
-    assert update["trust_new"] - update["trust_old"] >= 0.30
     conflict, = report["conflicts"]
-    assert conflict["step"] == 1 and conflict["resolution"] == "A_selected_by_trust_gap"
-    assert conflict["habits"] == {"A": senior, "B": junior} and conflict["gap"] >= 0.30
+    assert conflict["step"] == 1 and conflict["at_birth"] is True
+    assert conflict["resolution"] == "A_selected_by_trust_gap"
+    assert conflict["habits"] == {"A": first["habit_id"], "B": second["habit_id"]} and conflict["gap"] >= 0.30
     assert [item for item in report["transitions"] if item["rule"] == "TC"] == []
     assert report["slow_only_triggers"] == []
 
-    # The senior habit acts on the fast path, without a warning; the environment shows its recovery.
-    recovery = competitors.recovery_of(world, senior)
+    # Both are loaded and apply; the junior yields to the senior before any effect, the senior acts.
+    recovery = competitors.recovery_of(world, first["habit_id"])
     probe = "quota_status" if recovery == "quota" else "capacity_status"
     before = len(world.calls(probe))
     world.run(competitors.PROGRAM, "after", competitors.inputs("after", "TLL", "quota"))
+    learned = {item["habit_id"]: item for item in world.opening("after")["learned"]}
+    assert learned[second["habit_id"]]["yields_to"] == [first["habit_id"]]
+    held, = world.events("after", "habit_suppressed")
+    assert (held["habit_id"], held["reason"], held["competitor"]) == (
+        second["habit_id"], "yields_to_rival", first["habit_id"])
     fired, = world.events("after", "habit_activated")
-    assert fired["habit_id"] == senior and fired["conflict_warning"] is False
+    assert fired["habit_id"] == first["habit_id"] and fired["conflict_warning"] is False
     assert world.events("after", "slow_path_used") == []
     assert len(world.calls(probe)) == before + 1 and {"route": "TLL"} in world.calls(probe)

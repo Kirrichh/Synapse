@@ -15,10 +15,13 @@ from typing import Any, Mapping
 
 from .records import digest
 
-POLICY_V2 = "synapse.memory.court-policy/v2"
+#: v3 (review R5, R6): a conflict is resolved only by a verified comparison and judged at a competitor's
+#: birth; the automaton demotes on confirmed errors (the last ``t3_fires`` counted signals in a state,
+#: across windows) or disuse, never on a count of windows. Same parameters, other meaning: another version.
+POLICY_V3 = "synapse.memory.court-policy/v3"
 DECISION_RULES = ("threshold", "sprt")
 
-PARAMETERS_V2: dict[str, Any] = {
+PARAMETERS: dict[str, Any] = {
     # signal
     "w_outcome": 0.6, "w_segment": 0.4,
     "outcome_score": {"success": 1.0, "failure": 0.0, "op_failure": 0.0},
@@ -28,7 +31,7 @@ PARAMETERS_V2: dict[str, Any] = {
     "min_evidence": 3, "pending_max_windows": 6, "resurrection_trust": 0.5,
     # automaton
     "t1_trust": 0.70, "t1_fires": 5, "t1_tasks": 2,
-    "t3_signal": 0.65, "t3_fires": 5,
+    "t3_signal": 0.65, "t3_fires": 5,  # confirmed errors: the last t3_fires counted signals in a state
     "t4_fires": 5, "t4_signal": 0.70,
     "m_idle": 6, "cold_matches": 2, "k_extinct": 3, "n_t9": 10, "n_pivot": 10,
     "sprt": {"p0": 0.8, "p1": 0.5, "alpha": 0.01, "beta": 0.01, "useful_signal": 0.8},
@@ -66,11 +69,11 @@ class PolicyViolation(ValueError):
 
 def resolve_parameters(overrides: Mapping[str, Any] | None) -> dict[str, Any]:
     """The declared parameters with operator overrides of the same shape."""
-    resolved = {key: (dict(value) if isinstance(value, dict) else value) for key, value in PARAMETERS_V2.items()}
+    resolved = {key: (dict(value) if isinstance(value, dict) else value) for key, value in PARAMETERS.items()}
     for key, value in (overrides or {}).items():
-        if key not in PARAMETERS_V2:
+        if key not in PARAMETERS:
             raise PolicyViolation(f"unknown court parameter {key!r}")
-        base = PARAMETERS_V2[key]
+        base = PARAMETERS[key]
         if isinstance(base, dict):
             if type(value) is not dict or set(value) - set(base):
                 raise PolicyViolation(f"court parameter {key!r} overrides only declared entries")
@@ -96,7 +99,7 @@ def resolve_parameters(overrides: Mapping[str, Any] | None) -> dict[str, Any]:
 def policy_identity(parameters: Mapping[str, Any], decision_rule: str) -> dict[str, Any]:
     if decision_rule not in DECISION_RULES:
         raise PolicyViolation("decision rule is threshold or sprt")
-    return {"policy": POLICY_V2, "decision_rule": decision_rule, "parameters": dict(parameters),
+    return {"policy": POLICY_V3, "decision_rule": decision_rule, "parameters": dict(parameters),
             "parameters_ref": digest({"rule": decision_rule, "parameters": dict(parameters)})}
 
 

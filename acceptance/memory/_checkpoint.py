@@ -108,7 +108,8 @@ def tools(*, checkpoint_contract=None):
         answer({"ok": True, "db": name, "pages": 12}, when={"db": name}, effect=_checkpoint_effect(facts, intact))
         for name, (facts, intact) in DATABASES.items()], server="sqlite", contract=checkpoint_contract or {})
     state = tool("migration_state", "cmdb:ops", [answer({"ok": True, "applied": True})], server="cmdb",
-                 contract={"state_check_for": "migrate", "resolve_state": {"applied": "applied"}})
+                 contract={"state_check_for": "migrate", "resolve_state": {"applied": "applied"},
+                           "binds": {"request": {"db": "db"}}, "attests": "operation"})
     integrity = tool("db_integrity", "fsck:ops", [
         answer({"ok": True, "db": name, "intact": intact}, when={"db": name})
         for name, (_, intact) in DATABASES.items()], server="fsck")

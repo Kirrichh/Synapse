@@ -1,23 +1,30 @@
-"""Palace recall returns candidates; only admission makes a fact (refinement §11, §18 "Извлечение").
+"""Palace recall returns candidates; nothing a card says about itself makes a fact (§11, review R3).
 
 A labelled probe set runs through the canonical launch (``python -m synapse run
---record``): cards are imprinted into a palace room, each probe recalls
-candidates and asks ``admit`` for one claim. The checker knows the hidden
-answers; the palace's own scores are never its reference:
+--record``): cards are imprinted into a palace room — each stating
+``status: confirmed`` about itself, the poisoned one ``provisional`` — each
+probe recalls candidates and asks ``admit`` for one claim. The checker knows
+the hidden answers; the palace's own scores are never its reference.
+
+A plain run has no memory session and so no verification journal: a status
+a card states describes its content and grants nothing, so every probe
+abstains, and every candidate says why (``no_verified_basis``). The candidate
+filter still reports every other check, and it is what this file measures:
 
 * similar words about another entity never answer for it;
 * high confidence with a weak match does not pass the minimum conditions;
 * a poisoned copy with the same keys, written later and with more confidence,
-  does not win the answer;
-* an unchanged statement does not grow stronger with repeated copies;
-* two confirmed statements that disagree are a conflict, not a winner;
+  does not rank above the true card, and copies do not strengthen a card;
 * a useful card the search cannot find (a paraphrase with no shared word) is
-  counted as a loss of information even though abstaining was safe.
+  counted as a loss of information.
 
 The sensitivity lattice over the admission threshold and the stored confidence
-is published with the share of wrong admissions and of lost useful knowledge,
-next to the same probes under the previous rule (a confident top candidate):
-the delta says which admissions disappeared and why.
+is published for the filter — the share of probes where a wrong card would
+pass every check but the basis, and of useful cards the filter loses — next to
+the previous rule (a confident top candidate): the delta says which answers
+disappeared and why. Facts are established by the knowledge path of a memory
+session, where hypotheses are the basis (``test_knowledge_*``,
+``test_admission_identity_acceptance.py``).
 """
 from __future__ import annotations
 
@@ -128,65 +135,72 @@ def _previous_rule(confidence) -> dict[str, str | None]:
     return answers
 
 
-def _rates(decided, threshold) -> dict[str, float]:
+def _filtered(item) -> list:
+    """Candidates that pass every check but the basis: what a basis would still have to establish."""
+    return [check for check in item["checked"] if check["reasons"] == ["no_verified_basis"]]
+
+
+def _rates(decided, threshold, values) -> dict[str, float]:
     wrong = lost = 0
     for name, (_, _, truth) in PROBES.items():
-        item = decided[(name, threshold)]
-        admitted = item["decision"] == "admitted"
-        wrong += admitted and item["value"] != truth
-        lost += truth is not None and not (admitted and item["value"] == truth)
-    return {"wrong_admission_share": wrong / len(PROBES), "lost_useful_share": lost / len(PROBES)}
+        passing = {values[check["id"]] for check in _filtered(decided[(name, threshold)])}
+        wrong += any(value != truth for value in passing)
+        lost += truth is not None and truth not in passing
+    return {"wrong_candidate_share": wrong / len(PROBES), "lost_useful_share": lost / len(PROBES)}
 
 
-def test_admission_separates_candidates_from_facts_and_publishes_its_sensitivity(tmp_path, record_property):
+def _values(events) -> dict:
+    return {event["imprint_id"]: event["fields"]["value"] for event in events if event["type"] == "memory_imprinted"}
+
+
+def test_a_card_never_grants_itself_admission_and_the_filter_publishes_its_sensitivity(tmp_path, record_property):
     lattice = {}
-    runs = {confidence: _decisions(_run(tmp_path, confidence)) for confidence in CONFIDENCES}
+    events = {confidence: _run(tmp_path, confidence) for confidence in CONFIDENCES}
+    runs = {confidence: _decisions(found) for confidence, found in events.items()}
     for confidence, decided in runs.items():
         for threshold in THRESHOLDS:
-            lattice[f"confidence={confidence},threshold={threshold}"] = _rates(decided, threshold)
-    decided = runs[0.99]
+            lattice[f"confidence={confidence},threshold={threshold}"] = _rates(decided, threshold,
+                                                                             _values(events[confidence]))
+    decided, values = runs[0.99], _values(events[0.99])
 
-    # The true card is admitted; the poisoned later, more confident copy never is.
+    # Nothing is admitted: every card, the true one stating "confirmed" included, has no basis.
+    assert {item["decision"] for item in decided.values()} == {"abstained"}
     restart = decided[("restart", 0.5)]
-    assert restart["decision"] == "admitted" and restart["value"] == TRUE_RESTART
-    poisoned = [item for item in restart["checked"] if "not_confirmed:provisional" in item["reasons"]]
-    assert len(poisoned) == 1
+    assert all("no_verified_basis" in check["reasons"] and check["status"] is None for check in restart["checked"])
+    assert {check["stated_status"] for check in restart["checked"]} == {"confirmed", "provisional"}
+    # The true card passes every other check; the poisoned copy passes them too and is no answer either.
+    assert {values[check["id"]] for check in _filtered(restart)} == {TRUE_RESTART, "pg_ctl kill"}
     # Similar words about other entities do not answer for this one.
-    assert all(decided[("other_entity", t)]["decision"] == "abstained" for t in THRESHOLDS)
     assert all("another_entity" in item["reasons"] for item in decided[("other_entity", 0.5)]["checked"])
     # A confident weak match does not pass the minimum conditions.
     weak = decided[("weak_match", 0.34)]
-    assert weak["decision"] == "abstained" and "too_few_key_tokens" in weak["checked"][0]["reasons"]
-    # Disagreeing confirmed statements are a conflict: nothing is admitted, neither one wins.
-    conflict = decided[("conflict", 0.5)]
-    assert conflict["decision"] == "conflict" and conflict["value"] is None and len(conflict["conflict"]) == 2
-    # A paraphrase with no shared word finds nothing: a safe abstention, counted as lost useful knowledge.
-    assert decided[("paraphrase", 0.34)]["decision"] == "abstained" and decided[("paraphrase", 0.34)]["checked"] == []
+    assert "too_few_key_tokens" in weak["checked"][0]["reasons"]
+    # A paraphrase with no shared word finds nothing: counted as lost useful knowledge.
+    assert decided[("paraphrase", 0.34)]["checked"] == []
 
     # Copies of an unchanged statement do not strengthen it.
     copied = _decisions(_run(tmp_path, 0.99, copies=4))
     for threshold in THRESHOLDS:
         once, many = decided[("restart", threshold)], copied[("restart", threshold)]
-        assert (once["decision"], once["value"], once["conflict"]) == (many["decision"], many["value"], many["conflict"])
-        assert {item["score"] for item in many["checked"] if not item["reasons"]} <= \
-            {item["score"] for item in once["checked"]}
+        assert once["decision"] == many["decision"] == "abstained"
+        assert {item["score"] for item in many["checked"]} <= {item["score"] for item in once["checked"]}
 
-    # The lattice: no wrong admission anywhere, and the stored confidence changes nothing.
-    assert all(rates["wrong_admission_share"] == 0.0 for rates in lattice.values())
+    # The lattice: the stored confidence changes nothing, and a stricter threshold only loses knowledge.
     for threshold in THRESHOLDS:
         rows = {json.dumps(lattice[f"confidence={c},threshold={threshold}"]) for c in CONFIDENCES}
         assert len(rows) == 1
     losses = [lattice[f"confidence=0.99,threshold={t}"]["lost_useful_share"] for t in THRESHOLDS]
-    assert losses == sorted(losses) and losses[0] < losses[-1]  # A stricter threshold only loses knowledge.
-    assert decided[("partial_keys", 0.5)]["value"] == TRUE_RESTART
-    assert decided[("partial_keys", 0.67)]["decision"] == "abstained"
+    assert losses == sorted(losses) and losses[0] < losses[-1]
+    assert TRUE_RESTART in {values[check["id"]] for check in _filtered(decided[("partial_keys", 0.5)])}
+    assert _filtered(decided[("partial_keys", 0.67)]) == []
 
-    # The delta against the previous rule on the same probes.
+    # The delta against the previous rule on the same probes: nothing is answered without a basis now.
     previous = _previous_rule(0.99)
     delta = {name: {"previous": previous[name], "now": decided[(name, 0.5)]["value"],
                     "truth": PROBES[name][2]} for name in sorted(PROBES)}
     assert delta["restart"]["previous"] == "pg_ctl kill"  # The poisoned copy used to win on confidence.
     assert delta["other_entity"]["previous"] is not None  # Another entity used to answer.
+    assert all(row["now"] is None for row in delta.values())
     record_property("admission_lattice", json.dumps(lattice, sort_keys=True))
     record_property("admission_delta", json.dumps(delta, sort_keys=True))
     print(json.dumps({"lattice": lattice, "delta": delta}, sort_keys=True, indent=1))

@@ -1,14 +1,15 @@
 """Statements: what a session read from a recorded observation (refinement §15).
 
-A statement says one thing about one subject: a property, its value, whether
-the source asserts or denies it (polarity), the conditions it holds under and
-the interval of the world it is about (valid time). Its source is a recorded
-observation of the same session — the tool, the arguments and the recorded
-answer's address — so the address is the version of the source the statement
-was read from, and the statement is a content-addressed record: the same
-statement from another source version is another record. When the memory
-learned it (transaction time) is not part of the statement: the court records
-it when it folds the statement into memory.
+A statement says one thing about one subject — an entity reference of
+``synapse.entity_identity``, compared exactly, never by search tokens: a
+property, its value, whether the source asserts or denies it (polarity), the
+conditions it holds under and the interval of the world it is about (valid
+time). Its source is a recorded observation of the same session — the tool,
+the arguments and the recorded answer's address — so the address is the
+version of the source the statement was read from, and the statement is a
+content-addressed record: the same statement from another source version is
+another record. When the memory learned it (transaction time) is not part of
+the statement: the court records it when it folds the statement into memory.
 
 A statement is never an established fact. Its surface text serves search only;
 admission reads its structured fields (refinement §11).
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from synapse import entity_identity
 from synapse.palace_admission import instant as canonical_instant
 
 from .. import records
@@ -72,9 +74,12 @@ def declare(statement: Any, source: Mapping[str, Any], source_ref: str) -> dict[
             or set(statement) - allowed:
         raise StatementViolation("a statement names subject, property, value, text and source "
                                  "(polarity, conditions and valid time optional)")
-    for name in ("subject", "property"):
-        if type(statement[name]) is not str or not statement[name].strip():
-            raise StatementViolation(f"a statement's {name} is named")
+    try:
+        subject = entity_identity.canonical(statement["subject"])
+    except entity_identity.EntityViolation as exc:
+        raise StatementViolation(f"a statement's subject is an entity: {exc}") from None
+    if type(statement["property"]) is not str or not statement["property"].strip():
+        raise StatementViolation("a statement's property is named")
     if not _scalar(statement["value"]):
         raise StatementViolation("a statement's value is a scalar")
     polarity = statement.get("polarity", True)
@@ -87,7 +92,7 @@ def declare(statement: Any, source: Mapping[str, Any], source_ref: str) -> dict[
     text = statement["text"]
     if type(text) is not str or not text.strip() or len(text) > _MAX_TEXT:
         raise StatementViolation("a statement's text is a bounded non-empty string")
-    return records.make("statement", subject=statement["subject"], property=statement["property"],
+    return records.make("statement", subject=subject, property=statement["property"],
                         value=statement["value"], polarity=polarity, conditions=dict(sorted(conditions.items())),
                         valid=_valid(statement.get("valid")), text=text,
                         source={"tool": source["tool"], "args": dict(source["args"]), "ref": source_ref})

@@ -105,6 +105,7 @@ def assemble(*, state, draft, decision, configuration, inputs_hash, window_sessi
         "retention": {"applied": copy.deepcopy(retention["acts"]), "passes": state["retention"]["cursor"]},
         "hypotheses": hypotheses_section,
         "legitimacy": {habit_id: dict(verdict) for habit_id, verdict in sorted(legitimacy_after.items())},
+        **({"reassessment": copy.deepcopy(decision["reassessment"])} if "reassessment" in decision else {}),
         "digest_id": None if digest is None else digest["id"],
         "snapshot_boundary_after": None if boundary is None else boundary["id"],
         "apply": {"habits": habits, "frozen": frozen, "declared": decision["declared"],

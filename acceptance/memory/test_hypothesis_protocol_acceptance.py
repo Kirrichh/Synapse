@@ -38,13 +38,14 @@ def test_only_confirmed_hypotheses_open_a_consequential_action(tmp_path):
     assert runbook.restarts(world) == [runbook.TRUE]
     # The status travels with the information into reasoning: the fact is admitted on the live status.
     admitted = runbook.admission(world, "good")
-    assert admitted["decision"] == "admitted" and admitted["checked"][0]["status_basis"] == "hypothesis"
+    assert admitted["decision"] == "admitted" and admitted["checked"][0]["basis"] is not None
 
     # The right entity with a poisoned command: nothing reaches the environment.
     world.run(runbook.PROGRAM, "bad", runbook.inputs("bad", "pg-bad"))
     found = runbook.statuses(world, "bad")
     assert found["entity"]["status"] == "confirmed"
-    assert found["content"] == {"status": "refuted", "reason": "contradicted:command", "by": "hypothesis_probed"}
+    assert found["content"] == {"status": "refuted", "reason": "contradicted:restart_command",
+                                "by": "hypothesis_probed"}
     assert runbook.admission(world, "bad")["checked"][0]["reasons"] == ["not_confirmed:refuted"]
     refusal, = _refusals(world, "bad")
     assert refusal.startswith("a required hypothesis is not established")

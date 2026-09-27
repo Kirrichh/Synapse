@@ -57,7 +57,7 @@ Changelog = "https://github.com/Kirrichh/Synapse/blob/main/docs/CHANGELOG.md"
 synapse = "synapse.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "hypothesis>=6.100"]
 agent-a2a = ["a2a-sdk==1.1.2", "httpx==0.28.1"]
 agent-acp = ["agent-client-protocol==0.12.1"]
 agent-mcp = ["mcp==2.2.0"]

@@ -156,6 +156,9 @@ class HabitRuntimeRecord:
     context_trust: Dict[str, float] = field(default_factory=dict)
     # A slow-only learned habit is selected and reported but never executed.
     slow_only: bool = False
+    # Learned rivals this habit gives way to, and rivals with no verified resolution (both held back).
+    yields_to: Tuple[str, ...] = ()
+    unresolved_with: Tuple[str, ...] = ()
     _subscribed_events: Set[str] = field(default_factory=set, init=False)
 
 

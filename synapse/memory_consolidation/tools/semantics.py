@@ -2,7 +2,8 @@
 
 Nothing here reads HTTP status classes as proof of an effect: without a
 contract, an answer is read by the general payload rule and an unreadable one
-stays unverifiable. A lost answer leaves the effect unknown; a repeat is
+stays unverifiable. A lost answer, and a refusal the contract does not
+describe, leave the effect unknown; a repeat is
 admissible only when the earlier effect is known absent or partial-and-
 repeatable, or the operation is idempotent by contract.
 """
@@ -39,9 +40,12 @@ def payload_result(payload: Any) -> tuple[str, str | None]:
 def interpret(contract: ToolContract, transport: str, payload: Any) -> dict[str, Any]:
     """Result and effect class of one attempt under its tool contract.
 
-    A lost answer leaves the effect unknown. A refusal leaves no effect unless
-    the service's documentation says otherwise for that code. An answer without
-    a machine-checkable result leaves the effect unknown.
+    A lost answer leaves the effect unknown. A refusal leaves the effect its
+    code's contract declares (none, partial or applied); a code the contract
+    does not describe, or a refusal without a code, leaves it unknown — a server
+    may have acted before it refused, so the absence of an effect is never a
+    default (review R2). An answer without a machine-checkable result leaves the
+    effect unknown.
     """
     if transport != "ok":
         return {"op_result": "unknown", "op_err": None, "effect": "unknown"}
@@ -49,14 +53,17 @@ def interpret(contract: ToolContract, transport: str, payload: Any) -> dict[str,
     if op_result == "ok":
         effect = "applied"
     elif op_result == "op_error":
-        effect = contract.effect_on_err.get(op_err or "", "none")
+        effect = contract.effect_on_err.get(op_err, "unknown") if op_err is not None else "unknown"
     else:
         effect = "unknown"
     return {"op_result": op_result, "op_err": op_err, "effect": effect}
 
 
-def repeat_admissible(effect: str, contract: ToolContract) -> tuple[bool, str]:
-    """May an unresolved operation be attempted again, decided before any effect."""
+def repeat_admissible(effect: str, contract: ToolContract, key_live: bool | None = None) -> tuple[bool, str]:
+    """May an unresolved operation be attempted again, decided before any effect.
+
+    ``key_live`` says whether the operation's idempotency key is still within the provider's retention
+    (``None`` when the operation has no key)."""
     if effect == "none":
         return True, "the service refused without effect"
     if effect == "partial":
@@ -67,6 +74,11 @@ def repeat_admissible(effect: str, contract: ToolContract) -> tuple[bool, str]:
         return False, "the operation already took effect"
     if contract.idempotent:
         return True, "the effect is unknown and the operation is idempotent by contract"
+    if key_live is True:
+        return True, "the effect is unknown and the repeat carries the operation's idempotency key"
+    if key_live is False:
+        return False, ("the effect is unknown and the operation's idempotency key has expired; "
+                       "resolve it by a state check")
     return False, "the effect is unknown and the operation is not idempotent; resolve it by a state check"
 
 

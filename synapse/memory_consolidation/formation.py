@@ -2,8 +2,9 @@
 
 A program fixes its task before execution with ``task_plan(contract)``. The
 contract states each segment's intent, its element part, the external evidence
-that anchors it and its required result: the operation to execute, the refusal
-a probe expects, or the alternatives it allows. Formation turns it into
+that anchors it and its required result: the operation to execute, the state
+that operation is meant to reach (whoever reaches it), the refusal a probe
+expects, or the alternatives it allows. Formation turns it into
 content-addressed task markers; nobody changes them afterwards and the verdict
 is a separate court record (spec part 1 §5).
 
@@ -80,13 +81,16 @@ def _requirement(value: Any, configuration: MemoryConfiguration) -> dict[str, An
     if type(value) is not dict or not required <= set(value) or set(value) - required - {"resource"}:
         raise TaskContractViolation("segment requirement has an unknown shape")
     if value["kind"] not in REQUIREMENT_KINDS:
-        raise TaskContractViolation("segment requirement kind is execute, probe_refusal or attempt_report")
+        raise TaskContractViolation("segment requirement kind is execute, reach_state, probe_refusal or "
+                                    "attempt_report")
     tool = None if value["tool"] is None else _tool(value["tool"], "requirement", configuration)
     admissible = value["admissible_err"]
     if type(admissible) is not list or any(type(code) is not str or not code for code in admissible):
         raise TaskContractViolation("admissible refusals are named codes")
-    if admissible and value["kind"] == "execute":
+    if admissible and value["kind"] in {"execute", "reach_state"}:
         raise TaskContractViolation("an executed requirement admits no refusal")
+    if value["kind"] == "reach_state" and tool is None:
+        raise TaskContractViolation("a state requirement names the operation whose state it asks for")
     if type(value["allowed_alternatives"]) is not list:
         raise TaskContractViolation("allowed alternatives are tools")
     alternatives = [_tool(entry, "alternative", configuration) for entry in value["allowed_alternatives"]]
@@ -95,7 +99,7 @@ def _requirement(value: Any, configuration: MemoryConfiguration) -> dict[str, An
     if "resource" in value:
         # Only a required operation can be bound to a resource; the key is absent otherwise, so
         # contracts without it keep their identity.
-        if tool is None or value["kind"] != "execute":
+        if tool is None or value["kind"] not in {"execute", "reach_state"}:
             raise TaskContractViolation("a requirement resource binds an executed required operation")
         requirement["resource"] = _resource(value["resource"], configuration)
     return requirement

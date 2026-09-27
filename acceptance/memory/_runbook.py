@@ -2,8 +2,9 @@
 
 A knowledge-base card says which service it is about and which command
 restarts it. The program never acts on the card itself: it states two
-hypotheses read from the recorded card — the entity (the service) and the
-content (the command) — and checks them with independent sources: the
+hypotheses read from the recorded card — the entity (the card is about the
+service) and the content (the service's restart command, the very statement
+the admission is asked about) — and checks them with independent sources: the
 inventory for the entity, the runbook for the command. The restart is a
 consequential action by its operator contract: it runs only when every
 hypothesis it names is established, and is refused before any effect
@@ -36,7 +37,7 @@ context "restart" {
   }
   let origin = {"tool": "kb_card", "args": {"id": card_id}}
   let entity = hypothesis({"aspect": "entity", "subject": card_id, "statement": {"service": "postgresql"}, "scope": "host-a", "source": origin, "check": {"tool": "inventory", "args": {"host": "host-a"}}})
-  let content = hypothesis({"aspect": "content", "subject": card_id, "statement": {"command": command}, "scope": "host-a", "source": origin, "check": {"tool": checker, "args": check_args}})
+  let content = hypothesis({"aspect": "content", "subject": "postgresql", "statement": {"restart_command": command}, "scope": "host-a", "source": origin, "check": {"tool": checker, "args": check_args}})
   if established(entity) == false {
     let e = probe(entity)
   }
@@ -44,7 +45,7 @@ context "restart" {
     let c = probe(content)
   }
   let fact = {"id": card_id, "entity": "postgresql", "attribute": "restart_command", "value": command, "source": "kb:wiki", "hypothesis": content.id, "content": "postgresql restart command"}
-  let admitted = admit([fact], {"entity": "postgresql", "attribute": "restart_command", "keys": ["postgresql", "restart", "command"]})
+  let admitted = admit([fact], {"entity": "postgresql", "attribute": "restart_command", "keys": ["postgresql", "restart", "command"], "scope": "host-a"})
   try {
     let done = tool("restart_service", {"command": command}, {"requires": [entity, content]})
   } catch (ACTION_FAILED as refused) {
@@ -63,12 +64,12 @@ def tools():
         answer({"ok": True, "service": "postgresql", "command": "pg_ctl kill", "rev": 1}, when={"id": "pg-bad"}),
         answer({"ok": True, "service": "postgresql", "command": "pg_ctl reload", "rev": 1}, when={"id": "pg-mute"})],
         server="kb")
-    mirror = tool("kb_mirror", "mirror:kb", [answer({"ok": True, "command": "pg_ctl kill"})], server="mirror")
+    mirror = tool("kb_mirror", "mirror:kb", [answer({"ok": True, "restart_command": "pg_ctl kill"})], server="mirror")
     inventory = tool("inventory", "cmdb:ops", [answer({"ok": True, "service": "postgresql", "version": "14"})],
                      server="cmdb")
     runbook = tool("runbook", "runbook:ops", [
         answer({"ok": True, "determinable": False}, when={"topic": "reload"}),
-        answer({"ok": True, "command": TRUE})], server="runbook")
+        answer({"ok": True, "restart_command": TRUE})], server="runbook")
     restart = tool("restart_service", "ops:host-a", [answer({"ok": True, "restarted": True}, effect="restarted")],
                    server="ops", contract={"requires_established": True})
     return [kb, mirror, inventory, runbook, restart]

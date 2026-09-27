@@ -96,7 +96,8 @@ def check_integrity(sessions, state, gateway: Gateway, gateway_records, executor
 
 def durations(gateway: Gateway) -> dict[int, float]:
     """Measured seconds of each gateway result (side log only)."""
-    return {item["gw_seq"]: item["duration_ms"] / 1000.0 for item in gateway.side_records()}
+    return {item["gw_seq"]: item["duration_ms"] / 1000.0 for item in gateway.side_records()
+            if item.get("measured_by") == "wall_clock"}
 
 
 def _plans(session: Mapping[str, Any], configuration: MemoryConfiguration) -> dict[str, dict[str, Any]]:

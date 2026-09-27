@@ -95,7 +95,8 @@ class MemoryEngine:
         opening = {"type": "memory_session_opened", "boundary": pinned["boundary"], "digest": pinned["digest"],
                    "exam": session.exam,
                    "learned": [{"habit_id": item.habit_id, "trigger_id": item.trigger_id,
-                                "context_trust": item.context_trust, "slow_only": item.slow_only}
+                                "context_trust": item.context_trust, "slow_only": item.slow_only,
+                                "yields_to": list(item.yields_to), "unresolved_with": list(item.unresolved_with)}
                                for item in entries]}
         self.opening = self.host.record_history_event(opening)
         for entry in entries:
@@ -105,7 +106,8 @@ class MemoryEngine:
                 habit_id=entry.habit_id,
                 typed_triggers=(TypedTrigger(entry.trigger_id, tuple(entry.event_types), tuple(entry.context),
                                              tuple(entry.when), tuple(entry.not_when)),),
-                context_trust={entry.trigger_id: float(entry.context_trust)}, slow_only=entry.slow_only))
+                context_trust={entry.trigger_id: float(entry.context_trust)}, slow_only=entry.slow_only,
+                yields_to=tuple(entry.yields_to), unresolved_with=tuple(entry.unresolved_with)))
         return self.opening
 
     def finish(self) -> Optional[Dict[str, Any]]:
@@ -324,8 +326,14 @@ class MemoryEngine:
         entry = self.hypotheses.get(hypothesis_id) if self.session is not None else None
         if entry is None:
             return None
-        return {"status": entry["status"], "subject": entry["record"]["subject"],
-                "statement": copy.deepcopy(entry["record"]["statement"])}
+        record = entry["record"]
+        return {"status": entry["status"], "aspect": record["aspect"], "subject": copy.deepcopy(record["subject"]),
+                "statement": copy.deepcopy(record["statement"]), "scope": record["scope"],
+                "conditions": copy.deepcopy(record.get("conditions") or {}), "source_ref": record["source"]["ref"]}
+
+    def identity_rules(self) -> Dict[str, str]:
+        """The operator's namespace rules for entity identity; none outside a memory session."""
+        return {} if self.session is None else self.session.identity_rules()
 
     # -- semantic knowledge (refinement §15) ---------------------------------
     def know(self, args: List[Any]) -> Dict[str, Any]:

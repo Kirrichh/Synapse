@@ -214,16 +214,19 @@ def tools(*, ids: str = "random"):
                                                                         "flags": {"revoked": "revoked"}},
                                                      otherwise={"ok": False, "err": "UNKNOWN_JOB"})],
                  server="audit", contract={"state_check_for": "jobs_cancel", "resolve_state": {"revoked": "applied"},
+                                           "binds": {"request": {"job_id": "job_id"}}, "attests": "operation",
                                            "effect_on_err": {"UNKNOWN_JOB": "none"}})
     watch = tool("job_watch", "audit:ops", [stateful({"ok": True}, act={"read": "jobs", "key": "job_id",
                                                                         "flags": {"paused": "pending"}},
                                                      otherwise={"ok": False, "err": "UNKNOWN_JOB"})],
                  server="audit", contract={"state_check_for": "jobs_pause", "resolve_state": {"paused": "applied"},
+                                           "binds": {"request": {"job_id": "job_id"}}, "attests": "operation",
                                            "effect_on_err": {"UNKNOWN_JOB": "none"}})
     release = tool("release_state", "cmdb:release", [
         answer({"ok": True, "released": False}, when={"service": "svc-stuck"}),
         answer({"ok": True, "released": True})], server="cmdb",
-        contract={"state_check_for": "deploy", "resolve_state": {"released": "applied"}})
+        contract={"state_check_for": "deploy", "resolve_state": {"released": "applied"},
+                  "binds": {"request": {"service": "service"}}, "attests": "operation"})
     return [deploy, migrate, create, status, cancel, pause, preempt, unlock, kill, audit, watch, release]
 
 

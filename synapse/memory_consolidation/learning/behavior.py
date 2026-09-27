@@ -74,6 +74,12 @@ def step_similarity(left: Sequence[Mapping[str, Any]], right: Sequence[Mapping[s
     return 1.0 - previous[-1] / max(len(a), len(b))
 
 
+def rivals(left: Mapping[str, Any], right: Mapping[str, Any], action_same: float) -> bool:
+    """Two frozen habits that promise one expected outcome by different actions."""
+    return (left["expected_outcome"] == right["expected_outcome"]
+            and step_similarity(left["action_pattern"], right["action_pattern"]) < action_same)
+
+
 def _same_value(left: Any, right: Any) -> bool:
     return canonical(left) == canonical(right)
 

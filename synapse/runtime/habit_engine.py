@@ -63,8 +63,11 @@ class HabitEngine:
         ``when`` and ``not_when`` in declared order. Applicable candidates are
         ordered by layer (declared before learned), priority class, context
         trust, configured similarity and finally identity, so equal ranks never
-        produce an arbitrary winner. The best candidate that passes the Living
-        Habits checks is executed once. With none applicable the event records a
+        produce an arbitrary winner. Learned rivals (one expected outcome,
+        other actions) that apply together are settled first: one that yields
+        to an applicable rival is held back, and an unresolved pair is held
+        back whole before any effect. The best remaining candidate that passes
+        the Living Habits checks is executed once. With none applicable the event records a
         near miss naming its one failed condition, or a miss. The runtime never
         evaluates the result; it records facts.
         """
@@ -90,10 +93,21 @@ class HabitEngine:
             elif status == "near_miss":
                 near.append({"habit": habit, "trigger": trigger, "failed": failed})
         applicable.sort(key=lambda item: item["key"])
-        warning = (len(applicable) > 1 and applicable[0]["habit"].layer == applicable[1]["habit"].layer
-                   and abs(applicable[0]["trust"] - applicable[1]["trust"]) < CONFLICT_WARNING_GAP)
+        held = self.held_rivals(applicable)
+        acting = [item for item in applicable if item["habit"].habit_id not in held]
+        warning = (len(acting) > 1 and acting[0]["habit"].layer == acting[1]["habit"].layer
+                   and abs(acting[0]["trust"] - acting[1]["trust"]) < CONFLICT_WARNING_GAP)
         suppressed: List[str] = []
-        for position, candidate in enumerate(applicable):
+        # Held rivals are recorded before anything acts: none of them runs on this event.
+        for candidate in applicable:
+            habit = candidate["habit"]
+            if habit.habit_id in held:
+                reason, competitor = held[habit.habit_id]
+                suppressed.append(habit.habit_id)
+                self.emit_habit_event({"type": "habit_suppressed", "habit_name": habit.name,
+                                       "habit_id": habit.habit_id, "reason": reason, "competitor": competitor,
+                                       "trigger_event_id": event.get("event_id")})
+        for rank, candidate in enumerate(acting):
             habit = candidate["habit"]
             reason = self._living_habits_block(habit)
             if reason is not None:
@@ -102,10 +116,10 @@ class HabitEngine:
                                        "habit_id": habit.habit_id, "reason": reason,
                                        "trigger_event_id": event.get("event_id")})
                 continue
-            runner = applicable[position + 1]["habit"] if position + 1 < len(applicable) else None
+            runner = acting[rank + 1]["habit"] if rank + 1 < len(acting) else None
             trigger = candidate["trigger"]
 
-            def activated(result, habit=habit, trigger=trigger, candidate=candidate, runner=runner, position=position):
+            def activated(result, habit=habit, trigger=trigger, candidate=candidate, runner=runner, position=rank):
                 self.emit_habit_event(self._bound({
                     "type": "habit_activated", "habit_name": habit.name, "habit_id": habit.habit_id,
                     "trigger_id": trigger.trigger_id, "layer": habit.layer,
@@ -135,6 +149,27 @@ class HabitEngine:
             "type": "habit_miss", "event_type": event.get("type"), "trigger_event_id": event.get("event_id"),
             "outcome": None, "suppressed": suppressed}, event))
         return {"kind": "miss"}
+
+    @staticmethod
+    def held_rivals(applicable: List[Dict[str, Any]]) -> Dict[str, tuple]:
+        """Learned rivals applicable to this event that must not act, with the reason and the rival.
+
+        A rival gives way to an applicable rival it yields to (a verified comparison or an established trust
+        gap); a rival with no verified resolution against another applicable one is held back with it, so an
+        unresolved conflict reaches the slow path before any external effect (review R5). A slow-only habit
+        never acts, so it takes no part."""
+        rivals = [item["habit"] for item in applicable if item["habit"].layer == 2 and not item["habit"].slow_only]
+        present = {habit.habit_id for habit in rivals}
+        held: Dict[str, tuple] = {}
+        for habit in rivals:
+            winner = next((other for other in habit.yields_to if other in present), None)
+            if winner is not None:
+                held[habit.habit_id] = ("yields_to_rival", winner)
+                continue
+            rival = next((other for other in habit.unresolved_with if other in present), None)
+            if rival is not None:
+                held[habit.habit_id] = ("unresolved_conflict", rival)
+        return held
 
     def _bound(self, record: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
         for name in ("task_id", "segment_marker_id", "off_plan"):

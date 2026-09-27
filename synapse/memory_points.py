@@ -88,6 +88,11 @@ class LearnedHabitEntry:
     energy_cost: float
     #: Loaded for selection and reporting, never executed: the fast path stays closed (exam mode C).
     slow_only: bool = False
+    #: Rivals (one expected outcome, other actions) this habit gives way to when both apply to one event:
+    #: the winner of a verified comparison, or a rival senior by an established trust gap.
+    yields_to: tuple[str, ...] = ()
+    #: Rivals with no verified resolution: when both apply to one event, neither acts before an external effect.
+    unresolved_with: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

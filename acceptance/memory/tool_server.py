@@ -22,10 +22,16 @@ An answer is one of:
   answers the object named by an argument; ``transition`` moves it from one
   state to another (``refuse`` names states answered with a refusal instead);
   ``consume`` uses up one object matching the call; ``put`` stores (or
-  replaces) the object named by an argument; ``flags`` add booleans that say
+  replaces) the object named by an argument, keeping the arguments ``keep``
+  names; ``flags`` add booleans that say
   whether the object is in a state; ``requires`` names other objects that
   must exist (in a state) first, each with the answer given when one does
   not;
+* a tool may declare ``dedupe`` (``{"field", "retention_s"}``): the provider
+  keeps each idempotency key it receives with the call's essential arguments
+  and answer; a repeat with the same key within the retention is answered
+  again without an effect, the same key with other arguments is refused
+  (``IDEMPOTENCY_KEY_REUSED``), and an older key is forgotten;
 * ``{"payload": {...}, "embed": {...}}`` — answers an embedding of the
   ``text`` argument: one component per declared concept, counting the words
   of that concept in the text. Synonyms and translations share a concept;
@@ -40,6 +46,7 @@ import json
 import os
 import re
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -99,7 +106,8 @@ def _consume(state, objects, act, arguments, then):
 
 def _put(objects, act, arguments, then):
     identifier = arguments.get(act["key"])
-    objects[identifier] = {act["key"]: identifier, "state": act["state"]}
+    objects[identifier] = {act["key"]: identifier, "state": act["state"],
+                           **{name: arguments.get(name) for name in act.get("keep", [])}}
     return {**then, "payload": {**then["payload"], **objects[identifier]}}
 
 
@@ -134,16 +142,35 @@ def _embedding(embed, arguments) -> dict:
     return {"ok": True, "vector": vector, "model": embed["model"]}
 
 
+def _deduplicated(state, name, arguments, dedupe):
+    """A provider's idempotency: a kept key answers again without an effect; the same key with other
+    essential arguments is refused; a key older than the provider's retention is forgotten."""
+    key = arguments[dedupe["field"]]
+    kept = state.get("keys", {}).get(name, {}).get(key)
+    if kept is None or time.time() - kept["at"] >= dedupe["retention_s"]:
+        return None
+    essential = {item: value for item, value in arguments.items() if item != dedupe["field"]}
+    if essential != kept["args"]:
+        return {"payload": {"ok": False, "err": "IDEMPOTENCY_KEY_REUSED"}}
+    return dict(kept["answer"])
+
+
 class World:
     """The server's own record of calls, applied effects and objects, shared by every run."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
 
-    def call(self, name, arguments, choose):
+    def call(self, name, arguments, choose, dedupe=None):
         with open(self.path.with_suffix(".lock"), "a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             state = json.loads(self.path.read_text()) if self.path.exists() else {"calls": [], "effects": []}
+            if dedupe is not None and arguments.get(dedupe["field"]) is not None:
+                kept = _deduplicated(state, name, arguments, dedupe)
+                if kept is not None:
+                    state["calls"].append({"tool": name, "args": arguments})
+                    self.path.write_text(json.dumps(state, sort_keys=True))
+                    return kept
             key = _canonical([name, arguments])
             count = sum(1 for item in state["calls"] if _canonical([item["tool"], item["args"]]) == key)
             answer = choose(count)
@@ -156,6 +183,11 @@ class World:
             state["calls"].append({"tool": name, "args": arguments})
             if answer.get("effect"):
                 state["effects"].append({"tool": name, "args": arguments, "effect": answer["effect"]})
+            if dedupe is not None and arguments.get(dedupe["field"]) is not None and "payload" in answer:
+                # The provider keeps what it answered for the key: the answer itself, never its effect or delay.
+                essential = {key: value for key, value in arguments.items() if key != dedupe["field"]}
+                state.setdefault("keys", {}).setdefault(name, {})[arguments[dedupe["field"]]] = {
+                    "args": essential, "answer": {"payload": answer["payload"]}, "at": time.time()}
             self.path.write_text(json.dumps(state, sort_keys=True))
             return answer
 
@@ -178,7 +210,7 @@ def main(script_path: str, world_path: str) -> None:
     async def call(context, params):
         tool = tools[params.name]
         arguments = dict(params.arguments or {})
-        answer = world.call(params.name, arguments, lambda count: _answer(tool, arguments, count))
+        answer = world.call(params.name, arguments, lambda count: _answer(tool, arguments, count), tool.get("dedupe"))
         if answer.get("delay"):
             await anyio.sleep(answer["delay"])
         if answer.get("lost"):

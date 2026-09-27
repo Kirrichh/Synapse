@@ -4832,14 +4832,16 @@ class Interpreter:
         """``admit(candidates, claim)``: whether one recalled candidate may be used as an established fact.
 
         Recall returns candidates; admission is a separate, recorded decision (``synapse.palace_admission``).
-        A record naming a hypothesis is judged by that hypothesis's live status in the bound memory session.
+        The basis is a hypothesis of the bound memory session's verification journal that states the very
+        statement; outside a memory session nothing is admitted.
         """
         from .palace_admission import admit
 
         if len(args) != 2 or not isinstance(args[0], list) or not isinstance(args[1], dict):
             raise RuntimeError("admit expects the recalled candidates and a claim")
         try:
-            decision = admit(args[0], args[1], hypothesis_of=self.runtime.memory.hypothesis_of)
+            decision = admit(args[0], args[1], hypothesis_of=self.runtime.memory.hypothesis_of,
+                             identity_rules=self.runtime.memory.identity_rules())
         except ValueError as exc:
             raise RuntimeError(str(exc)) from None
         event = {"type": "memory_admission", "decision": decision["decision"],

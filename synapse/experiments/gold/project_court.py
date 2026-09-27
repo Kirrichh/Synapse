@@ -31,7 +31,7 @@ from .source_verification import canonical
 
 COURT_DECISION_V1 = "synapse.stage4.gold.court-decision/v1"
 COURT_DECISION_V2 = "synapse.stage4.gold.court-decision/v2"
-CONSOLIDATION_MODES = ("full", "summary", "emergency")
+CONSOLIDATION_MODES = ("full", "summary", "emergency", "reassess")
 # Declared before any run and retained in every decision. Another threshold or
 # rule is a new policy version; it never reinterprets an earlier decision.
 COURT_POLICY_V1 = {"schema_version": "synapse.stage4.gold.court-policy/v1", "subject": "EXACT_PATCH",

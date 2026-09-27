@@ -20,7 +20,11 @@ scope with the same tool and arguments, a hidden repeat of an operation with an
 unknown effect is bound to it, and a repeat the tool contract does not admit is
 refused before any effect. A STARTED record without
 its RESULT is a call whose effect is unknown; recovery never repeats it unless
-the contract makes the operation idempotent.
+the contract makes the operation idempotent or the provider deduplicates it by
+the operation's idempotency key within the key's retention. The gateway issues
+that key per operation — a repeat of the operation carries the same key, a new
+operation a new one even with the same arguments — and never takes it from the
+agent.
 
 The journal is append-only JSON lines with its own hash chain, shared by all
 runs of one memory owner under a process-level lock; wall-clock time never
@@ -64,7 +68,8 @@ class Gateway:
                                    lambda r: _chain_hash(r["seq"], r["kind"], r["prev"], r["body"]))
         self.side_log = ChainedLog(root / "side-time.jsonl", _SIDE_GENESIS,
                                     lambda r: hashlib.sha256(canonical({key: r[key] for key in (
-                                        "seq", "prev", "gw_seq", "duration_ms", "measured_by")})).hexdigest())
+                                        "seq", "prev", "gw_seq", "duration_ms", "measured_by", "at_ms")
+                                        if key in r})).hexdigest())
         self.evidence = EvidenceStore(root / "evidence")
         self.transport = transport if transport is not None else McpToolTransport(configuration)
 
@@ -115,6 +120,8 @@ class Gateway:
         for key in _FORBIDDEN_TIME_KEYS & set(request.get("args") or {}):
             raise ValueError(f"wall-clock field {key!r} cannot enter the canonical request")
         contract = self.configuration.contract(request["tool"])
+        if contract.idempotency_key and contract.idempotency_key["field"] in (request.get("args") or {}):
+            return self.refuse(request, "the idempotency key is the gateway's to issue, never an argument")
         run_id, ordinal = request["run_id"], request["ordinal"]
         records = self.records()
         mine = [item for item in records if item["body"].get("run_id") == run_id]
@@ -131,14 +138,16 @@ class Gateway:
         ops = self._scope_ops(mine, scope)
         if stale and not [item for item in finished if item["body"].get("started_seq") == stale[-1]["seq"]]:
             started = stale[-1]
+            op = next(item for item in ops if item["op_seq"] == started["body"]["op_seq"])
+            repeatable, _ = repeat_admissible("unknown", contract, self._key_live(contract, op))
             lost = self._append("RESULT", {
                 "started_seq": started["seq"], "run_id": run_id, "ordinal": ordinal, "tool": contract.name,
                 "request_canon": request_canon, "transport": "lost", "op_result": "unknown", "op_err": None,
                 "effect": "unknown", "evidence_ref": None, "evidence_preexisting": False,
-                "recovered": True, "final": not contract.idempotent})
-            if not contract.idempotent:
+                "recovered": True, "final": not repeatable})
+            if not repeatable:
                 return self._outcome(lost, contract, self.records())
-            ops = self._scope_ops([*mine, started, lost], scope)
+            ops = self._scope_ops([*mine, lost], scope)
             op = next(item for item in ops if item["op_seq"] == started["body"]["op_seq"])
             return self._attempt(request, contract, request_canon, op, retry_of=op["op_seq"], admitted=True)
         target, decision = self._resolve_operation(request, contract, ops)
@@ -185,14 +194,14 @@ class Gateway:
                 return None, "a declared retry names no operation of this scope"
             if target["tool"] != contract.name or target["args_canon"] != args_canon:
                 return target, "a declared retry changes the tool or its essential arguments"
-            allowed, reason = repeat_admissible(target["last_effect"], contract)
+            allowed, reason = repeat_admissible(target["last_effect"], contract, self._key_live(contract, target))
             return target, None if allowed and not target["resolved"] else (
                 "the operation already succeeded" if target["resolved"] else reason)
         hidden = next((item for item in reversed(ops) if item["tool"] == contract.name
                        and item["args_canon"] == args_canon and not item["resolved"]
                        and item["last_effect"] == "unknown"), None)
         if hidden is not None:
-            allowed, reason = repeat_admissible("unknown", contract)
+            allowed, reason = repeat_admissible("unknown", contract, self._key_live(contract, hidden))
             return hidden, None if allowed else f"a hidden repeat of an unresolved operation: {reason}"
         return None, None
 
@@ -205,7 +214,8 @@ class Gateway:
                 continue
             op = ops.setdefault(body["op_seq"], {"op_seq": body["op_seq"], "tool": body["tool"],
                                                  "args_canon": body["args_canon"], "attempts": [],
-                                                 "resolved": False, "last_effect": "unknown"})
+                                                 "resolved": False, "last_effect": "unknown",
+                                                 "key": body.get("idempotency_key"), "key_seq": item["seq"]})
             op["attempts"].append(item["seq"])
         for item in mine:
             if item["kind"] != "RESULT":
@@ -218,8 +228,26 @@ class Gateway:
             op["resolved"] = op["resolved"] or item["body"]["op_result"] == "ok"
         return [ops[key] for key in sorted(ops)]
 
+    def _key_live(self, contract, op) -> bool | None:
+        """Whether the operation's idempotency key is still within the provider's retention (``None``: no key)."""
+        if not contract.idempotency_key or not op.get("key"):
+            return None
+        issued = [item["at_ms"] for item in self.side_records()
+                  if item.get("measured_by") == "key_issued" and item["gw_seq"] == op["key_seq"]]
+        if not issued:
+            return False  # A key whose issue time is unknown cannot be shown to be alive.
+        return time.time() * 1000.0 - issued[0] < contract.idempotency_key["retention_s"] * 1000.0
+
+    def _key(self, request, contract, op) -> str | None:
+        """The operation's idempotency key: the one it was first sent with, or a new one for a new operation."""
+        if not contract.idempotency_key:
+            return None
+        return op.get("key") or digest({"run_id": request["run_id"], "op_scope": request["op_scope"],
+                                        "op_seq": op["op_seq"], "tool": contract.name})
+
     def _attempt(self, request, contract, request_canon, op, *, retry_of, admitted):
         attempt = len(op["attempts"]) + 1
+        key = self._key(request, contract, op)
         started = self._append("STARTED", {
             "run_id": request["run_id"], "ordinal": request["ordinal"], "episode": request["episode"],
             "op_scope": request["op_scope"], "task_id": request.get("task_id"), "segment": request.get("segment_marker_id"),
@@ -228,9 +256,16 @@ class Gateway:
             "args_canon": digest(request["args"]), "request_canon": request_canon, "op_seq": op["op_seq"],
             "retry_of": retry_of, "admitted": admitted, "attempt": attempt, "source": contract.source,
             "executor": self.executor, "contract_ref": contract.contract_ref,
-            **({"serves": request["serves"]} if request.get("serves") is not None else {})})
+            **({"serves": request["serves"]} if request.get("serves") is not None else {}),
+            **({"idempotency_key": key} if key is not None else {})})
+        if key is not None and not op["attempts"]:
+            # When the key was issued is wall-clock time: it lives in the side log, never in the journal.
+            self.side_log.append(lambda seq, prev: {"seq": seq, "prev": prev, "gw_seq": started["seq"],
+                                                    "measured_by": "key_issued", "at_ms": round(time.time() * 1000.0)})
         began = time.perf_counter()
-        transport, payload = self.transport.call(contract, request["args"])
+        arguments = dict(request["args"]) if key is None else {**request["args"],
+                                                               contract.idempotency_key["field"]: key}
+        transport, payload = self.transport.call(contract, arguments)
         duration_ms = round((time.perf_counter() - began) * 1000.0, 3)
         # An observation is the source's answer to this request; only a repeat of both is a copy.
         ref, preexisting = self.evidence.put({"tool": contract.name, "request": request_canon, "transport": transport,

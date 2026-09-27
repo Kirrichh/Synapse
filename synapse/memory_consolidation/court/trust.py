@@ -2,7 +2,9 @@
 
 ``trust_new = trust_old + lr(state) · (signal − trust_old)`` per trigger. With
 fewer than ``min_evidence`` ready signals a trigger accumulates pending
-evidence; at the threshold it receives one update from their mean. Conserved
+evidence; every ``min_evidence`` ready signals, in order, give one update from
+their mean, so the same signals update trust alike however they fell into
+windows. Conserved
 fires wait with no signal; provisional signals of an emergency window wait
 until their session's re-execution is verified; evidence older than
 ``pending_max_windows`` expires and is reported. Dormant and extinct habits are
@@ -54,9 +56,13 @@ def accumulate(parameters, metadata, fires, window, verified_runs, report):
     for trigger_id in sorted({item["trigger_id"] for item in pending}):
         ready = [item for item in pending if item["trigger_id"] == trigger_id and item["signal"] is not None
                  and not item["provisional"]]
-        if len(ready) >= parameters["min_evidence"]:
-            updates.append((trigger_id, ready))
-            pending = [item for item in pending if item not in ready]
+        # One update per ``min_evidence`` ready signals, in order: however the signals fell into windows,
+        # the same batches update trust.
+        size = parameters["min_evidence"]
+        for start in range(0, len(ready) - len(ready) % size, size):
+            batch = ready[start:start + size]
+            updates.append((trigger_id, batch))
+            pending = [item for item in pending if item not in batch]
     return pending, updates
 
 
@@ -85,8 +91,7 @@ def _update_learned(parameters, habit_id, metadata, updates, report) -> None:
     metadata["trust"] = metadata["context_trust"].get(metadata["trigger_id"], metadata["trust"])
 
 
-def _learned(parameters, habits, fires_by_habit, window, verified, mode, report) -> dict[str, list[float]]:
-    signals: dict[str, list[float]] = {}
+def _learned(parameters, habits, fires_by_habit, window, verified, mode, report) -> None:
     for habit_id in sorted(set(habits) | set(fires_by_habit)):
         fires = sorted(fires_by_habit.get(habit_id, []), key=lambda item: (item["run_id"], item["event_id"]))
         if habit_id not in habits:
@@ -97,7 +102,6 @@ def _learned(parameters, habits, fires_by_habit, window, verified, mode, report)
         metadata = habits[habit_id]
         _remember(parameters, metadata, fires)
         pending, updates = accumulate(parameters, metadata, fires, window, verified, report)
-        signals[habit_id] = [fire["signal"] for fire in fires if fire["status"] == "counted"]
         if mode == "emergency" or metadata["state"] not in EFFECTIVE:
             metadata["pending"] = pending + [item for _, ready in updates for item in ready]
             continue
@@ -106,7 +110,6 @@ def _learned(parameters, habits, fires_by_habit, window, verified, mode, report)
         if pending:
             report["pending_evidence"].append({"habit_id": habit_id, "accumulated": len(pending),
                                                "events": _refs(pending)})
-    return signals
 
 
 def _observe_declared(parameters, habit_id, metadata, updates, report) -> None:
@@ -143,8 +146,8 @@ def _declared(parameters, declared, fires, window, verified, mode, report) -> No
         _observe_declared(parameters, habit_id, metadata, updates, report)
 
 
-def trust_stage(parameters, state, draft, mode, report) -> tuple[dict, dict, dict]:
-    """Learned and declared metadata after stage 3, and each learned habit's counted window signals."""
+def trust_stage(parameters, state, draft, mode, report) -> tuple[dict, dict]:
+    """Learned and declared metadata after stage 3."""
     habits = copy.deepcopy(state["habits"])
     declared = copy.deepcopy(state["declared"])
     window = state["window"] + 1
@@ -152,6 +155,6 @@ def trust_stage(parameters, state, draft, mode, report) -> tuple[dict, dict, dic
     by_habit: dict[str, list] = {}
     for fire in draft["fires"]:
         by_habit.setdefault(fire["habit_id"], []).append(fire)
-    signals = _learned(parameters, habits, by_habit, window, verified, mode, report)
+    _learned(parameters, habits, by_habit, window, verified, mode, report)
     _declared(parameters, declared, draft["declared_fires"], window, verified, mode, report)
-    return habits, declared, signals
+    return habits, declared

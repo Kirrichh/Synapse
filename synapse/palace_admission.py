@@ -4,24 +4,35 @@
 with the query, scored only by that lexical overlap (scorer
 ``palace-lexical/v2``). A record's confidence, its insertion time and its
 metadata never enter the score; zero overlap is no lexical evidence and no
-candidate; equal scores are ordered by record identity.
+candidate; equal scores are ordered by record identity. Search tokens find
+candidates; they never decide which entity a record is about.
 
 ``admit(candidates, claim)`` decides whether one candidate may be used as an
 established fact for the claim. Every check is separate and reported:
 
-* the entity, the attribute and the kind of information are those of the claim
-  — similar words about another entity never answer for it;
+* the entity is the claim's entity by the exact identity rules of
+  ``synapse.entity_identity`` (namespace, type, typed identifier,
+  incarnation) — or linked to it by an alias a confirmed entity hypothesis
+  establishes (the claim's ``identified_by``); the attribute and the kind of
+  information are the claim's;
 * the scope and the time of validity cover the claim; unknown freshness of a
   time-bound record is no admission;
 * the record names its provenance;
 * it asserts what the claim asks — a denial (``polarity`` false) never answers
   an assertion — under the claim's conditions, and a record of unknown
   currency (``freshness`` unknown or undeclared) is no admission;
-* its status is ``confirmed``: the live status of the hypothesis it names (or
-  the claim's ``verified_by``) when a memory session knows it, otherwise the
-  status the record states (reported as self-declared). The hypothesis must
-  state the record's value; for a statement of semantic knowledge also its
-  subject and property — a confirmation of something else confirms nothing;
+* the authority to treat it as established is never the record's own: a
+  ``status`` the content states describes that content and grants nothing
+  (review R3). The basis is a hypothesis of the verification journal — the one
+  the record or the claim (``verified_by``) names — whose live status is
+  ``confirmed`` and which states this very statement: a content hypothesis
+  about the same entity, stating the record's attribute with the same typed
+  value (or, for a boolean denial, its negation), under the same conditions,
+  for the claim's scope and, when the record names the source version it was
+  read from, for that version. A confirmation of anything else — another
+  entity, property, value, type, polarity, scope or version — confirms nothing;
+  a basis that is no longer confirmed no longer admits. Outside a memory
+  session there is no journal, so nothing is admitted;
 * at least two distinct normalized key tokens of the claim occur in the record
   and its lexical score reaches the threshold — a filter on candidates, never
   a proof of content;
@@ -35,6 +46,8 @@ from datetime import datetime, timezone
 import json
 import re
 from typing import Any, Callable, Iterable, Mapping
+
+from . import entity_identity
 
 SCORER_VERSION = "palace-lexical/v2"
 MIN_KEY_TOKENS = 2
@@ -120,9 +133,9 @@ def _canonical(value: Any) -> str:
 def _claim(value: Any) -> dict[str, Any]:
     required = {"entity", "attribute", "keys"}
     if type(value) is not dict or not required <= set(value) or set(value) - required - {
-            "kind", "scope", "at", "threshold", "polarity", "conditions", "verified_by"}:
+            "kind", "scope", "at", "threshold", "polarity", "conditions", "verified_by", "identified_by"}:
         raise ValueError("an admission claim names entity, attribute and keys (kind, scope, at, threshold, "
-                         "polarity, conditions and verified_by optional)")
+                         "polarity, conditions, verified_by and identified_by optional)")
     if type(value.get("polarity", True)) is not bool or type(value.get("conditions") or {}) is not dict:
         raise ValueError("an admission claim's polarity is a boolean and its conditions an object")
     keys = value["keys"]
@@ -131,28 +144,66 @@ def _claim(value: Any) -> dict[str, Any]:
     threshold = value.get("threshold", DEFAULT_THRESHOLD)
     if type(threshold) not in {int, float} or not 0 < threshold <= 1:
         raise ValueError("an admission threshold is in (0, 1]")
-    return {"entity": str(value["entity"]), "attribute": str(value["attribute"]), "kind": value.get("kind", "fact"),
-            "scope": value.get("scope"), "at": instant(value.get("at")), "keys": keys, "threshold": float(threshold),
-            "polarity": value.get("polarity", True), "conditions": dict(value.get("conditions") or {}),
-            "verified_by": value.get("verified_by")}
+    return {"entity": entity_identity.canonical(value["entity"]), "attribute": str(value["attribute"]),
+            "kind": value.get("kind", "fact"), "scope": value.get("scope"), "at": instant(value.get("at")),
+            "keys": keys, "threshold": float(threshold), "polarity": value.get("polarity", True),
+            "conditions": dict(value.get("conditions") or {}), "verified_by": value.get("verified_by"),
+            "identified_by": value.get("identified_by")}
 
 
-def _states_record(hypothesis: Mapping[str, Any], record: Mapping[str, Any]) -> bool:
-    """Whether a hypothesis states this record's value (and, for a statement, its subject and property)."""
+def record_version(record: Mapping[str, Any]) -> Any:
+    """The source version a record says it was read from, if it names one."""
+    if record.get("version") is not None:
+        return record["version"]
+    source = record.get("source")
+    return source.get("ref") if isinstance(source, dict) else None
+
+
+def basis_gaps(hypothesis: Mapping[str, Any], record: Mapping[str, Any], claim: Mapping[str, Any],
+               rules: Mapping[str, str] | None = None) -> list[str]:
+    """Why a confirmed hypothesis does not establish this record's statement (empty when it does)."""
+    gaps = []
+    if hypothesis.get("aspect", "content") != "content":
+        gaps.append("basis_not_about_content")
+    if entity_identity.compare(hypothesis.get("subject"), record.get("entity"), rules) is not None:
+        gaps.append("basis_about_another_entity")
     statement = hypothesis.get("statement") or {}
-    values = {_canonical(value) for value in statement.values()}
-    if _canonical(record.get("value")) not in values:
-        return False
-    if str(record.get("id", "")).startswith("stm_"):
-        return (tokens(str(hypothesis.get("subject", ""))) == tokens(str(record.get("entity", "")))
-                and _canonical(statement.get(record.get("attribute"))) == _canonical(record.get("value")))
-    return True
+    attribute = record.get("attribute")
+    if attribute not in statement:
+        gaps.append("basis_about_another_property")
+    else:
+        stated, value = _canonical(statement[attribute]), _canonical(record.get("value"))
+        if record.get("polarity", True) is True:
+            holds = stated == value
+        else:  # A boolean denial is entailed by the negated value; nothing else denies by equality.
+            holds = type(record.get("value")) is bool and stated == _canonical(not record["value"])
+        if not holds:
+            gaps.append("basis_states_another_value")
+    if _canonical(hypothesis.get("conditions") or {}) != _canonical(record.get("conditions") or {}):
+        gaps.append("basis_under_other_conditions")
+    scope = record.get("scope")
+    if (scope not in (None, "any") and hypothesis.get("scope") != scope) or (
+            claim["scope"] is not None and hypothesis.get("scope") != claim["scope"]):
+        gaps.append("basis_for_another_scope")
+    version = record_version(record)
+    if version is not None and hypothesis.get("source_ref") != version:
+        gaps.append("basis_for_another_version")
+    return gaps
 
 
-def _checks(record, claim, key_tokens, hypothesis_of) -> tuple[list[str], dict[str, Any]]:
-    reasons = []
-    if tokens(str(record.get("entity", ""))) != tokens(claim["entity"]):
-        reasons.append("another_entity")
+def _identity(record, claim, hypothesis_of, rules) -> tuple[list[str], str | None]:
+    reason = entity_identity.compare(record.get("entity"), claim["entity"], rules)
+    if reason is None:
+        return [], None
+    if claim["identified_by"] is None:
+        return ["another_entity" if reason == "entity_unreadable" else reason], None
+    link = hypothesis_of(claim["identified_by"]) if hypothesis_of is not None else None
+    failure = entity_identity.alias_holds(link, record.get("entity"), claim["entity"], rules)
+    return ([reason, failure], None) if failure is not None else ([], claim["identified_by"])
+
+
+def _checks(record, claim, key_tokens, hypothesis_of, rules) -> tuple[list[str], dict[str, Any]]:
+    reasons, alias = _identity(record, claim, hypothesis_of, rules)
     if record.get("attribute") != claim["attribute"]:
         reasons.append("another_attribute")
     if record.get("kind", "fact") != claim["kind"]:
@@ -177,32 +228,41 @@ def _checks(record, claim, key_tokens, hypothesis_of) -> tuple[list[str], dict[s
         reasons.append("other_conditions")
     if record.get("freshness") in {"unknown", "undeclared"}:
         reasons.append("freshness_unknown")
-    status, basis = record.get("status"), "self_declared"
-    named = record.get("hypothesis") or claim["verified_by"]
-    if named is not None:
+    # The record's own status describes its content; the basis is the verification journal's alone.
+    status, named = None, record.get("hypothesis") or claim["verified_by"]
+    if named is None:
+        reasons.append("no_verified_basis")
+    else:
         known = hypothesis_of(named) if hypothesis_of is not None else None
-        status, basis = (known["status"], "hypothesis") if known is not None else (None, "hypothesis_unknown")
-        if known is not None and not _states_record(known, record):
-            reasons.append("hypothesis_about_another_statement")
-    if status != "confirmed":
-        reasons.append(f"not_confirmed:{status}")
+        if known is None:
+            reasons.append("basis_unknown")
+        else:
+            status = known["status"]
+            if status != "confirmed":
+                reasons.append(f"not_confirmed:{status}")
+            reasons.extend(basis_gaps(known, record, claim, rules))
     matched = sorted(key_tokens & content_tokens(record))
     scored = candidate_score(" ".join(claim["keys"]), record) or {"score": 0.0}
     if len(matched) < MIN_KEY_TOKENS:
         reasons.append("too_few_key_tokens")
     if scored["score"] < claim["threshold"]:
         reasons.append("below_threshold")
-    return reasons, {"status": status, "status_basis": basis, "matched_keys": matched, "score": scored["score"]}
+    return reasons, {"status": status, "basis": named, "alias": alias, "stated_status": record.get("status"),
+                     "matched_keys": matched, "score": scored["score"]}
 
 
 def admit(candidates: Iterable[Mapping[str, Any]], claim: Any,
-          hypothesis_of: Callable[[str], Mapping[str, Any] | None] | None = None) -> dict[str, Any]:
-    """Admit at most one candidate as an established fact for ``claim``, with every reason."""
+          hypothesis_of: Callable[[str], Mapping[str, Any] | None] | None = None,
+          identity_rules: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Admit at most one candidate as an established fact for ``claim``, with every reason.
+
+    ``hypothesis_of`` reads the verification journal of the bound memory session (``None`` outside one);
+    ``identity_rules`` are the operator's namespace rules."""
     claim = _claim(claim)
     key_tokens = frozenset().union(*(tokens(item) for item in claim["keys"])) if claim["keys"] else frozenset()
     checked, passing = [], {}
     for record in candidates:
-        reasons, facts = _checks(record, claim, key_tokens, hypothesis_of)
+        reasons, facts = _checks(record, claim, key_tokens, hypothesis_of, identity_rules)
         checked.append({"id": record.get("id"), "reasons": reasons, **facts})
         if not reasons:
             statement = _canonical(record["value"])

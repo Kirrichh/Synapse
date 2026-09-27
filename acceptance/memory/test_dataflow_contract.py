@@ -85,7 +85,7 @@ def test_the_durable_profile_admits_a_graph_only_where_it_can_be_persisted_and_o
 
 
 def _tools(contract: dict) -> dict:
-    return {"schema_version": "synapse.memory.tool-configuration/v1", "servers": [{"id": "desk", "argv": ["x"]}],
+    return {"schema_version": "synapse.memory.tool-configuration/v2", "servers": [{"id": "desk", "argv": ["x"]}],
             "tools": [{"name": "quote", "server": "desk", "descriptor_sha256": "0" * 64,
                        "input_schema": {"type": "object"}, "output_schema": {"type": "object"},
                        "source": "billing:ops", "contract": contract}],

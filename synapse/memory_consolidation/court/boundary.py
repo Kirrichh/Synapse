@@ -28,7 +28,8 @@ BOUNDARY_V3 = "synapse.memory.snapshot-boundary/v3"
 def _entry(habit_id, metadata, frozen) -> dict[str, Any]:
     return {"habit_id": habit_id, "trigger": frozen["trigger"], "habit": frozen["habit"],
             "state": metadata["state"], "priority": metadata["priority"], "context_trust": metadata["trust"],
-            "energy_cost": metadata["energy_cost"], "publication": metadata["publication"]}
+            "energy_cost": metadata["energy_cost"], "publication": metadata["publication"],
+            "yields_to": sorted(metadata.get("yields_to", []))}
 
 
 def boundary_record(state_after: Mapping[str, Any], legitimacy: Mapping[str, Any],

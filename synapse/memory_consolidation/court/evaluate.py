@@ -38,8 +38,8 @@ class DreamInputs:
     ending: frozenset[str]
 
 
-def _empty_draft(inputs: DreamInputs, integrity) -> dict[str, Any]:
-    return {"consolidation_id": inputs.consolidation_id, "mode": inputs.mode, "integrity": integrity,
+def empty_draft(consolidation_id: str, mode: str, integrity) -> dict[str, Any]:
+    return {"consolidation_id": consolidation_id, "mode": mode, "integrity": integrity,
             "evidence_problems": [], "replay": {}, "verdicts": [], "fires": [], "declared_fires": [],
             "reactions": [], "near_misses": [], "misses": [], "suppressed": [], "cases": [], "requests": [],
             "hypotheses": [], "knowledge": {"declared": [], "uses": []},
@@ -81,7 +81,8 @@ def _session_into(draft, inputs: DreamInputs, counsel: Counsel, session, gateway
     cases = build_cases(facts, verdicts, seconds, replay.get("status"))
     draft["cases"].extend(cases.values())
     draft["suppressed"].extend({"run_id": facts.run, "habit_id": event.get("habit_id"),
-                                "reason": event.get("reason"), "trigger_event_id": event.get("trigger_event_id")}
+                                "reason": event.get("reason"), "trigger_event_id": event.get("trigger_event_id"),
+                                "competitor": event.get("competitor")}
                                for _, event in facts.found.get("habit_suppressed", []))
     draft["hypotheses"].extend(hypothesis_events(facts.found, facts.run))
     for name, items in knowledge_events(facts.found, facts.run).items():
@@ -97,11 +98,12 @@ def evaluate(inputs: DreamInputs) -> dict[str, Any]:
     integrity = check_integrity(inputs.sessions, inputs.state, inputs.gateway, gateway_records, inputs.executor)
     counsel = Counsel(inputs.gateway, inputs.configuration, inputs.consolidation_id)
     seconds = durations(inputs.gateway)
-    draft = _empty_draft(inputs, integrity)
+    draft = empty_draft(inputs.consolidation_id, inputs.mode, integrity)
     for session in inputs.sessions:
         _session_into(draft, inputs, counsel, session, gateway_records, seconds)
     parameters = inputs.configuration.parameters
-    draft["conflict_advice"] = conflict_advice(counsel, inputs.state, parameters, draft["fires"], draft["reactions"])
+    draft["conflict_advice"] = conflict_advice(counsel, inputs.state, parameters, draft["fires"], draft["reactions"],
+                                             draft["suppressed"])
     draft["arbitration"] = ({} if inputs.mode == "emergency"
                             else arbitration(counsel, inputs.state, inputs.configuration, draft))
     draft["counsel"] = {"questions": counsel.questions, "agreed": counsel.agreed}

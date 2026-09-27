@@ -121,15 +121,16 @@ class MemoryFactory:
             return self._exam_session(run)
         with self.owner.store.session() as guard:
             self.owner.bind(guard, self.configuration)
+            self.owner.require_policy(self.configuration, guard=guard)
             self.owner.register_session(guard, dict(run), self.configuration)
             boundary, digest = self._pinned(run, guard)
         return MemorySession(self, dict(run), boundary, digest)
 
     def _exam_session(self, run: Mapping[str, Any]) -> MemorySession:
         """An exam reads a fixed snapshot of this memory and is never registered for the court."""
-        bound = self.owner.bound_configuration()
-        if bound is None or bound.configuration_sha256 != self.configuration.configuration_sha256:
+        if self.owner.bound_digest() != self.configuration.configuration_sha256:
             raise MemoryOwnerViolation("an exam reads a memory bound to its own configuration")
+        self.owner.require_policy(self.configuration)
         boundary, digest = self._complete(self.exam["snapshot"], None)
         if self.exam["mode"] == "A":
             boundary, digest = None, None  # Accumulated experience is switched off.
@@ -188,6 +189,14 @@ class MemoryFactory:
             self.owner.bind(guard, self.configuration)
             return consolidate(self.owner, self.configuration, ports, guard, mode=mode, current=current)
 
+
+    def reassess(self) -> dict[str, Any]:
+        """Re-judge the recorded memory under this configuration and policy, then adopt the configuration."""
+        from .court.consolidation import reassess
+
+        ports = self.ports()
+        with self.owner.store.session() as guard:
+            return reassess(self.owner, self.configuration, ports, guard)
 
     # -- the governing operator's acts on retained experience -------------------
     def forget(self, qid: str, *, reason: str, operator: str) -> list[dict[str, Any]]:

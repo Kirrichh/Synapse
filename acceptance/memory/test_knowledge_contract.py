@@ -141,7 +141,7 @@ def test_the_court_folds_copies_corrections_and_conflicts_and_revises_what_depen
 def _candidate(**changes):
     base = {"id": "stm_1", "kind": "fact", "entity": "basic", "attribute": "monthly_price", "value": 20,
             "polarity": True, "conditions": {}, "valid_from": "2026-01-01T00:00:00Z", "valid_until": None,
-            "freshness": "current", "source": {"tool": "catalog_entry"}}
+            "freshness": "current", "source": {"tool": "catalog_entry", "ref": "ev-1"}}
     return {**base, **changes}
 
 
@@ -150,20 +150,23 @@ CLAIM = {"entity": "basic", "attribute": "monthly_price", "keys": ["basic", "mon
 
 
 def _reasons(candidate, hypothesis=None, **claim):
-    known = {"hyp_1": {"status": "confirmed", "subject": "basic", "statement": {"monthly_price": 20}, **(
-        hypothesis or {})}}
+    known = {"hyp_1": {"status": "confirmed", "aspect": "content", "subject": "basic",
+                       "statement": {"monthly_price": 20}, "scope": "catalog", "conditions": {},
+                       "source_ref": "ev-1", **(hypothesis or {})}}
     decision = admit([candidate], {**CLAIM, **claim}, hypothesis_of=known.get)
     return decision["checked"][0]["reasons"]
 
 
 def test_admission_reads_the_statements_structure():
     assert _reasons(_candidate()) == []
-    assert _reasons(_candidate(polarity=False)) == ["another_polarity"]
-    assert _reasons(_candidate(conditions={"region": "eu"})) == ["other_conditions"]
-    assert _reasons(_candidate(conditions={"region": "eu"}), conditions={"region": "eu"}) == []
+    assert _reasons(_candidate(polarity=False)) == ["another_polarity", "basis_states_another_value"]
+    assert _reasons(_candidate(conditions={"region": "eu"})) == ["other_conditions", "basis_under_other_conditions"]
+    assert _reasons(_candidate(conditions={"region": "eu"}), {"conditions": {"region": "eu"}},
+                    conditions={"region": "eu"}) == []
     assert _reasons(_candidate(freshness="unknown")) == ["freshness_unknown"]
     assert _reasons(_candidate(valid_until="2026-03-01T00:00:00Z")) == ["outside_validity"]  # The end is exclusive.
-    # A confirmation of another value or of another subject confirms nothing here.
-    assert _reasons(_candidate(), {"statement": {"monthly_price": 99}}) == ["hypothesis_about_another_statement"]
-    assert _reasons(_candidate(), {"subject": "basic-plus"}) == ["hypothesis_about_another_statement"]
+    # A confirmation of another value, subject or source version confirms nothing here.
+    assert _reasons(_candidate(), {"statement": {"monthly_price": 99}}) == ["basis_states_another_value"]
+    assert _reasons(_candidate(), {"subject": "basic-plus"}) == ["basis_about_another_entity"]
+    assert _reasons(_candidate(), {"source_ref": "ev-0"}) == ["basis_for_another_version"]
     assert _reasons(_candidate(), {"status": "provisional"}) == ["not_confirmed:provisional"]

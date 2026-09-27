@@ -92,6 +92,8 @@ VERSIONS: dict[str, dict[str, frozenset[str]]] = {
     "habit_trigger": {RECORD_SCHEMA_V1: _TRIGGER_V1, RECORD_SCHEMA_V2: _TRIGGER_V1 | {"applicability"}},
     # A composite procedure names its base and the parts joined into it; any other has none.
     "learned_habit": {RECORD_SCHEMA_V1: _HABIT_V1, RECORD_SCHEMA_V2: _HABIT_V1 | {"composition"}},
+    # A hypothesis states the conditions its claim holds under ({} for none); v1 hypotheses stay verifiable.
+    "hypothesis": {RECORD_SCHEMA_V1: KINDS["hypothesis"][2], RECORD_SCHEMA_V2: KINDS["hypothesis"][2] | {"conditions"}},
 }
 
 

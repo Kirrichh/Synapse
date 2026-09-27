@@ -925,6 +925,32 @@ jobs:
             file: acceptance/memory/test_dataflow_revision_acceptance.py
           - shard: dataflow-crash
             file: acceptance/memory/test_dataflow_crash_acceptance.py
+          - shard: admission-basis-contract
+            file: acceptance/memory/test_admission_basis_contract.py
+          - shard: admission-identity
+            file: acceptance/memory/test_admission_identity_acceptance.py
+          - shard: effect-uncertainty
+            file: acceptance/memory/test_effect_uncertainty_acceptance.py
+          - shard: idempotency-crash
+            file: acceptance/memory/test_idempotency_crash_acceptance.py
+          - shard: gateway-sequences
+            file: acceptance/memory/test_gateway_sequence_contract.py
+          - shard: conflict-resolution-contract
+            file: acceptance/memory/test_conflict_resolution_contract.py
+          - shard: conflict-overlap
+            file: acceptance/memory/test_conflict_overlap_acceptance.py
+          - shard: automaton-contract
+            file: acceptance/memory/test_automaton_experience_contract.py
+          - shard: automaton-sequences
+            file: acceptance/memory/test_automaton_sequence_contract.py
+          - shard: automaton-experience
+            file: acceptance/memory/test_automaton_experience_acceptance.py
+          - shard: reassessment-contract
+            file: acceptance/memory/test_reassessment_contract.py
+          - shard: reassessment
+            file: acceptance/memory/test_memory_reassessment_acceptance.py
+          - shard: paired-exam
+            file: acceptance/memory/test_paired_exam_acceptance.py
           - shard: dependency-direction
             file: tests/test_memory_dependency_direction.py
     steps:
@@ -933,7 +959,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install the runtime with the MCP tool boundary
-        run: python -m pip install -e '.[agent-mcp]' pytest
+        run: python -m pip install -e '.[agent-mcp]' pytest 'hypothesis>=6.100'
       - name: Configure git for the connected project fixtures
         run: |
           git config --global user.email "ci@example.invalid"

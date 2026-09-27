@@ -8,7 +8,8 @@ default element of the owner's cases. Schema v2 adds the knowledge policy
 (refinement §15): the embedding model of the semantic search channel (a
 ``reason`` tool recorded by the gateway, so the choice of model never changes
 what memory may do), the currency rule of each property and the search
-budget. How a run reads the memory (an ordinary
+budget, and optionally the identity rules of entity namespaces (which ones
+fold case; ``synapse.entity_identity``). How a run reads the memory (an ordinary
 learning session or an exam in mode A, B or C) belongs to the run, not to
 this policy: the three modes run on the same memory.
 
@@ -17,11 +18,13 @@ and in every report.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import re
 from typing import Any, Mapping
+
+from synapse import entity_identity
 
 from .records import digest
 from .tools.contracts import ToolConfiguration, parse_tool_configuration
@@ -70,6 +73,8 @@ class MemoryConfiguration:
     element: str
     raw: Mapping[str, Any]
     knowledge: KnowledgePolicy | None = None
+    #: The operator's case rule of each entity namespace (schema v2 ``identity``); sensitive when undeclared.
+    identity: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def configuration_sha256(self) -> str:
@@ -138,9 +143,10 @@ def _knowledge(value: Any, tools: ToolConfiguration) -> KnowledgePolicy | None:
 def parse_memory_configuration(value: Any) -> MemoryConfiguration:
     required = {"schema_version", "tools", "court", "advisor", "scorer", "element"}
     version = value.get("schema_version") if type(value) is dict else None
+    optional: set[str] = set()
     if version == MEMORY_CONFIGURATION_V2:
-        required = required | {"knowledge"}
-    if type(value) is not dict or set(value) != required:
+        required, optional = required | {"knowledge"}, {"identity"}
+    if type(value) is not dict or not required <= set(value) or set(value) - required - optional:
         raise _fail("unknown shape")
     if version not in {MEMORY_CONFIGURATION_V1, MEMORY_CONFIGURATION_V2}:
         raise _fail("unsupported schema version")
@@ -156,10 +162,15 @@ def parse_memory_configuration(value: Any) -> MemoryConfiguration:
     element = value["element"]
     if type(element) is not str or _ELEMENT_RE.fullmatch(element) is None:
         raise _fail("element is a bounded identifier")
+    try:
+        identity = entity_identity.parse_rules(value.get("identity"))
+    except entity_identity.EntityViolation as exc:
+        raise _fail(str(exc)) from None
     return MemoryConfiguration(tools=tools, decision_rule=court["decision_rule"], parameters=parameters,
                                advisor=_component(value["advisor"], "advisor", tools),
                                scorer=_component(value["scorer"], "scorer", tools),
-                               element=element, raw=value, knowledge=_knowledge(value.get("knowledge"), tools))
+                               element=element, raw=value, knowledge=_knowledge(value.get("knowledge"), tools),
+                               identity=identity)
 
 
 def read_memory_configuration(path: Path) -> MemoryConfiguration:

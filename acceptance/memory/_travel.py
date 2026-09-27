@@ -61,7 +61,9 @@ def booking_state(source="gds:ops"):
     """An independent observation of the searched flights: it attests the same claim."""
     rules = [answer({"ok": True, "route": route, "found": True}, when={"route": route}) for route in ROUTES]
     return tool("booking_state", source, rules, server="gds",
-                contract={"state_check_for": "flights", "resolve_state": {"found": "applied"}})
+                contract={"state_check_for": "flights", "resolve_state": {"found": "applied"},
+                          "binds": {"request": {"route": "route"}, "answer": {"route": "route"}},
+                          "attests": "operation"})
 
 
 def tools(*, busy_every_time=(), slow_quota=(), **sources):

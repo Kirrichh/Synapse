@@ -1,7 +1,10 @@
 """Testable hypotheses: from assumption to commitment (refinement §10).
 
 A hypothesis states one claim — about an entity, a content or a version, never
-two at once — with its scope, its source and the permitted check. Its source is
+two at once — about one entity (``synapse.entity_identity``), under the
+conditions it holds in, with its scope, its source and the permitted check.
+An entity hypothesis stating ``{"same_as": <other reference>}`` is the only way
+two names become one entity (an alias). Its source is
 a recorded observation of the same session (the tool, the arguments and the
 recorded result's address), so the address is the version of the source the
 claim was read from. The claim, source and check form a content-addressed
@@ -23,6 +26,8 @@ the program abstains.
 from __future__ import annotations
 
 from typing import Any, Mapping
+
+from synapse import entity_identity
 
 from . import records
 from .configuration import MemoryConfiguration
@@ -53,28 +58,39 @@ def _call(value: Any, name: str, configuration: MemoryConfiguration) -> dict[str
 
 def declare(claim: Any, configuration: MemoryConfiguration, source_ref: str | None) -> dict[str, Any]:
     """The hypothesis record; ``source_ref`` is the recorded source answer, ``None`` when absent."""
-    if type(claim) is not dict or set(claim) != {"aspect", "subject", "statement", "scope", "source", "check"}:
-        raise HypothesisViolation("a hypothesis states aspect, subject, statement, scope, source and check")
+    required = {"aspect", "subject", "statement", "scope", "source", "check"}
+    if type(claim) is not dict or not required <= set(claim) or set(claim) - required - {"conditions"}:
+        raise HypothesisViolation("a hypothesis states aspect, subject, statement, scope, source and check "
+                                  "(conditions optional)")
     if claim["aspect"] not in ASPECTS:
         raise HypothesisViolation("a hypothesis is about an entity, a content or a version")
     statement = claim["statement"]
     if (type(statement) is not dict or not 1 <= len(statement) <= _MAX_FIELDS
             or any(type(key) is not str or not _scalar(value) for key, value in statement.items())):
         raise HypothesisViolation("a hypothesis statement is a small object of scalar fields")
-    for name in ("subject", "scope"):
-        if type(claim[name]) is not str or not claim[name].strip():
-            raise HypothesisViolation(f"a hypothesis {name} is named")
+    try:
+        subject = entity_identity.canonical(claim["subject"])
+    except entity_identity.EntityViolation as exc:
+        raise HypothesisViolation(f"a hypothesis subject is an entity: {exc}") from None
+    if type(claim["scope"]) is not str or not claim["scope"].strip():
+        raise HypothesisViolation("a hypothesis scope is named")
+    conditions = claim.get("conditions") or {}
+    if (type(conditions) is not dict or len(conditions) > _MAX_FIELDS
+            or any(type(key) is not str or not _scalar(value) for key, value in conditions.items())):
+        raise HypothesisViolation("a hypothesis's conditions are a small object of scalar fields")
     source = _call(claim["source"], "source", configuration)
-    return records.make("hypothesis", aspect=claim["aspect"], subject=claim["subject"], statement=dict(statement),
-                        scope=claim["scope"], source={**source, "ref": source_ref},
-                        check=_call(claim["check"], "check", configuration))
+    return records.make("hypothesis", aspect=claim["aspect"], subject=subject, statement=dict(statement),
+                        scope=claim["scope"], conditions=dict(sorted(conditions.items())),
+                        source={**source, "ref": source_ref}, check=_call(claim["check"], "check", configuration))
 
 
 def claim_key(record: Mapping[str, Any]) -> str:
     """The claim without its source version: what a changed source is compared against."""
+    conditions = record.get("conditions") or {}
+    # Conditions enter the key only when a claim has them, so claims recorded before conditions keep theirs.
     return digest({"aspect": record["aspect"], "subject": record["subject"], "statement": record["statement"],
-                   "scope": record["scope"], "source": {"tool": record["source"]["tool"],
-                                                        "args": record["source"]["args"]}})
+                   "scope": record["scope"], **({"conditions": conditions} if conditions else {}),
+                   "source": {"tool": record["source"]["tool"], "args": record["source"]["args"]}})
 
 
 def resolve(record: Mapping[str, Any], view: Mapping[str, Any] | None,

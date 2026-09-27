@@ -72,4 +72,5 @@ def test_a_poisoned_mirror_gets_no_priority(tmp_path):
     decision = asked["admission"]
     assert decision["decision"] == "admitted" and decision["fact"] == trusted
     reasons, = [item["reasons"] for item in decision["checked"] if item["id"] == poisoned["statement"]]
-    assert "hypothesis_about_another_statement" in reasons
+    # The confirmed hypothesis is about the catalog's statement: another value from another source version.
+    assert {"basis_states_another_value", "basis_for_another_version"} <= set(reasons)

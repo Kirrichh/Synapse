@@ -27,6 +27,8 @@ APPROVED_OUTBOUND = {
     "synapse.lexer": {"learning/dependencies.py"},
     # Palace admission owns the lexical scorer and the validity-time form semantic knowledge is searched with.
     "synapse.palace_admission": {"knowledge/statements.py", "knowledge/search.py"},
+    # Exact entity identity: statement and hypothesis subjects, and the operator's namespace rules.
+    "synapse.entity_identity": {"knowledge/statements.py", "hypotheses.py", "configuration.py"},
     "synapse.hardening": {"court/consolidation.py", "court/window.py"},
     "synapse.version": {"factory.py"},
     # The verified re-execution and session reader of durable cognitive runs (court ports).

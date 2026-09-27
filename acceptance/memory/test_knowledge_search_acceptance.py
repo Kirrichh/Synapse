@@ -49,7 +49,7 @@ def test_a_paraphrase_without_common_words_is_found_by_meaning_and_admitted_only
     decision = hybrid["admission"]
     assert decision["decision"] == "admitted" and decision["fact"] == found[("basic", 20)]["id"]
     checked = {item["id"]: item for item in decision["checked"]}
-    assert checked[found[("basic", 20)]["id"]]["status_basis"] == "hypothesis"
+    assert checked[found[("basic", 20)]["id"]]["basis"] == decision["claim"]["verified_by"]
     # The near-identical sentence about another plan is a candidate, never the same fact.
     assert "another_entity" in checked[found[("basic-plus", 30)]["id"]]["reasons"]
     # The cost of the semantic channel is published with the search.

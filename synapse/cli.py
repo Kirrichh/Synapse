@@ -435,16 +435,21 @@ def _handle_run(args: argparse.Namespace) -> int:
 
 
 def _handle_memory(args: argparse.Namespace, ap) -> int:
-    """``synapse memory forget|restore``: operator acts, recorded by the owner before any body changes."""
+    """``synapse memory forget|restore|reassess``: operator acts, recorded by the owner before any body changes.
+
+    ``reassess`` judges the recorded memory again under the given configuration and the court policy in force,
+    without calling any tool or model, publishes what changed and adopts the configuration."""
     from .memory_consolidation.configuration import read_memory_configuration
     from .memory_consolidation.factory import MemoryFactory
 
-    if args.memory_cmd not in {"forget", "restore"}:
-        ap.error("synapse memory requires forget or restore")
+    if args.memory_cmd not in {"forget", "restore", "reassess"}:
+        ap.error("synapse memory requires forget, restore or reassess")
     try:
         factory = MemoryFactory(Path(args.project_state), read_memory_configuration(Path(args.memory_config)))
         if args.memory_cmd == "forget":
             result = {"acts": factory.forget(args.quantum, reason=args.reason, operator=args.operator)}
+        elif args.memory_cmd == "reassess":
+            result = {"consolidation": factory.reassess()}
         else:
             result = {"acts": [factory.restore(args.quantum)]}
     except (OSError, ValueError) as exc:
@@ -541,10 +546,14 @@ def main(argv=None) -> int:
     memory = sub.add_parser("memory", help="the governing operator's acts on a memory owner's retained experience")
     memory_sub = memory.add_subparsers(dest="memory_cmd")
     for name, text in (("forget", "remove a retained case behind a tombstone (legally significant)"),
-                       ("restore", "return a compacted case to processing from its recorded results")):
+                       ("restore", "return a compacted case to processing from its recorded results"),
+                       ("reassess", "judge the recorded memory again under a new configuration and adopt it")):
         act = memory_sub.add_parser(name, help=text)
         act.add_argument("--project-state", required=True, help="connected project state that owns the memory")
-        act.add_argument("--memory-config", required=True, help="the owner's bound memory configuration JSON")
+        act.add_argument("--memory-config", required=True,
+                         help="the owner's memory configuration JSON (for reassess: the one to adopt)")
+        if name == "reassess":
+            continue
         act.add_argument("--quantum", required=True, help="case quantum id (qnt_...)")
         if name == "forget":
             act.add_argument("--reason", required=True, help="why the case is forgotten (recorded in the tombstone)")

@@ -1,10 +1,11 @@
 """Advice the decision stages consume, asked during evaluation.
 
-Stage 4, step 2 — a recorded counterfactual for learned competitors: would the
-other habit's outcome have been better? It rests only on recorded outcomes
-(fires of both, and slow-path episodes on the shared trigger whose steps are
-either habit's action) and is not asked below the declared minimum, because an
-unsafe comparison must stay uncertain.
+Stage 4, step 2 — learned competitors: the verified comparison of their
+recorded outcomes (``comparison.py``: decided outcomes of fires of both and of
+slow-path episodes where both apply whose steps are either habit's action,
+paired only in the same situation) decides; the model is asked only once there
+are enough comparable situations, and its answer is recorded as a proposal of
+what the comparison should look at — it has no authority to resolve anything.
 
 Stage 5 — arbitration of candidates that meet every birth criterion but sit in
 a gray band against an existing habit: an action similarity between the
@@ -18,48 +19,66 @@ from typing import Any, Mapping
 from ..learning.behavior import step_similarity
 from ..learning.triggers import context_template, matches, render_template
 from .births import typed_check
-from .conflicts import competitors
+from .comparison import compare
+from .conflicts import competitors, met_at_runtime
 from .counsel import Counsel
 from .pool import assess, merge_pool
 
 _DECISIVE = {"duplicate", "absorbed", "archived_duplicate", "archived_absorbed"}
 
 
+def _ref(run_id, event_id) -> str | None:
+    return None if run_id is None or event_id is None else f"{run_id}|{event_id}"
+
+
 def _histories(state, fires) -> dict[str, list]:
-    history: dict[str, list] = {habit_id: list(metadata.get("recent", []))
+    history: dict[str, list] = {habit_id: [{**item, "ref": _ref(item.get("run_id"), item.get("event_id"))}
+                                           for item in metadata.get("recent", [])]
                                 for habit_id, metadata in state["habits"].items()}
     for fire in fires:
-        history.setdefault(fire["habit_id"], []).append({"outcome": fire["outcome"], "path": "habit",
-                                                         "segment_verdict": fire["segment_verdict"],
-                                                         "fields": fire["context"]["fields"]})
+        history.setdefault(fire["habit_id"], []).append({
+            "outcome": fire["outcome"], "path": "habit", "segment_verdict": fire["segment_verdict"],
+            "fields": fire["context"]["fields"], "ref": _ref(fire.get("run_id"), fire.get("event_id")),
+            "copy": fire.get("status") == "excluded"})
     return history
 
 
-def _attribute_slow(history, pair, state, reactions, parameters) -> None:
-    """Slow-path outcomes on the shared trigger count for the habit whose action they repeat."""
-    left, right = pair
-    a = state["frozen"][left]
+def _attributed(pair, state, reactions, parameters) -> dict[str, list]:
+    """This window's slow-path outcomes where both apply, for the habit whose action they repeat."""
+    found: dict[str, list] = {habit_id: [] for habit_id in pair}
     for reaction in reactions:
         slow = reaction["slow"]
-        if slow is None or matches(a["trigger"], reaction["context"])[0] != "applicable":
+        if slow is None or any(matches(state["frozen"][habit_id]["trigger"], reaction["context"])[0] != "applicable"
+                               for habit_id in pair):
             continue
         for habit_id in pair:
             pattern = state["frozen"][habit_id]["habit"]["action_pattern"]
             if step_similarity(slow["steps"], pattern) >= parameters["action_same"]:
-                history.setdefault(habit_id, []).append({"outcome": slow["outcome"], "path": "slow",
-                                                         "segment_verdict": reaction["segment_verdict"],
-                                                         "fields": reaction["context"]["fields"]})
+                found[habit_id].append({
+                    "outcome": slow["outcome"], "path": "slow", "segment_verdict": reaction["segment_verdict"],
+                    "fields": reaction["context"]["fields"], "ref": _ref(reaction["run_id"], reaction["event_id"]),
+                    "copy": bool(slow.get("evidence_preexisting"))})
+    return found
 
 
-def conflict_advice(counsel: Counsel, state, parameters, fires, reactions) -> dict[str, Any]:
-    """Counterfactual answers for every competitor pair, keyed ``"left|right"``."""
-    history = _histories(state, fires)
+def conflict_advice(counsel: Counsel | None, state, parameters, fires, reactions, suppressed) -> dict[str, Any]:
+    """The verified comparison of every competitor pair, keyed ``"left|right"``, with the model's proposal.
+
+    The compared outcomes are the habits' recent fires, this window's fires, the slow-path outcomes
+    attributed to them in earlier windows (``compared``) and this window's (``attributed``, which the
+    decision keeps). Without ``counsel`` (a reassessment calls nothing) no proposal is asked."""
+    fired = _histories(state, fires)
     advice: dict[str, Any] = {}
-    for left, right in competitors(state, parameters):
-        _attribute_slow(history, (left, right), state, reactions, parameters)
+    for left, right in competitors(state, parameters, met_at_runtime(suppressed)):
+        attributed = _attributed((left, right), state, reactions, parameters)
+        history = {habit_id: [*fired.get(habit_id, []), *state["habits"][habit_id].get("compared", []),
+                              *attributed[habit_id]] for habit_id in (left, right)}
         key = f"{left}|{right}"
-        if min(len(history.get(left, [])), len(history.get(right, []))) < parameters["counterfactual_min_pairs"]:
-            advice[key] = {"basis": "insufficient_recorded_outcomes", "asked": False, "answer": None}
+        result = compare(left, right, history, parameters["counterfactual_min_pairs"])
+        if result["pairs"] < parameters["counterfactual_min_pairs"] or counsel is None:
+            basis = "insufficient_comparable_outcomes" if counsel is not None else "not_asked_in_reassessment"
+            advice[key] = {"basis": basis, "asked": False, "answer": None, "comparison": result,
+                           "attributed": attributed}
             continue
         variant = {"A": {"habit_id": left, "pattern": state["frozen"][left]["habit"]["action_pattern"],
                          "outcomes": history[left]},
@@ -67,7 +86,7 @@ def conflict_advice(counsel: Counsel, state, parameters, fires, reactions) -> di
                          "outcomes": history[right]}}
         answer = counsel.ask("would_B_outcome_be_better", ("yes", "no"),
                              (variant, {"B": variant["B"], "A": variant["A"]}))
-        advice[key] = {"basis": "recorded_outcomes", **answer}
+        advice[key] = {"basis": "proposal", **answer, "comparison": result, "attributed": attributed}
     return advice
 
 

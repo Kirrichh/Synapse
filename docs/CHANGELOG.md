@@ -1,5 +1,53 @@
 # Synapse Changelog
 
+## Memory review of PR108 — identity, attestations, repeats, conflicts, automaton, reassessment — 2026-09-27
+
+Court policy `synapse.memory.court-policy/v3`, tool configuration
+`synapse.memory.tool-configuration/v2` (v1 is refused with the migration path),
+owner binding `synapse.memory.owner-binding/v2`, hypothesis record v2 (with
+`conditions`), memory configuration v2 key `identity`. New operator command
+`synapse memory reassess`; new consolidation mode `reassess` (also admitted by
+Gold's court chain). Report sections gain `reassessment`; transitions gain
+`cause` and `at`; snapshot boundary habit entries gain `yields_to`; the
+opening's learned entries gain `yields_to` and `unresolved_with`; events
+`habit_suppressed` may carry `competitor` with reasons `yields_to_rival` and
+`unresolved_conflict`.
+
+- Exact entity identity (`synapse/entity_identity.py`): namespace, type,
+  typed id and incarnation; case folding only where the operator declares it;
+  aliases are confirmed `entity` hypotheses, never similarity.
+- Palace admission reads its basis from the hypothesis journal and requires it
+  to cover the whole statement (entity, property, value, conditions, scope,
+  version); a record's own status is never read.
+- State checks bind to the checked operation (`binds`, `attests`,
+  `operation_field`); a state observed before the operation, a foreign object
+  or another operation keeps the uncertainty; requirement kind `reach_state`.
+- An undescribed refusal code leaves the effect unknown; the gateway issues one
+  idempotency key per operation, refuses agent-chosen keys and admits a repeat
+  of an unknown effect only while the provider's key is alive; crash recovery
+  repeats only keyed operations.
+- Conflicts: the verified comparison of recorded outcomes in one situation
+  decides step 2 (`court/comparison.py`); a model's answer is a proposal; a
+  competitor born at equal trust closes the shared trigger at birth; rivals
+  applicable to one event without a verified resolution are held back before
+  any effect, also when their triggers overlap only partly.
+- Automaton: causes kept apart (sufficient experience, confirmed errors on the
+  last `t3_fires` signals, disuse, changed basis, cold match); under
+  `threshold` fires are read one by one and a transition happens at the fire
+  that reaches it, with the trust reached by then; trust updates in fixed
+  batches of `min_evidence`; an event delivered twice counts once.
+- Reassessment: re-judges live habits' bases from recorded material under the
+  current contracts without calling tools or models, archives what no longer
+  holds (TR), republishes kept habits to Gold under the new tool binding,
+  completes missing metadata neutrally, re-judges competitors, publishes the
+  delta and only then adopts the configuration; memory decided under another
+  court policy is reassessed before it is opened or consolidated.
+- Acceptance: contracts on plain data, Hypothesis sequences of the gateway and
+  of the automaton against independent reference models, heavy CLI scenarios
+  (identity, effect uncertainty, idempotency after a crash, conflict at birth,
+  partial overlap, verified comparison against the advisor, rare fires,
+  reassessment, paired A/B/C exam). `hypothesis` joins the dev dependencies.
+
 ## Memory stage 6 and language stage 7 — semantic knowledge and event-driven graphs — 2026-09-27
 
 Memory configuration schema v2 adds `knowledge` (embedder, per-property

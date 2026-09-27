@@ -108,7 +108,27 @@ Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:
 No Linux full suite was run for Patch 2. A recorded baseline is evidence of an
 observed run, not a command to rerun the full suite before each patch.
 
-The latest observed Linux run is the memory stage 5b package on PR #108
+The latest observed Linux run is the memory stage 6 and language stage 7
+package on PR #108 (semantic knowledge with two times and hybrid search;
+event-driven `parallel` graphs; Python 3.11, every `tests/` and `acceptance/`
+file in its own process, four files in parallel, on the committed tree):
+
+```text
+tests/:       5224 passed, 12 skipped
+acceptance/:  1 failed, 909 passed, 1 skipped
+```
+
+The one acceptance failure is `acceptance/stage4/stage16/test_live_gemini_worker.py`,
+the explicit live job that requires `GEMINI_API_KEY` (absent here). The run
+first found 52 failures in `tests/test_durable_execution.py` and
+`tests/test_durable_mailbox_wait.py`: the P2a classifier refuses every run
+while an AST class is unclassified, and the new `parallel` nodes were not
+classified. They are now classified outside the P2a subset and the pinned
+inventory count moved from 93 to 96; the counts above include those two files
+rerun after the fix (78 and 16 passed), together with every other durable
+test file and the dataflow acceptance files, all passing.
+
+The previous observed Linux run is the memory stage 5b package on PR #108
 (composition of learned procedures with ordered alternatives, nested parts and
 sequences; Python 3.11, every `tests/` and `acceptance/` file in its own
 process, four files in parallel, on the committed tree):
@@ -128,7 +148,7 @@ Both failures were diagnosed:
   subsystem, took about 1.7 times as long); rerun alone on the same tree it
   passed: `1 passed in 7373.32s`.
 
-The previous observed Linux run is the memory stage 5a package on PR #108
+An earlier observed Linux run is the memory stage 5a package on PR #108
 (learned applicability D1 and result references D2; Python 3.11, every
 `tests/` and `acceptance/` file in its own process, four files in parallel,
 on the committed tree):

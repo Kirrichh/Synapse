@@ -12,6 +12,7 @@ the agent never changes it.
 """
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
@@ -33,7 +34,7 @@ _SOURCE_RE = re.compile(r"[a-z0-9][a-z0-9_.-]*:[A-Za-z0-9@_.+-]+\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _CONTRACT_FIELDS = {"idempotent", "effect_on_err", "repeatable_on_partial", "compensates", "compensation_signs",
                     "state_check_for", "resolve_state", "environmental_errors", "doc", "requires_established",
-                    "observation", "idempotency_key", "binds", "attests", "operation_field"}
+                    "observation", "idempotency_key", "binds", "attests", "operation_field", "verifies"}
 
 
 class ToolConfigurationViolation(ValueError):
@@ -86,6 +87,10 @@ class ToolContract:
     #: ``operation_field``, or, without one, by the operator's declaration that the state is that operation's.
     attests: str = "state"
     operation_field: str | None = None
+    #: A hypothesis check's typed binding to the claim it checks (review F1): which of its request arguments
+    #: and which fields of its answer name the claim's subject, its scope (or the one scope the service answers
+    #: for, ``value``) and each condition. Without it no answer of this tool decides a hypothesis.
+    verifies: Mapping[str, Any] | None = None
 
     @property
     def service(self) -> str:
@@ -105,7 +110,8 @@ class ToolContract:
                 **({"observation": True} if self.observation else {}),
                 **({"idempotency_key": dict(self.idempotency_key)} if self.idempotency_key else {}),
                 **({"binds": {key: dict(value) for key, value in self.binds.items()}, "attests": self.attests,
-                    "operation_field": self.operation_field} if self.state_check_for is not None else {})}
+                    "operation_field": self.operation_field} if self.state_check_for is not None else {}),
+                **({"verifies": copy.deepcopy(dict(self.verifies))} if self.verifies is not None else {})}
 
     @property
     def contract_ref(self) -> str:
@@ -180,6 +186,31 @@ def _names(value: Any, detail: str) -> list[str]:
     return value
 
 
+def _sides(value: Any, detail: str, *, literal: bool = False) -> dict[str, str]:
+    """One binding: the request argument and/or the answer field naming a part of the claim (or, for a scope,
+    the one ``value`` the service answers for)."""
+    sides = {"request", "answer"} | ({"value"} if literal else set())
+    if (type(value) is not dict or not value or set(value) - sides or ("value" in value and len(value) > 1)
+            or any(type(item) is not str or not item for item in value.values())):
+        raise _fail(detail)
+    return dict(sorted(value.items()))
+
+
+def _parse_verifies(name: str, value: Any) -> dict[str, Any] | None:
+    """A hypothesis check's binding to the claim: subject and scope always, each condition it can answer."""
+    if value is None:
+        return None
+    detail = f"hypothesis check {name} binds the claim's subject, scope and conditions to its request or answer"
+    if type(value) is not dict or not {"subject", "scope"} <= set(value) or set(value) - {"subject", "scope",
+                                                                                           "conditions"}:
+        raise _fail(detail)
+    conditions = value.get("conditions", {})
+    if type(conditions) is not dict or any(type(key) is not str or not key for key in conditions):
+        raise _fail(detail)
+    return {"subject": _sides(value["subject"], detail), "scope": _sides(value["scope"], detail, literal=True),
+            "conditions": {key: _sides(item, detail) for key, item in sorted(conditions.items())}}
+
+
 def _parse_semantics(name: str, value: Any) -> dict[str, Any]:
     """The documented answer semantics of one tool (its ``contract`` object)."""
     contract = _mapping(value, f"{name} contract", required=set(), optional=_CONTRACT_FIELDS)
@@ -230,7 +261,8 @@ def _parse_semantics(name: str, value: Any) -> dict[str, Any]:
             "state_check_for": contract.get("state_check_for"), "resolve_state": resolve_state,
             "environmental_errors": tuple(sorted(set(environmental))), "doc": str(contract.get("doc", "")),
             "requires_established": contract.get("requires_established", False),
-            "observation": contract.get("observation", False)}
+            "observation": contract.get("observation", False),
+            "verifies": _parse_verifies(name, contract.get("verifies"))}
 
 
 def _parse_tool(item: Any, servers: Mapping[str, ToolServer], known: Mapping[str, ToolContract]) -> ToolContract:

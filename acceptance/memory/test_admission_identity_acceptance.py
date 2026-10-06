@@ -8,7 +8,9 @@ the independent ledger, is admitted.
 
 A database is deleted and created again under its old name: the statement
 about the old incarnation is found, its value is even the one the new
-incarnation has, and it is still not admitted for the new one.
+incarnation has, and it is still not admitted for the new one — and the
+billing service, which quotes the old incarnation, confirms nothing about the
+new one.
 
 An alias is a confirmed link, never a similarity: a directory names what
 ``acct-7`` stands for and an independent registry confirms it, so knowledge
@@ -24,9 +26,9 @@ AT = "2026-03-01"
 BALANCE = "Balance of {} is {} euro"
 
 
-def _account(world, name, value):
+def _account(world, name, value, entity=None):
     catalog.publish(world, "catalog", name, "balance", value, text=BALANCE.format(name, value), start="2026-01-01")
-    catalog.publish(world, "billing", name, "balance", value)
+    catalog.publish(world, "billing", name, "balance", value, entity=name if entity is None else entity)
 
 
 def _checked(asked, record_id):
@@ -53,7 +55,7 @@ def test_an_object_recreated_under_its_name_is_another_entity(tmp_path):
     world = catalog.world(tmp_path)
     old = {"namespace": "db", "type": "database", "id": "orders", "uid": "u-1"}
     new = {**old, "uid": "u-2"}
-    _account(world, "orders", 20)
+    _account(world, "orders", 20, entity=old)  # Billing quotes the old incarnation.
     learned = catalog.learn(world, "learn-old", "orders", subject=old)["knowledge"]["declared"][0]["statement"]
     # Recreated with the same balance: the old statement's value is the new object's value too.
     asked = catalog.ask(world, "ask-new", "orders", "balance", "orders balance", at=AT, subject=new,
@@ -61,7 +63,9 @@ def test_an_object_recreated_under_its_name_is_another_entity(tmp_path):
     candidate, = asked["search"]["candidates"]
     assert candidate["id"] == learned and candidate["entity"] == old and candidate["value"] == 20
     assert asked["admission"]["decision"] == "abstained"
-    assert _checked(asked, learned) == ["another_incarnation", "basis_about_another_entity"]
+    # Billing quotes the old incarnation: its answer is no check of the new one, which stays provisional.
+    assert _checked(asked, learned) == ["another_incarnation", "not_confirmed:provisional",
+                                        "basis_about_another_entity"]
     # The old incarnation itself is still answered.
     same = catalog.ask(world, "ask-old", "orders", "balance", "orders balance", at=AT, subject=old,
                        channels=["lexical"])

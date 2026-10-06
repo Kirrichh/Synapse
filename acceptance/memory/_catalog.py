@@ -112,9 +112,11 @@ def tools():
     mirror = tool("mirror_entry", "mirror:web", [stateful({"ok": True}, act={"read": "mirror", "key": "plan"},
                                                           otherwise={"ok": False, "err": "UNKNOWN_PLAN"})],
                   server="mirror", contract={"effect_on_err": {"UNKNOWN_PLAN": "none"}})
+    # Billing names the entity each quote is about; it answers only for the catalog.
     billing = tool("billing_quote", "billing:ops", [stateful({"ok": True}, act={"read": "billing", "key": "plan"},
                                                              otherwise={"ok": False, "err": "UNKNOWN_PLAN"})],
-                   server="billing", contract={"effect_on_err": {"UNKNOWN_PLAN": "none"}})
+                   server="billing", contract={"effect_on_err": {"UNKNOWN_PLAN": "none"}, "verifies": {
+                       "subject": {"answer": "entity"}, "scope": {"value": "catalog"}}})
     embed = tool("embed", "embed:model", [embedder(CONCEPTS)], server="model", role="reason")
     # A directory names what an alias stands for; an independent registry confirms or refutes the link.
     directory = tool("directory", "directory:ops", [stateful({"ok": True}, act={"read": "directory", "key": "entity"},
@@ -122,7 +124,8 @@ def tools():
                      server="names", contract={"effect_on_err": {"UNKNOWN_NAME": "none"}})
     registry = tool("registry", "registry:ops", [stateful({"ok": True}, act={"read": "registry", "key": "entity"},
                                                           otherwise={"ok": False, "err": "UNKNOWN_NAME"})],
-                    server="names", contract={"effect_on_err": {"UNKNOWN_NAME": "none"}})
+                    server="names", contract={"effect_on_err": {"UNKNOWN_NAME": "none"}, "verifies": {
+                        "subject": {"request": "entity", "answer": "entity"}, "scope": {"value": "catalog"}}})
     return [catalog, mirror, billing, embed, directory, registry]
 
 
@@ -155,9 +158,10 @@ def _put(world: MemoryWorld, room: str, key: str, content: dict) -> None:
 
 def publish(world: MemoryWorld, room: str, plan: str, prop: str, value, *, text: str = "", start: str | None = None,
             polarity: bool = True, **extra) -> None:
-    """What one service answers about one plan from now on (the checker's truth)."""
-    _put(world, room, plan, {"plan": plan, "property": prop, "value": value, "polarity": polarity, "start": start,
-                             "text": text, "fact": {prop: value}, prop: value, **extra})
+    """What one service answers about one plan from now on (the checker's truth); the entity it names is the
+    plan unless ``entity`` says which object (a namespace, a type, an incarnation)."""
+    _put(world, room, plan, {"plan": plan, "entity": plan, "property": prop, "value": value, "polarity": polarity,
+                             "start": start, "text": text, "fact": {prop: value}, prop: value, **extra})
 
 
 def learn(world: MemoryWorld, run_id: str, plan: str, *, source: str = "catalog_entry", check: bool = False,

@@ -1,13 +1,17 @@
 """Stand trials as a verified comparison of competitors, over plain data (review R5 §4–5).
 
 * each decided trial of the two competitors inside its transfer scope is one
-  comparable situation; the same situation tried again counts once, an
-  undecided trial (arms from two states, an undecided arm) counts nothing;
+  comparable situation; the same situation tried again with the same results
+  counts once, with other results the trials contradict each other and name no
+  winner, whichever came first; an undecided trial (arms from two states, an
+  undecided arm) counts nothing;
 * one procedure wins only when it did better in the declared number of
   situations and never worse; contradicting trials and equal results name no
   winner;
-* a trial whose scope does not reproduce every value the competitors'
-  trigger admits says nothing about it;
+* a trial says something about a trigger only when everything the trigger
+  admits lies inside the scope: every field the trigger names is reproduced,
+  and every field the stand bounded the trigger bounds to values tried — a
+  trigger open on the weather is wider than a stand tried in clear weather;
 * an arm's outcome is the environment's: a body refused something its
   contracts forbid has failed whatever the anchor says; an undecided segment
   leaves the arm undecided;
@@ -19,6 +23,7 @@ from __future__ import annotations
 import pytest
 
 from acceptance.memory import _court_data as data
+from synapse.memory_consolidation.court.advice import conflict_advice
 from synapse.memory_consolidation.court.comparison import compare_trials
 from synapse.memory_consolidation.court.trials import arm_outcome
 
@@ -37,6 +42,13 @@ def _trial(left, right, outcomes, situation, *, decided=True, scope=SCOPE, stand
     ([("success", "failure", "s1"), ("success", "failure", "s1")], None, "too_few_trials"),
     ([("success", "failure", "s1"), ("failure", "success", "s2")], None, "contradicting_trials"),
     ([("success", "success", "s1"), ("failure", "failure", "s2")], None, "no_difference_established"),
+    # The same situation tried again with other results contradicts itself, in either order of the records.
+    ([("success", "failure", "s1"), ("success", "failure", "s2"), ("failure", "success", "s1")], None,
+     "contradicting_trials"),
+    ([("success", "failure", "s1"), ("success", "failure", "s2"), ("success", "success", "s1")], None,
+     "contradicting_trials"),
+    ([("success", "success", "s1"), ("success", "failure", "s2"), ("success", "failure", "s1")], None,
+     "contradicting_trials"),
     # Better in one situation of the two declared, never worse: not enough for either.
     ([("success", "failure", "s1"), ("success", "success", "s2")], None, "no_difference_established"),
     ([("failure", "failure", "s1"), ("failure", "success", "s2")], None, "no_difference_established"),
@@ -74,6 +86,43 @@ def test_a_scope_that_does_not_cover_the_trigger_proves_nothing():
     wider = [[*WHEN[0], {"field": "tool", "op": "==", "value": "flights"}]] * 2  # A field the stand never names.
     trials = [_trial("A", "B", ("success", "failure"), name) for name in ("s1", "s2")]
     assert compare_trials("A", "B", trials, 2, wider)["reason"] == "outside_transfer_scope"
+
+
+CLEAR = {"fields": {"route_kind": ["intl"], "weather": ["clear"]}}
+INTL = {"field": "route_kind", "op": "==", "value": "intl"}
+
+
+@pytest.mark.parametrize("when, covered", [
+    ([INTL], False),  # Open on the weather: wider than a stand tried in clear weather.
+    ([], False),
+    ([INTL, {"field": "weather", "op": "in", "value": ["clear", "rain"]}], False),
+    ([INTL, {"field": "weather", "op": "!=", "value": "rain"}], False),  # A negation never bounds to a set.
+    ([INTL, {"field": "weather", "op": "==", "value": "clear"}], True),
+    ([INTL, {"field": "weather", "op": "in", "value": ["clear"]}], True),
+    ([INTL, {"field": "weather", "op": "in", "value": ["clear", "rain"]},
+      {"field": "weather", "op": "==", "value": "clear"}], True),  # Bounds on one field intersect,
+    ([INTL, {"field": "weather", "op": "==", "value": "clear"},
+      {"field": "weather", "op": "in", "value": ["clear", "rain"]}], True),  # in either order;
+    ([INTL, {"field": "weather", "op": "==", "value": "clear"},
+      {"field": "weather", "op": "!=", "value": "rain"}], True),  # a negation narrows a bound further.
+])
+def test_a_trial_covers_a_trigger_only_inside_what_the_stand_tried(when, covered):
+    trials = [_trial("A", "B", ("success", "failure"), name, scope=CLEAR) for name in ("s1", "s2")]
+    found = compare_trials("A", "B", trials, 2, [when, [INTL, {"field": "weather", "op": "==", "value": "clear"}]])
+    assert (found["winner"], found["reason"]) == (("A", "better_in_stand_trials") if covered
+                                                  else (None, "outside_transfer_scope"))
+
+
+@pytest.mark.parametrize("scope, lifted", [(CLEAR, False), (SCOPE, True)])
+def test_the_court_lifts_a_ban_only_for_a_trigger_inside_the_stand(scope, lifted):
+    config, state, ids = data.world(labels=("q", "c"), trust=0.7, state_name="active")
+    state["slow_only"] = [data.CONDITION]  # The competitors' trigger bounds the route kind alone.
+    trials = [_trial(ids["q"], ids["c"], ("success", "failure"), name, scope=scope) for name in "123"]
+    after, decision = data.window(config, state, advice=conflict_advice(None, state, config.parameters, [], [], [],
+                                                                        trials))
+    conflict, = decision["sections"]["conflicts"]
+    assert conflict["step"] == (2 if lifted else 3) and (after["slow_only"] == []) is lifted
+    assert conflict["advice"]["trial"]["reason"] == ("better_in_stand_trials" if lifted else "outside_transfer_scope")
 
 
 @pytest.mark.parametrize("label", ["q", "c"])

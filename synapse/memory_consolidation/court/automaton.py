@@ -4,9 +4,11 @@ Transitions T1–T9, TC, TS and TR as in spec part 2 §4.6, checked by the
 declared decision rule. Each transition has one cause, and the automaton keeps
 the causes apart (review R6):
 
-* sufficient experience promotes (T1, T4): fires counted from the state's
-  entry (T1: since birth, in the declared number of tasks, at the declared
-  trust);
+* sufficient experience promotes (T1, T4): confirmed experience — fires the
+  environment decided (counted signals) — from the state's entry (T1: since
+  birth, in the declared number of distinct tasks, at the declared trust). A
+  fire whose outcome stays undecided is use, never experience: it neither
+  fills the quota nor counts as a failure;
 * confirmed errors demote (T2, T3, T5): under ``threshold`` the last
   ``t3_fires`` counted signals in the state average below ``t3_signal``; under
   ``sprt`` Wald's test on the usefulness of each counted signal, reset on every
@@ -86,9 +88,19 @@ def _count(parameters, metadata, fire) -> None:
 
 
 def _since_birth(metadata, fire) -> None:
+    """Use since birth, and apart from it the confirmed experience a promotion reads."""
+    task = fire["task_id"] or f"run:{fire['run_id']}"
     metadata["fires_since_birth"] += 1
-    metadata["tasks_since_birth"] = sorted(set(metadata["tasks_since_birth"])
-                                           | {fire["task_id"] or f"run:{fire['run_id']}"})
+    metadata["tasks_since_birth"] = sorted(set(metadata["tasks_since_birth"]) | {task})
+    if fire["status"] == "counted":
+        metadata["counted_since_birth"] += 1
+        metadata["counted_tasks_since_birth"] = sorted(set(metadata["counted_tasks_since_birth"]) | {task})
+
+
+def _experienced(parameters, metadata, trust) -> bool:
+    """T1's experience: the declared trust, counted fires and distinct tasks with a counted fire since birth."""
+    return (trust >= parameters["t1_trust"] and metadata["counted_since_birth"] >= parameters["t1_fires"]
+            and len(metadata["counted_tasks_since_birth"]) >= parameters["t1_tasks"])
 
 
 def _trust_track(context, step: _Step) -> tuple[float, dict[tuple[str, str], float]]:
@@ -113,14 +125,13 @@ def _reached(parameters, metadata, trust) -> tuple[str, str] | None:
     if len(tail) >= parameters["t3_fires"] and mean(tail) < parameters["t3_signal"]:
         return "errors", f"the last {len(tail)} counted signals average {mean(tail):.4f}"
     state = metadata["state"]
-    if state == "born" and (trust >= parameters["t1_trust"] and metadata["fires_since_birth"] >= parameters["t1_fires"]
-                            and len(metadata["tasks_since_birth"]) >= parameters["t1_tasks"]):
-        return "promotion", (f"trust {trust:.4f}, {metadata['fires_since_birth']} fires in "
-                             f"{len(metadata['tasks_since_birth'])} tasks")
-    if state == "probation" and metadata["signals_in_state"] and metadata["fires_in_state"] >= parameters["t4_fires"]:
+    if state == "born" and _experienced(parameters, metadata, trust):
+        return "promotion", (f"trust {trust:.4f}, {metadata['counted_since_birth']} counted fires in "
+                             f"{len(metadata['counted_tasks_since_birth'])} tasks")
+    if state == "probation" and metadata["signals_in_state"] >= parameters["t4_fires"]:
         average = metadata["signal_sum_in_state"] / metadata["signals_in_state"]
         if average >= parameters["t4_signal"]:
-            return "promotion", f"{metadata['fires_in_state']} fires in probation, mean {average:.4f}"
+            return "promotion", f"{metadata['signals_in_state']} counted fires in probation, mean {average:.4f}"
     return None
 
 
@@ -187,9 +198,7 @@ def _born(context, step: _Step) -> None:
     if step.hypothesis == "H1":
         _move(context, step, "probation", "T2", "SPRT accepted H1", "confirmed_errors")
         return
-    if step.hypothesis == "H0" and (metadata["trust"] >= parameters["t1_trust"]
-                                    and metadata["fires_since_birth"] >= parameters["t1_fires"]
-                                    and len(metadata["tasks_since_birth"]) >= parameters["t1_tasks"]):
+    if step.hypothesis == "H0" and _experienced(parameters, metadata, metadata["trust"]):
         _move(context, step, "active", "T1", "SPRT accepted H0", "sufficient_experience")
         return
     disused = _disused(context, step)

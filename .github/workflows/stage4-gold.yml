@@ -955,6 +955,10 @@ jobs:
             file: acceptance/memory/test_partial_effect_acceptance.py
           - shard: hypothesis-expiry
             file: acceptance/memory/test_hypothesis_expiry_acceptance.py
+          - shard: hypothesis-binding-contract
+            file: acceptance/memory/test_hypothesis_binding_contract.py
+          - shard: hypothesis-binding
+            file: acceptance/memory/test_hypothesis_binding_acceptance.py
           - shard: fast-path-attestation
             file: acceptance/memory/test_fast_path_attestation_acceptance.py
           - shard: contract-violation

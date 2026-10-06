@@ -125,7 +125,7 @@ def test_t1_trust_threshold(trust, promoted):
 def test_t1_fires_threshold(earlier, promoted):
     # One more fire this window: the counts are 4, 5 and 6 against t1_fires = 5.
     configuration, state, ids = _world({**_NO_UPDATE, "t1_trust": 0.5, "t1_fires": 5, "t1_tasks": 1},
-                                       ("q", QUOTA, BINDING, {"fires_since_birth": earlier}))
+                                       ("q", QUOTA, BINDING, {"counted_since_birth": earlier}))
     moves = _moves(_decide(configuration, state, _fires(ids["q"], state, 1)))
     assert ((ids["q"], "T1", "active") in moves) is promoted
 
@@ -135,7 +135,7 @@ def test_t1_tasks_threshold(earlier_tasks, promoted):
     # One more task this window: 1, 2 and 3 distinct tasks against t1_tasks = 2.
     configuration, state, ids = _world(
         {**_NO_UPDATE, "t1_trust": 0.5, "t1_fires": 1, "t1_tasks": 2},
-        ("q", QUOTA, BINDING, {"tasks_since_birth": [f"earlier-{index}" for index in range(earlier_tasks)]}))
+        ("q", QUOTA, BINDING, {"counted_tasks_since_birth": [f"earlier-{index}" for index in range(earlier_tasks)]}))
     moves = _moves(_decide(configuration, state, _fires(ids["q"], state, 1)))
     assert ((ids["q"], "T1", "active") in moves) is promoted
 

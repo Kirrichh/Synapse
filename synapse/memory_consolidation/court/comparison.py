@@ -23,10 +23,13 @@ it rests only on recorded outcomes that can be compared:
 The histories remain observational data: they are not a counterfactual
 experiment in independent copies of one initial state, and the comparison says
 so (``basis``). Stand trials (``trials.py``) are such experiments: each decided
-trial of the two competitors is one comparable situation, each situation once,
-judged by the same rule under its own basis — and only for triggers inside the
-transfer scope its stand declares; outside it a trial proves nothing. The court
-lifts a slow-only ban only on a winner found here.
+trial of the two competitors is one comparable situation, each situation once
+(tried again with the same results it counts once; with other results the
+trials contradict each other and decide nothing), judged by the same rule
+under its own basis — and only for a trigger whose whole admitted region lies
+inside the transfer scope its stand declares; a trigger that leaves open a
+field the stand bounded is wider than the stand, and a trial proves nothing
+about it. The court lifts a slow-only ban only on a winner found here.
 """
 from __future__ import annotations
 
@@ -100,15 +103,33 @@ def compare(left: str, right: str, histories: Mapping[str, list], minimum: int) 
             "excluded": {left: excluded_a, right: excluded_b}}
 
 
+def _admitted(conditions) -> dict[str, set[bytes] | None]:
+    """Per field a trigger names, the finite set of values its conditions admit (``None``: not finite)."""
+    found: dict[str, set[bytes] | None] = {}
+    for condition in conditions:
+        name = condition["field"]
+        values = ({canonical(condition["value"])} if condition["op"] == "==" else
+                  {canonical(item) for item in condition["value"]} if condition["op"] == "in" else None)
+        if values is None:
+            found.setdefault(name, None)  # A bound, a negation or a type test narrows; it never makes finite.
+        else:
+            found[name] = values if found.get(name) is None else found[name] & values
+    return found
+
+
 def _covered(scope, condition_sets) -> bool:
-    """Whether every value a trigger admits on a field lies in the values the stand reproduces."""
+    """Whether everything a trigger admits lies inside what the stand reproduced: every field the trigger
+    names is one the stand reproduces, and on every field the stand reproduces the trigger admits only values
+    the stand tried. A field the trigger leaves open admits every value — wider than any stand — so a trigger
+    that does not bound a field of the stand is never covered by it."""
+    reproduced = {name: {canonical(item) for item in values} for name, values in scope["fields"].items()}
     for conditions in condition_sets:
-        for condition in conditions:
-            values = scope["fields"].get(condition["field"])
-            admitted = ([condition["value"]] if condition["op"] == "==" else
-                        list(condition["value"]) if condition["op"] == "in" else None)
-            if values is None or admitted is None or not {canonical(item) for item in admitted} <= {
-                    canonical(item) for item in values}:
+        admitted = _admitted(conditions)
+        if set(admitted) - set(reproduced):
+            return False
+        for name, values in reproduced.items():
+            allowed = admitted.get(name)
+            if allowed is None or not allowed <= values:
                 return False
     return True
 
@@ -119,11 +140,15 @@ def compare_trials(left: str, right: str, trials: Iterable[Mapping[str, Any]], m
     relevant = [item for item in trials if set(item["arms"]) == {left, right}]
     conditions = [list(group) for group in conditions]
     inside = [item for item in relevant if _covered(item["scope"], conditions)]
-    situations: dict[str, dict[str, str]] = {}
-    for item in sorted(inside, key=lambda value: value["id"]):
+    # One situation tried again with the same results counts once; with other results it contradicts itself.
+    tried: dict[str, set[tuple[str, str]]] = {}
+    for item in inside:
         if item["decided"]:
-            situations.setdefault(f"{item['stand']}|{item['situation']}",
-                                  {habit_id: arm["outcome"] for habit_id, arm in item["arms"].items()})
+            tried.setdefault(f"{item['stand']}|{item['situation']}", set()).add(
+                (item["arms"][left]["outcome"], item["arms"][right]["outcome"]))
+    mixed = sorted(key for key, results in tried.items() if len(results) > 1)
+    situations = {key: dict(zip((left, right), next(iter(results))))
+                  for key, results in tried.items() if len(results) == 1}
     better = {left: 0, right: 0}
     for outcomes in situations.values():
         if outcomes[left] != outcomes[right]:
@@ -131,6 +156,8 @@ def compare_trials(left: str, right: str, trials: Iterable[Mapping[str, Any]], m
     winner, reason = None, "too_few_trials"
     if relevant and not inside:
         reason = "outside_transfer_scope"
+    elif mixed:
+        reason = "contradicting_trials"  # A copy of one initial state that gave two results decides nothing.
     elif len(situations) >= minimum:
         if better[left] and better[right]:
             reason = "contradicting_trials"
@@ -141,6 +168,6 @@ def compare_trials(left: str, right: str, trials: Iterable[Mapping[str, Any]], m
         else:
             reason = "no_difference_established"
     return {"basis": "stand_trial", "winner": winner, "reason": reason, "pairs": len(situations),
-            "better": better, "trials": sorted(item["id"] for item in relevant),
+            "better": better, "mixed_situations": len(mixed), "trials": sorted(item["id"] for item in relevant),
             "outside_scope": len(relevant) - len(inside),
             "stands": sorted({item["stand"] for item in inside})}

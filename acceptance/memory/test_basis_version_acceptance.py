@@ -57,7 +57,8 @@ def _world(root):
         # The runbook answers once, then can no longer determine the command.
         tool("runbook", "runbook:ops", [answer({"ok": True, "determinable": False},
                                                sequence=[{"payload": {"ok": True, "restart_command": COMMAND}}])],
-             server="runbook"),
+             server="runbook",
+             contract={"verifies": {"subject": {"request": "service"}, "scope": {"value": "host-a"}}}),
         tool("gate", "clock:ops", [answer({"ok": True}, when={"run": "paused"}, delay=25, until=SIGNAL), answer({"ok": True})],
              server="clock"),
         tool("restart_service", "ops:host-a", [answer({"ok": True, "restarted": True}, effect="restarted")],

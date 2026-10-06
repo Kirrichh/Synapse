@@ -127,7 +127,8 @@ def tools(count: int = 40) -> list:
         tool("kb_card", "kb:wiki", [stateful({"ok": True}, act={"read": "cards", "key": "id"},
                                              otherwise={"ok": False, "err": "NO_CARD"})], server="kb",
              contract={"effect_on_err": {"NO_CARD": "none"}}),
-        tool("runbook", "runbook:ops", [answer({"ok": True, "restart_command": COMMAND})], server="runbook"),
+        tool("runbook", "runbook:ops", [answer({"ok": True, "restart_command": COMMAND})], server="runbook",
+             contract={"verifies": {"subject": {"request": "service"}, "scope": {"value": "host-a"}}}),
         tool("kb_mirror", "mirror:kb", [answer({"ok": True, "restart_command": COMMAND})], server="mirror"),
         tool("restart_service", "ops:host-a", [answer({"ok": True, "restarted": True}, effect="restarted")],
              server="ops", contract={"requires_established": True})]

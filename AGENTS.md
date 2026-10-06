@@ -108,7 +108,28 @@ Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:
 No Linux full suite was run for Patch 2. A recorded baseline is evidence of an
 observed run, not a command to rerun the full suite before each patch.
 
-The latest observed Linux run is the completed memory review package on PR
+The latest observed Linux verification is the second review of PR #108 at
+`5580007` (F1 a check decides only the claim its contract binds it to; F2 a
+stand trial covers a trigger only inside the tested scope; F3 contradicting
+trials name no winner; F4 promotion reads confirmed experience only). It is a
+targeted run, not a full suite: Python 3.11, every `acceptance/memory` file in
+its own process, four files in parallel, on the uncommitted working tree,
+plus the memory files of `tests/` and the stage16 memory court files:
+
+```text
+acceptance/memory:  75 files, 343 passed
+tests/ (memory):    tests/test_memory_dependency_direction.py, 2 passed
+stage16 court:      6 files, 30 passed
+```
+
+One expectation changed with F1 and was rerun alone:
+`test_admission_identity_acceptance.py` — billing quotes the old incarnation of
+a recreated database, so the check of the new incarnation stays provisional
+(an added admission reason, the same abstention). The reviewer's battery
+(4 findings, 5 positive controls) passes 9/9. A mutation campaign over the new
+rules killed all 22 mutants (`reports/memory_second_review_mutation_evidence_v1.json`).
+
+The latest observed full Linux run is the completed memory review package on PR
 #108 (attestations of admission bases, contract violations archive a habit,
 the dependency projection and forget, generalization explanations and
 contract versions, stand trials, state snapshots with tail replay; Python

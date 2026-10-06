@@ -1,5 +1,25 @@
 # Synapse Changelog
 
+## Memory review of PR108, second pass — check relevance, stand scope, contradicting trials, confirmed experience — 2026-10-06
+
+New tool contract field `verifies`; hypothesis check rule
+`synapse.memory.hypothesis-check/v2`; hypothesis probe events and the court's
+hypothesis records carry `rule`; stand trial comparisons report
+`mixed_situations`; learned habit metadata gains `counted_since_birth` and
+`counted_tasks_since_birth`.
+
+- F1: a check decides a hypothesis only when the checking tool's contract
+  binds its request and answer to the claim's subject, scope and conditions; a
+  check about another object neither confirms nor refutes. Statuses decided
+  under the v1 rule are never reused.
+- F2: a stand trial speaks for a trigger only when everything the trigger
+  admits lies inside the stand's tested scope; a trigger open on a field the
+  stand bounded keeps its slow-only ban.
+- F3: repeated trials of one situation with different results contradict each
+  other and name no winner, whatever their order.
+- F4: promotion (T1, T4, and T1 under SPRT) reads confirmed experience only;
+  undecided fires count as use, neither as experience nor as errors.
+
 ## Memory review of PR108, completed — attestations, dependencies, trials, measurements — 2026-10-06
 
 New operator command `synapse memory trial`, new run option `--exam-trial`,

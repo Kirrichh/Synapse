@@ -12,6 +12,13 @@ not reach opposite conclusions from the same stream:
   errors demote the promoted habit at the next consolidation — the order the
   stream reached them, never the other way round;
 * rare errors among successes never demote;
+* a fire whose outcome the environment left undecided is use, not
+  experience: it neither fills a promotion's quota nor counts as an error —
+  one success and four undecided fires keep a habit in probation, five
+  undecided fires keep a trusted habit born, five confirmed successes in one
+  task stay one task of experience however many tasks undecided fires came
+  from, and five confirmed successes promote it however the undecided ones
+  are interleaved;
 * an event delivered twice counts once;
 * after a change of environment, recent errors demote an active habit whatever
   its long history of successes;
@@ -139,3 +146,62 @@ def test_a_contract_violation_archives_at_once_whatever_the_experience(state_nam
         {"habit_id": habit_id, "layer": 2, "run_id": "run-0002", "event_id": "ev-0002",
          "refusals": ["a hidden repeat of an unresolved operation: the effect is unknown"]}]
 
+
+
+def _undecided(fire):
+    return {**fire, "outcome": "uncertain", "segment_verdict": "uncertain", "status": "pending", "signal": None,
+            "why": "segment_uncertain"}
+
+
+@pytest.mark.parametrize("state_name, trust, decided", [("probation", 0.5, [True]), ("born", 0.95, [])])
+def test_undecided_fires_supply_no_experience(state_name, trust, decided):
+    config, state, ids = data.world(FIXED_TRUST, trust=trust, state_name=state_name)
+    habit_id = ids["q"]
+    trigger_id = state["habits"][habit_id]["trigger_id"]
+    fires = [data.fire(habit_id, trigger_id, index, success) for index, success in enumerate(decided)]
+    fires += [_undecided(data.fire(habit_id, trigger_id, len(fires) + index, True))
+              for index in range(4 + (not decided))]
+    after, decision = data.window(config, state, fires)
+    habit = after["habits"][habit_id]
+    assert decision["sections"]["transitions"] == [] and habit["state"] == state_name
+    assert habit["fires_since_birth"] == 5 and habit["counted_since_birth"] == len(decided)
+    assert habit["tail"] == [] if not decided else len(habit["tail"]) == 1  # Undecided is never an error.
+
+
+@pytest.mark.parametrize("state_name, rule", [("probation", "T4"), ("born", "T1")])
+def test_confirmed_successes_promote_among_undecided_fires(state_name, rule):
+    config, state, ids = data.world(FIXED_TRUST, trust=0.9, state_name=state_name)
+    habit_id = ids["q"]
+    trigger_id = state["habits"][habit_id]["trigger_id"]
+    fires = []
+    for index in range(10):
+        fire = data.fire(habit_id, trigger_id, index, True)
+        fires.append(fire if index % 2 else _undecided(fire))
+    after, decision = data.window(config, state, fires)
+    assert [(item["rule"], item["to"], item["cause"]) for item in decision["sections"]["transitions"]] == [
+        (rule, "active", "sufficient_experience")]
+    assert after["habits"][habit_id]["state"] == "active"
+
+
+def test_tasks_of_experience_are_tasks_with_a_confirmed_fire():
+    config, state, ids = data.world(FIXED_TRUST, trust=0.9)  # t1_tasks = 2
+    habit_id = ids["q"]
+    trigger_id = state["habits"][habit_id]["trigger_id"]
+    fires = [{**data.fire(habit_id, trigger_id, index, True), "task_id": "task-only"} for index in range(5)]
+    fires += [_undecided(data.fire(habit_id, trigger_id, 5 + index, True)) for index in range(3)]
+    after, decision = data.window(config, state, fires)
+    habit = after["habits"][habit_id]
+    assert decision["sections"]["transitions"] == [] and habit["state"] == "born"
+    assert habit["counted_tasks_since_birth"] == ["task-only"] and len(habit["tasks_since_birth"]) == 4
+
+
+def test_fires_of_experience_are_confirmed_fires():
+    config, state, ids = data.world(FIXED_TRUST, trust=0.9)  # t1_fires = 5, t1_tasks = 2
+    habit_id = ids["q"]
+    trigger_id = state["habits"][habit_id]["trigger_id"]
+    fires = [data.fire(habit_id, trigger_id, index, True) for index in range(2)]
+    fires += [_undecided(data.fire(habit_id, trigger_id, 2 + index, True)) for index in range(3)]
+    after, decision = data.window(config, state, fires)
+    habit = after["habits"][habit_id]
+    assert decision["sections"]["transitions"] == [] and habit["state"] == "born"
+    assert (habit["fires_since_birth"], habit["counted_since_birth"]) == (5, 2)

@@ -21,6 +21,7 @@ from __future__ import annotations
 from acceptance.memory._world import MemoryWorld, answer, tool
 
 TRUE = "pg_ctl restart -m fast"
+CARDS = ("pg-good", "pg-steady", "pg-bad", "pg-mute", "pg-none")
 
 PROGRAM = '''
 memory palace "clerk" {
@@ -37,7 +38,7 @@ context "restart" {
     command = card.payload.command
   }
   let origin = {"tool": "kb_card", "args": {"id": card_id}}
-  let entity = hypothesis({"aspect": "entity", "subject": card_id, "statement": {"service": "postgresql"}, "scope": "host-a", "source": origin, "check": {"tool": "inventory", "args": {"host": "host-a"}}})
+  let entity = hypothesis({"aspect": "entity", "subject": card_id, "statement": {"service": "postgresql"}, "scope": "host-a", "source": origin, "check": {"tool": "inventory", "args": {"host": "host-a", "card": card_id}}})
   let content = hypothesis({"aspect": "content", "subject": "postgresql", "statement": {"restart_command": command}, "scope": "host-a", "source": origin, "check": {"tool": checker, "args": check_args}})
   if established(entity) == false {
     let e = probe(entity)
@@ -67,11 +68,16 @@ def tools():
         answer({"ok": True, "service": "postgresql", "command": "pg_ctl reload", "rev": 1}, when={"id": "pg-mute"})],
         server="kb")
     mirror = tool("kb_mirror", "mirror:kb", [answer({"ok": True, "restart_command": "pg_ctl kill"})], server="mirror")
-    inventory = tool("inventory", "cmdb:ops", [answer({"ok": True, "service": "postgresql", "version": "14"})],
-                     server="cmdb")
+    # The inventory says which service each card of host-a documents: it answers about the card it is asked.
+    inventory = tool("inventory", "cmdb:ops", [
+        answer({"ok": True, "card": card_id, "host": "host-a", "service": "postgresql", "version": "14"},
+               when={"card": card_id}) for card_id in CARDS], server="cmdb", contract={"verifies": {
+                   "subject": {"request": "card", "answer": "card"}, "scope": {"request": "host", "answer": "host"}}})
+    # The runbook of host-a answers about the service it is asked.
     runbook = tool("runbook", "runbook:ops", [
         answer({"ok": True, "determinable": False}, when={"topic": "reload"}),
-        answer({"ok": True, "restart_command": TRUE})], server="runbook")
+        answer({"ok": True, "restart_command": TRUE})], server="runbook",
+        contract={"verifies": {"subject": {"request": "service"}, "scope": {"value": "host-a"}}})
     restart = tool("restart_service", "ops:host-a", [answer({"ok": True, "restarted": True}, effect="restarted")],
                    server="ops", contract={"requires_established": True})
     return [kb, mirror, inventory, runbook, restart]

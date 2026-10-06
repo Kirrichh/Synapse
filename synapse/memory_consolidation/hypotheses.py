@@ -12,16 +12,27 @@ record: another source version is another hypothesis.
 
 A hypothesis starts ``provisional``. Only its declared check decides it, through
 the gateway, and only when the checking source is independent of the claim's
-source in the declared provenance graph: every stated field present and equal
-confirms it, a present and different field refutes it, anything else — a
-failed or lost check, a missing field, an explicit "cannot determine", a
-dependent or unestablished checking source, an absent source — keeps it
-provisional with its reason. Confirming an entity says nothing about a content.
+source in the declared provenance graph *and* the check answered about this
+very claim (review F1): an independent source that answered about another
+object proves nothing about this one. The operator's contract of the checking
+tool (``verifies``) binds the claim to the check — which request argument and
+which answer field name the subject, the scope (or the one scope the service
+answers for) and each condition. The subject is compared by the exact identity
+rules, the scope and conditions by value; a claim's condition the contract
+cannot bind, or a condition the check answered under that the claim does not
+state, leaves the answer about another context. Then every stated field
+present and equal confirms it, a present and different field refutes it;
+anything else — a failed or lost check, a check without a binding, an answer
+about another subject, scope or context, a missing field, an explicit "cannot
+determine", a dependent or unestablished checking source, an absent source —
+keeps it provisional with its reason, neither confirmed nor refuted.
+Confirming an entity says nothing about a content.
 
 Reuse: a status the court recorded for the same hypothesis (same claim, same
-source version) serves a later session only while it is fresh; a changed
-source or unknown freshness never inherits it — the claim is checked again or
-the program abstains.
+source version) serves a later session only while it is fresh and only when it
+was decided under the current check rule; a changed source, unknown freshness
+or a status decided before checks were bound to their claim never inherits it
+— the claim is checked again or the program abstains.
 """
 from __future__ import annotations
 
@@ -84,7 +95,9 @@ def declare(claim: Any, configuration: MemoryConfiguration, source_ref: str | No
                         source={**source, "ref": source_ref}, check=_call(claim["check"], "check", configuration))
 
 
-CHECK_RULE = "synapse.memory.hypothesis-check/v1"
+#: v2 (review F1): a check decides only a claim its contract binds it to. A status decided under v1 is never
+#: reused; the claim is checked again.
+CHECK_RULE = "synapse.memory.hypothesis-check/v2"
 
 
 def verification(record: Mapping[str, Any], configuration: MemoryConfiguration, *, method: str | None,
@@ -110,30 +123,86 @@ def claim_key(record: Mapping[str, Any]) -> str:
                    "source": {"tool": record["source"]["tool"], "args": record["source"]["args"]}})
 
 
+def _bound(binding: Mapping[str, str], args: Mapping[str, Any], payload: Mapping[str, Any]) -> list | str:
+    """The values one binding reads from the check's request and answer, or why it cannot read them."""
+    values = []
+    if "request" in binding:
+        if binding["request"] not in args:
+            return "check_unbound"
+        values.append(args[binding["request"]])
+    if "answer" in binding:
+        if binding["answer"] not in payload:
+            return "check_silent_on"
+        values.append(payload[binding["answer"]])
+    return values
+
+
+def _about_claim(record: Mapping[str, Any], payload: Mapping[str, Any],
+                 configuration: MemoryConfiguration) -> str | None:
+    """Why the check did not answer about this claim's subject, scope and conditions (``None``: it did)."""
+    verifies = configuration.tools.contract(record["check"]["tool"]).verifies
+    if verifies is None:
+        return "check_unbound"
+    args = record["check"]["args"]
+    values = _bound(verifies["subject"], args, payload)
+    if type(values) is str:
+        return values + ":subject"
+    if any(entity_identity.compare(record["subject"], value, configuration.identity) is not None for value in values):
+        return "check_about_another:subject"
+    scope = verifies["scope"]
+    values = [scope["value"]] if "value" in scope else _bound(scope, args, payload)
+    if type(values) is str:
+        return values + ":scope"
+    if any(value != record["scope"] for value in values):
+        return "check_about_another:scope"
+    conditions = record.get("conditions") or {}
+    for name in sorted(set(conditions) | set(verifies["conditions"])):
+        binding = verifies["conditions"].get(name)
+        if binding is None:
+            return f"check_unbound:condition:{name}"
+        if name not in conditions:
+            # The check answered under a condition the claim does not state: about a narrower context.
+            if binding.get("request") in args or binding.get("answer") in payload:
+                return f"check_under_condition:{name}"
+            continue
+        values = _bound(binding, args, payload)
+        if type(values) is str:
+            return f"{values}:condition:{name}"
+        if any(canonical(value) != canonical(conditions[name]) for value in values):
+            return f"check_under_other_condition:{name}"
+    return None
+
+
 def resolve(record: Mapping[str, Any], view: Mapping[str, Any] | None,
             configuration: MemoryConfiguration) -> dict[str, Any]:
-    """The status one recorded check gives the hypothesis (deterministic)."""
+    """The status one recorded check gives the hypothesis (deterministic), under ``CHECK_RULE``."""
+    def decided(status: str, reason: str) -> dict[str, Any]:
+        return {"status": status, "reason": reason, "rule": CHECK_RULE}
+
     if record["source"]["ref"] is None:
-        return {"status": "provisional", "reason": "source_absent"}
+        return decided("provisional", "source_absent")
     if view is None:
-        return {"status": "provisional", "reason": "not_checked"}
+        return decided("provisional", "not_checked")
     source = configuration.tools.contract(record["source"]["tool"]).source
     checker = view.get("source")
     independence = relation(configuration.tools.provenance, source, checker) if checker else None
     if independence != INDEPENDENT:
-        return {"status": "provisional", "reason": f"checking_source_{independence or 'unknown'}"}
+        return decided("provisional", f"checking_source_{independence or 'unknown'}")
     payload = view.get("payload")
     if not view.get("ok") or not isinstance(payload, dict):
-        return {"status": "provisional", "reason": "check_not_answered"}
+        return decided("provisional", "check_not_answered")
     if payload.get("determinable") is False:
-        return {"status": "provisional", "reason": "check_cannot_determine"}
+        return decided("provisional", "check_cannot_determine")
+    elsewhere = _about_claim(record, payload, configuration)
+    if elsewhere is not None:
+        return decided("provisional", elsewhere)
     missing = sorted(name for name in record["statement"] if name not in payload)
     if missing:
-        return {"status": "provisional", "reason": "check_silent_on:" + ",".join(missing)}
+        return decided("provisional", "check_silent_on:" + ",".join(missing))
     differing = sorted(name for name, value in record["statement"].items() if canonical(payload[name]) != canonical(value))
     if differing:
-        return {"status": "refuted", "reason": "contradicted:" + ",".join(differing)}
-    return {"status": "confirmed", "reason": "check_agrees"}
+        return decided("refuted", "contradicted:" + ",".join(differing))
+    return decided("confirmed", "check_agrees")
 
 
 def reuse(record: Mapping[str, Any], known: Mapping[str, Any] | None, claims: Mapping[str, Any],
@@ -148,6 +217,8 @@ def reuse(record: Mapping[str, Any], known: Mapping[str, Any] | None, claims: Ma
         return {"status": None, "reason": "freshness_unknown" if window is None else "stale"}
     if known["status"] == "provisional":
         return {"status": None, "reason": "still_provisional"}
+    if known.get("rule") != CHECK_RULE:
+        return {"status": None, "reason": "checked_under_another_rule"}
     # The court's record of the check that decided it: which session checked, what it read, which case holds it.
     return {"status": known["status"], "reason": "court_record",
             "record": {"window": known["window"], "run_id": known.get("run_id"),

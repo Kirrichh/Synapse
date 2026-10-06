@@ -5,9 +5,10 @@ its check gave. The court folds every recorded check of a window into memory
 state — the latest check of a hypothesis decides it — with the case that
 holds the check as its basis. Reuses are reported, never folded: a reuse
 decides nothing, it saves a check. The snapshot boundary carries the
-statuses and, per claim, the source version last checked, so a later session
-reuses a status only for the very same source version and tells a changed
-source apart from an unknown claim. An emergency window changes nothing.
+statuses with the check rule each was decided under and, per claim, the source
+version last checked, so a later session reuses a status only for the very same
+source version under the current rule and tells a changed source apart from an
+unknown claim. An emergency window changes nothing.
 """
 from __future__ import annotations
 
@@ -28,7 +29,8 @@ def hypothesis_events(found: Mapping[str, list], run_id: str) -> list[dict[str, 
         for position, event in found.get(kind, []):
             items.append({"kind": kind, "position": position, "run_id": run_id, "hypothesis": event["hypothesis"],
                           "record": declared.get(event["hypothesis"]), "status": event["status"],
-                          "reason": event["reason"], "check_ref": event.get("check_ref")})
+                          "reason": event["reason"], "check_ref": event.get("check_ref"),
+                          "rule": event.get("rule")})
     return sorted(items, key=lambda item: item["position"])
 
 
@@ -51,7 +53,9 @@ def hypothesis_stage(state: Mapping[str, Any], draft: Mapping[str, Any], cases, 
         basis = None if check is None else holding.get((item["run_id"], check["evidence"]))
         entry = {"record": copy.deepcopy(item["record"]), "claim_key": claim_key(item["record"]),
                  "source_ref": item["record"]["source"]["ref"], "status": item["status"], "reason": item["reason"],
-                 "window": window, "run_id": item["run_id"], "check_ref": item["check_ref"], "basis": basis}
+                 "window": window, "run_id": item["run_id"], "check_ref": item["check_ref"], "basis": basis,
+                 # The check rule the status was decided under: a status of an older rule is never reused.
+                 "rule": item["rule"]}
         updates[item["hypothesis"]] = entry
         section["probed"].append({key: entry[key] for key in ("run_id", "status", "reason", "basis")}
                                  | {"hypothesis": item["hypothesis"]})
@@ -65,6 +69,6 @@ def boundary_view(hypotheses: Mapping[str, Mapping[str, Any]]) -> tuple[dict, di
         statuses[hypothesis_id] = {"status": entry["status"], "window": entry["window"],
                                    "claim_key": entry["claim_key"], "source_ref": entry["source_ref"],
                                    "run_id": entry.get("run_id"), "check_ref": entry.get("check_ref"),
-                                   "basis": entry.get("basis")}
+                                   "basis": entry.get("basis"), "rule": entry.get("rule")}
         claims[entry["claim_key"]] = hypothesis_id
     return statuses, claims

@@ -33,6 +33,8 @@ session opening gains `trial` and `unverified`; gateway refusals record
   crashes against an independent model, separate A/B/C measures, a held-out
   domain, group-consistent data splits, training order and outage varied
   separately, LongMemEval retrieval through the candidate channel.
+- Mutation campaign over the new memory paths: 55 mutants, all killed by
+  acceptance (`reports/memory_review_mutation_evidence_v1.json`).
 - `tests/test_swebench_measurement_output_boundary.py` keeps only checks of
   the product's behavior: the scope tripwires over fixed historical commits
   and the working tree, and the checks of words in the production source, are

@@ -1,0 +1,786 @@
+{
+  "commit": "a951dd9d732f9784af116a757385f37f8f1955fc",
+  "dirty": false,
+  "exams": [
+    {
+      "exam": 0,
+      "tasks": {
+        "A": {
+          "EVN": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "EVN"
+              },
+              {
+                "route": "EVN"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 3202.986,
+            "loaded": [],
+            "memory_bytes": 0,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [],
+            "tool_calls": 4
+          },
+          "LED": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "LED"
+              },
+              {
+                "route": "LED"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 2729.145,
+            "loaded": [],
+            "memory_bytes": 0,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [],
+            "tool_calls": 4
+          },
+          "TBS": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "TBS"
+              },
+              {
+                "route": "TBS"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 2732.451,
+            "loaded": [],
+            "memory_bytes": 0,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [],
+            "tool_calls": 4
+          }
+        },
+        "B": {
+          "EVN": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "EVN"
+              },
+              {
+                "route": "EVN"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 1,
+            "latency_ms": 2846.978,
+            "loaded": [
+              "hab_10c40917089a12b23afa4984fea9abe9449d4c361a68de08872be2b54fc6e89a"
+            ],
+            "memory_bytes": 4493,
+            "model_calls": 0,
+            "slow_path": 0,
+            "suppressed": [],
+            "tool_calls": 4
+          },
+          "LED": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "LED"
+              },
+              {
+                "route": "LED"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 2594.584,
+            "loaded": [
+              "hab_10c40917089a12b23afa4984fea9abe9449d4c361a68de08872be2b54fc6e89a"
+            ],
+            "memory_bytes": 4493,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [],
+            "tool_calls": 4
+          },
+          "TBS": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "TBS"
+              },
+              {
+                "route": "TBS"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 1,
+            "latency_ms": 2846.999,
+            "loaded": [
+              "hab_10c40917089a12b23afa4984fea9abe9449d4c361a68de08872be2b54fc6e89a"
+            ],
+            "memory_bytes": 4493,
+            "model_calls": 0,
+            "slow_path": 0,
+            "suppressed": [],
+            "tool_calls": 4
+          }
+        },
+        "C": {
+          "EVN": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "EVN"
+              },
+              {
+                "route": "EVN"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 2950.055,
+            "loaded": [
+              "hab_10c40917089a12b23afa4984fea9abe9449d4c361a68de08872be2b54fc6e89a"
+            ],
+            "memory_bytes": 4493,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [
+              "slow_only"
+            ],
+            "tool_calls": 4
+          },
+          "LED": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "LED"
+              },
+              {
+                "route": "LED"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 2989.807,
+            "loaded": [
+              "hab_10c40917089a12b23afa4984fea9abe9449d4c361a68de08872be2b54fc6e89a"
+            ],
+            "memory_bytes": 4493,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [],
+            "tool_calls": 4
+          },
+          "TBS": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "TBS"
+              },
+              {
+                "route": "TBS"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 2595.099,
+            "loaded": [
+              "hab_10c40917089a12b23afa4984fea9abe9449d4c361a68de08872be2b54fc6e89a"
+            ],
+            "memory_bytes": 4493,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [
+              "slow_only"
+            ],
+            "tool_calls": 4
+          }
+        }
+      },
+      "totals": {
+        "A": {
+          "abstained": 0.0,
+          "erroneous_actions": 0.0,
+          "goal": 3.0,
+          "habit_fires": 0.0,
+          "latency_ms": 8664.582,
+          "lost_useful_knowledge": 2,
+          "memory_bytes": 0.0,
+          "model_calls": 0.0,
+          "slow_path": 3.0,
+          "tasks": 3,
+          "tool_calls": 12.0
+        },
+        "B": {
+          "abstained": 0.0,
+          "erroneous_actions": 0.0,
+          "goal": 3.0,
+          "habit_fires": 2.0,
+          "latency_ms": 8288.561,
+          "lost_useful_knowledge": 0,
+          "memory_bytes": 13479.0,
+          "model_calls": 0.0,
+          "slow_path": 1.0,
+          "tasks": 3,
+          "tool_calls": 12.0
+        },
+        "C": {
+          "abstained": 0.0,
+          "erroneous_actions": 0.0,
+          "goal": 3.0,
+          "habit_fires": 0.0,
+          "latency_ms": 8534.961,
+          "lost_useful_knowledge": 2,
+          "memory_bytes": 13479.0,
+          "model_calls": 0.0,
+          "slow_path": 3.0,
+          "tasks": 3,
+          "tool_calls": 12.0
+        }
+      }
+    },
+    {
+      "exam": 1,
+      "tasks": {
+        "A": {
+          "EVN": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "EVN"
+              },
+              {
+                "route": "EVN"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 2898.163,
+            "loaded": [],
+            "memory_bytes": 0,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [],
+            "tool_calls": 4
+          },
+          "LED": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "LED"
+              },
+              {
+                "route": "LED"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 2668.797,
+            "loaded": [],
+            "memory_bytes": 0,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [],
+            "tool_calls": 4
+          },
+          "TBS": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "TBS"
+              },
+              {
+                "route": "TBS"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 2918.587,
+            "loaded": [],
+            "memory_bytes": 0,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [],
+            "tool_calls": 4
+          }
+        },
+        "B": {
+          "EVN": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "EVN"
+              },
+              {
+                "route": "EVN"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 1,
+            "latency_ms": 3131.075,
+            "loaded": [
+              "hab_26c6d6a3d80c665684d98630546f98e3ad5e4f737d3933cbfca44affcd755037"
+            ],
+            "memory_bytes": 4493,
+            "model_calls": 0,
+            "slow_path": 0,
+            "suppressed": [],
+            "tool_calls": 4
+          },
+          "LED": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "LED"
+              },
+              {
+                "route": "LED"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 2934.151,
+            "loaded": [
+              "hab_26c6d6a3d80c665684d98630546f98e3ad5e4f737d3933cbfca44affcd755037"
+            ],
+            "memory_bytes": 4493,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [],
+            "tool_calls": 4
+          },
+          "TBS": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "TBS"
+              },
+              {
+                "route": "TBS"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 1,
+            "latency_ms": 3092.729,
+            "loaded": [
+              "hab_26c6d6a3d80c665684d98630546f98e3ad5e4f737d3933cbfca44affcd755037"
+            ],
+            "memory_bytes": 4493,
+            "model_calls": 0,
+            "slow_path": 0,
+            "suppressed": [],
+            "tool_calls": 4
+          }
+        },
+        "C": {
+          "EVN": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "EVN"
+              },
+              {
+                "route": "EVN"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 2924.363,
+            "loaded": [
+              "hab_26c6d6a3d80c665684d98630546f98e3ad5e4f737d3933cbfca44affcd755037"
+            ],
+            "memory_bytes": 4493,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [
+              "slow_only"
+            ],
+            "tool_calls": 4
+          },
+          "LED": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "LED"
+              },
+              {
+                "route": "LED"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 3024.323,
+            "loaded": [
+              "hab_26c6d6a3d80c665684d98630546f98e3ad5e4f737d3933cbfca44affcd755037"
+            ],
+            "memory_bytes": 4493,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [],
+            "tool_calls": 4
+          },
+          "TBS": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "TBS"
+              },
+              {
+                "route": "TBS"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 2838.943,
+            "loaded": [
+              "hab_26c6d6a3d80c665684d98630546f98e3ad5e4f737d3933cbfca44affcd755037"
+            ],
+            "memory_bytes": 4493,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [
+              "slow_only"
+            ],
+            "tool_calls": 4
+          }
+        }
+      },
+      "totals": {
+        "A": {
+          "abstained": 0.0,
+          "erroneous_actions": 0.0,
+          "goal": 3.0,
+          "habit_fires": 0.0,
+          "latency_ms": 8485.547,
+          "lost_useful_knowledge": 2,
+          "memory_bytes": 0.0,
+          "model_calls": 0.0,
+          "slow_path": 3.0,
+          "tasks": 3,
+          "tool_calls": 12.0
+        },
+        "B": {
+          "abstained": 0.0,
+          "erroneous_actions": 0.0,
+          "goal": 3.0,
+          "habit_fires": 2.0,
+          "latency_ms": 9157.955,
+          "lost_useful_knowledge": 0,
+          "memory_bytes": 13479.0,
+          "model_calls": 0.0,
+          "slow_path": 1.0,
+          "tasks": 3,
+          "tool_calls": 12.0
+        },
+        "C": {
+          "abstained": 0.0,
+          "erroneous_actions": 0.0,
+          "goal": 3.0,
+          "habit_fires": 0.0,
+          "latency_ms": 8787.629,
+          "lost_useful_knowledge": 2,
+          "memory_bytes": 13479.0,
+          "model_calls": 0.0,
+          "slow_path": 3.0,
+          "tasks": 3,
+          "tool_calls": 12.0
+        }
+      }
+    },
+    {
+      "exam": 2,
+      "tasks": {
+        "A": {
+          "EVN": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "EVN"
+              },
+              {
+                "route": "EVN"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 2874.191,
+            "loaded": [],
+            "memory_bytes": 0,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [],
+            "tool_calls": 4
+          },
+          "LED": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "LED"
+              },
+              {
+                "route": "LED"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 2660.778,
+            "loaded": [],
+            "memory_bytes": 0,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [],
+            "tool_calls": 4
+          },
+          "TBS": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "TBS"
+              },
+              {
+                "route": "TBS"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 2649.362,
+            "loaded": [],
+            "memory_bytes": 0,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [],
+            "tool_calls": 4
+          }
+        },
+        "B": {
+          "EVN": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "EVN"
+              },
+              {
+                "route": "EVN"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 1,
+            "latency_ms": 2798.489,
+            "loaded": [
+              "hab_52a65bb1e30e1515a34b06048e664a6bc2272ff2572a2e100a2b130758f3f13c"
+            ],
+            "memory_bytes": 4493,
+            "model_calls": 0,
+            "slow_path": 0,
+            "suppressed": [],
+            "tool_calls": 4
+          },
+          "LED": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "LED"
+              },
+              {
+                "route": "LED"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 2751.075,
+            "loaded": [
+              "hab_52a65bb1e30e1515a34b06048e664a6bc2272ff2572a2e100a2b130758f3f13c"
+            ],
+            "memory_bytes": 4493,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [],
+            "tool_calls": 4
+          },
+          "TBS": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "TBS"
+              },
+              {
+                "route": "TBS"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 1,
+            "latency_ms": 2740.371,
+            "loaded": [
+              "hab_52a65bb1e30e1515a34b06048e664a6bc2272ff2572a2e100a2b130758f3f13c"
+            ],
+            "memory_bytes": 4493,
+            "model_calls": 0,
+            "slow_path": 0,
+            "suppressed": [],
+            "tool_calls": 4
+          }
+        },
+        "C": {
+          "EVN": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "EVN"
+              },
+              {
+                "route": "EVN"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 2841.875,
+            "loaded": [
+              "hab_52a65bb1e30e1515a34b06048e664a6bc2272ff2572a2e100a2b130758f3f13c"
+            ],
+            "memory_bytes": 4493,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [
+              "slow_only"
+            ],
+            "tool_calls": 4
+          },
+          "LED": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "LED"
+              },
+              {
+                "route": "LED"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 2784.577,
+            "loaded": [
+              "hab_52a65bb1e30e1515a34b06048e664a6bc2272ff2572a2e100a2b130758f3f13c"
+            ],
+            "memory_bytes": 4493,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [],
+            "tool_calls": 4
+          },
+          "TBS": {
+            "abstained": false,
+            "erroneous_actions": 0,
+            "flights": [
+              {
+                "route": "TBS"
+              },
+              {
+                "route": "TBS"
+              }
+            ],
+            "goal": true,
+            "habit_fires": 0,
+            "latency_ms": 2942.081,
+            "loaded": [
+              "hab_52a65bb1e30e1515a34b06048e664a6bc2272ff2572a2e100a2b130758f3f13c"
+            ],
+            "memory_bytes": 4493,
+            "model_calls": 0,
+            "slow_path": 1,
+            "suppressed": [
+              "slow_only"
+            ],
+            "tool_calls": 4
+          }
+        }
+      },
+      "totals": {
+        "A": {
+          "abstained": 0.0,
+          "erroneous_actions": 0.0,
+          "goal": 3.0,
+          "habit_fires": 0.0,
+          "latency_ms": 8184.331,
+          "lost_useful_knowledge": 2,
+          "memory_bytes": 0.0,
+          "model_calls": 0.0,
+          "slow_path": 3.0,
+          "tasks": 3,
+          "tool_calls": 12.0
+        },
+        "B": {
+          "abstained": 0.0,
+          "erroneous_actions": 0.0,
+          "goal": 3.0,
+          "habit_fires": 2.0,
+          "latency_ms": 8289.935,
+          "lost_useful_knowledge": 0,
+          "memory_bytes": 13479.0,
+          "model_calls": 0.0,
+          "slow_path": 1.0,
+          "tasks": 3,
+          "tool_calls": 12.0
+        },
+        "C": {
+          "abstained": 0.0,
+          "erroneous_actions": 0.0,
+          "goal": 3.0,
+          "habit_fires": 0.0,
+          "latency_ms": 8568.533,
+          "lost_useful_knowledge": 2,
+          "memory_bytes": 13479.0,
+          "model_calls": 0.0,
+          "slow_path": 3.0,
+          "tasks": 3,
+          "tool_calls": 12.0
+        }
+      }
+    }
+  ],
+  "platform": "Linux-6.18.44-fc-v70-x86_64-with-glibc2.39",
+  "python": "3.11.15",
+  "schema_version": "synapse.memory.paired-exam-measures/v1",
+  "tasks": [
+    "TBS",
+    "EVN",
+    "LED"
+  ],
+  "unit": "one task in one arm, from the restored initial state"
+}

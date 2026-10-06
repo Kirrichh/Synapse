@@ -108,7 +108,34 @@ Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:
 No Linux full suite was run for Patch 2. A recorded baseline is evidence of an
 observed run, not a command to rerun the full suite before each patch.
 
-The latest observed Linux run is the memory review package on PR #108
+The latest observed Linux run is the completed memory review package on PR
+#108 (attestations of admission bases, contract violations archive a habit,
+the dependency projection and forget, generalization explanations and
+contract versions, stand trials, state snapshots with tail replay; Python
+3.11, every `tests/` and `acceptance/` file in its own process, four files in
+parallel, on the uncommitted working tree):
+
+```text
+tests/:       2 failed, 5232 passed, 12 skipped
+acceptance/:  1 failed, 1061 passed, 1 skipped
+```
+
+All three failures were diagnosed:
+
+- `acceptance/stage4/stage16/test_live_gemini_worker.py` is the explicit live
+  job that requires `GEMINI_API_KEY` (absent here).
+- Two scope tripwires of `tests/test_swebench_measurement_output_boundary.py`
+  compared fixed historical commits and the working tree with a file list;
+  they passed on the committed tree and were then removed with the other
+  checks of that file that did not exercise the product.
+
+The acceptance count includes the seven contract cases added after the run to
+kill surviving mutants; the files changed then were rerun alone and passed. A
+mutation campaign over the package's new memory paths killed all 55 mutants
+(`reports/memory_review_mutation_evidence_v1.json`). Measurements are in
+`docs/MEMORY_PERFORMANCE.md`.
+
+The previous observed Linux run is the memory review package on PR #108
 (exact entity identity and admission bases, operation-bound state checks,
 unknown effects and gateway-issued idempotency keys, verified conflict
 comparison with blocking before any effect, the experience-based automaton,
@@ -129,7 +156,7 @@ All three failures were diagnosed:
   tripwires over fixed historical commit ranges that also count uncommitted
   and untracked files; they fail on a dirty working tree only.
 
-The previous observed Linux run is the memory stage 6 and language stage 7
+An earlier observed Linux run is the memory stage 6 and language stage 7
 package on PR #108 (semantic knowledge with two times and hybrid search;
 event-driven `parallel` graphs; Python 3.11, every `tests/` and `acceptance/`
 file in its own process, four files in parallel, on the committed tree):
@@ -149,7 +176,7 @@ inventory count moved from 93 to 96; the counts above include those two files
 rerun after the fix (78 and 16 passed), together with every other durable
 test file and the dataflow acceptance files, all passing.
 
-The previous observed Linux run is the memory stage 5b package on PR #108
+An earlier observed Linux run is the memory stage 5b package on PR #108
 (composition of learned procedures with ordered alternatives, nested parts and
 sequences; Python 3.11, every `tests/` and `acceptance/` file in its own
 process, four files in parallel, on the committed tree):

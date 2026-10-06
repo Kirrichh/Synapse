@@ -28,11 +28,25 @@ established fact for the claim. Every check is separate and reported:
   ``confirmed`` and which states this very statement: a content hypothesis
   about the same entity, stating the record's attribute with the same typed
   value (or, for a boolean denial, its negation), under the same conditions,
-  for the claim's scope and, when the record names the source version it was
-  read from, for that version. A confirmation of anything else — another
+  for the claim's scope, read from the source the record names (its name or
+  its tool) and, when the record names the source version it was read from,
+  for that version. A confirmation of anything else — another
   entity, property, value, type, polarity, scope or version — confirms nothing;
   a basis that is no longer confirmed no longer admits. Outside a memory
   session there is no journal, so nothing is admitted;
+* every candidate whose named basis the journal knows carries its
+  attestation (``ATTESTATION_V1``, after the in-toto discipline of binding a
+  subject, a predicate type and its verifier): the statement (kind, exact
+  entity, property, typed value, polarity, conditions, scope), its version
+  (source version, validity period, the instant asked about), the
+  verification (method and rule of the check, the contract it ran under, the
+  recorded observations it read, the session and court window that decided
+  it), the provenance (the record, its source, the identity link used, the
+  copies of the same statement), the outcome for this very statement
+  (``confirmed``, ``refuted`` or ``undecided`` — a check no longer fresh
+  decides nothing, it never refutes) and the dependencies whose revocation
+  or change requires admitting again. The admitted fact's attestation is the
+  decision's; a hash or a source name alone attests nothing;
 * at least two distinct normalized key tokens of the claim occur in the record
   and its lexical score reaches the threshold — a filter on candidates, never
   a proof of content;
@@ -50,6 +64,7 @@ from typing import Any, Callable, Iterable, Mapping
 from . import entity_identity
 
 SCORER_VERSION = "palace-lexical/v2"
+ATTESTATION_V1 = "synapse.memory.admission-attestation/v1"
 MIN_KEY_TOKENS = 2
 DEFAULT_THRESHOLD = 0.5
 _TOKEN = re.compile(r"\w+", re.UNICODE)
@@ -188,7 +203,61 @@ def basis_gaps(hypothesis: Mapping[str, Any], record: Mapping[str, Any], claim: 
     version = record_version(record)
     if version is not None and hypothesis.get("source_ref") != version:
         gaps.append("basis_for_another_version")
+    if not _same_source(record.get("source"), hypothesis.get("source") or {}):
+        gaps.append("basis_from_another_source")
     return gaps
+
+
+def _same_source(stated: Any, read: Mapping[str, Any]) -> bool:
+    """The record names the source the hypothesis read its claim from: the source's name, or the tool."""
+    if isinstance(stated, dict):
+        return stated.get("tool") == read.get("tool") or (
+            stated.get("tool") is None and stated.get("name") is not None and stated.get("name") == read.get("name"))
+    return stated is not None and stated in {read.get("name"), read.get("tool")}
+
+
+def _value_type(value: Any) -> str:
+    return {bool: "boolean", int: "integer", float: "number", str: "string", type(None): "null",
+            dict: "object", list: "array"}.get(type(value), type(value).__name__)
+
+
+def _outcome(status: str | None, gaps: list[str]) -> str:
+    """What the basis says about this very statement: only a check of this statement decides it."""
+    if gaps or status not in {"confirmed", "refuted"}:
+        return "undecided"
+    return status
+
+
+def attestation(record: Mapping[str, Any], claim: Mapping[str, Any], named: str, known: Mapping[str, Any],
+                gaps: list[str], alias: str | None) -> dict[str, Any]:
+    """The admission basis of one candidate: what is stated, of which version, verified how, from where,
+    with which outcome, and what it depends on."""
+    verification = dict(known.get("verification") or {})
+    observations = verification.get("observations") or {}
+    check = observations.get("check")
+    dependencies = [{"kind": "hypothesis", "ref": named}]
+    if alias is not None:
+        dependencies.append({"kind": "identity_link", "ref": alias})
+    if record_version(record) is not None:
+        dependencies.append({"kind": "source_version", "ref": record_version(record)})
+    if isinstance(check, dict) and check.get("evidence") is not None:
+        dependencies.append({"kind": "observation", "ref": check["evidence"]})
+    if verification.get("contract_ref") is not None:
+        dependencies.append({"kind": "check_contract", "ref": verification["contract_ref"]})
+    return {
+        "schema_version": ATTESTATION_V1,
+        "statement": {"kind": record.get("kind", "fact"), "entity": record.get("entity"),
+                      "attribute": record.get("attribute"), "value": record.get("value"),
+                      "value_type": _value_type(record.get("value")), "polarity": record.get("polarity", True),
+                      "conditions": dict(record.get("conditions") or {}), "scope": record.get("scope")},
+        "version": {"source_version": record_version(record), "valid_from": instant(record.get("valid_from")),
+                    "valid_until": instant(record.get("valid_until")), "at": claim["at"],
+                    "known_from": record.get("known_from"), "known_until": record.get("known_until")},
+        "verification": {"hypothesis": named, "status": known.get("status"), **verification},
+        "provenance": {"record": record.get("id"), "source": record.get("source"), "identity_link": alias,
+                       "copies": []},
+        "outcome": _outcome(known.get("status"), gaps),
+        "dependencies": dependencies}
 
 
 def _identity(record, claim, hypothesis_of, rules) -> tuple[list[str], str | None]:
@@ -229,7 +298,7 @@ def _checks(record, claim, key_tokens, hypothesis_of, rules) -> tuple[list[str],
     if record.get("freshness") in {"unknown", "undeclared"}:
         reasons.append("freshness_unknown")
     # The record's own status describes its content; the basis is the verification journal's alone.
-    status, named = None, record.get("hypothesis") or claim["verified_by"]
+    status, named, attested = None, record.get("hypothesis") or claim["verified_by"], None
     if named is None:
         reasons.append("no_verified_basis")
     else:
@@ -240,7 +309,9 @@ def _checks(record, claim, key_tokens, hypothesis_of, rules) -> tuple[list[str],
             status = known["status"]
             if status != "confirmed":
                 reasons.append(f"not_confirmed:{status}")
-            reasons.extend(basis_gaps(known, record, claim, rules))
+            gaps = basis_gaps(known, record, claim, rules)
+            reasons.extend(gaps)
+            attested = attestation(record, claim, named, known, gaps, alias)
     matched = sorted(key_tokens & content_tokens(record))
     scored = candidate_score(" ".join(claim["keys"]), record) or {"score": 0.0}
     if len(matched) < MIN_KEY_TOKENS:
@@ -248,7 +319,7 @@ def _checks(record, claim, key_tokens, hypothesis_of, rules) -> tuple[list[str],
     if scored["score"] < claim["threshold"]:
         reasons.append("below_threshold")
     return reasons, {"status": status, "basis": named, "alias": alias, "stated_status": record.get("status"),
-                     "matched_keys": matched, "score": scored["score"]}
+                     "matched_keys": matched, "score": scored["score"], "attestation": attested}
 
 
 def admit(candidates: Iterable[Mapping[str, Any]], claim: Any,
@@ -260,17 +331,21 @@ def admit(candidates: Iterable[Mapping[str, Any]], claim: Any,
     ``identity_rules`` are the operator's namespace rules."""
     claim = _claim(claim)
     key_tokens = frozenset().union(*(tokens(item) for item in claim["keys"])) if claim["keys"] else frozenset()
-    checked, passing = [], {}
+    checked, passing, attested = [], {}, {}
     for record in candidates:
         reasons, facts = _checks(record, claim, key_tokens, hypothesis_of, identity_rules)
         checked.append({"id": record.get("id"), "reasons": reasons, **facts})
         if not reasons:
             statement = _canonical(record["value"])
-            passing.setdefault(statement, record)  # Copies of one statement count once.
-    decision = {"scorer": SCORER_VERSION, "claim": claim, "checked": checked, "fact": None,
+            if statement in passing:  # Copies of one statement count once; the first stands for them.
+                attested[statement]["provenance"]["copies"].append(record.get("id"))
+            else:
+                passing[statement], attested[statement] = record, facts["attestation"]
+    decision = {"scorer": SCORER_VERSION, "claim": claim, "checked": checked, "fact": None, "attestation": None,
                 "conflict": sorted(passing) if len(passing) > 1 else []}
     if len(passing) == 1:
-        decision.update(decision="admitted", fact=dict(next(iter(passing.values()))))
+        statement = next(iter(passing))
+        decision.update(decision="admitted", fact=dict(passing[statement]), attestation=attested[statement])
     elif len(passing) > 1:
         decision["decision"] = "conflict"
     else:

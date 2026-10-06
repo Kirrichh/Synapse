@@ -32,12 +32,14 @@ def tool(name, source, answers, *, contract=None, event_fields=(), role="action"
             "event_fields": list(event_fields), "role": role, "server": server, "dedupe": dedupe}
 
 
-def answer(payload, *, when=None, sequence=(), effect=None, delay=None):
+def answer(payload, *, when=None, sequence=(), effect=None, delay=None, until=None):
     """A rule: ``sequence`` answers the first calls of one exact request, then ``payload``; ``delay``
-    seconds pass before the answer is given."""
+    seconds pass before the answer is given, or less once the signal file ``until`` appears."""
     then = {"payload": payload} if effect is None else {"payload": payload, "effect": effect}
     if delay is not None:
         then["delay"] = delay
+    if until is not None:
+        then["until"] = until
     return {"when": when or {}, "sequence": list(sequence), "then": then}
 
 
@@ -125,12 +127,15 @@ class MemoryWorld:
                      "--input-file", inputs, "--project-state", self.state,
                      "--memory-config", configuration or self.configuration_path]
         if exam is not None:
-            mode, snapshot = exam
+            mode, snapshot, *trial = exam
             arguments += ["--exam-mode", mode, "--exam-snapshot", snapshot]
+            if trial:  # A trial arm: the one learned habit the exam runs alone.
+                arguments += ["--exam-trial", trial[0]]
         return arguments
 
     def run(self, source: str, run_id: str, bindings: dict, *, exam=None) -> dict:
-        """One ordinary durable session, or an exam ``(mode, snapshot boundary id)`` on a fixed snapshot."""
+        """One ordinary durable session, or an exam ``(mode, snapshot boundary id[, trial habit])`` on a fixed
+        snapshot."""
         code, payload, stderr = self._cli(*self._run_arguments(source, run_id, bindings, exam))
         assert code == 0 and payload is not None and payload["status"] == "COMPLETED", (code, payload, stderr)
         return payload

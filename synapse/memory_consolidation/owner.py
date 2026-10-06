@@ -4,13 +4,18 @@ Memory records live in the project's existing element-owner journal (store B)
 under its one owner session: the bound memory configuration, each durable
 session's opening, consolidation reports and snapshot boundaries. The
 applied decisions themselves are Gold's court chain; the current memory state
-is the fold of the reports that chain names, in order. The gateway of the
+is the fold of the reports that chain names, in order. A verified snapshot
+of that fold at a known cut of the chain spares re-reading the prefix: it is
+used only when its projection version, its cut (the decision and report it
+was taken after) and the digest of its state all match, and the journal stays
+the source the state is rebuilt from otherwise. The gateway of the
 owner's runs lives beside the journal. An owner binds one memory configuration;
 another configuration is another policy and is refused, never mixed in — until a
 reassessment re-judges the memory under the new one and the owner adopts it.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 from pathlib import Path
 from typing import Any
@@ -20,7 +25,7 @@ from synapse.experiments.gold.project_memory_store import ProjectMemoryStore
 
 from . import records
 from .configuration import MemoryConfiguration, parse_memory_configuration
-from .court.projection import fold
+from .court.projection import PROJECTION_V1, apply_report, empty_state
 
 OWNER_BINDING_V1 = "synapse.memory.owner-binding/v1"
 #: A later binding names the configuration it supersedes, the reassessment that had adopted that one (none for
@@ -28,6 +33,9 @@ OWNER_BINDING_V1 = "synapse.memory.owner-binding/v1"
 OWNER_BINDING_V2 = "synapse.memory.owner-binding/v2"
 SESSION_OPENED_V1 = "synapse.memory.session-opened/v1"
 RETENTION_PASS_V1 = "synapse.memory.retention-pass/v1"
+STATE_SNAPSHOT_V1 = "synapse.memory.state-snapshot/v1"
+#: How many applied reports a state snapshot follows the previous one by.
+SNAPSHOT_EVERY = 8
 
 
 class MemoryOwnerViolation(ValueError):
@@ -144,17 +152,25 @@ class MemoryOwner:
             raise MemoryOwnerViolation("a court decision names no consolidation report")
         return records.verify(event["payload"]["report"], "consolidation_report")["report"]
 
+    def _report(self, consolidation, retained) -> dict[str, Any]:
+        """The report a decision names, from the journal events the chain was validated against."""
+        found = retained.get((consolidation_key(consolidation["consolidation_id"]), "CONSOLIDATION_REPORTED"))
+        if found is None or found[1] != consolidation["report"]:
+            raise MemoryOwnerViolation("a court decision names no consolidation report")
+        report = records.verify(found[0]["payload"]["report"], "consolidation_report")["report"]
+        if report["consolidation_id"] != consolidation["consolidation_id"]:
+            raise MemoryOwnerViolation("a decision names another consolidation's report")
+        return report
+
     def applied(self, *, guard=None) -> list[dict[str, Any]]:
         """The court chain with each decision's consolidation report (``None`` for exact-only decisions)."""
-        chain, _ = court_chain(self.store, project_identity=self.identity, guard=guard)
+        chain, retained = court_chain(self.store, project_identity=self.identity, guard=guard)
         result = []
         for payload, receipt in chain:
             consolidation = payload.get("consolidation")
             report = None
             if consolidation is not None and consolidation["report"] is not None:
-                report = self.read_report(consolidation["report"])
-                if report["consolidation_id"] != consolidation["consolidation_id"]:
-                    raise MemoryOwnerViolation("a decision names another consolidation's report")
+                report = self._report(consolidation, retained)
             result.append({"decision": payload, "receipt": receipt, "report": report})
         return result
 
@@ -169,8 +185,48 @@ class MemoryOwner:
                 return
 
     def state(self, *, guard=None) -> dict[str, Any]:
-        """The memory state: the fold of every applied report, in chain order."""
-        return fold(item["report"] for item in self.applied(guard=guard) if item["report"] is not None)
+        """The memory state: the fold of every applied report, in chain order — from the latest verified
+        snapshot on, when one matches the chain."""
+        chain, retained = court_chain(self.store, project_identity=self.identity, guard=guard)
+        state, start = self._snapshot(chain, retained)
+        for payload, _ in chain[start:]:
+            consolidation = payload.get("consolidation")
+            if consolidation is not None and consolidation["report"] is not None:
+                state = apply_report(state, self._report(consolidation, retained))
+        return state
+
+    def _snapshot(self, chain, retained) -> tuple[dict[str, Any], int]:
+        """The latest snapshot whose version, cut and digest match the chain, and where the fold resumes."""
+        snapshots = sorted((event["payload"] for (_, kind), (event, _) in retained.items()
+                            if kind == "MEMORY_STATE" and event["payload"]["project_identity"] == self.identity),
+                           key=lambda item: item["through"]["index"], reverse=True)
+        for snapshot in snapshots:
+            index, cut = snapshot["through"]["index"], snapshot["through"]
+            if (snapshot["schema_version"] != STATE_SNAPSHOT_V1 or snapshot["projection"] != PROJECTION_V1
+                    or not 0 <= index < len(chain) or chain[index][0].get("consolidation") is None
+                    or chain[index][0]["consolidation"]["consolidation_id"] != cut["consolidation_id"]
+                    or chain[index][0]["consolidation"]["report"] != cut["report"]
+                    or records.digest(snapshot["state"]) != snapshot["state_sha256"]):
+                continue  # Another version, a cut the chain does not hold, or damaged: never used.
+            return copy.deepcopy(snapshot["state"]), index + 1
+        return empty_state(), 0
+
+    def put_state_snapshot(self, guard) -> dict | None:
+        """Record the state at the chain's head every ``SNAPSHOT_EVERY`` reports (the court, under its session)."""
+        chain, retained = court_chain(self.store, project_identity=self.identity, guard=guard)
+        reports = [index for index, (payload, _) in enumerate(chain)
+                   if payload.get("consolidation") is not None and payload["consolidation"]["report"] is not None]
+        if not reports or len(reports) % SNAPSHOT_EVERY or reports[-1] != len(chain) - 1:
+            return None
+        head = chain[-1][0]["consolidation"]
+        state = self.state(guard=guard)
+        return self.store.put(kind="MEMORY_STATE", guard=guard,
+                              job_key=_key("synapse.memory.state", self.identity, head["consolidation_id"]),
+                              payload={"schema_version": STATE_SNAPSHOT_V1, "project_identity": self.identity,
+                                       "projection": PROJECTION_V1,
+                                       "through": {"index": len(chain) - 1, "consolidation_id": head["consolidation_id"],
+                                                   "report": head["report"]},
+                                       "state_sha256": records.digest(state), "state": state})
 
     # -- retention passes ------------------------------------------------------
     def put_retention(self, guard, sequence: int, window: int, acts: list[dict[str, Any]]) -> dict:
@@ -191,6 +247,18 @@ class MemoryOwner:
             raise MemoryOwnerViolation("retention passes are not a contiguous sequence")
         return passes
 
+    # -- stand trials (review R5) --------------------------------------------------
+    def put_trial(self, guard, trial: dict[str, Any]) -> dict:
+        """Record one judged stand trial; the court reads every recorded trial when it compares competitors."""
+        return self.store.put(kind="MEMORY_TRIAL", guard=guard, job_key=_key("synapse.memory.trial", self.identity,
+                                                                             trial["id"]),
+                              payload={"project_identity": self.identity, "trial": trial})
+
+    def trials(self, *, guard=None) -> list[dict[str, Any]]:
+        return sorted((event["payload"]["trial"] for event, _ in self.store.inventory(guard=guard)
+                       if event["kind"] == "MEMORY_TRIAL" and event["payload"]["project_identity"] == self.identity),
+                      key=lambda item: item["id"])
+
     def put_boundary(self, guard, boundary: dict[str, Any]) -> dict:
         records.verify(boundary, "snapshot_boundary")
         consolidation_id = boundary["boundary"]["consolidation_id"]
@@ -198,8 +266,15 @@ class MemoryOwner:
                               payload={"boundary": boundary})
 
     def boundary(self, consolidation_id: str, *, guard=None) -> dict[str, Any] | None:
-        key = consolidation_key(consolidation_id)
+        return self.boundaries(guard=guard).get(consolidation_id)
+
+    def boundaries(self, *, guard=None) -> dict[str, dict[str, Any]]:
+        """Every recorded snapshot boundary by the consolidation it was built from, read in one pass."""
+        found = {}
         for event, _ in self.store.inventory(guard=guard):
-            if event["kind"] == "SNAPSHOT_BOUNDARY" and event["job_key"] == key:
-                return records.verify(event["payload"]["boundary"], "snapshot_boundary")
-        return None
+            if event["kind"] == "SNAPSHOT_BOUNDARY":
+                boundary = records.verify(event["payload"]["boundary"], "snapshot_boundary")
+                if consolidation_key(boundary["boundary"]["consolidation_id"]) != event["job_key"]:
+                    raise MemoryOwnerViolation("a snapshot boundary is filed under another consolidation")
+                found[boundary["boundary"]["consolidation_id"]] = boundary
+        return found

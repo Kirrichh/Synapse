@@ -392,6 +392,10 @@ def _memory_factory(args: argparse.Namespace):
     if (args.exam_mode is None) != (args.exam_snapshot is None):
         raise ValueError("an exam names both its mode and the snapshot it reads")
     exam = None if args.exam_mode is None else {"mode": args.exam_mode, "snapshot": args.exam_snapshot}
+    if args.exam_trial is not None:
+        if exam is None:
+            raise ValueError("a trial arm is an exam: it names its mode and snapshot")
+        exam["trial"] = args.exam_trial
     return MemoryFactory(Path(args.project_state), read_memory_configuration(Path(args.memory_config)), exam=exam)
 
 
@@ -435,21 +439,24 @@ def _handle_run(args: argparse.Namespace) -> int:
 
 
 def _handle_memory(args: argparse.Namespace, ap) -> int:
-    """``synapse memory forget|restore|reassess``: operator acts, recorded by the owner before any body changes.
+    """``synapse memory forget|restore|reassess|trial``: operator acts, recorded by the owner before any body changes.
 
     ``reassess`` judges the recorded memory again under the given configuration and the court policy in force,
     without calling any tool or model, publishes what changed and adopts the configuration."""
     from .memory_consolidation.configuration import read_memory_configuration
     from .memory_consolidation.factory import MemoryFactory
 
-    if args.memory_cmd not in {"forget", "restore", "reassess"}:
-        ap.error("synapse memory requires forget, restore or reassess")
+    if args.memory_cmd not in {"forget", "restore", "reassess", "trial"}:
+        ap.error("synapse memory requires forget, restore, reassess or trial")
     try:
         factory = MemoryFactory(Path(args.project_state), read_memory_configuration(Path(args.memory_config)))
         if args.memory_cmd == "forget":
             result = {"acts": factory.forget(args.quantum, reason=args.reason, operator=args.operator)}
         elif args.memory_cmd == "reassess":
             result = {"consolidation": factory.reassess()}
+        elif args.memory_cmd == "trial":
+            result = {"trial": factory.trial([Path(item) for item in args.arm], stand=args.stand,
+                                             scope=json.loads(args.scope))}
         else:
             result = {"acts": [factory.restore(args.quantum)]}
     except (OSError, ValueError) as exc:
@@ -506,6 +513,7 @@ def main(argv=None) -> int:
     run.add_argument("--exam-mode", choices=("A", "B", "C"),
                      help="exam on a fixed snapshot: A no experience, B admitted habits, C all learned slow-only")
     run.add_argument("--exam-snapshot", help="complete snapshot boundary id an exam reads (bnd_...)")
+    run.add_argument("--exam-trial", help="a trial arm: the one learned habit (hab_...) an exam in mode B runs alone")
 
     sub.add_parser("repl", help="start the Synapse REPL")
 
@@ -547,12 +555,20 @@ def main(argv=None) -> int:
     memory_sub = memory.add_subparsers(dest="memory_cmd")
     for name, text in (("forget", "remove a retained case behind a tombstone (legally significant)"),
                        ("restore", "return a compacted case to processing from its recorded results"),
-                       ("reassess", "judge the recorded memory again under a new configuration and adopt it")):
+                       ("reassess", "judge the recorded memory again under a new configuration and adopt it"),
+                       ("trial", "record a stand trial of two learned competitors from their two exam arms")):
         act = memory_sub.add_parser(name, help=text)
         act.add_argument("--project-state", required=True, help="connected project state that owns the memory")
         act.add_argument("--memory-config", required=True,
                          help="the owner's memory configuration JSON (for reassess: the one to adopt)")
         if name == "reassess":
+            continue
+        if name == "trial":
+            act.add_argument("--arm", action="append", required=True,
+                             help="run artifact of one arm (an exam in mode B with --exam-trial); twice")
+            act.add_argument("--stand", required=True, help="the stand both arms ran on, restored before each")
+            act.add_argument("--scope", required=True,
+                             help='transfer scope JSON: {"fields": {name: [values the stand reproduces]}}')
             continue
         act.add_argument("--quantum", required=True, help="case quantum id (qnt_...)")
         if name == "forget":
@@ -614,6 +630,7 @@ def main(argv=None) -> int:
             "--memory-config": args.memory_config is not None,
             "--exam-mode": args.exam_mode is not None,
             "--exam-snapshot": args.exam_snapshot is not None,
+            "--exam-trial": args.exam_trial is not None,
         }
         if not args.durable:
             forbidden = [flag for flag, present in durable_conditional.items() if present]

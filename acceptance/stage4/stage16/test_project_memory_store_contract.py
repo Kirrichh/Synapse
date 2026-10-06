@@ -3,6 +3,7 @@ import pytest
 
 from synapse.experiments.gold import project_memory_store as M
 from synapse.experiments.gold.admission_journal import JournalAdapterViolation, JournalAdapterFailureCode
+from synapse.experiments.gold.persistence import PersistenceViolation
 
 
 def put(store, guard, *, payload=None, kind="REQUESTED"):
@@ -73,3 +74,16 @@ def test_event_budget_refuses_new_work_before_writing_and_keeps_idempotent_reads
         with pytest.raises(ValueError, match="event budget"):
             store.put(kind="STARTED", job_key="a" * 64, payload={"request_ref": receipt}, guard=guard)
     assert len(store.inventory()) == 1
+
+
+def test_an_event_read_before_is_still_checked_and_detached(tmp_path):
+    store = M.ProjectMemoryStore(tmp_path)
+    with store.session() as guard:
+        receipt = put(store, guard)
+    first = store.read(receipt)
+    first["payload"]["task"] = "changed by the caller"
+    assert store.read(receipt)["payload"] == {"task": "maintain-frame"}  # A reader gets its own copy.
+    stored, = [path for path in store.events.rglob("*") if path.is_file() and path.read_bytes().startswith(b'{"job_key"')]
+    stored.write_bytes(stored.read_bytes().replace(b"maintain-frame", b"maintain-other"))
+    with pytest.raises(PersistenceViolation, match="committed member bytes do not match"):
+        store.read(receipt)  # Bytes this reader validated before are hashed again on every read.

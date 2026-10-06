@@ -1,10 +1,17 @@
-"""Acceptance-side driver: one durable session whose process dies at its first removal from store D.
+"""Acceptance-side driver: one durable session whose process dies at a chosen point.
 
-``python -m acceptance.memory._crash_driver STATE CONFIG PROGRAM RUNS RUN_ID INPUTS`` runs the same
-durable launch the CLI composes, with the owner's store D wrapped so that the
-process exits the moment retention removes a body. Retention records its acts
-before any removal, so the crash lands exactly between the recorded fact and
-the physical change — the point the checker must find consistent afterwards.
+``python -m acceptance.memory._crash_driver STATE CONFIG PROGRAM RUNS RUN_ID INPUTS [POINT]`` runs the
+same durable launch the CLI composes, wrapped so that the process exits:
+
+* ``discard`` (the default) — the moment retention removes a body from store D.
+  Retention records its acts before any removal, so the crash lands exactly
+  between the recorded fact and the physical change;
+* ``consolidation`` — when the finished session asks for its consolidation:
+  every result is recorded, nothing is consolidated;
+* ``boundary`` — when the court writes the snapshot boundary of a decision it
+  has already committed: the decision is applied, the boundary lags.
+
+These are the points the checker must find consistent afterwards.
 """
 from __future__ import annotations
 
@@ -23,13 +30,26 @@ class _DyingStore(EvidenceStore):
         os._exit(9)
 
 
-def main(state, configuration, program, runs, run_id, inputs) -> None:
-    factory = MemoryFactory(Path(state), read_memory_configuration(Path(configuration)))
-    factory.gateway.evidence = _DyingStore(factory.gateway.evidence.root)
+class _DyingFactory(MemoryFactory):
+    def court(self, mode, *, current=None):
+        os._exit(9)
+
+
+def _dying(*_, **__):
+    os._exit(9)
+
+
+def main(state, configuration, program, runs, run_id, inputs, point="discard") -> None:
+    kind = _DyingFactory if point == "consolidation" else MemoryFactory
+    factory = kind(Path(state), read_memory_configuration(Path(configuration)))
+    if point == "discard":
+        factory.gateway.evidence = _DyingStore(factory.gateway.evidence.root)
+    elif point == "boundary":
+        factory.owner.put_boundary = _dying
     execute_durable_run(DurableRunRequest(source_path=Path(program), state_dir=Path(runs), run_id=run_id,
                                           input_file=Path(inputs), memory=factory), stdin=sys.stdin)
     os._exit(0)
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:7])
+    main(*sys.argv[1:8])

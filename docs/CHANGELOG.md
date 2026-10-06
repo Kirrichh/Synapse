@@ -1,5 +1,39 @@
 # Synapse Changelog
 
+## Memory review of PR108, completed — attestations, dependencies, trials, measurements — 2026-10-06
+
+New operator command `synapse memory trial`, new run option `--exam-trial`,
+new decision rule `confidence_sequence` (parameters `cs`), new project-journal
+event kinds `MEMORY_STATE` and `MEMORY_TRIAL`. Report sections gain
+`contract_violations` and `dependencies`; births gain `generalization` and
+`verified_under`; reassessment habits gain `contracts` and `contracts_changed`;
+admission decisions and `memory_admission` events gain `attestation`; the
+session opening gains `trial` and `unverified`; gateway refusals record
+`breach`.
+
+- R6: a body that attempts what its contracts forbid archives a learned habit
+  at once (TV) and is reported for a declared one.
+- R3: every admission basis is an attestation of the very statement (what,
+  which version, verified how, from where, outcome, dependencies); a record
+  naming another source than the one the hypothesis read is refused.
+- §8.2: the court's dependency projection (W3C PROV vocabulary) answers which
+  authorities depended on a basis; `forget` withdraws derived versions from
+  search and revokes dependent statuses and habits, each reported apart; a
+  basis read from the court is read again before an effect.
+- §8.1: births explain their generalization and record the contract versions
+  they were verified under; a changed contract keeps a habit unloaded until a
+  reassessment re-verifies it.
+- R5 §4–5: stand trials of two competitors in independent copies of one
+  initial state, recorded with their transfer scope, decide step 2 inside it.
+- §8.3: verified state snapshots with tail replay, reports read from the
+  verified journal scan, the newest boundary found from the chain's head,
+  validated journal bytes not re-validated, an exact semantic ranking;
+  paired measurements in `docs/MEMORY_PERFORMANCE.md`.
+- Acceptance: generated lifecycles through the canonical launch with injected
+  crashes against an independent model, separate A/B/C measures, a held-out
+  domain, group-consistent data splits, training order and outage varied
+  separately, LongMemEval retrieval through the candidate channel.
+
 ## Memory review of PR108 — identity, attestations, repeats, conflicts, automaton, reassessment — 2026-09-27
 
 Court policy `synapse.memory.court-policy/v3`, tool configuration

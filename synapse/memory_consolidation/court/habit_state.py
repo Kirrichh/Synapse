@@ -24,7 +24,7 @@ def new_metadata(parameters, *, habit_id: str, trigger_id: str, state: str, trus
             "context_trust": {trigger_id: trust}, "counted": 0, "pending": [], "state_since": window,
             "fires_in_state": 0, "signals_in_state": 0, "signal_sum_in_state": 0.0, "tail": [],
             "fires_since_birth": 0, "tasks_since_birth": [], "idle_windows": 0, "cold_windows": 0,
-            "sprt_llr": 0.0, "key_hold_until": None, "votes": 0,
+            "sprt_llr": 0.0, "key_hold_until": None, "votes": 0, "cs_tasks": [], "cs_sum": 0.0,
             "exec_summary": {"fires_total": 0, "successes": 0, "failures": 0, "uncertain": 0},
             "energy_cost": energy_cost, "priority": parameters["learned_priority_class"],
             "born_in": consolidation_id, "supersedes": supersedes, "superseded_by": None, "recent": [],
@@ -58,7 +58,7 @@ def enter_state(metadata: dict[str, Any], state: str, window: int) -> None:
     """A new effectiveness state restarts every counter measured within a state."""
     metadata.update(state=state, state_since=window, fires_in_state=0, signals_in_state=0,
                     signal_sum_in_state=0.0, tail=[], idle_windows=0, cold_windows=0,
-                    sprt_llr=0.0, key_hold_until=None)
+                    sprt_llr=0.0, key_hold_until=None, cs_tasks=[], cs_sum=0.0)
 
 
 def mean(values) -> float | None:

@@ -26,7 +26,7 @@ BINDINGS = {"q": [{"step": 0, "args": ROUTE}, {"step": 1, "failed_action": True}
             "c": [{"step": 0, "args": ROUTE}, {"step": 1, "args": ROUTE}, {"step": 2, "failed_action": True}]}
 
 
-def configuration(parameters=None, element="acceptance.court"):
+def configuration(parameters=None, element="acceptance.court", rule="threshold"):
     tools = [{"name": name, "server": "ops", "input_schema": {"type": "object"}, "output_schema": {"type": "object"},
               "descriptor_sha256": "0" * 64, "source": f"{name}:ops", "role": "action", "contract": {},
               "event_fields": []} for name in ("flights", "quota_status", "capacity_status", "reserve_slot")]
@@ -35,13 +35,14 @@ def configuration(parameters=None, element="acceptance.court"):
         "tools": {"schema_version": "synapse.memory.tool-configuration/v2",
                   "servers": [{"id": "ops", "argv": ["ops"]}], "tools": tools,
                   "provenance": {f"{item['name']}:ops": {"ancestors": []} for item in tools}},
-        "court": {"decision_rule": "threshold", "parameters": parameters or {}}, "advisor": None, "scorer": None,
+        "court": {"decision_rule": rule, "parameters": parameters or {}}, "advisor": None, "scorer": None,
         "element": element})
 
 
-def world(parameters=None, labels=("q",), *, conditions=None, trust=0.5, state_name="born", window=10, **overrides):
+def world(parameters=None, labels=("q",), *, conditions=None, trust=0.5, state_name="born", window=10,
+          rule="threshold", **overrides):
     """A court state holding the quota (``q``) and capacity (``c``) recoveries as learned habits."""
-    config = configuration(parameters)
+    config = configuration(parameters, rule=rule)
     state = empty_state()
     state["window"] = window
     ids = {}

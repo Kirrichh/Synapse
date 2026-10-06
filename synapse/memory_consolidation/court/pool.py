@@ -27,11 +27,14 @@ import copy
 from typing import Any
 
 from ..learning.applicability import BoundaryUnavailable, generalize
-from ..learning.behavior import BindingUnavailable, check_binding, derive_binding, event_fields_read
+from ..learning.behavior import (BindingUnavailable, check_binding, contracts_of, derive_binding, event_fields_read,
+                                 explain_binding)
 from ..learning.dependencies import check_types
 from ..learning.provenance import independent_witnesses
 from ..learning.triggers import covers
 from ..records import digest
+
+GENERALIZATION_V1 = "synapse.memory.generalization/v1"
 
 
 def support(reaction) -> str | None:
@@ -234,7 +237,23 @@ def assess(candidate, parameters, configuration, requests) -> dict[str, Any]:
                          "independence": independence["verdict"],
                          "request": None if request is None else request["habit_id"]},
             "independence": independence, "reasons": reasons, "condition": condition,
-            "applicability": explanation, "binding": binding, "success": success}
+            "applicability": explanation, "binding": binding, "success": success,
+            "generalization": _generalization(success, binding, explanation, candidate["steps"], configuration)}
+
+
+def _generalization(success, binding, explanation, steps, configuration) -> dict[str, Any] | None:
+    """The explanation of what the candidate generalizes (review §8.1): which input conditions were checked,
+    where every argument comes from and why it varies, which checks verified each basis episode, and the tool
+    contracts all of it was verified under."""
+    if not success or binding is None or "unavailable" in binding:
+        return None
+    return {"schema_version": GENERALIZATION_V1,
+            "conditions": None if explanation is None else {key: explanation.get(key) for key in (
+                "essential", "bounded", "irrelevant", "unproven", "required") if key in explanation},
+            "arguments": explain_binding(binding, success),
+            "checks": [{"qid": item["qid"], "run_id": item["run_id"], "event_id": item["event_id"],
+                        "evidence": sorted(item["evidence"])} for item in success],
+            "contracts": contracts_of(steps, configuration)}
 
 
 def _dependencies(binding) -> int:

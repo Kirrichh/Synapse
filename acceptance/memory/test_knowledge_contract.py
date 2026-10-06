@@ -3,12 +3,15 @@
 The rules the heavy scenarios rely on, on the subsystem's pure functions: the
 timeline's resolution at a valid time as known at a window (inertia, a late
 report, a declared end, bounded and event currency, an undeclared property,
-disagreeing versions), reciprocal rank fusion, the court's fold of
+disagreeing versions), reciprocal rank fusion, the exactness of the semantic
+ranking against one cosine per pair (equal scores included), the court's fold of
 declarations (copy, repetition, correction with the revision of dependent
 hypotheses and habits, conflict) and admission's structured checks.
 """
 from __future__ import annotations
 
+import math
+import random
 from types import SimpleNamespace
 
 from synapse.memory_consolidation.court.knowledge import knowledge_stage
@@ -84,6 +87,31 @@ def test_fusion_uses_ranks_never_scores():
     assert semantic_ranking([1.0, 0.0], entries, 5) == [entries[0]["record"]["id"]]  # No similarity, no candidate.
 
 
+def _pairwise(query, entries, budget):
+    """The reference ranking: one cosine per pair, sorted in full, ties by identity."""
+    def cosine(left, right):
+        dot = sum(a * b for a, b in zip(left, right))
+        norm = math.sqrt(sum(a * a for a in left)) * math.sqrt(sum(b * b for b in right))
+        return 0.0 if norm == 0 else dot / norm
+    scored = [(-round(cosine(query, entry["vector"]), 12), entry["record"]["id"]) for entry in entries
+              if len(entry["vector"]) == len(query) and cosine(query, entry["vector"]) > 0]
+    return [identity for _, identity in sorted(scored)[:budget]]
+
+
+def test_the_semantic_ranking_is_exact():
+    rng = random.Random(7)
+    for trial in range(30):
+        entries = [{"record": {"id": f"stm_{index:04d}"}, "vector": [rng.choice((-1.0, 0.0, 0.5, 1.0))
+                                                                    for _ in range(6)]}
+                   for index in range(rng.randrange(1, 120))]  # Few component values: many equal scores.
+        entries += [{"record": {"id": "stm_short"}, "vector": [1.0]}, {"record": {"id": "stm_zero"},
+                                                                      "vector": [0.0] * 6}]
+        rng.shuffle(entries)  # Recorded order is never identity order: equal scores are ordered by identity.
+        query = [rng.uniform(-1, 1) for _ in range(6)]
+        budget = rng.randrange(1, 30)
+        assert semantic_ranking(query, entries, budget) == _pairwise(query, entries, budget), trial
+
+
 def _court(state, declared, uses=(), habits=None):
     context = SimpleNamespace(state=state, window=state["window"] + 1, report={},
                               draft={"knowledge": {"declared": declared, "uses": list(uses)}})
@@ -152,7 +180,8 @@ CLAIM = {"entity": "basic", "attribute": "monthly_price", "keys": ["basic", "mon
 def _reasons(candidate, hypothesis=None, **claim):
     known = {"hyp_1": {"status": "confirmed", "aspect": "content", "subject": "basic",
                        "statement": {"monthly_price": 20}, "scope": "catalog", "conditions": {},
-                       "source_ref": "ev-1", **(hypothesis or {})}}
+                       "source_ref": "ev-1", "source": {"tool": "catalog_entry", "name": "shop:catalog", "ref": "ev-1"},
+                       **(hypothesis or {})}}
     decision = admit([candidate], {**CLAIM, **claim}, hypothesis_of=known.get)
     return decision["checked"][0]["reasons"]
 

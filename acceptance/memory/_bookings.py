@@ -12,7 +12,11 @@ Per flight the service answers:
 * ``F-SOLD-OUT`` — first refuses as sold out (nothing booked), then books;
 * ``F-OK`` — books;
 * ``F-SLOW`` — books, then answers only after a long delay (a window to stop
-  the session after the effect and before its answer is recorded).
+  the session after the effect and before its answer is recorded);
+* ``F-PARTIAL`` — first holds the outbound leg only and refuses with the
+  documented ``PARTIAL`` (a partial effect), then completes the booking.
+  ``book_resumable`` documents that a partial booking may be repeated to
+  completion; the others do not.
 
 A session that books once first reads the seat map, an observation whose
 recorded answer persists the run before the booking starts.
@@ -96,16 +100,20 @@ def _answers():
         answer(BOOKED, when={"flight": "F-SOLD-OUT"}, effect="booked",
                sequence=[{"payload": {"ok": False, "err": "SOLD_OUT"}}]),
         answer(BOOKED, when={"flight": "F-SLOW"}, effect="booked", delay=30),
+        answer(BOOKED, when={"flight": "F-PARTIAL"}, effect="completed",
+               sequence=[{"payload": {"ok": False, "err": "PARTIAL"}, "effect": "outbound_held"}]),
         answer(BOOKED, effect="booked"),
     ]
 
 
 def tools(*, retention_s: int = 600) -> list:
-    contract = {"effect_on_err": {"SOLD_OUT": "none"}}
+    contract = {"effect_on_err": {"SOLD_OUT": "none", "PARTIAL": "partial"}}
     keyed = tool("book", "airline:desk", _answers(), server="airline",
                  contract={**contract, "idempotency_key": {"field": KEY, "retention_s": retention_s}},
                  dedupe={"field": KEY, "retention_s": retention_s})
     plain = tool("book_plain", "airline:plain", _answers(), server="airline", contract=contract)
+    resumable = tool("book_resumable", "airline:resumable", _answers(), server="airline",
+                     contract={**contract, "repeatable_on_partial": True})
     seats = tool("seat_map", "airline:seats", [answer({"ok": True, "free": 3})], server="airline",
                  contract={"observation": True, "idempotent": True})
     # Reserving records the request's key with the reservation, then answers with an undocumented error;
@@ -122,12 +130,13 @@ def tools(*, retention_s: int = 600) -> list:
         contract={"state_check_for": "reserve", "resolve_state": {"booked": "applied"},
                   "binds": {"request": {"flight": "flight"}, "answer": {"flight": "flight"}},
                   "attests": "operation", "operation_field": KEY})
-    return [keyed, plain, seats, reserve, reservation]
+    return [keyed, plain, resumable, seats, reserve, reservation]
 
 
 def world(root, **options) -> MemoryWorld:
     return MemoryWorld(root, tools(**options), provenance={
         "airline:desk": {"ancestors": []}, "airline:plain": {"ancestors": []}, "airline:seats": {"ancestors": []},
+        "airline:resumable": {"ancestors": []},
         "airline:records": {"ancestors": []}})
 
 
@@ -151,7 +160,7 @@ def inputs(task: str, book_tool: str, mode: str, flight: str, other: str = "F-OK
 
 def bookings(world: MemoryWorld, flight: str | None = None) -> list:
     """The bookings that actually happened (the environment's own record)."""
-    return [item for item in world.world()["effects"] if item["effect"] == "booked"
+    return [item for item in world.world()["effects"] if item["effect"] in {"booked", "outbound_held", "completed"}
             and (flight is None or item["args"]["flight"] == flight)]
 
 

@@ -19,7 +19,7 @@ from typing import Any, Mapping
 from ..learning.behavior import step_similarity
 from ..learning.triggers import context_template, matches, render_template
 from .births import typed_check
-from .comparison import compare
+from .comparison import compare, compare_trials
 from .conflicts import competitors, met_at_runtime
 from .counsel import Counsel
 from .pool import assess, merge_pool
@@ -61,7 +61,8 @@ def _attributed(pair, state, reactions, parameters) -> dict[str, list]:
     return found
 
 
-def conflict_advice(counsel: Counsel | None, state, parameters, fires, reactions, suppressed) -> dict[str, Any]:
+def conflict_advice(counsel: Counsel | None, state, parameters, fires, reactions, suppressed,
+                    trials=()) -> dict[str, Any]:
     """The verified comparison of every competitor pair, keyed ``"left|right"``, with the model's proposal.
 
     The compared outcomes are the habits' recent fires, this window's fires, the slow-path outcomes
@@ -75,9 +76,11 @@ def conflict_advice(counsel: Counsel | None, state, parameters, fires, reactions
                               *attributed[habit_id]] for habit_id in (left, right)}
         key = f"{left}|{right}"
         result = compare(left, right, history, parameters["counterfactual_min_pairs"])
+        trial = compare_trials(left, right, trials, parameters["counterfactual_min_pairs"],
+                               [state["frozen"][habit_id]["trigger"]["when"] for habit_id in (left, right)])
         if result["pairs"] < parameters["counterfactual_min_pairs"] or counsel is None:
             basis = "insufficient_comparable_outcomes" if counsel is not None else "not_asked_in_reassessment"
-            advice[key] = {"basis": basis, "asked": False, "answer": None, "comparison": result,
+            advice[key] = {"basis": basis, "asked": False, "answer": None, "comparison": result, "trial": trial,
                            "attributed": attributed}
             continue
         variant = {"A": {"habit_id": left, "pattern": state["frozen"][left]["habit"]["action_pattern"],
@@ -86,7 +89,7 @@ def conflict_advice(counsel: Counsel | None, state, parameters, fires, reactions
                          "outcomes": history[right]}}
         answer = counsel.ask("would_B_outcome_be_better", ("yes", "no"),
                              (variant, {"B": variant["B"], "A": variant["A"]}))
-        advice[key] = {"basis": "proposal", **answer, "comparison": result, "attributed": attributed}
+        advice[key] = {"basis": "proposal", **answer, "comparison": result, "trial": trial, "attributed": attributed}
     return advice
 
 

@@ -11,7 +11,9 @@ reported. Step 2: the verified comparison of their recorded outcomes
 other yields to it (``yields_to``, which the snapshot boundary carries to the
 runtime); on one shared applicability the other also goes on probation (TC). A
 model's answer is a recorded proposal and never resolves a conflict (review
-R5). Slow-path outcomes attributed to a competitor are kept (``compared``), so
+R5); stand trials of the two inside their transfer scope (``compare_trials``)
+are a verified comparison of their own, used when the recorded outcomes find no
+winner. Slow-path outcomes attributed to a competitor are kept (``compared``), so
 comparable evidence accumulates across windows. A verified result stands in later windows while the recorded outcomes do
 not contradict it. Step 3: without a sufficient verified result, both go to
 probation and a shared trigger becomes slow-only; only a later verified step-2
@@ -33,7 +35,8 @@ from ..learning.triggers import condition_key
 from ..records import canonical
 from .habit_state import EFFECTIVE
 
-_ADVICE_FIELDS = ("basis", "asked", "calls", "answer", "agreed", "reasons", "refs", "component", "comparison")
+_ADVICE_FIELDS = ("basis", "asked", "calls", "answer", "agreed", "reasons", "refs", "component", "comparison",
+                  "trial")
 
 
 def met_at_runtime(suppressed: Iterable[Mapping[str, Any]]) -> set[tuple[str, str]]:
@@ -130,6 +133,8 @@ def conflict_stage(parameters, state, habits, draft, report, forced) -> list[dic
             report["conflicts"].append({**entry, "step": 1, "resolution": "A_selected_by_trust_gap"})
             continue
         comparison = advice.get("comparison") or {}
+        if comparison.get("winner") is None and (advice.get("trial") or {}).get("winner") is not None:
+            comparison = advice["trial"]  # Stand trials inside their transfer scope decide what history cannot.
         if comparison.get("winner") is not None:
             report["conflicts"].append(_step_two(entry, habits, comparison["winner"], advice, blocked, slow_only,
                                                  forced))

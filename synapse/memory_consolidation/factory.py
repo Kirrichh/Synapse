@@ -26,7 +26,10 @@ from synapse.memory_points import DURABLE_COGNITIVE_PROFILE
 from synapse.version import RUNTIME_VERSION
 
 from .configuration import MEMORY_BINDING_V1, MemoryConfiguration
-from .court.boundary import boundary_record
+from .court.boundary import boundary_record, habit_entry
+from .court.habit_state import EFFECTIVE
+from .court.projection import fold
+from .court.retention import apply_acts, pending_acts
 from .court.consolidation import CourtPorts, consolidate
 from .legitimacy import GoldLegitimacy
 from .owner import MemoryOwner, MemoryOwnerViolation
@@ -41,9 +44,11 @@ class MemoryFactory:
 
     def __init__(self, state_root: Path, configuration: MemoryConfiguration, *, transport=None,
                  owner: MemoryOwner | None = None, exam: Mapping[str, Any] | None = None) -> None:
-        if exam is not None and (type(exam) is not dict or set(exam) != {"mode", "snapshot"}
-                                 or exam["mode"] not in EXAM_MODES or type(exam["snapshot"]) is not str):
-            raise MemoryOwnerViolation("an exam names its mode and the snapshot boundary it reads")
+        if exam is not None and (type(exam) is not dict or set(exam) - {"trial"} != {"mode", "snapshot"}
+                                 or exam["mode"] not in EXAM_MODES or type(exam["snapshot"]) is not str
+                                 or ("trial" in exam and (exam["mode"] != "B" or type(exam["trial"]) is not str))):
+            raise MemoryOwnerViolation("an exam names its mode and the snapshot boundary it reads; a trial arm is "
+                                       "an exam in mode B naming the one learned habit it runs")
         self.owner = owner if owner is not None else MemoryOwner(state_root)
         self.configuration = configuration
         self.exam = None if exam is None else dict(exam)
@@ -75,21 +80,24 @@ class MemoryFactory:
         return boundary
 
     def latest_boundary(self, guard) -> tuple[dict | None, dict | None]:
-        """The newest complete boundary and its digest, rebuilding a lagging one."""
-        from .court.projection import apply_report, empty_state
+        """The newest complete boundary and its digest, rebuilding a lagging one.
 
-        state, latest = empty_state(), (None, None)
-        for item in self.owner.applied(guard=guard):
-            report = item["report"]
-            if report is None:
-                continue
-            state = apply_report(state, report)
+        Searched from the chain's head: the newest report that names a boundary decides; only a boundary that
+        lags behind its committed decision needs the state it was built from."""
+        applied = [item for item in self.owner.applied(guard=guard) if item["report"] is not None]
+        recorded = self.owner.boundaries(guard=guard)
+        for position in range(len(applied) - 1, -1, -1):
+            report = applied[position]["report"]
             if report["snapshot_boundary_after"] is None:
                 continue
-            boundary = self.owner.boundary(report["consolidation_id"], guard=guard) or self._rebuilt(item, state, guard)
+            boundary = recorded.get(report["consolidation_id"])
+            if boundary is None:
+                state = (self.owner.state(guard=guard) if position == len(applied) - 1
+                         else fold(item["report"] for item in applied[:position + 1]))
+                boundary = self._rebuilt(applied[position], state, guard)
             if boundary is not None:
-                latest = (boundary, report["apply"]["digest"])
-        return latest
+                return boundary, report["apply"]["digest"]
+        return None, None
 
     def _pinned(self, run, guard) -> tuple[dict | None, dict | None]:
         opening = opening_of(run.get("history"))
@@ -109,6 +117,14 @@ class MemoryFactory:
     def _recorded_pin(self, opening, guard) -> dict | None:
         """The boundary a run recorded at its opening."""
         return None if opening.get("boundary") is None else self._complete(opening["boundary"], guard)[0]
+
+    def memory_now(self) -> dict[str, Any]:
+        """The owner's memory state with the retention acts recorded since its last report applied — what the
+        next consolidation will start from (read-only; a forget acts before it is folded)."""
+        state = self.owner.state()
+        passes = self.owner.retention_passes()
+        quanta, retention = apply_acts(state, pending_acts(passes, state), len(passes))
+        return {**state, "quanta": {**state["quanta"], **quanta}, "retention": retention}
 
     def admitted_now(self, habit_id: str, item: Mapping[str, Any]) -> bool:
         """Gold admits this learned behavior for the current attempt and tool binding."""
@@ -134,7 +150,19 @@ class MemoryFactory:
         boundary, digest = self._complete(self.exam["snapshot"], None)
         if self.exam["mode"] == "A":
             boundary, digest = None, None  # Accumulated experience is switched off.
-        return MemorySession(self, dict(run), boundary, digest, self.exam["mode"])
+        trial = None if "trial" not in self.exam else self._trial_arm(self.exam["snapshot"], self.exam["trial"])
+        return MemorySession(self, dict(run), boundary, digest, self.exam["mode"], trial=trial)
+
+    def _trial_arm(self, snapshot: str, habit_id: str) -> dict[str, Any]:
+        """The one learned habit a trial arm runs (review R5): live at the snapshot, whatever its conflict — the
+        arm runs it alone, in its own restored copy of the environment, and never teaches the memory."""
+        reports = [item["report"] for item in self.owner.applied() if item["report"] is not None]
+        at = next((index for index, report in enumerate(reports) if report["snapshot_boundary_after"] == snapshot),
+                  None)
+        state = fold(reports[:at + 1]) if at is not None else None
+        if state is None or habit_id not in state["frozen"] or state["habits"][habit_id]["state"] not in EFFECTIVE:
+            raise MemoryOwnerViolation("a trial arm runs a learned habit live at the snapshot it reads")
+        return habit_entry(habit_id, state["habits"][habit_id], state["frozen"][habit_id])
 
     def replay_session(self, run: Mapping[str, Any]) -> ReplaySession:
         opening = opening_of(run["history"]) or {}
@@ -206,6 +234,23 @@ class MemoryFactory:
         with self.owner.store.session() as guard:
             self.owner.bind(guard, self.configuration)
             return forget(self.owner, ports, guard, qid, reason=reason, operator=operator)
+
+    def trial(self, artifacts: list[Path], *, stand: str, scope: Any) -> dict[str, Any]:
+        """Judge and record a stand trial of two competitors from its two recorded exam arms (review R5)."""
+        from synapse.durable_cognitive import read_cognitive_session
+
+        from .court.trials import judge_trial
+
+        arms = [read_cognitive_session(Path(path)) for path in artifacts]
+        if any(arm["integrity_error"] is not None for arm in arms):
+            raise MemoryOwnerViolation("a trial arm's run artifact does not verify")
+        with self.owner.store.session() as guard:
+            self.owner.bind(guard, self.configuration)
+            self.owner.require_policy(self.configuration, guard=guard)
+            trial = judge_trial(self.owner.state(guard=guard), self.configuration, self.gateway, arms, stand=stand,
+                                scope=scope)
+            self.owner.put_trial(guard, trial)
+        return trial
 
     def restore(self, qid: str) -> dict[str, Any]:
         from .operator_acts import restore

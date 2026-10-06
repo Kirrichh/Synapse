@@ -22,7 +22,11 @@ it rests only on recorded outcomes that can be compared:
 
 The histories remain observational data: they are not a counterfactual
 experiment in independent copies of one initial state, and the comparison says
-so (``basis``). The court lifts a slow-only ban only on a winner found here.
+so (``basis``). Stand trials (``trials.py``) are such experiments: each decided
+trial of the two competitors is one comparable situation, each situation once,
+judged by the same rule under its own basis — and only for triggers inside the
+transfer scope its stand declares; outside it a trial proves nothing. The court
+lifts a slow-only ban only on a winner found here.
 """
 from __future__ import annotations
 
@@ -94,3 +98,49 @@ def compare(left: str, right: str, histories: Mapping[str, list], minimum: int) 
     return {"basis": COMPARISON_BASIS, "winner": winner, "reason": reason, "pairs": len(pairs),
             "better": better, "mixed_situations": len(mixed),
             "excluded": {left: excluded_a, right: excluded_b}}
+
+
+def _covered(scope, condition_sets) -> bool:
+    """Whether every value a trigger admits on a field lies in the values the stand reproduces."""
+    for conditions in condition_sets:
+        for condition in conditions:
+            values = scope["fields"].get(condition["field"])
+            admitted = ([condition["value"]] if condition["op"] == "==" else
+                        list(condition["value"]) if condition["op"] == "in" else None)
+            if values is None or admitted is None or not {canonical(item) for item in admitted} <= {
+                    canonical(item) for item in values}:
+                return False
+    return True
+
+
+def compare_trials(left: str, right: str, trials: Iterable[Mapping[str, Any]], minimum: int,
+                   conditions: Iterable[Iterable[Mapping[str, Any]]]) -> dict[str, Any]:
+    """Whether ``left`` or ``right`` did better in stand trials of the two, inside the trials' transfer scope."""
+    relevant = [item for item in trials if set(item["arms"]) == {left, right}]
+    conditions = [list(group) for group in conditions]
+    inside = [item for item in relevant if _covered(item["scope"], conditions)]
+    situations: dict[str, dict[str, str]] = {}
+    for item in sorted(inside, key=lambda value: value["id"]):
+        if item["decided"]:
+            situations.setdefault(f"{item['stand']}|{item['situation']}",
+                                  {habit_id: arm["outcome"] for habit_id, arm in item["arms"].items()})
+    better = {left: 0, right: 0}
+    for outcomes in situations.values():
+        if outcomes[left] != outcomes[right]:
+            better[left if outcomes[left] == "success" else right] += 1
+    winner, reason = None, "too_few_trials"
+    if relevant and not inside:
+        reason = "outside_transfer_scope"
+    elif len(situations) >= minimum:
+        if better[left] and better[right]:
+            reason = "contradicting_trials"
+        elif better[left] >= minimum:
+            winner, reason = left, "better_in_stand_trials"
+        elif better[right] >= minimum:
+            winner, reason = right, "better_in_stand_trials"
+        else:
+            reason = "no_difference_established"
+    return {"basis": "stand_trial", "winner": winner, "reason": reason, "pairs": len(situations),
+            "better": better, "trials": sorted(item["id"] for item in relevant),
+            "outside_scope": len(relevant) - len(inside),
+            "stands": sorted({item["stand"] for item in inside})}

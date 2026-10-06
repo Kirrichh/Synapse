@@ -63,6 +63,8 @@ def boundary_view(hypotheses: Mapping[str, Mapping[str, Any]]) -> tuple[dict, di
     statuses, claims = {}, {}
     for hypothesis_id, entry in sorted(hypotheses.items(), key=lambda item: (item[1]["window"], item[0])):
         statuses[hypothesis_id] = {"status": entry["status"], "window": entry["window"],
-                                   "claim_key": entry["claim_key"], "source_ref": entry["source_ref"]}
+                                   "claim_key": entry["claim_key"], "source_ref": entry["source_ref"],
+                                   "run_id": entry.get("run_id"), "check_ref": entry.get("check_ref"),
+                                   "basis": entry.get("basis")}
         claims[entry["claim_key"]] = hypothesis_id
     return statuses, claims

@@ -64,7 +64,7 @@ def _pinned(history) -> str | None:
     return None
 
 
-def _session(entry, recorded, state, ending: bool) -> dict[str, Any]:
+def session_window(entry, recorded, state, ending: bool) -> dict[str, Any]:
     """A session's window since its cursor; a live session's window stops before a segment it is still in."""
     cursor = state["cursors"].get(entry["run_id"], {"to": 0})
     history = recorded["history"]
@@ -82,7 +82,7 @@ def _window(owner, ports, state, mode, current, guard) -> list[dict[str, Any]]:
             continue
         own = current is not None and entry["run_id"] == current["run_id"]
         recorded = current if own else ports.read_session(entry)
-        session = _session(entry, recorded, state, ending=own and mode == "full")
+        session = session_window(entry, recorded, state, ending=own and mode == "full")
         if session["to"] > session["from"] and significant(session):
             sessions.append(session)
     return sessions
@@ -178,7 +178,8 @@ def consolidate(owner: MemoryOwner, configuration: MemoryConfiguration, ports: C
     consolidation_id = _identity(owner, tail, effective_mode, cursors, configuration, head, len(passes))
     draft = evaluate(DreamInputs(consolidation_id, effective_mode, sessions, state, configuration, ports.gateway,
                                  ports.executor, ports.replay,
-                                 frozenset({current["run_id"]} if current is not None and mode == "full" else ())))
+                                 frozenset({current["run_id"]} if current is not None and mode == "full" else ()),
+                                 tuple(owner.trials(guard=guard))))
     legitimacy = _legitimacy(ports, state)
     decision, gates = _gated_decision(state, draft, configuration, legitimacy, ports)
     _supersede(ports, state, decision, gates)
@@ -192,6 +193,7 @@ def consolidate(owner: MemoryOwner, configuration: MemoryConfiguration, ports: C
     summary = append_decision(owner.store, guard, project_identity=owner.identity, tail=tail,
                               consolidation={"consolidation_id": consolidation_id, "mode": effective_mode,
                                              "report": receipt})
+    owner.put_state_snapshot(guard)
     if result["boundary"] is not None:
         owner.put_boundary(guard, result["boundary"])
         # Retention runs after the decision is applied, under the same owner session (spec part 3 §8.4).
@@ -273,7 +275,8 @@ def reassess(owner: MemoryOwner, configuration: MemoryConfiguration, ports: Cour
     reassessment["policy"] = {"from": reports[-1]["policy"]["policy"] if reports else None,
                               "to": configuration.policy["policy"]}
     draft = {**empty_draft(consolidation_id, "reassess", {"ok": True, "problems": []}),
-             "conflict_advice": conflict_advice(None, state, configuration.parameters, [], [], []),
+             "conflict_advice": conflict_advice(None, state, configuration.parameters, [], [], [],
+                                                owner.trials(guard=guard)),
              "arbitration": {}, "counsel": {"questions": 0, "agreed": 0}, "gateway_head": head,
              "reassessment": reassessment}
     legitimacy = _legitimacy(ports, state)
@@ -289,6 +292,7 @@ def reassess(owner: MemoryOwner, configuration: MemoryConfiguration, ports: Cour
     summary = append_decision(owner.store, guard, project_identity=owner.identity, tail=tail,
                               consolidation={"consolidation_id": consolidation_id, "mode": "reassess",
                                              "report": receipt})
+    owner.put_state_snapshot(guard)
     owner.put_boundary(guard, result["boundary"])
     retention_pass(owner, configuration, ports, guard)
     owner.rebind(guard, configuration, reassessment=consolidation_id)

@@ -16,6 +16,9 @@ An answer is one of:
   and dies before answering, so the caller loses the answer;
 * any answer may add ``"delay": seconds`` — the call is recorded in the world
   first and answered only after the delay (a window for a process crash);
+  with ``"until": name`` as well, it is answered as soon as a file of that
+  name appears next to the world (the scenario's signal), at the latest
+  after the delay;
 * ``{"payload": {...}, "act": {...}, "otherwise": {...}}`` — answered from the
   world's objects: ``create`` stores a new object under a fresh identifier
   (random, or sequential for a predictable service) and answers it; ``read``
@@ -212,7 +215,11 @@ def main(script_path: str, world_path: str) -> None:
         arguments = dict(params.arguments or {})
         answer = world.call(params.name, arguments, lambda count: _answer(tool, arguments, count), tool.get("dedupe"))
         if answer.get("delay"):
-            await anyio.sleep(answer["delay"])
+            signal = Path(world_path).parent / answer["until"] if answer.get("until") else None
+            waited = 0.0
+            while waited < answer["delay"] and not (signal is not None and signal.exists()):
+                await anyio.sleep(0.1)
+                waited += 0.1
         if answer.get("lost"):
             os._exit(3)  # The effect is applied; the answer never reaches the caller.
         payload = answer["payload"]

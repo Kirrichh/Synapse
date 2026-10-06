@@ -15,9 +15,17 @@ established. Each refusal stands next to the correct case that still passes:
   session there is no basis at all, and a confirmed hypothesis establishes
   only the very statement: the same entity, property and typed value (a
   boolean denial is entailed by the negated value), the same conditions, the
-  claim's scope and the source version the record was read from; a hypothesis
-  about an entity is no confirmation of a content, and a basis that is no
-  longer confirmed no longer admits.
+  claim's scope, the source the hypothesis read (a record naming another
+  source is a substituted one) and the source version the record was read
+  from; a hypothesis about an entity is no confirmation of a content, and a
+  basis that is no
+  longer confirmed no longer admits;
+* attestation — every candidate whose basis is known carries what is stated
+  (with its value's type), of which version, verified how and from which
+  observations, its provenance, its outcome for this very statement and what
+  it depends on; an admitted fact carries the attestation of the statement,
+  copies counted once inside it; a check that is no longer fresh leaves the
+  outcome undecided, never refuted.
 """
 from __future__ import annotations
 
@@ -36,7 +44,8 @@ def _record(entity="account-1", **changes):
 
 def _basis(**changes):
     return {"status": "confirmed", "aspect": "content", "subject": "account-1", "statement": {"balance": 20},
-            "scope": "bank", "conditions": {}, "source_ref": None, **changes}
+            "scope": "bank", "conditions": {}, "source_ref": None,
+            "source": {"tool": "ledger", "name": "bank:ledger", "ref": None}, **changes}
 
 
 def _decide(record, entity="account-1", journal=None, rules=None, **claim):
@@ -121,6 +130,8 @@ def test_a_record_never_grants_itself_the_authority_to_be_established():
     ({"conditions": {"currency": "eur"}}, {}, "basis_under_other_conditions"),
     ({"scope": "shop"}, {"scope": "bank"}, "basis_for_another_scope"),
     ({"source_ref": "ev-old"}, {"source": {"tool": "ledger", "ref": "ev-new"}}, "basis_for_another_version"),
+    ({"source": {"tool": "ledger", "name": "mirror:ledger", "ref": None}}, {}, "basis_from_another_source"),
+    ({}, {"source": {"tool": "forged_ledger", "ref": None}}, "basis_from_another_source"),
     ({"aspect": "entity"}, {}, "basis_not_about_content"),
     ({"status": "provisional"}, {}, "not_confirmed:provisional"),
     ({"status": "refuted"}, {}, "not_confirmed:refuted"),
@@ -132,7 +143,8 @@ def test_a_basis_establishes_only_its_own_statement(basis, record, reason):
 def test_the_same_value_of_another_statement_confirms_nothing():
     healthy = {"id": "card-h", "entity": "service-b", "attribute": "healthy", "value": True, "source": "ops:status",
                "content": "service healthy", "hypothesis": "hyp_a"}
-    journal = {"hyp_a": _basis(subject="service-a", statement={"healthy": True})}
+    journal = {"hyp_a": _basis(subject="service-a", statement={"healthy": True},
+                               source={"tool": "status", "name": "ops:status", "ref": None})}
     reasons = admit([healthy], {"entity": "service-b", "attribute": "healthy", "keys": ["service", "healthy"]},
                     hypothesis_of=journal.get)["checked"][0]["reasons"]
     assert reasons == ["basis_about_another_entity"]
@@ -150,3 +162,52 @@ def test_a_boolean_denial_is_entailed_by_its_negated_value_and_the_right_basis_s
         hypothesis_of=wrong.get)["checked"][0]["reasons"]
     versioned = _record(source={"tool": "ledger", "ref": "ev-1"})
     assert _decide(versioned, journal={"hyp_value": _basis(source_ref="ev-1")})["decision"] == "admitted"
+
+
+VERIFIED = {"method": "probe", "rule": "synapse.memory.hypothesis-check/v1", "contract_ref": "c" * 64,
+            "observations": {"source": "ev-1", "check": {"gw_seq": 4, "evidence": "ev-check"}},
+            "checked_in": "run-1", "window": None, "case": None, "reason": "check_agrees"}
+
+
+def test_an_admitted_fact_carries_the_attestation_of_its_statement():
+    record = _record(source={"tool": "ledger", "ref": "ev-1"})
+    copy = {**record, "id": "card-2"}
+    journal = {"hyp_value": _basis(source_ref="ev-1", verification=VERIFIED)}
+    decision = admit([record, copy], {"entity": "account-1", "attribute": "balance", "keys": KEYS, "scope": "bank"},
+                     hypothesis_of=journal.get)
+    attested = decision["attestation"]
+    assert decision["decision"] == "admitted" and attested["outcome"] == "confirmed"
+    assert attested["statement"] == {"kind": "fact", "entity": "account-1", "attribute": "balance", "value": 20,
+                                     "value_type": "integer", "polarity": True, "conditions": {}, "scope": None}
+    assert attested["version"]["source_version"] == "ev-1"
+    assert attested["verification"]["hypothesis"] == "hyp_value" and attested["verification"]["method"] == "probe"
+    assert attested["provenance"]["record"] == "card-1" and attested["provenance"]["copies"] == ["card-2"]
+    assert attested["dependencies"] == [{"kind": "hypothesis", "ref": "hyp_value"},
+                                        {"kind": "source_version", "ref": "ev-1"},
+                                        {"kind": "observation", "ref": "ev-check"},
+                                        {"kind": "check_contract", "ref": "c" * 64}]
+
+
+def test_an_identity_link_is_a_dependency_of_the_attestation():
+    journal = {"hyp_value": _basis(verification=VERIFIED), "hyp_alias": _alias()}
+    decision = _decide(_record(), entity="acct-7", journal=journal, identified_by="hyp_alias")
+    assert decision["attestation"]["provenance"]["identity_link"] == "hyp_alias"
+    assert {"kind": "identity_link", "ref": "hyp_alias"} in decision["attestation"]["dependencies"]
+
+
+@pytest.mark.parametrize("basis, outcome", [
+    ({"status": "refuted"}, "refuted"),
+    ({"status": "provisional", "verification": {**VERIFIED, "reason": "stale"}}, "undecided"),
+    ({"statement": {"balance": 21}}, "undecided"),
+    ({"subject": "account-2"}, "undecided"),
+])
+def test_the_outcome_is_about_this_very_statement(basis, outcome):
+    checked, = _decide(_record(), journal={"hyp_value": _basis(**basis)})["checked"]
+    assert checked["attestation"]["outcome"] == outcome
+    # Only a confirmed attestation of this statement admits.
+    assert checked["reasons"]
+
+
+def test_nothing_is_attested_without_a_known_basis():
+    decision = _decide(_record(hypothesis=None))
+    assert decision["attestation"] is None and decision["checked"][0]["attestation"] is None

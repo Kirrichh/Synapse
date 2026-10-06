@@ -10,6 +10,10 @@
   with a recorded verified resolution keeps it.
 * A reassessment observes no window: trust, pending evidence and the
   automaton's counters are untouched.
+* A kept habit is verified under the current tool contracts; a session loads a
+  learned habit only under the contracts it was verified under — one whose
+  body's tool contract changed, or that names none, is listed as unverified
+  and not loaded until a reassessment verifies it again.
 """
 from __future__ import annotations
 
@@ -18,7 +22,12 @@ from synapse.memory_consolidation.court.births import make_birth
 from synapse.memory_consolidation.court.decide import decide
 from synapse.memory_consolidation.court.evaluate import empty_draft
 from synapse.memory_consolidation.court.projection import empty_state
+from types import SimpleNamespace
+
+from synapse.memory_consolidation.court.boundary import habit_entry
 from synapse.memory_consolidation.learning.applicability import explanation_of
+from synapse.memory_consolidation.learning.behavior import contracts_of
+from synapse.memory_consolidation.session import MemorySession
 
 CONDITION = {"event_types": ["external_error"], "context": ["search"],
              "when": [{"field": "route_kind", "op": "==", "value": "intl"}], "not_when": []}
@@ -77,7 +86,7 @@ def _reassess(configuration, state, verdicts):
     draft = {**empty_draft("con_reassess", "reassess", {"ok": True, "problems": []}), "conflict_advice": {},
              "arbitration": {}, "reassessment": {"schema_version": "synapse.memory.reassessment/v1", "habits": [
                  {"habit_id": habit_id, "state": state["habits"][habit_id]["state"], "verified": verified,
-                  "required": 3, "episodes": [],
+                  "required": 3, "episodes": [], "contracts": {"quota_status": "c" * 64}, "contracts_changed": [],
                   "verdict": "basis_holds" if verified >= 3 else "basis_no_longer_verified"}
                  for habit_id, verified in verdicts.items()]}}
     return decide(state, draft, configuration, {habit_id: {"admitted": True} for habit_id in state["habits"]})
@@ -122,3 +131,31 @@ def test_a_recorded_verified_resolution_stands():
     decision = _reassess(configuration, state, {ids["q"]: 3, ids["c"]: 3})
     conflict, = decision["sections"]["conflicts"]
     assert conflict["step"] == 2 and conflict["standing"] is True and decision["slow_only"] == []
+
+
+def test_a_kept_habit_is_verified_under_the_current_contracts_and_a_lost_one_is_not():
+    configuration, state, ids = _state("q", "c")
+    decision = _reassess(configuration, state, {ids["q"]: 3, ids["c"]: 1})
+    assert decision["habits"][ids["q"]]["verified_under"] == {"contracts": {"quota_status": "c" * 64}}
+    assert decision["habits"][ids["c"]].get("verified_under") is None
+
+
+def test_a_session_loads_a_habit_only_under_the_contracts_it_was_verified_under():
+    configuration, state, ids = _state("q", "c")
+    current = contracts_of(QUOTA, configuration)
+    verified = {ids["q"]: {"contracts": current},
+                ids["c"]: {"contracts": {**contracts_of(CAPACITY, configuration), "reserve_slot": "0" * 64}}}
+    habits = []
+    for label, habit_id in ids.items():
+        metadata = {**state["habits"][habit_id], "verified_under": verified.get(habit_id), "priority": "medium",
+                    "energy_cost": 1.0, "publication": None}
+        habits.append(habit_entry(habit_id, metadata, state["frozen"][habit_id]))
+    legacy = {**habits[0], "habit_id": "hab_legacy", "verified_under": None}
+    factory = SimpleNamespace(configuration=configuration, admitted_now=lambda habit_id, item: True)
+    session = MemorySession(factory, {"run_id": "load"}, {"id": "bnd_x", "boundary": {"habits": [*habits, legacy]}},
+                            None)
+    loaded = [entry.habit_id for entry in session.registry_entries()]
+    assert loaded == [ids["q"]]
+    assert session.unverified == sorted([{"habit_id": ids["c"], "contracts_changed": ["reserve_slot"]},
+                                         {"habit_id": "hab_legacy", "contracts_changed": ["*"]}],
+                                        key=lambda item: item["habit_id"])

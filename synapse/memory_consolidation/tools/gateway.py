@@ -121,7 +121,8 @@ class Gateway:
             raise ValueError(f"wall-clock field {key!r} cannot enter the canonical request")
         contract = self.configuration.contract(request["tool"])
         if contract.idempotency_key and contract.idempotency_key["field"] in (request.get("args") or {}):
-            return self.refuse(request, "the idempotency key is the gateway's to issue, never an argument")
+            return self.refuse(request, "the idempotency key is the gateway's to issue, never an argument",
+                               breach=True)
         run_id, ordinal = request["run_id"], request["ordinal"]
         records = self.records()
         mine = [item for item in records if item["body"].get("run_id") == run_id]
@@ -157,15 +158,19 @@ class Gateway:
                 "tool": contract.name,
                 "request_canon": request_canon, "op_seq": None if target is None else target["op_seq"],
                 "reason": decision, "task_id": request.get("task_id"), "segment": request.get("segment_marker_id"),
-                "off_plan": bool(request.get("off_plan")), "path": request["path"], "habit_id": request.get("habit_id"), "final": True})
+                "off_plan": bool(request.get("off_plan")), "path": request["path"], "habit_id": request.get("habit_id"),
+                "breach": True, "final": True})
             return self._outcome(rejected, contract, self.records())
         if target is None:
             target = {"op_seq": len(ops) + 1, "attempts": []}
             return self._attempt(request, contract, request_canon, target, retry_of=None, admitted=None)
         return self._attempt(request, contract, request_canon, target, retry_of=target["op_seq"], admitted=True)
 
-    def refuse(self, request: Mapping[str, Any], reason: str) -> dict[str, Any]:
-        """Record a refusal decided before any effect: an unmet precondition of the call."""
+    def refuse(self, request: Mapping[str, Any], reason: str, *, breach: bool = False) -> dict[str, Any]:
+        """Record a refusal decided before any effect: an unmet precondition of the call.
+
+        ``breach`` marks a request the tool contracts forbid outright (an argument only the gateway may set),
+        as opposed to a precondition the world has not met yet."""
         contract = self.configuration.contract(request["tool"])
         records = self.records()
         final = [item for item in records if item["body"].get("run_id") == request["run_id"]
@@ -179,7 +184,7 @@ class Gateway:
             "request_canon": digest({"tool": request["tool"], "args": request["args"]}), "op_seq": None,
             "reason": reason, "task_id": request.get("task_id"), "segment": request.get("segment_marker_id"),
             "off_plan": bool(request.get("off_plan")), "path": request["path"], "habit_id": request.get("habit_id"),
-            "final": True})
+            "breach": breach, "final": True})
         return self._outcome(rejected, contract, self.records())
 
     def _resolve_operation(self, request, contract, ops):

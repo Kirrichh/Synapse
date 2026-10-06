@@ -10,12 +10,18 @@ the causes apart (review R6):
 * confirmed errors demote (T2, T3, T5): under ``threshold`` the last
   ``t3_fires`` counted signals in the state average below ``t3_signal``; under
   ``sprt`` Wald's test on the usefulness of each counted signal, reset on every
-  state change, accepts H1;
+  state change, accepts H1; under ``confidence_sequence`` the time-uniform
+  upper bound on the mean signal of the state's distinct tasks falls below
+  ``cs.demote`` (and the lower bound reaching ``cs.promote`` promotes) — read
+  at every fire, which is what the bound is valid for, one observation per
+  task;
 * disuse archives (T2, T5 after ``m_idle`` consolidations without fires; T9;
   T7 without a cold match);
 * a changed basis moves a habit by the decision that changed it (TS for a
   successor, TC for a conflict, TR for a basis a reassessment no longer
-  verifies), and a cold match wakes it.
+  verifies), and a cold match wakes it;
+* a contract violation — the gateway refused, before any effect, something
+  the body attempted — archives the habit at once (TV), whatever its trust.
 
 Too little experience is never a cause: a habit that has not yet fired often
 enough keeps its state. Under ``threshold`` the window's fires are read one by
@@ -36,7 +42,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..learning.triggers import condition_key, covers
-from ..policy import sprt_decision, sprt_step
+from ..policy import cs_radius, sprt_decision, sprt_step
 from .habit_state import EFFECTIVE, enter_state, mean
 
 #: Where a confirmed error or a promotion leads, by state (threshold rule).
@@ -73,6 +79,10 @@ def _count(parameters, metadata, fire) -> None:
         metadata["signal_sum_in_state"] += fire["signal"]
         metadata["tail"] = (list(metadata.get("tail", [])) + [fire["signal"]])[-parameters["t3_fires"]:]
         metadata["sprt_llr"] += sprt_step(parameters, fire["signal"])
+        task = fire["task_id"] or f"run:{fire['run_id']}"
+        if task not in metadata.get("cs_tasks", []):  # One observation per distinct task, its first.
+            metadata["cs_tasks"] = [*metadata.get("cs_tasks", []), task]
+            metadata["cs_sum"] = metadata.get("cs_sum", 0.0) + fire["signal"]
 
 
 def _since_birth(metadata, fire) -> None:
@@ -114,8 +124,23 @@ def _reached(parameters, metadata, trust) -> tuple[str, str] | None:
     return None
 
 
-def _read_fires(context, step: _Step) -> bool:
-    """The threshold rule: every transition the window's fires reach, at the fire that reaches it."""
+def _cs_reached(parameters, metadata, trust) -> tuple[str, str] | None:
+    """The confidence_sequence rule: the bound on the mean signal of distinct tasks has left the band."""
+    count = len(metadata.get("cs_tasks", []))
+    if not count:
+        return None
+    mean_signal = metadata["cs_sum"] / count
+    radius = cs_radius(parameters, count)
+    if mean_signal + radius < parameters["cs"]["demote"]:
+        return "errors", f"{count} tasks, mean {mean_signal:.4f}, upper bound {mean_signal + radius:.4f}"
+    if metadata["state"] in _ON_PROMOTION and mean_signal - radius >= parameters["cs"]["promote"]:
+        return "promotion", f"{count} tasks, mean {mean_signal:.4f}, lower bound {mean_signal - radius:.4f}"
+    return None
+
+
+def _read_fires(context, step: _Step, reached_by=_reached) -> bool:
+    """The threshold and confidence_sequence rules: every transition the window's fires reach, at the fire
+    that reaches it."""
     metadata, parameters = step.metadata, context.parameters
     trust, after = _trust_track(context, step)
     moved = False
@@ -129,7 +154,7 @@ def _read_fires(context, step: _Step) -> bool:
             _count(parameters, metadata, fire)
             trust = after.get((fire["run_id"], fire["event_id"]), trust)
             at = {"run_id": fire["run_id"], "event_id": fire["event_id"]}
-        reached = _reached(parameters, metadata, trust)
+        reached = reached_by(parameters, metadata, trust)
         if reached is None:
             continue
         kind, basis = reached
@@ -230,6 +255,9 @@ def _forced(context, step: _Step, forced) -> bool:
     if rule == "TR" and current in EFFECTIVE:
         _move(context, step, "dormant", "TR", basis, "changed_basis")
         return True
+    if rule == "TV" and step.metadata["state"] in EFFECTIVE:
+        _move(context, step, "dormant", "TV", basis, "contract_violation")
+        return True
     return False
 
 
@@ -250,6 +278,8 @@ def _one(context, step: _Step, habits, forced, wakes, legitimacy) -> None:
     if current in EFFECTIVE:
         if context.configuration.decision_rule == "threshold":
             moved = _read_fires(context, step)
+        elif context.configuration.decision_rule == "confidence_sequence":
+            moved = _read_fires(context, step, _cs_reached)
         else:
             _read_window(context, step)
     if step.habit_id in forced and _forced(context, step, forced):

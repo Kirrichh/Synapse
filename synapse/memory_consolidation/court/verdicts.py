@@ -108,6 +108,10 @@ def _verdict(counsel, parameters, marker, plan, scopes, events, run, replay, lat
             return None
         return {**base, "verdict": "failed" if later_executed else "skipped", "stage": "1",
                 "criterion": "session moved past the segment" if later_executed else "segment not reached"}
+    if counsel is None:
+        # Judged by the environment alone (a stand trial): what the anchor cannot decide stays uncertain.
+        return stage_one(base, parameters, marker, scopes, replay) or {
+            **base, "verdict": "uncertain", "stage": "1", "flags": ["anchor_required"]}
     return (stage_one(base, parameters, marker, scopes, replay)
             or _later_stages(base, counsel, parameters, marker, plan, scopes))
 

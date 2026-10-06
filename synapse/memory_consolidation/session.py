@@ -23,8 +23,9 @@ from typing import Any, Mapping
 
 from synapse.memory_points import ActionPorts, LearnedHabitEntry, ReplayHorizon, TypedCondition
 
+from .court.dependencies import forgotten_dependents
 from .formation import bind_event, plan_task
-from .hypotheses import declare, resolve, reuse
+from .hypotheses import declare, resolve, reuse, verification
 from .knowledge import search as knowledge_search
 from .knowledge.statements import declare as declare_statement, instant
 from .learning.behavior import execute, rivals
@@ -91,7 +92,8 @@ class MemorySession:
     """One durable run's session of its memory owner."""
 
     def __init__(self, factory, run: Mapping[str, Any], boundary: Mapping[str, Any] | None,
-                 digest: Mapping[str, Any] | None, exam: str | None = None) -> None:
+                 digest: Mapping[str, Any] | None, exam: str | None = None, *,
+                 trial: Mapping[str, Any] | None = None) -> None:
         if exam is not None and exam not in EXAM_MODES:
             raise ValueError("an exam runs in mode A, B or C")
         self.factory = factory
@@ -103,9 +105,13 @@ class MemorySession:
         self.scores = 0
         self.embeddings = 0
         habits = [] if boundary is None else boundary["boundary"]["habits"]
-        self._habits = {item["habit_id"]: item for item in habits}
+        # A trial arm (review R5) runs exactly one learned habit, alone; nothing else is loaded.
+        self.trial = None if trial is None else trial["habit_id"]
+        self._habits = {item["habit_id"]: item for item in ([trial] if trial is not None else habits)}
         # The learned habits this session loaded (Gold admitted them at its start): its parts too.
         self._loaded: set[str] = set()
+        # Learned habits not loaded because a contract they were verified under changed.
+        self.unverified: list[dict[str, Any]] = []
 
     # -- formation and events ------------------------------------------------
     def declare_task(self, contract: Mapping[str, Any]) -> dict[str, Any]:
@@ -121,10 +127,24 @@ class MemorySession:
     def registry_entries(self) -> tuple[LearnedHabitEntry, ...]:
         if self.exam == "A":
             return ()
+        self.unverified = [{"habit_id": habit_id, "contracts_changed": changed}
+                           for habit_id, item in sorted(self._habits.items())
+                           for changed in [self._contracts_changed(item)] if changed]
+        unverified = {item["habit_id"] for item in self.unverified}
         entries = tuple(_entry(item, slow_only=self.exam == "C") for habit_id, item in sorted(self._habits.items())
-                        if self.factory.admitted_now(habit_id, item))
+                        if habit_id not in unverified and self.factory.admitted_now(habit_id, item))
         self._loaded = {entry.habit_id for entry in entries}
         return rivalry(entries, self._habits, self.factory.configuration.parameters)
+
+    def _contracts_changed(self, item) -> list[str]:
+        """The tools whose contract is no longer the one the procedure was verified under; a procedure that
+        names none is unverified as a whole. Its applicability is checked again by a reassessment, never assumed."""
+        verified = (item.get("verified_under") or {}).get("contracts")
+        if verified is None:
+            return ["*"]
+        tools = self.factory.configuration.tools.tools
+        return sorted(name for name, ref in verified.items()
+                      if name not in tools or tools[name].contract_ref != ref)
 
     def declared_trust(self, habit_identity: str) -> Mapping[str, float] | None:
         if self.boundary is None:
@@ -217,7 +237,29 @@ class MemorySession:
         unestablished = sorted(item["hypothesis"] for item in requires if item["status"] != "confirmed")
         if unestablished:
             return "a required hypothesis is not established: " + ", ".join(unestablished)
-        return None
+        return self._bases_changed(requires)
+
+    def _bases_changed(self, requires) -> str | None:
+        """Before an effect, every basis read from the court's record is read again (review §8.2, after
+        Kubernetes resourceVersion): a status the court revised after the window it was read at — a corrected
+        source, a later check — or one resting on results the operator forgot, refuses the effect. A check this
+        run made is fresh; an exam reads its fixed snapshot."""
+        recorded = {item["hypothesis"]: item["read"]["window"] for item in requires
+                    if (item.get("read") or {}).get("method") == "court_record"}
+        if self.exam is not None or not recorded:
+            return None
+        state = self.factory.memory_now()
+        changed = [f"{hypothesis_id} is now {entry['status']} ({entry['reason']})"
+                   for hypothesis_id, window in recorded.items()
+                   for entry in [state["hypotheses"].get(hypothesis_id)]
+                   if entry is not None and entry["window"] > window and entry["status"] != "confirmed"]
+        # A forget the operator recorded acts before the next consolidation applies it.
+        for _, tombstone, found in forgotten_dependents(state):
+            changed.extend(f"{hypothesis_id} rests on forgotten results ({tombstone['tombstone']})"
+                           for hypothesis_id in found.get("hypothesis", [])
+                           if hypothesis_id in recorded and recorded[hypothesis_id] <= tombstone["window"])
+        changed = sorted(set(changed))
+        return "a required basis changed since it was read: " + "; ".join(changed) if changed else None
 
     # -- hypotheses (refinement §10) ---------------------------------------------
     def declare_hypothesis(self, claim, source_ref) -> dict[str, Any]:
@@ -225,6 +267,15 @@ class MemorySession:
 
     def resolve_hypothesis(self, record, view) -> dict[str, Any]:
         return resolve(record, view, self.factory.configuration)
+
+    def hypothesis_verification(self, record, **decided) -> dict[str, Any]:
+        return verification(record, self.factory.configuration, **decided)
+
+    def hypothesis_source(self, record) -> dict[str, Any]:
+        """Where the hypothesis read its claim: the tool, the source it answers for, the recorded answer."""
+        contract = self.factory.configuration.tools.tools.get(record["source"]["tool"])
+        return {"tool": record["source"]["tool"], "name": None if contract is None else contract.source,
+                "ref": record["source"]["ref"]}
 
     def known_hypothesis(self, record) -> dict[str, Any]:
         """The court's status for this very hypothesis, if the pinned snapshot holds a fresh one."""

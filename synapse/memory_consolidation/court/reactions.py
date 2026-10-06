@@ -211,7 +211,12 @@ def _reaction(kind, event, error, facts: SessionFacts, slow, verdicts, replay, c
              "failed_settled": None if failure is None else failure["settled"],
              "habit_outcome": local_outcome(habit_episode) if kind == "habit_activated" else None, "habit_detail": None,
              "habit_steps": typed_steps(program_calls(habit_episode), failed) if kind == "habit_activated" else [],
-             "habit_attempts": [item["gw_seq"] for item in habit_episode], "slow": None, "composition": None}
+             "habit_attempts": [item["gw_seq"] for item in habit_episode],
+             # What the gateway refused the body before any effect because its contracts forbid it outright.
+             "habit_refusals": [] if scope is None or kind != "habit_activated" else [
+                 item["reason"] for item in scope["rejected"]
+                 if item["episode"] == f"{error['event_id']}|habit" and item["breach"]],
+             "slow": None, "composition": None}
     learned = recorded.frozen.get(event.get("habit_id")) if kind == "habit_activated" and event.get("layer") == 2 \
         else None
     if learned is not None and scope is not None:

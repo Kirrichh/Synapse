@@ -93,11 +93,12 @@ class MemoryEngine:
         entries = tuple(session.registry_entries())
         pinned = session.pinned()
         opening = {"type": "memory_session_opened", "boundary": pinned["boundary"], "digest": pinned["digest"],
-                   "exam": session.exam,
+                   "exam": session.exam, "trial": session.trial,
                    "learned": [{"habit_id": item.habit_id, "trigger_id": item.trigger_id,
                                 "context_trust": item.context_trust, "slow_only": item.slow_only,
                                 "yields_to": list(item.yields_to), "unresolved_with": list(item.unresolved_with)}
-                               for item in entries]}
+                               for item in entries],
+                   "unverified": list(session.unverified)}
         self.opening = self.host.record_history_event(opening)
         for entry in entries:
             self.host.habit_registry.register(HabitRuntimeRecord(
@@ -188,7 +189,11 @@ class MemoryEngine:
             for item in handles:
                 self.established([item])  # Consults the pinned snapshot once, if this run has not decided it.
                 entry = self._hypothesis(item)
-                requires.append({"hypothesis": entry["record"]["id"], "status": entry["status"]})
+                decision = entry["decision"] or {}
+                # What was read, and from where: the version a court record was decided at is checked before
+                # the effect (``MemorySession``); a check of this run is fresh.
+                requires.append({"hypothesis": entry["record"]["id"], "status": entry["status"],
+                                 "read": {"method": decision.get("method"), "window": decision.get("window")}})
         frame = self.frames[-1] if self.frames else None
         action = self.recorded_action(args[0], copy.deepcopy(args[1]), retry_of, frame, requires=requires)
         view = action["outcome"]["view"]
@@ -299,7 +304,7 @@ class MemoryEngine:
             "hypothesis": record, "status": "provisional", "reason": reason, "trace_id": self.host.current_trace_id()},
             {"hypothesis": record})
         self.hypotheses[record["id"]] = {"record": recorded["hypothesis"], "status": "provisional",
-                                         "reason": reason, "decided_by": None}
+                                         "reason": reason, "decided_by": None, "decision": None}
         return {"id": record["id"], "aspect": record["aspect"], "status": "provisional", "reason": reason}
 
     def probe(self, args: List[Any]) -> Dict[str, Any]:
@@ -318,7 +323,9 @@ class MemoryEngine:
             "hypothesis": record["id"], "status": result["status"], "reason": result["reason"],
             "check_ref": check_ref, "trace_id": self.host.current_trace_id()},
             {"hypothesis": record["id"], "status": result["status"], "reason": result["reason"]})
-        entry.update(status=result["status"], reason=result["reason"], decided_by="probe")
+        entry.update(status=result["status"], reason=result["reason"], decided_by="probe",
+                     decision={"method": "probe", "observation": check_ref, "checked_in": session.run["run_id"],
+                               "window": None, "case": None, "reason": result["reason"]})
         return {"id": record["id"], "status": result["status"], "reason": result["reason"]}
 
     def hypothesis_of(self, hypothesis_id: str) -> Optional[Dict[str, Any]]:
@@ -327,9 +334,13 @@ class MemoryEngine:
         if entry is None:
             return None
         record = entry["record"]
+        decision = entry["decision"] or {"method": None, "observation": None, "checked_in": None, "window": None,
+                                         "case": None, "reason": entry["reason"]}
         return {"status": entry["status"], "aspect": record["aspect"], "subject": copy.deepcopy(record["subject"]),
                 "statement": copy.deepcopy(record["statement"]), "scope": record["scope"],
-                "conditions": copy.deepcopy(record.get("conditions") or {}), "source_ref": record["source"]["ref"]}
+                "conditions": copy.deepcopy(record.get("conditions") or {}), "source_ref": record["source"]["ref"],
+                "source": self.session.hypothesis_source(record),
+                "verification": self.session.hypothesis_verification(record, **decision)}
 
     def identity_rules(self) -> Dict[str, str]:
         """The operator's namespace rules for entity identity; none outside a memory session."""
@@ -401,7 +412,10 @@ class MemoryEngine:
                 "trace_id": self.host.current_trace_id()},
                 {"hypothesis": entry["record"]["id"], "status": known["status"], "reason": known["reason"]})
             if known["status"] is not None:
-                entry.update(status=known["status"], reason=known["reason"])
+                court = known["record"]
+                entry.update(status=known["status"], reason=known["reason"], decision={
+                    "method": "court_record", "observation": court["check_ref"], "checked_in": court["run_id"],
+                    "window": court["window"], "case": court["case"], "reason": known["reason"]})
             entry["decided_by"] = "memory"
         return entry["status"] == "confirmed"
 

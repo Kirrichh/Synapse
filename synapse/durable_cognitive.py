@@ -238,7 +238,8 @@ def read_cognitive_session(artifact_path: Path) -> dict[str, Any]:
     if artifact.get("execution_profile") != DURABLE_COGNITIVE_PROFILE:
         return {"source_code": "", "initial_bindings": {}, "history": [],
                 "integrity_error": "not a cognitive durable artifact"}
-    return {"source_code": artifact["replay_state"]["source_code"],
+    return {"run_id": artifact["run_id"], "source_hash": artifact["source"]["hash"],
+            "source_code": artifact["replay_state"]["source_code"],
             "initial_bindings": copy.deepcopy(artifact["initial_bindings"]["value"]),
             "history": copy.deepcopy(artifact["replay_state"]["execution_history"]), "integrity_error": None}
 

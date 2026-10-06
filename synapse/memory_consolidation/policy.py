@@ -19,7 +19,7 @@ from .records import digest
 #: birth; the automaton demotes on confirmed errors (the last ``t3_fires`` counted signals in a state,
 #: across windows) or disuse, never on a count of windows. Same parameters, other meaning: another version.
 POLICY_V3 = "synapse.memory.court-policy/v3"
-DECISION_RULES = ("threshold", "sprt")
+DECISION_RULES = ("threshold", "sprt", "confidence_sequence")
 
 PARAMETERS: dict[str, Any] = {
     # signal
@@ -35,6 +35,8 @@ PARAMETERS: dict[str, Any] = {
     "t4_fires": 5, "t4_signal": 0.70,
     "m_idle": 6, "cold_matches": 2, "k_extinct": 3, "n_t9": 10, "n_pivot": 10,
     "sprt": {"p0": 0.8, "p1": 0.5, "alpha": 0.01, "beta": 0.01, "useful_signal": 0.8},
+    # confidence_sequence: a time-uniform bound on the mean signal of distinct tasks (Howard et al. 2021)
+    "cs": {"alpha": 0.05, "rho": 1.0, "promote": 0.70, "demote": 0.65},
     # conflicts
     "conflict_gap": 0.30, "conflict_warning_gap": 0.05, "counterfactual_min_pairs": 3,
     # birth
@@ -98,7 +100,7 @@ def resolve_parameters(overrides: Mapping[str, Any] | None) -> dict[str, Any]:
 
 def policy_identity(parameters: Mapping[str, Any], decision_rule: str) -> dict[str, Any]:
     if decision_rule not in DECISION_RULES:
-        raise PolicyViolation("decision rule is threshold or sprt")
+        raise PolicyViolation("decision rule is threshold, sprt or confidence_sequence")
     return {"policy": POLICY_V3, "decision_rule": decision_rule, "parameters": dict(parameters),
             "parameters_ref": digest({"rule": decision_rule, "parameters": dict(parameters)})}
 
@@ -127,6 +129,23 @@ def sprt_step(parameters: Mapping[str, Any], observed: float) -> float:
     if useful:
         return math.log(sprt["p1"] / sprt["p0"])
     return math.log((1 - sprt["p1"]) / (1 - sprt["p0"]))
+
+
+def cs_radius(parameters: Mapping[str, Any], count: int) -> float:
+    """Half-width of the two-sided confidence sequence on a mean of ``count`` observations in [0, 1].
+
+    The normal-mixture boundary of Howard, Ramdas, McAuliffe and Sekhon (2021) for 1/4-sub-Gaussian
+    increments: with V = count/4, the sum stays within sqrt(2 (V + ρ) log(sqrt((V + ρ)/ρ) / (α/2))) of its
+    mean at every count at once, with probability at least 1 − α. Monitoring it after every observation is
+    what it is valid for; it assumes observations bounded in [0, 1] whose conditional mean does not drift —
+    the decision rule counts one observation per distinct task for that reason, and never turns repeats of a
+    task into independent trials."""
+    if count <= 0:
+        return math.inf
+    cs = parameters["cs"]
+    variance = count / 4.0
+    return math.sqrt(2.0 * (variance + cs["rho"]) * math.log(math.sqrt((variance + cs["rho"]) / cs["rho"])
+                                                              / (cs["alpha"] / 2.0))) / count
 
 
 def sprt_decision(parameters: Mapping[str, Any], log_likelihood: float) -> str | None:

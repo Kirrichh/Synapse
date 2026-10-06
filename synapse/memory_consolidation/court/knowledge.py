@@ -116,12 +116,13 @@ def knowledge_stage(context, habits, forced, configuration) -> dict[str, Any]:
     for item in sorted(knowledge["declared"], key=lambda value: (value["run_id"], value["position"])):
         record = verify(item["statement"], "statement")
         known = {**state["knowledge"]["versions"], **versions}
-        if record["id"] in known:
+        # A version withdrawn with forgotten results and observed again is a new observation, not a copy.
+        if record["id"] in known and known[record["id"]].get("withdrawn") is None:
             section["copies"].append({"run_id": item["run_id"], "statement": record["id"], "of": record["id"]})
             continue
         own_slot, source = slot(record), source_identity(record)
         current = [entry for entry in known.values() if entry["slot"] == own_slot and entry["known_until"] is None
-                   and entry["record"]["valid"]["from"] == record["valid"]["from"]]
+                   and entry.get("withdrawn") is None and entry["record"]["valid"]["from"] == record["valid"]["from"]]
         same = [entry for entry in current if entry["source_identity"] == source]
         repeated = next((entry for entry in same if _content(entry["record"]) == _content(record)), None)
         if repeated is not None:

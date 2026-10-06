@@ -8,6 +8,9 @@
 * With and without the journal: exam A (no accumulated experience) must check;
   exam B (the same snapshot with the journal) reuses. Both restart with the
   same command; the journal saves exactly the checks it did not repeat.
+* The admitted fact's attestation says how it was verified: by this
+  session's check, or by the court's record of the earlier check it reused —
+  the same observations under the same check contract.
 """
 from __future__ import annotations
 
@@ -30,7 +33,15 @@ def test_statuses_persist_and_serve_only_an_unchanged_source(tmp_path):
     assert {name: len(world.calls(name)) for name in checks} == checks
     assert runbook.restarts(world) == [runbook.TRUE, runbook.TRUE]
     # Retrieved with its status: the reused confirmation admits the fact in the new process.
-    assert runbook.admission(world, "again")["decision"] == "admitted"
+    again = runbook.admission(world, "again")
+    assert again["decision"] == "admitted"
+    # Its attestation names the court's record of the check made in the first session, not a new one.
+    first = runbook.admission(world, "first")["attestation"]["verification"]
+    reused_check = again["attestation"]["verification"]
+    assert (first["method"], first["checked_in"]) == ("probe", "first")
+    assert (reused_check["method"], reused_check["checked_in"]) == ("court_record", "first")
+    assert reused_check["observations"] == first["observations"] and reused_check["window"] is not None
+    assert reused_check["contract_ref"] == first["contract_ref"] is not None
     reused = world.reports()[-1]["hypotheses"]["reused"]
     assert {(item["run_id"], item["status"]) for item in reused} == {("again", "confirmed")}
 

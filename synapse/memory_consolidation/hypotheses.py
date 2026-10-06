@@ -84,6 +84,23 @@ def declare(claim: Any, configuration: MemoryConfiguration, source_ref: str | No
                         source={**source, "ref": source_ref}, check=_call(claim["check"], "check", configuration))
 
 
+CHECK_RULE = "synapse.memory.hypothesis-check/v1"
+
+
+def verification(record: Mapping[str, Any], configuration: MemoryConfiguration, *, method: str | None,
+                 observation: Any, checked_in: str | None, window: int | None, case: str | None,
+                 reason: str | None) -> dict[str, Any]:
+    """How a status of this hypothesis was decided: the rule, the check and the contract it ran under, and
+    the recorded observations it read — the verifier half of an admission's attestation (review R3)."""
+    contract = configuration.tools.tools.get(record["check"]["tool"])
+    return {"method": method, "rule": CHECK_RULE, "check": {"tool": record["check"]["tool"],
+                                                           "args": dict(record["check"]["args"])},
+            "contract_ref": None if contract is None else contract.contract_ref,
+            "checker_source": None if contract is None else contract.source,
+            "observations": {"source": record["source"]["ref"], "check": observation},
+            "checked_in": checked_in, "window": window, "case": case, "reason": reason}
+
+
 def claim_key(record: Mapping[str, Any]) -> str:
     """The claim without its source version: what a changed source is compared against."""
     conditions = record.get("conditions") or {}
@@ -131,4 +148,7 @@ def reuse(record: Mapping[str, Any], known: Mapping[str, Any] | None, claims: Ma
         return {"status": None, "reason": "freshness_unknown" if window is None else "stale"}
     if known["status"] == "provisional":
         return {"status": None, "reason": "still_provisional"}
-    return {"status": known["status"], "reason": "court_record"}
+    # The court's record of the check that decided it: which session checked, what it read, which case holds it.
+    return {"status": known["status"], "reason": "court_record",
+            "record": {"window": known["window"], "run_id": known.get("run_id"),
+                       "check_ref": known.get("check_ref"), "case": known.get("basis")}}

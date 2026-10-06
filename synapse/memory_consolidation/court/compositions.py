@@ -26,6 +26,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..learning.applicability import explanation_of
+from ..learning.behavior import contracts_of
 from ..learning.composition import COMPOSITION_V1, composition_key, parts_of
 from ..learning.triggers import condition_key
 from .births import energy_cost, make_birth
@@ -148,7 +149,8 @@ def _birth(context, entry, success, criteria, independence) -> dict[str, Any]:
                        trust=parameters["resurrection_trust"], state_name="born", supersedes=predecessor,
                        basis=[{"qid": item["qid"], "steps": item["steps"], "run_id": item["run_id"],
                                "event_id": item["event_id"]} for item in success],
-                       composition=composition)
+                       composition=composition,
+                       contracts=contracts_of(base["habit"]["action_pattern"], context.configuration))
     birth.update(candidate_key=entry["candidate_key"], criteria=criteria, independence=independence,
                  evidence=sorted({ref for item in success for ref in item["evidence"]}),
                  typed_check="composition", arbitration=None)

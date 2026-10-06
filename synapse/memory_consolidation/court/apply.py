@@ -57,7 +57,10 @@ def _births(decision, admitted, legitimacy) -> tuple[dict, dict, dict, list]:
                      # What it applies to and why, and where each argument comes from (refinement §12, §13).
                      "condition": {key: birth["trigger"][key] for key in ("event_types", "context", "when", "not_when")},
                      "applicability": birth["trigger"].get("applicability"), "binding": birth["habit"]["binding"],
-                     "composition": birth["habit"].get("composition")})
+                     "composition": birth["habit"].get("composition"),
+                     # Why it generalizes as it does and under which contracts it was verified (review §8.1).
+                     "generalization": birth.get("generalization"),
+                     "verified_under": habits[habit_id].get("verified_under")})
     return habits, frozen, legitimacy_after, view
 
 

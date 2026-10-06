@@ -23,10 +23,13 @@ MAX_MEMORY_EVENTS = 4096
 # Memory consolidation records share this journal and its owner session: the
 # owner's bound memory configuration, each durable session's opening, a
 # consolidation report (written before its JUDGED decision), the snapshot
-# boundary built from an applied decision and each retention pass (its acts are
-# recorded before any raw body leaves store D).
+# boundary built from an applied decision, each retention pass (its acts are
+# recorded before any raw body leaves store D), a verified snapshot of the
+# memory state at a known cut of the court chain and each recorded stand trial
+# of two learned competitors.
 EVENT_KINDS = {"REQUESTED", "STARTED", "FRAME_COMPLETED", "OUTCOME_RECORDED", "CONSOLIDATED", "OBSERVED", "JUDGED",
-               "MEMORY_BOUND", "SESSION_OPENED", "CONSOLIDATION_REPORTED", "SNAPSHOT_BOUNDARY", "MEMORY_RETENTION"}
+               "MEMORY_BOUND", "SESSION_OPENED", "CONSOLIDATION_REPORTED", "SNAPSHOT_BOUNDARY", "MEMORY_RETENTION",
+               "MEMORY_STATE", "MEMORY_TRIAL"}
 
 
 def memory_job_identity(project_identity, run_root, run_id):
@@ -49,20 +52,30 @@ class ProjectMemoryStore:
         self.fence = FileSnapshotFence(self.root / "coordinator", read_only=read_only)
         self.read_only = read_only
         self._owner_session = None
+        # transaction id -> (sha256 of its bytes, the event those bytes were validated as)
+        self._validated: dict[str, tuple[str, dict]] = {}
 
     def _read(self, transaction):
         marker, members = read_committed_snapshot_transaction(self.events, transaction_id=transaction)
         if set(members) != {"event.json"}:
             raise ValueError("memory event has undeclared members")
         raw = members["event.json"]
-        event = decode_canonical(raw)
-        if (len(raw) > MAX_MEMORY_EVENT_BYTES or canonical(event) != raw
-                or set(event) != {"schema_version", "kind", "job_key", "payload"}
-                or event["schema_version"] != MEMORY_EVENT_V1 or event["kind"] not in EVENT_KINDS
-                or type(event["job_key"]) is not str or re.fullmatch(r"[0-9a-f]{64}", event["job_key"]) is None
-                or type(event["payload"]) is not dict
-                or marker["marker_sha256"] != hashlib.sha256(raw).hexdigest()
-                or marker["boundary_id"] != event["job_key"]):
+        digest = hashlib.sha256(raw).hexdigest()
+        # Every read hashes the bytes and checks the marker. Bytes this reader already proved canonical and
+        # within the contract (the same transaction, the same digest) are not re-validated; any other bytes are.
+        known = self._validated.get(transaction)
+        if known is not None and known[0] == digest:
+            event = deepcopy(known[1])
+        else:
+            event = decode_canonical(raw)
+            if (len(raw) > MAX_MEMORY_EVENT_BYTES or canonical(event) != raw
+                    or set(event) != {"schema_version", "kind", "job_key", "payload"}
+                    or event["schema_version"] != MEMORY_EVENT_V1 or event["kind"] not in EVENT_KINDS
+                    or type(event["job_key"]) is not str or re.fullmatch(r"[0-9a-f]{64}", event["job_key"]) is None
+                    or type(event["payload"]) is not dict):
+                raise ValueError("memory event differs from its immutable contract")
+            self._validated[transaction] = (digest, deepcopy(event))
+        if marker["marker_sha256"] != digest or marker["boundary_id"] != event["job_key"]:
             raise ValueError("memory event differs from its immutable contract")
         return event, {"transaction_id": transaction, "ref": source_ref(raw, MEMORY_EVENT_V1).to_dict()}
 

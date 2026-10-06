@@ -7,7 +7,8 @@ runtime's rivalry rule:
   situation; uncertain episodes, copies, a repeated episode, results of other
   situations and a situation where one procedure both succeeded and failed
   are no pairs, and equal results name no winner;
-* a model's agreed answer is a proposal: it never lifts a slow-only ban;
+* a model's agreed answer is a proposal: it never lifts a slow-only ban, and
+  a changed, reversed or missing answer over the same bases changes nothing;
   a verified winner does, and the loser yields to it until recorded outcomes
   contradict the result;
 * rivals whose triggers overlap only partly become competitors once the
@@ -183,6 +184,28 @@ def test_a_verified_winner_lifts_the_ban_and_the_loser_yields_to_it():
     assert decision["habits"][ids["q"]]["yields_to"] == [ids["c"]] and decision["habits"][ids["c"]]["yields_to"] == []
     assert (ids["q"], "TC", "probation") in {(item["habit_id"], item["rule"], item["to"])
                                              for item in decision["sections"]["transitions"]}
+
+
+@pytest.mark.parametrize("verified", [False, True])
+def test_the_verdict_does_not_move_with_the_advisors_answers(verified):
+    """Agreeing, disagreeing, reversed or absent advice over the same bases gives one and the same decision."""
+    outcomes = []
+    for calls in (["yes", "yes"], ["no", "no"], ["yes", "no"], None):
+        configuration, state, ids = _world()
+        state["slow_only"] = [SHARED]
+        advice = _advice(ids, winner=ids["c"] if verified else None)
+        entry = next(iter(advice.values()))
+        if calls is None:
+            entry.update(basis="insufficient_comparable_outcomes", asked=False, calls=None, answer=None, agreed=None)
+        else:
+            agreed = calls[0] == calls[1]
+            entry.update(calls=calls, answer=calls[0] if agreed else None, agreed=agreed)
+        decision = _decide(configuration, state, advice)
+        conflict, = decision["sections"]["conflicts"]
+        outcomes.append((conflict["step"], conflict["resolution"], decision["slow_only"],
+                         {label: decision["habits"][habit_id]["yields_to"] for label, habit_id in ids.items()}))
+    assert all(item == outcomes[0] for item in outcomes)
+    assert outcomes[0][0] == (2 if verified else 3)
 
 
 def test_a_verified_result_stands_until_recorded_outcomes_contradict_it():

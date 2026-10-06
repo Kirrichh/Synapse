@@ -24,7 +24,9 @@ wall time of the query's embedding.
 """
 from __future__ import annotations
 
+import heapq
 import math
+import operator
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from synapse.palace_admission import SCORER_VERSION, candidate_score
@@ -52,24 +54,25 @@ def lexical_ranking(query: str, entries: Sequence[Mapping[str, Any]], budget: in
     return [identity for _, identity in sorted(scored)[:budget]]
 
 
-def cosine(left: Sequence[float], right: Sequence[float]) -> float:
-    dot = sum(a * b for a, b in zip(left, right))
-    norm = math.sqrt(sum(a * a for a in left)) * math.sqrt(sum(b * b for b in right))
-    return 0.0 if norm == 0 else dot / norm
-
-
 def semantic_ranking(query_vector: Sequence[float] | None, entries: Sequence[Mapping[str, Any]],
                      budget: int) -> list[str]:
+    """The exact ranking by cosine (review §8.3): every recorded vector is compared — no approximate index, so
+    no useful candidate is lost to the index — the query's norm is computed once and every similarity in the
+    same arithmetic order, so the scores are the very floats a pairwise computation gives; equal scores are
+    ordered by identity."""
     if query_vector is None:
         return []
+    query_norm = math.sqrt(sum(map(operator.mul, query_vector, query_vector)))
     scored = []
     for entry in entries:
         vector = entry.get("vector")
-        if vector is not None and len(vector) == len(query_vector):
-            similarity = cosine(query_vector, vector)
-            if similarity > 0:
-                scored.append((-round(similarity, 12), entry["record"]["id"]))
-    return [identity for _, identity in sorted(scored)[:budget]]
+        if vector is None or len(vector) != len(query_vector):
+            continue
+        norm = query_norm * math.sqrt(sum(map(operator.mul, vector, vector)))
+        similarity = 0.0 if norm == 0 else sum(map(operator.mul, query_vector, vector)) / norm
+        if similarity > 0:
+            scored.append((-round(similarity, 12), entry["record"]["id"]))
+    return [identity for _, identity in heapq.nsmallest(budget, scored)]
 
 
 def fuse(rankings: Iterable[Sequence[str]], k: int = RRF_K) -> list[str]:
@@ -99,6 +102,8 @@ def search(query: str, versions: Mapping[str, Mapping[str, Any]], policy, *, val
            channels: Sequence[str] = ("lexical", "semantic")) -> dict[str, Any]:
     """Candidates for ``query`` at ``valid_at`` as known at ``known_as_of``, with each channel's ranking and cost."""
     budget = policy.budget
+    # A version read from forgotten results left the index: it stays history, never a candidate.
+    versions = {identity: entry for identity, entry in versions.items() if entry.get("withdrawn") is None}
     held = sorted((entry for entry in versions.values() if known_at(entry, known_as_of)),
                   key=lambda entry: entry["record"]["id"])
     rankings: dict[str, list[str]] = {}

@@ -117,6 +117,38 @@ def _rule(index, key, calls, basis) -> dict[str, Any]:
     raise BindingUnavailable(f"argument {key!r} of call {index} is not derivable from the event")
 
 
+def contracts_of(steps: Sequence[Mapping[str, Any]], configuration) -> dict[str, str | None]:
+    """The contract version of every tool the body calls itself (the failed action's own tool is decided by the
+    gateway at each repeat): what the procedure was verified under (review §8.1)."""
+    tools = sorted({step["tool"] for step in steps if step.get("step") == "call" and step.get("tool") not in (None, SAME)})
+    return {name: (contract.contract_ref if (contract := configuration.tools.tools.get(name)) is not None else None)
+            for name in tools}
+
+
+def explain_binding(binding: Sequence[Mapping[str, Any]], basis: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Why every argument of the body is what it is, from the basis episodes (review §8.1, after Soar's
+    explanation-based learning): a variable is a variable only because its values differed and each one is
+    explained by the same source in every episode; a value that never changed stays a constant, unproven as a
+    variable."""
+    explained = []
+    for item in binding:
+        if item.get("failed_action"):
+            explained.append({"step": item["step"], "argument": None, "rule": "failed_action",
+                              "why": "repeats the failed operation itself, as the gateway admits it"})
+            continue
+        for key, source in sorted(item["args"].items()):
+            values = [episode["calls"][item["step"]]["args"][key] for episode in basis]
+            distinct = len({canonical(value) for value in values})
+            rule = next(iter(source))
+            why = {"result": "first appeared in the producer's answer in every episode, with values that differ",
+                   "const": "the same value in every episode: a constant, never shown to vary",
+                   "event_field": "equals the reactive event's field in every episode",
+                   "failed_arg": "equals the failed action's argument in every episode"}[rule]
+            explained.append({"step": item["step"], "argument": key, "rule": rule, "source": source[rule],
+                              "episodes": len(values), "distinct_values": distinct, "why": why})
+    return explained
+
+
 def derive_binding(basis: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """The binding rule that explains every basis episode's call arguments.
 

@@ -25,11 +25,14 @@ from .hypotheses import boundary_view
 BOUNDARY_V3 = "synapse.memory.snapshot-boundary/v3"
 
 
-def _entry(habit_id, metadata, frozen) -> dict[str, Any]:
+def habit_entry(habit_id, metadata, frozen) -> dict[str, Any]:
+    """What a session loads of one learned habit."""
     return {"habit_id": habit_id, "trigger": frozen["trigger"], "habit": frozen["habit"],
             "state": metadata["state"], "priority": metadata["priority"], "context_trust": metadata["trust"],
             "energy_cost": metadata["energy_cost"], "publication": metadata["publication"],
-            "yields_to": sorted(metadata.get("yields_to", []))}
+            "yields_to": sorted(metadata.get("yields_to", [])),
+            # The tool contracts its procedure was verified under (review §8.1).
+            "verified_under": metadata.get("verified_under")}
 
 
 def boundary_record(state_after: Mapping[str, Any], legitimacy: Mapping[str, Any],
@@ -43,7 +46,7 @@ def boundary_record(state_after: Mapping[str, Any], legitimacy: Mapping[str, Any
         verdict = legitimacy.get(habit_id, {})
         if (metadata["state"] in EFFECTIVE and verdict.get("admitted")
                 and canonical(condition_key(frozen["trigger"])) not in slow):
-            habits.append(_entry(habit_id, metadata, frozen))
+            habits.append(habit_entry(habit_id, metadata, frozen))
     declared = {habit_id: metadata["context_trust"] for habit_id, metadata in sorted(state_after["declared"].items())}
     hypotheses, claims = boundary_view(state_after["hypotheses"])
     return records.make("snapshot_boundary", boundary={

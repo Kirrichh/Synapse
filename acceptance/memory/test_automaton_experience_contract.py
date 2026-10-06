@@ -15,7 +15,10 @@ not reach opposite conclusions from the same stream:
 * an event delivered twice counts once;
 * after a change of environment, recent errors demote an active habit whatever
   its long history of successes;
-* disuse is its own cause, and every transition names its cause.
+* disuse is its own cause, and every transition names its cause;
+* a fire whose body attempted what the contracts forbid archives the habit at
+  that consolidation, whatever its trust and successes — a serious violation
+  waits for no statistics.
 
 Trust is held fixed (no update below an unreachable minimum evidence) so the
 automaton's own rules are what is observed.
@@ -118,3 +121,21 @@ def test_disuse_is_its_own_cause(state_name, rule, target):
     assert moves == [(rule, target, "disuse")]
     moves, _ = _run([], (0,) * 5, state=state_name)
     assert moves == []
+
+
+@pytest.mark.parametrize("state_name, trust", [("born", 0.9), ("active", 0.95), ("probation", 0.6)])
+def test_a_contract_violation_archives_at_once_whatever_the_experience(state_name, trust):
+    config, state, ids = data.world(FIXED_TRUST, q={"state": state_name, "trust": trust})
+    habit_id = ids["q"]
+    trigger_id = state["habits"][habit_id]["trigger_id"]
+    fires = [data.fire(habit_id, trigger_id, index, True) for index in range(6)]
+    # One success among them whose body also attempted what the contracts forbid; nothing waits for statistics.
+    fires[2] = {**fires[2], "refusals": ["a hidden repeat of an unresolved operation: the effect is unknown"]}
+    state, decision = data.window(config, state, fires)
+    assert [(item["rule"], item["to"], item["cause"]) for item in decision["sections"]["transitions"]][-1:] == [
+        ("TV", "dormant", "contract_violation")]
+    assert decision["habits"][habit_id]["state"] == "dormant"
+    assert decision["sections"]["contract_violations"] == [
+        {"habit_id": habit_id, "layer": 2, "run_id": "run-0002", "event_id": "ev-0002",
+         "refusals": ["a hidden repeat of an unresolved operation: the effect is unknown"]}]
+

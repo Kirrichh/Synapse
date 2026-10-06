@@ -12,7 +12,8 @@ otherwise. A mirror of the knowledge base answers like the card, so it can
 never confirm it.
 
 Cards: ``pg-good`` carries the true command (its third and later reads carry a
-new revision); ``pg-bad`` names the right service with a poisoned command;
+new revision); ``pg-steady`` carries it at one revision however often it is
+read; ``pg-bad`` names the right service with a poisoned command;
 ``pg-mute`` asks the runbook about a topic it cannot determine.
 """
 from __future__ import annotations
@@ -61,6 +62,7 @@ def tools():
     changed = {**card, "rev": 2}
     kb = tool("kb_card", "kb:wiki", [
         answer(changed, when={"id": "pg-good"}, sequence=[{"payload": card}, {"payload": card}]),
+        answer(card, when={"id": "pg-steady"}),
         answer({"ok": True, "service": "postgresql", "command": "pg_ctl kill", "rev": 1}, when={"id": "pg-bad"}),
         answer({"ok": True, "service": "postgresql", "command": "pg_ctl reload", "rev": 1}, when={"id": "pg-mute"})],
         server="kb")
@@ -80,8 +82,8 @@ def provenance():
             "runbook:ops": {"ancestors": []}, "ops:host-a": {"ancestors": []}}
 
 
-def world(root) -> MemoryWorld:
-    return MemoryWorld(root, tools(), provenance=provenance())
+def world(root, **options) -> MemoryWorld:
+    return MemoryWorld(root, tools(), provenance=provenance(), **options)
 
 
 def inputs(task, card, *, checker="runbook", check_args=None, read_card=True, fallback=TRUE):

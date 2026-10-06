@@ -38,6 +38,11 @@ APPLY_FIELDS = frozenset({"habits", "frozen", "declared", "slow_only", "pool", "
 _APPLY_FIELDS_BEFORE_KNOWLEDGE = APPLY_FIELDS - {"knowledge"}
 
 
+#: The fold's own version: a state snapshot records it, and a snapshot of another version is never used.
+#: Any change to how ``apply_report`` folds a report changes this version.
+PROJECTION_V1 = "synapse.memory.state-projection/v1"
+
+
 def empty_state() -> dict[str, Any]:
     return copy.deepcopy(EMPTY_STATE)
 

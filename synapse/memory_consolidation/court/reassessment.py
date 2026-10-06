@@ -20,7 +20,9 @@ tool or a model:
 
 A habit keeps its basis when at least as many basis episodes are still
 verified as a birth requires (or all of them, for a smaller basis); otherwise
-it is archived by the decision, for a changed basis. A habit that keeps its
+it is archived by the decision, for a changed basis. A kept habit records the
+tool contracts it is now verified under, so a session loads it again; the
+report names the contracts that changed since it was last verified. A habit that keeps its
 basis under a new tool binding is published to Gold again with the evidence the
 reassessment verified: Gold admits behavior only under the binding it was
 published with, and a habit Gold does not admit again is archived too. The
@@ -32,6 +34,7 @@ from __future__ import annotations
 from typing import Any, Iterable, Mapping
 
 from ..configuration import MemoryConfiguration
+from ..learning.behavior import contracts_of
 from ..tools.gateway import Gateway
 from ..tools.semantics import interpret, repeat_admissible
 from .habit_state import EFFECTIVE
@@ -141,8 +144,15 @@ def reassess_bases(state, configuration: MemoryConfiguration, gateway: Gateway, 
         episodes = [_episode(qid, state, sessions, recorded, configuration) for qid in sorted(qids)]
         verified = sum(1 for item in episodes if item["now"] == "verified")
         required = min(configuration.parameters["birth_episodes"], len(episodes))
+        steps = state["frozen"][habit_id]["habit"]["action_pattern"]
+        recorded_contracts = (metadata.get("verified_under") or {}).get("contracts")
+        current = contracts_of(steps, configuration)
         habits.append({"habit_id": habit_id, "state": metadata["state"], "verified": verified,
                        "required": required, "episodes": episodes,
+                       # Which contracts it was verified under changed: the reason its applicability is re-judged.
+                       "contracts_changed": sorted(current) if recorded_contracts is None else sorted(
+                           name for name in current if recorded_contracts.get(name) != current[name]),
+                       "contracts": current,
                        "verdict": "basis_holds" if episodes and verified >= required else "basis_no_longer_verified"})
     return {"schema_version": REASSESSMENT_V1, "habits": habits}
 

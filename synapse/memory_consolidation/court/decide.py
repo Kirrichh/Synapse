@@ -20,6 +20,7 @@ from .automaton import automaton, forced_transitions
 from .births import pool_stage
 from .boundaries import boundary_stage
 from .cold import cold_stage
+from .dependencies import forgotten_stage
 from .compositions import composition_stage
 from .conflicts import birth_conflicts, conflict_stage
 from .habit_state import complete_metadata
@@ -30,7 +31,7 @@ from .trust import trust_stage
 REPORT_SECTIONS = ("trust_decisions", "pending_evidence", "excluded_signals", "expired_pending",
                    "declared_observations", "recommendations", "conflicts", "votes", "pool_updates",
                    "supersessions", "boundary_refusals", "transitions", "refused_births", "compositions",
-                   "composition_reviews")
+                   "composition_reviews", "contract_violations", "dependencies")
 
 
 @dataclass
@@ -70,14 +71,37 @@ def _distinct_fires(draft, report) -> dict[str, Any]:
     return {**draft, "fires": fires}
 
 
+def _contract_violations(context, habits, forced) -> None:
+    """A body that attempted what its contracts forbid loses its fast path at once (learned) or is reported to
+    its author (declared); nothing waits for statistics (review R6)."""
+    for layer, fires in ((2, context.draft["fires"]), (1, context.draft["declared_fires"])):
+        for fire in sorted(fires, key=lambda item: (item["run_id"], item["event_id"])):
+            if not fire.get("refusals"):
+                continue
+            context.report["contract_violations"].append({
+                "habit_id": fire["habit_id"], "layer": layer, "run_id": fire["run_id"], "event_id": fire["event_id"],
+                "refusals": list(fire["refusals"])})
+            basis = f"the body attempted what its contracts forbid: {fire['refusals'][0]}"
+            if layer == 2 and fire["habit_id"] in habits and forced.get(fire["habit_id"], ("",))[0] != "TS":
+                # A supersession archives it already, naming its successor; the violation stays reported.
+                forced[fire["habit_id"]] = ("TV", basis)
+            elif layer == 1:
+                context.report["recommendations"].append({
+                    "habit_id": fire["habit_id"], "layer": 1, "recommendation": "review_declared_habit",
+                    "basis": basis, "authority": "GOVERNING_HUMAN"})
+
+
 def _reassess(context, state, draft) -> dict[str, Any]:
     """A reassessment observes no window: it completes recorded metadata neutrally, archives habits whose basis
     is no longer verified and judges every competitor pair again under the policy in force."""
     habits = copy.deepcopy(state["habits"])
+    completed = complete_metadata(habits)
     for item in draft["reassessment"]["habits"]:
         if (item.get("republication") or {}).get("admitted"):
             habits[item["habit_id"]]["publication"] = item["republication"]["publication"]
-    completed = complete_metadata(habits)
+        if item["verdict"] == "basis_holds":
+            # Its bases were judged again under these contracts: its applicability is verified under them.
+            habits[item["habit_id"]]["verified_under"] = {"contracts": dict(item["contracts"])}
     forced = lost_bases(draft["reassessment"])
     slow_only = conflict_stage(context.parameters, state, habits, draft, context.report, forced)
     forced_transitions(context, habits, forced)
@@ -108,6 +132,7 @@ def decide(state, draft, configuration, legitimacy, refused: Mapping[str, str] |
     forced: dict[str, tuple[str, str]] = {}
     slow_only = conflict_stage(configuration.parameters, state, habits, draft, context.report, forced)
     knowledge = knowledge_stage(context, habits, forced, configuration)
+    forgotten_stage(context, habits, forced, knowledge)
     wakes, consumed = cold_stage(context, legitimacy)
     births: list[dict[str, Any]] = []
     boundary_stage(context, habits, births, forced, refused)
@@ -117,6 +142,7 @@ def decide(state, draft, configuration, legitimacy, refused: Mapping[str, str] |
     for vote in context.report["votes"]:
         if vote["habit_id"] in habits:
             habits[vote["habit_id"]]["votes"] += 1
+    _contract_violations(context, habits, forced)
     automaton(context, habits, forced, wakes, legitimacy)
     return {"sections": context.report, "habits": habits, "declared": declared, "births": births, "pool": pool,
             "slow_only": slow_only, "knowledge": knowledge}

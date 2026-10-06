@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..learning.applicability import BoundaryUnavailable, explanation_of, narrow_explanation, widen
-from ..learning.behavior import step_similarity
+from ..learning.behavior import contracts_of, step_similarity
 from ..learning.triggers import condition_key, narrowed, widened
 from ..records import canonical
 from .births import make_birth
@@ -86,7 +86,8 @@ def _successor(context, habit_id, metadata, frozen, change) -> dict[str, Any]:
                        basis_qids=frozen["habit"]["born_from"]["episodes"], energy=metadata["energy_cost"],
                        trust=metadata["trust"], state_name="probation", supersedes=habit_id,
                        basis=[{"boundary": kind, "basis": basis}],
-                       composition=frozen["habit"].get("composition"))
+                       composition=frozen["habit"].get("composition"),
+                       contracts=contracts_of(frozen["habit"]["action_pattern"], context.configuration))
     birth["boundary"] = {"kind": kind, "basis": basis, "predecessor": habit_id}
     return birth
 

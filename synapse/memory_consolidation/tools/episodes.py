@@ -69,7 +69,9 @@ def recorded_attempts(records: list[Mapping[str, Any]], evidence) -> tuple[list[
         body = record["body"]
         if record["kind"] == "REJECTED":
             rejected.append({"gw_seq": record["seq"], "tool": body["tool"], "op": body["op_seq"],
-                             "episode": body["episode"], "reason": body["reason"]})
+                             "episode": body["episode"], "reason": body["reason"],
+                             # A request the contracts forbid outright, not a precondition not yet met.
+                             "breach": bool(body.get("breach"))})
             continue
         if record["kind"] != "RESULT":
             continue

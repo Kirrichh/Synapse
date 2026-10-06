@@ -36,6 +36,7 @@ class DreamInputs:
     executor: str
     replay: Callable[[Mapping[str, Any]], dict[str, Any]]
     ending: frozenset[str]
+    trials: tuple = ()
 
 
 def empty_draft(consolidation_id: str, mode: str, integrity) -> dict[str, Any]:
@@ -103,7 +104,7 @@ def evaluate(inputs: DreamInputs) -> dict[str, Any]:
         _session_into(draft, inputs, counsel, session, gateway_records, seconds)
     parameters = inputs.configuration.parameters
     draft["conflict_advice"] = conflict_advice(counsel, inputs.state, parameters, draft["fires"], draft["reactions"],
-                                             draft["suppressed"])
+                                             draft["suppressed"], inputs.trials)
     draft["arbitration"] = ({} if inputs.mode == "emergency"
                             else arbitration(counsel, inputs.state, inputs.configuration, draft))
     draft["counsel"] = {"questions": counsel.questions, "agreed": counsel.agreed}

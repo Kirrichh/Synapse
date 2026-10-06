@@ -4847,7 +4847,8 @@ class Interpreter:
         event = {"type": "memory_admission", "decision": decision["decision"],
                  "fact": None if decision["fact"] is None else decision["fact"].get("id"),
                  "claim": decision["claim"], "checked": decision["checked"], "conflict": decision["conflict"],
-                 "scorer": decision["scorer"], "trace_id": self.current_trace_id()}
+                 "attestation": decision["attestation"], "scorer": decision["scorer"],
+                 "trace_id": self.current_trace_id()}
         self.execution_history.append(event)
         self.memory_audit.append(event)
         return decision

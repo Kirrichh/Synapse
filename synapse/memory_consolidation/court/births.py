@@ -100,7 +100,7 @@ def energy_cost(parameters, episodes) -> float:
 
 def make_birth(parameters, consolidation_id, window, *, condition, applicability, steps, binding, template,
                source_episodes, basis_qids, energy, trust, state_name, supersedes=None, basis=None,
-               composition=None) -> dict[str, Any]:
+               composition=None, contracts=None) -> dict[str, Any]:
     """The trigger, frozen habit and initial metadata of one birth."""
     check_binding(steps, binding)
     trigger = make_trigger(condition, template=template, born_from=consolidation_id, source_episodes=source_episodes,
@@ -113,6 +113,8 @@ def make_birth(parameters, consolidation_id, window, *, condition, applicability
     metadata = new_metadata(parameters, habit_id=habit["id"], trigger_id=trigger["id"], state=state_name,
                             trust=trust, window=window, consolidation_id=consolidation_id, energy_cost=energy,
                             supersedes=supersedes)
+    # The tool contracts the procedure was verified under; a change makes its applicability unverified.
+    metadata["verified_under"] = None if contracts is None else {"contracts": dict(contracts)}
     return {"habit": habit, "trigger": trigger, "metadata": metadata, "basis": basis or []}
 
 
@@ -126,8 +128,10 @@ def _candidate_birth(parameters, consolidation_id, window, key, entry, assessmen
                        trust=parameters["resurrection_trust"], state_name="born",
                        basis=[{"qid": item["qid"], "steps": item["steps"], "run_id": item["run_id"],
                                "event_id": item["event_id"]}
-                              for item in success])
+                              for item in success],
+                       contracts=assessment["generalization"]["contracts"])
     birth.update(candidate_key=key, criteria=assessment["criteria"], independence=assessment["independence"],
+                 generalization=assessment["generalization"],
                  evidence=sorted({ref for item in success for ref in item["evidence"]}),
                  typed_check="distinct" if relation is None else relation["relation"],
                  arbitration=None if relation is None else relation.get("arbitration"))

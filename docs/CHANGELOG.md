@@ -33,6 +33,10 @@ session opening gains `trial` and `unverified`; gateway refusals record
   crashes against an independent model, separate A/B/C measures, a held-out
   domain, group-consistent data splits, training order and outage varied
   separately, LongMemEval retrieval through the candidate channel.
+- `tests/test_swebench_measurement_output_boundary.py` keeps only checks of
+  the product's behavior: the scope tripwires over fixed historical commits
+  and the working tree, and the checks of words in the production source, are
+  removed.
 
 ## Memory review of PR108 — identity, attestations, repeats, conflicts, automaton, reassessment — 2026-09-27
 

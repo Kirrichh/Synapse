@@ -32,7 +32,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from synapse.palace_admission import SCORER_VERSION, candidate_score
 
 from .statements import freshness_of, slot
-from .timeline import known_at, resolve
+from .timeline import held_period, resolve
 
 SEARCH_V1 = "synapse.memory.knowledge-search/v1"
 RRF_K = 60  # The constant Cormack, Clarke and Buettcher found robust.
@@ -93,18 +93,22 @@ def candidate(resolved: Mapping[str, Any], rank: int, channels: Mapping[str, lis
             "valid_from": resolved["valid_from"], "valid_until": resolved["valid_until"],
             "freshness": resolved["freshness"], "text": record["text"],
             "source": {"tool": record["source"]["tool"], "ref": record["source"]["ref"], "source": entry["source"]},
-            "known_from": entry["known_from"], "known_until": entry["known_until"], "rank": rank,
+            # The period memory held it in at the asked window, never the latest one (review R3).
+            "known_from": resolved["known"]["from"], "known_until": resolved["known"]["until"], "rank": rank,
             "found_by": sorted(name for name, ranking in channels.items() if record["id"] in ranking)}
 
 
 def search(query: str, versions: Mapping[str, Mapping[str, Any]], policy, *, valid_at: str | None,
            known_as_of: int | None, embed: Callable[[str], tuple[list[float] | None, float | None]] | None,
-           channels: Sequence[str] = ("lexical", "semantic")) -> dict[str, Any]:
-    """Candidates for ``query`` at ``valid_at`` as known at ``known_as_of``, with each channel's ranking and cost."""
+           channels: Sequence[str] = ("lexical", "semantic"), embedded_by: str | None = None) -> dict[str, Any]:
+    """Candidates for ``query`` at ``valid_at`` as known at ``known_as_of``, with each channel's ranking and cost.
+
+    The semantic channel compares the query's vector only with vectors of the same embedder (``embedded_by``):
+    equal dimensions are no common space, so a vector of another model, or of none named, is not searched
+    until a reading under this one indexes it again (review DEEP-6)."""
     budget = policy.budget
     # A version read from forgotten results left the index: it stays history, never a candidate.
-    versions = {identity: entry for identity, entry in versions.items() if entry.get("withdrawn") is None}
-    held = sorted((entry for entry in versions.values() if known_at(entry, known_as_of)),
+    held = sorted((entry for entry in versions.values() if held_period(entry, known_as_of) is not None),
                   key=lambda entry: entry["record"]["id"])
     rankings: dict[str, list[str]] = {}
     cost = {"embedding_calls": 0, "vectors": 0, "dimensions": None, "index_bytes": 0, "embedding_ms": None}
@@ -112,11 +116,12 @@ def search(query: str, versions: Mapping[str, Mapping[str, Any]], policy, *, val
         rankings["lexical"] = lexical_ranking(query, held, budget)
     if "semantic" in channels and embed is not None:
         vector, elapsed = embed(query)
-        indexed = [entry["vector"] for entry in held if entry.get("vector") is not None]
+        comparable = [entry for entry in held if embedded_by is not None and entry.get("embedded_by") == embedded_by]
+        indexed = [entry["vector"] for entry in comparable if entry.get("vector") is not None]
         cost.update(embedding_calls=1, vectors=len(indexed), embedding_ms=elapsed,
                     dimensions=None if vector is None else len(vector),
                     index_bytes=sum(len(item) for item in indexed) * _BYTES_PER_COMPONENT)
-        rankings["semantic"] = semantic_ranking(vector, held, budget)
+        rankings["semantic"] = semantic_ranking(vector, comparable, budget)
     fused = fuse(rankings.values())[:budget]
     slots: list[str] = []
     by_id = {entry["record"]["id"]: entry for entry in held}
@@ -133,3 +138,19 @@ def search(query: str, versions: Mapping[str, Mapping[str, Any]], policy, *, val
     return {"schema_version": SEARCH_V1, "lexical_scorer": SCORER_VERSION, "budget": budget,
             "valid_at": valid_at, "known_as_of": known_as_of, "channels": rankings, "fused": fused,
             "candidates": candidates, "cost": cost}
+
+
+def recorded(identity: str, versions: Mapping[str, Mapping[str, Any]], policy, *, valid_at: str | None,
+             known_as_of: int | None) -> tuple[dict[str, Any] | None, str | None]:
+    """A statement memory recorded, in the shape admission reads, resolved again at ``valid_at`` as memory knew
+    it at ``known_as_of`` from the record and the operator's currency rule — or why it does not hold then. A
+    candidate is a copy the program holds; what memory recorded decides (review DEEP-4)."""
+    entry = versions.get(identity)
+    if entry is None:
+        return None, "statement_not_recorded"
+    members = [item for item in versions.values() if slot(item["record"]) == slot(entry["record"])]
+    for resolved in resolve(members, freshness_of(policy, entry["record"]["property"]), valid_at=valid_at,
+                            known_as_of=known_as_of):
+        if resolved["entry"]["record"]["id"] == identity:
+            return candidate(resolved, None, {}), None
+    return None, "outside_validity"

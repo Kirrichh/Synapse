@@ -50,13 +50,14 @@ class _Scope:
     in_dream: bool = False
     in_integrate: bool = False
     functions: frozenset[str] = frozenset()
-    #: Every identifier the program binds: a builtin of that name is no longer the builtin wherever it is read.
-    owned: frozenset[str] = frozenset()
+    #: The names bound where this scope reads them: the program's own bindings, a function's parameters and
+    #: body inside it — a builtin of such a name is no longer the builtin there.
+    bound: frozenset[str] = frozenset()
 
     def nested(self, **changes: Any) -> "_Scope":
         values = {"top_level": False, "suspension_allowed": self.suspension_allowed,
                   "in_function": self.in_function, "in_dream": self.in_dream,
-                  "in_integrate": self.in_integrate, "functions": self.functions, "owned": self.owned}
+                  "in_integrate": self.in_integrate, "functions": self.functions, "bound": self.bound}
         values.update(changes)
         return _Scope(**values)
 
@@ -77,35 +78,50 @@ def validate_cognitive_program(root: synapse_ast.Program) -> set[str]:
     functions = frozenset(stmt.name for stmt in _walk(root) if isinstance(stmt, synapse_ast.FnDef) and stmt.name)
     parameters = frozenset(param for stmt in _walk(root) if isinstance(stmt, synapse_ast.FnDef)
                            for param in stmt.params)
-    owned = _owned(root)
-    scope = _Scope(functions=functions | parameters, owned=frozenset(owned))
+    scope = _Scope(functions=functions | parameters, bound=_bindings(root.statements))
     for statement in root.statements:
         _statement(statement, scope)
-    return owned
+    return _owned(root)
+
+
+def _bindings(node: Any) -> frozenset[str]:
+    """The names one scope binds in its statements and their blocks; a nested function binds its own name here
+    and its parameters and body only inside it (review R1)."""
+    if isinstance(node, synapse_ast.FnDef):
+        return frozenset({node.name})
+    found = set(_binds(node)) if isinstance(node, synapse_ast.Node) else set()
+    children = vars(node).items() if isinstance(node, synapse_ast.Node) else (
+        enumerate(node) if isinstance(node, (list, tuple)) else node.items() if isinstance(node, dict) else ())
+    for key, value in children:
+        if key not in {"line", "column", "closure"}:
+            found |= _bindings(value)
+    return frozenset(found)
 
 
 def _owned(root: synapse_ast.Program) -> set[str]:
     """The identifiers the source binds."""
-    owned: set[str] = set()
-    for node in _walk(root):
-        if isinstance(node, synapse_ast.LetStmt):
-            owned.add(node.name)
-        elif isinstance(node, synapse_ast.AssignStmt):
-            owned.add(node.target)
-        elif isinstance(node, synapse_ast.FnDef):
-            owned.add(node.name)
-            owned.update(node.params)
-        elif isinstance(node, synapse_ast.ForStmt):
-            owned.add(node.var)
-        elif isinstance(node, synapse_ast.TryCatchStmt) and node.catch_binding:
-            owned.add(node.catch_binding)
-        elif isinstance(node, (synapse_ast.HabitStmt, synapse_ast.ConsolidateStmt)):
-            owned.add(node.binding)
-        elif isinstance(node, synapse_ast.MemoryPalaceDef):
-            owned.update({node.name, node.binding})
-        elif isinstance(node, synapse_ast.ParallelStmt):
-            owned.update({node.name, *(item.name for item in node.nodes)})
-    return owned
+    return set().union(*(_binds(node) for node in _walk(root)))
+
+
+def _binds(node: Any) -> set[str]:
+    """The names one node binds."""
+    if isinstance(node, synapse_ast.LetStmt):
+        return {node.name}
+    if isinstance(node, synapse_ast.AssignStmt):
+        return {node.target}
+    if isinstance(node, synapse_ast.FnDef):
+        return {node.name, *node.params}
+    if isinstance(node, synapse_ast.ForStmt):
+        return {node.var}
+    if isinstance(node, synapse_ast.TryCatchStmt) and node.catch_binding:
+        return {node.catch_binding}
+    if isinstance(node, (synapse_ast.HabitStmt, synapse_ast.ConsolidateStmt)):
+        return {node.binding}
+    if isinstance(node, synapse_ast.MemoryPalaceDef):
+        return {node.name, node.binding}
+    if isinstance(node, synapse_ast.ParallelStmt):
+        return {node.name, *(item.name for item in node.nodes)}
+    return set()
 
 
 def _walk(node: Any):
@@ -172,7 +188,8 @@ def _statement(node: Any, scope: _Scope) -> None:
     if isinstance(node, synapse_ast.FnDef):
         if scope.in_dream or scope.in_integrate:
             raise _fail("functions are defined outside dream and integrate")
-        _block(node.body, scope.nested(suspension_allowed=False, in_function=True))
+        _block(node.body, scope.nested(suspension_allowed=False, in_function=True,
+                                       bound=scope.bound | set(node.params) | _bindings(node.body)))
         return
     if isinstance(node, synapse_ast.ReturnStmt):
         if not (scope.in_function or scope.in_dream):
@@ -261,7 +278,7 @@ def _parallel(node: synapse_ast.ParallelStmt, scope: _Scope) -> None:
     if scope.in_dream or scope.in_integrate:
         raise _fail("a parallel graph runs outside dream and integrate")
     try:
-        analyse(node, lambda name: name not in scope.owned)
+        analyse(node, lambda name: name not in scope.bound)
     except GraphViolation as exc:
         raise _fail(str(exc)) from None
     inner = scope.nested(suspension_allowed=False)

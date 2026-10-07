@@ -115,7 +115,8 @@ class Parser:
             return self.agent_def()
         if self.check(TokenType.CONTEXT):
             return self.context_block()
-        if self.check(TokenType.ENERGY_POOL):
+        if self.check(TokenType.ENERGY_POOL) and self.current + 1 < len(self.tokens) \
+                and self.tokens[self.current + 1].type == TokenType.LBRACE:
             return self.energy_pool_decl()
         if self.check(TokenType.FLOW):
             return self.flow_def()
@@ -1061,6 +1062,8 @@ class Parser:
             return Variable(name="resonance_drift", line=self.previous().line, column=self.previous().column)
         if self.match(TokenType.PALACE):
             return Variable(name="palace", line=self.previous().line, column=self.previous().column)
+        if self.match(TokenType.ENERGY_POOL):
+            return Variable(name="energy_pool", line=self.previous().line, column=self.previous().column)
         if self.match(TokenType.SOURCE):
             return Variable(name="source", line=self.previous().line, column=self.previous().column)
         if self.match(TokenType.CONTENT):

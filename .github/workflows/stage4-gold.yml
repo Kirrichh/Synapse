@@ -51,6 +51,10 @@ jobs:
           tests/test_replay_determinism_model.py
           acceptance/runtime/test_interpreter_cli_optimizations.py
           acceptance/runtime/test_cvm_invocation_limits.py
+          acceptance/runtime/test_program_failures_contract.py
+          acceptance/runtime/test_vm_host_calls_contract.py
+          acceptance/runtime/test_integrate_transaction_contract.py
+          acceptance/runtime/test_runtime_state_contract.py
 
   gold-fast:
     name: gold-fast
@@ -927,8 +931,16 @@ jobs:
             file: acceptance/memory/test_knowledge_return_acceptance.py
           - shard: event-admission
             file: acceptance/memory/test_event_admission_acceptance.py
+          - shard: knowledge-order
+            file: acceptance/memory/test_knowledge_order_acceptance.py
+          - shard: knowledge-index
+            file: acceptance/memory/test_knowledge_index_acceptance.py
+          - shard: forget-relearn-history
+            file: acceptance/memory/test_forget_relearn_history_acceptance.py
           - shard: dataflow-contract
             file: acceptance/memory/test_dataflow_contract.py
+          - shard: dataflow-source
+            file: acceptance/memory/test_dataflow_source_acceptance.py
           - shard: dataflow-overlap
             file: acceptance/memory/test_dataflow_overlap_acceptance.py
           - shard: dataflow-revision

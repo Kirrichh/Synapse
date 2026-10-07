@@ -253,7 +253,8 @@ class MemoryEngine:
 
     def record_parallel(self, request: Dict[str, Any], outcome: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Record a call node's performed request (main thread, in completion order); a re-execution consumes
-        the recorded one instead and ``outcome`` is ``None``."""
+        the recorded one instead and ``outcome`` is ``None``. Recording makes no source: ``parallel_integrated``
+        does, for the answer the graph uses."""
         h = self.host
         recorded = h.next_history_event("external_action")
         if recorded is not None:
@@ -265,11 +266,16 @@ class MemoryEngine:
             recorded = h.record_history_event({"type": "external_action", "request": request, "outcome": outcome})
             if h.durable_checkpoint is not None and h.runtime_mode == self.live_mode:
                 h.durable_checkpoint()
-        view = recorded["outcome"]["view"]
-        if view["ok"] and recorded["outcome"]["ref"]["evidence"] is not None:
-            self.observed[self._canonical({"tool": request["tool"], "args": request["args"]})] = \
-                recorded["outcome"]["ref"]["evidence"]
         return recorded
+
+    def parallel_integrated(self, recorded: Dict[str, Any]) -> None:
+        """A call node's answer the graph used: only then is it the observation a statement or hypothesis of this
+        run is read from — a stale or cancelled answer is recorded and accounted, never a source (review
+        DEEP-1)."""
+        request, outcome = recorded["request"], recorded["outcome"]
+        if outcome["view"]["ok"] and outcome["ref"]["evidence"] is not None:
+            self.observed[self._canonical({"tool": request["tool"], "args": request["args"]})] = \
+                outcome["ref"]["evidence"]
 
     # -- hypotheses -----------------------------------------------------------
     def _hypothesis(self, handle) -> Dict[str, Any]:
@@ -347,6 +353,10 @@ class MemoryEngine:
         """The operator's namespace rules for entity identity; none outside a memory session."""
         return {} if self.session is None else self.session.identity_rules()
 
+    def recorded_statement(self, identity: Any, valid_at: Any, known_as_of: Any) -> Any:
+        """A statement of the bound session's memory resolved again for admission; nothing outside a session."""
+        return None if self.session is None else self.session.recorded_statement(identity, valid_at, known_as_of)
+
     # -- semantic knowledge (refinement §15) ---------------------------------
     def know(self, args: List[Any]) -> Dict[str, Any]:
         """``know(statement)``: a statement read from an observation this run recorded; the court folds it."""
@@ -363,9 +373,12 @@ class MemoryEngine:
         except ValueError as exc:
             raise self._runtime_error(str(exc)) from None
         vector = session.embed(record["text"])
+        # A vector is comparable only with vectors of the same embedder: the declaration names the one asked.
+        embedded_by = session.embedded_by()
         recorded = self.recorded_event("knowledge_declared", {
-            "statement": record, "vector": vector, "trace_id": self.host.current_trace_id()},
-            {"statement": record, "vector": vector})
+            "statement": record, "vector": vector, "embedded_by": embedded_by,
+            "trace_id": self.host.current_trace_id()},
+            {"statement": record, "vector": vector, "embedded_by": embedded_by})
         return {"id": recorded["statement"]["id"], "embedded": recorded["vector"] is not None}
 
     def search_knowledge(self, args: List[Any]) -> Dict[str, Any]:

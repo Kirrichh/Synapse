@@ -333,19 +333,49 @@ def _checks(record, claim, key_tokens, hypothesis_of, rules) -> tuple[list[str],
                      "matched_keys": matched, "score": scored["score"], "attestation": attested}
 
 
+#: What a statement of memory states: a candidate that alters any of it is not the recorded statement.
+_RECORDED_CONTENT = ("entity", "attribute", "value", "polarity", "conditions", "text", "source")
+#: What a search reports about a candidate besides the statement.
+_SEARCH_FIELDS = ("rank", "found_by")
+
+
+def _as_recorded(candidate, claim, recorded) -> tuple[Mapping[str, Any], list[str]]:
+    """A statement memory recorded is admitted as memory recorded it (review DEEP-4): its validity, currency
+    and the period memory held it in are resolved again at the claim's time from the record and the operator's
+    currency rule, never read from the copy the program holds; a copy that alters what the statement states is
+    not that statement. ``recorded`` answers ``None`` for a candidate that is no statement of memory."""
+    if recorded is None:
+        return candidate, []
+    held_until = candidate.get("known_until")
+    found = recorded(candidate.get("id"), claim["at"], None if held_until is None else candidate.get("known_from"))
+    if found is None:
+        return candidate, []
+    view, reason = found
+    if view is None:
+        return candidate, [reason]
+    altered = any(_canonical(candidate.get(name)) != _canonical(view[name]) for name in _RECORDED_CONTENT)
+    view = {**view, **{name: candidate[name] for name in _SEARCH_FIELDS if name in candidate}}
+    return view, ["candidate_not_as_recorded"] if altered else []
+
+
 def admit(candidates: Iterable[Mapping[str, Any]], claim: Any,
           hypothesis_of: Callable[[str], Mapping[str, Any] | None] | None = None,
-          identity_rules: Mapping[str, str] | None = None) -> dict[str, Any]:
+          identity_rules: Mapping[str, str] | None = None, recorded: Callable[..., Any] | None = None
+          ) -> dict[str, Any]:
     """Admit at most one candidate as an established fact for ``claim``, with every reason.
 
     ``hypothesis_of`` reads the verification journal of the bound memory session (``None`` outside one);
-    ``identity_rules`` are the operator's namespace rules."""
+    ``identity_rules`` are the operator's namespace rules; ``recorded(id, at, known_as_of)`` resolves a
+    statement of that session's memory again (``(view, None)`` or ``(None, reason)``; ``None`` for a candidate
+    that is no statement of memory)."""
     claim = _claim(claim)
     key_tokens = frozenset().union(*(tokens(item) for item in claim["keys"])) if claim["keys"] else frozenset()
     checked, passing, attested = [], {}, {}
-    for record in candidates:
+    for given in candidates:
+        record, recorded_reasons = _as_recorded(given, claim, recorded)
         reasons, facts = _checks(record, claim, key_tokens, hypothesis_of, identity_rules)
-        checked.append({"id": record.get("id"), "reasons": reasons, **facts})
+        reasons = [*recorded_reasons, *reasons]
+        checked.append({"id": given.get("id"), "reasons": reasons, **facts})
         if not reasons:
             statement = _canonical(record["value"])
             if statement in passing:  # Copies of one statement count once; the first stands for them.

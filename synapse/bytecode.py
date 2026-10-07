@@ -35,7 +35,7 @@ execution path для базовых примитивов языка.
   FRACTURE_SELF  DREAM  LLM_EVAL  HOST_EVAL
   HALT
   --- LLM/PROMPT CVM BRIDGE (alpha3e Track A) ---
-  PROMPT_BUILD  a=template_hash b=variable_names : build PromptEnvelope onto stack
+  PROMPT_BUILD  a=template_hash b=variable_names c=template : build PromptEnvelope onto stack
   LLM_REQUEST   a=schema_hash b=engine_params c=cache_policy : pause VM for LLM call
   LLM_RESUME    : resume VM after LLM result injected by Bridge (no operands needed)
 """
@@ -672,7 +672,9 @@ class CognitiveCompiler:
         var_names = list(node.args.keys())
         for var_node in node.args.values():
             self._visit(var_node)
-        self._emit("PROMPT_BUILD", template_hash, var_names)
+        # The template travels with the request; its placeholders take their
+        # values when the envelope is built (synapse.prompt_template).
+        self._emit("PROMPT_BUILD", template_hash, var_names, node.template)
 
     def _compile_llm_call(self, node: "LLMCall") -> None:
         """Compile LLMCall → PROMPT_BUILD + LLM_REQUEST.
@@ -687,9 +689,10 @@ class CognitiveCompiler:
         else:
             # bare string expression or variable — evaluate it
             self._visit(node.prompt)
-            # wrap in a minimal prompt envelope with no named variables
+            # wrap it in an inline prompt envelope that carries the text itself (review: a request that dropped
+            # its text left every prompt the same request)
             inline_hash = "sha256:inline-" + hashlib.sha256(b"inline").hexdigest()[:16]
-            self._emit("PROMPT_BUILD", inline_hash, [])
+            self._emit("PROMPT_BUILD", inline_hash, ["__text__"])
 
         # schema_hash is empty until LLMCall AST grows a schema annotation
         schema_hash = ""
@@ -905,8 +908,9 @@ class CognitiveCompiler:
                 self._visit(arg)
             self._emit("CALL_METHOD", node.callee.member, len(node.args))
         else:
-            # Сложный каллибль — fallback
-            self._visit(node.callee)
+            # Вычисляемый каллибль: аргументы, затем функция на вершине стека —
+            # контракт CALL и порядок вычисления интерпретатора.
             for arg in node.args:
                 self._visit(arg)
+            self._visit(node.callee)
             self._emit("CALL", len(node.args))

@@ -86,7 +86,7 @@ def _session_into(draft, inputs: DreamInputs, counsel: Counsel, session, gateway
                                 "competitor": event.get("competitor")}
                                for _, event in facts.found.get("habit_suppressed", []))
     draft["hypotheses"].extend(hypothesis_events(facts.found, facts.run))
-    for name, items in knowledge_events(facts.found, facts.run).items():
+    for name, items in knowledge_events(facts.found, facts.run, facts.observed).items():
         draft["knowledge"][name].extend(items)
     reactions = build_reactions(facts, verdicts, replay.get("status"), cases, seconds, inputs.state["frozen"],
                                 configuration)

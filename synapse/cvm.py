@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Iterable
 
 from .bytecode import BytecodeProgram
+from .prompt_template import placeholders as prompt_placeholders
 from .runtime.host_abi import HOST_ABI_VERSION
 
 # These retain the existing two JSON wire forms, including the spaces in the
@@ -1139,9 +1140,16 @@ class CognitiveVM:
             variables = {}
             for name in reversed(var_names):
                 variables[name] = self._pop()
+            template = ins.c if isinstance(ins.c, str) else None
+            if template is not None:
+                # A placeholder takes the value its name holds now; one without
+                # a value stays as written when the prompt is rendered.
+                for name in prompt_placeholders(template):
+                    if name not in variables and name in self.state.locals:
+                        variables[name] = self.state.locals[name]
             # Build deterministic variables_hash
             import hashlib, json as _json
-            canonical = _json.dumps(variables, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+            canonical = _json.dumps(variables, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
             variables_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
             envelope = {
                 "type":           "prompt_envelope",
@@ -1149,6 +1157,8 @@ class CognitiveVM:
                 "variables":      variables,
                 "variables_hash": variables_hash,
             }
+            if template is not None:
+                envelope["template"] = template
             self._push(envelope)
 
         elif op == "LLM_REQUEST":
@@ -1944,7 +1954,8 @@ class CognitiveVM:
         steps = 0
         last = None
 
-        while not self.halted and steps < max_steps:
+        # A paused host call stops the run: nothing steps until the host resumes it.
+        while not self.halted and self.state.pending_host_call is None and steps < max_steps:
             if checkpoint_trigger and checkpoint_trigger(self):
                 if checkpoint_callback:
                     checkpoint_callback(self)

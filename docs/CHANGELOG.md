@@ -1,5 +1,80 @@
 # Synapse Changelog
 
+## Earlier review families (C–R) rechecked on the current tree — 2026-10-07
+
+Every family of the earlier PR108 reviews was reproduced again on `c4999a4`;
+those still reproducible are fixed here. Behaviour changes: errors raised
+inside `main()` are reported; `run vm` takes only compiled bytecode; the policy
+guard refuses state changes; out-of-range or non-finite PAD values are refused;
+`energy_pool` is a live read-only value; the gateway takes the operator's
+privacy declaration (`SYNAPSE_LLM_DATA_CLASSIFICATION`,
+`SYNAPSE_LLM_REPOSITORY_VISIBILITY`, `SYNAPSE_LLM_CONTAINS_SECRETS`,
+`SYNAPSE_LLM_CONTAINS_PERSONAL_DATA`); prompt envelopes carry their template;
+interpreter snapshots carry palace records.
+
+- Failures: an assertion or an undefined name inside `main()` or inside a
+  called function is reported as itself, no longer swallowed or renamed
+  "undefined function"; `run vm` on anything but compiled bytecode is refused.
+- VM: a model call in the middle or at the end of a VM program is performed by
+  the bridge (one owner of `llm.request`) and the program continues; the
+  provider receives the program's prompt, inline or templated
+  (`synapse.prompt_template`, one template language for the interpreter and
+  the VM); a call naming no model uses the configured one; replay is the
+  host's mode, not a truthy constant; a computed callee is called with its
+  arguments; `time`/`random`/`uuid` are recorded and replayed in the VM as in
+  the interpreter.
+- Free tier: a program's model call carries the operator's privacy
+  declaration; without it the call is refused before any provider request.
+- Transactions: a failing `integrate` body rolls back whatever its on_fail
+  policy; a rollback restores mood, affective tags, somatic markers, habits,
+  energy, policies and palace records (and drops a palace created inside); in
+  the overlay transaction a function declared outside reads and writes through
+  the overlay, a closure over other state or a shadowed scope is refused, and
+  `think`, host functions and `time`/`random`/`uuid`/`print` under any name
+  are refused by the barrier.
+- State: a program binding, a history event and live state never share one
+  object (affective state and tags, checkpoints, palace rooms); a checkpoint
+  keeps its moment; PAD values are checked; the energy pool is read live and
+  changed only by the runtime; a snapshot restores palace records.
+- Governance: a policy guard reads only; a statement that would change state
+  (palace, affect, somatic, energy, habit, intent and others) or `print` is
+  refused before its effect, and a change to program data or to the guarded
+  arguments refuses the guarded call.
+- Golden suite: `inline_guard_pass` and `inline_guard_fail_recovery` left the
+  interpreter strict suite — they are compiled-CVM programs whose recorded
+  artifacts recorded the swallowed refusal; their guard semantics are accepted
+  on the CVM.
+
+## Recheck of PR108 at c4999a4 — history, parallel results, order, admission, index — 2026-10-07
+
+Knowledge search candidates carry the period memory held them in at the asked
+window; `knowledge_declared` events carry `embedded_by`; knowledge versions
+gain `embedded_by`; the report's knowledge section gains `reindexed`;
+`palace_admission.admit` takes `recorded`; admission reasons gain
+`statement_not_recorded` and `candidate_not_as_recorded`.
+
+- R2: a forget ends the period it applied in and every period before it; a
+  later reading holds only from its own window.
+- R3: a historical candidate and its attestation carry the period selected for
+  the asked window (`timeline.held_period`, the one owner of both).
+- R1: the durable profile reads a name where the graph runs: a parameter of
+  another function binds nothing there.
+- DEEP-1: a call node's answer is a source for statements and hypotheses only
+  once the graph integrates it; a stale or cancelled answer is never one.
+- DEEP-2: the program receives its own copy of a graph's result; changing it
+  rewrites no recorded step, commit or answer.
+- DEEP-3: one consolidation folds statements in the order their sources were
+  observed (gateway sequence), never by run names; a statement read from no
+  recorded observation is an integrity problem of its session.
+- DEEP-4: a statement of memory is admitted as recorded: validity, currency and
+  held period are resolved again from the record and the operator's currency
+  rule; a copy that alters what the statement states is refused.
+- DEEP-5: a reading of a known statement adds no confidence but restores a
+  missing vector of the index.
+- DEEP-6: vectors name their embedder (tool, declared version, contract); the
+  semantic channel compares only vectors of the embedder in force, and a
+  reading under it indexes a statement again.
+
 ## Independent audit of PR108 (AUD-1…AUD-5) — 2026-10-07
 
 Knowledge versions held again gain `earlier_known`; knowledge declarations held

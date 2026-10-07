@@ -91,6 +91,7 @@ def test_the_durable_profile_admits_a_graph_only_where_it_can_be_persisted_and_o
         validate_cognitive_program(_program('parallel g {\n  node a = {"x": print(1)}\n  commit a\n}\n'))
 
 
+GRAPH = "parallel calculation {\n  node value = len([1, 2])\n  commit value\n}\n"
 REBOUND = {
     "function": "fn len(items) {\n  x = x + 1\n  return 7\n}\n",
     "alias": "fn change(items) {\n  x = x + 1\n  return 7\n}\nlet len = change\n",
@@ -115,6 +116,25 @@ def test_a_builtin_name_bound_to_another_function_is_refused_before_anything_run
     assert interpreter.global_env.get("x") == 0  # Refused before the function could run.
     with pytest.raises(CognitiveProfileViolation, match="bound to another callee"):
         validate_cognitive_program(_program(source))
+
+
+@pytest.mark.parametrize("source, refused", [
+    # A parameter of another function binds nothing where the graph runs.
+    ("fn helper(len) {\n  return len\n}\n" + GRAPH, False),
+    ("fn helper(items) {\n  let len = items\n  return len\n}\n" + GRAPH, False),
+    # Inside the function whose parameter or body binds the name, the name is not the builtin.
+    ("fn helper(len) {\n" + GRAPH + "  return calculation\n}\nprint(helper(1))\n", True),
+    ("fn helper(items) {\n  let len = items\n" + GRAPH + "  return calculation\n}\nprint(helper(1))\n", True),
+])
+def test_the_durable_profile_reads_a_name_where_the_graph_runs(source, refused):
+    if refused:
+        with pytest.raises(CognitiveProfileViolation, match="bound to another callee"):
+            validate_cognitive_program(_program(source))
+        with pytest.raises(ProgramError):  # The graph is refused at the call; nothing it reads ran.
+            _run(source)
+    else:
+        validate_cognitive_program(_program(source))
+        assert _run(source).global_env.get("calculation")["value"] == 2
 
 
 def test_a_graph_node_named_after_a_builtin_is_no_builtin():

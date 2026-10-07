@@ -9,7 +9,8 @@ evidence as the first. Each change is a correction of the one before:
 * asked now, search finds 20 and admission admits it — the independent billing
   service says 20;
 * asked as memory knew it in each earlier window, the answer is the one it held
-  then: 20 after the first session, 25 after the second;
+  then, with the period it held it in then: 20 after the first session, 25
+  after the second;
 * reading the catalog again unchanged is a copy.
 """
 from __future__ import annotations
@@ -42,10 +43,16 @@ def test_a_correction_returns_to_an_answer_memory_held_before(tmp_path):
     now = catalog.ask(world, "now", "basic", "monthly_price", "basic monthly price", at="2026-03-01")
     assert [item["value"] for item in now["search"]["candidates"]] == [20]
     assert now["admission"]["decision"] == "admitted"
-    for window, value in ((first["window"]["index"], 20), (second["window"]["index"], 25)):
+    periods = {first["window"]["index"]: (20, [first["window"]["index"], second["window"]["index"]]),
+               second["window"]["index"]: (25, [second["window"]["index"], back["window"]["index"]])}
+    for window, (value, period) in periods.items():
         then = catalog.ask(world, f"then-{window}", "basic", "monthly_price", "basic monthly price",
                            at="2026-03-01", known_as_of=window)
-        assert [item["value"] for item in then["search"]["candidates"]] == [value], window
+        held, = then["search"]["candidates"]
+        # The period memory held it in then, never the one it holds it in now (review R3).
+        assert (held["value"], [held["known_from"], held["known_until"]]) == (value, period), window
+    assert [now["admission"]["attestation"]["version"][key] for key in ("known_from", "known_until")] == [
+        back["window"]["index"], None]
 
     again = _learn(world, "learn-20-copy", 20)
     assert again["knowledge"]["declared"] == [] and len(again["knowledge"]["copies"]) == 1

@@ -6,6 +6,7 @@ unit tests; PostgreSQL/Redis classes expose the same boundary and can be wired t
 real drivers later without touching language semantics.
 """
 from __future__ import annotations
+import copy
 import json
 import sqlite3
 import time
@@ -25,6 +26,14 @@ class CognitiveStorageBackend:
         raise NotImplementedError
 
     def query_memory(self, palace: str, room: str, query: str = "", threshold: float = 0.0, limit: int = 10) -> List[Dict[str, Any]]:
+        raise NotImplementedError
+
+    def records(self, palace: str) -> List[Dict[str, Any]]:
+        """Every record of one palace, as data."""
+        raise NotImplementedError
+
+    def replace_records(self, palace: str, records: List[Dict[str, Any]]) -> None:
+        """The palace holds exactly ``records`` afterwards."""
         raise NotImplementedError
 
     def save_intention(self, cascade: Dict[str, Any]) -> str:
@@ -56,6 +65,12 @@ class InMemoryCognitiveStorage(CognitiveStorageBackend):
         """Candidates of one room by lexical overlap only (``palace_admission``); never admitted facts."""
         room_records = [m for m in self.memories if m.get("palace") == palace and m.get("room") == room]
         return rank(room_records, query or "", threshold)[: int(limit or 10)]
+
+    def records(self, palace: str) -> List[Dict[str, Any]]:
+        return [copy.deepcopy(m) for m in self.memories if m.get("palace") == palace]
+
+    def replace_records(self, palace: str, records: List[Dict[str, Any]]) -> None:
+        self.memories = [m for m in self.memories if m.get("palace") != palace] + copy.deepcopy(list(records))
 
     def save_intention(self, cascade: Dict[str, Any]) -> str:
         cid = cascade.get("id") or f"intent-{uuid.uuid4().hex[:12]}"
@@ -97,6 +112,18 @@ class SQLiteCognitiveStorage(InMemoryCognitiveStorage):
         rows = self.conn.execute("SELECT payload FROM memories WHERE palace=? AND room=? ORDER BY created_at DESC", (palace, room)).fetchall()
         self.memories = [json.loads(r[0]) for r in rows]
         return super().query_memory(palace, room, query, threshold, limit)
+
+    def records(self, palace: str) -> List[Dict[str, Any]]:
+        rows = self.conn.execute("SELECT payload FROM memories WHERE palace=? ORDER BY rowid", (palace,)).fetchall()
+        return [json.loads(r[0]) for r in rows]
+
+    def replace_records(self, palace: str, records: List[Dict[str, Any]]) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM memories WHERE palace=?", (palace,))
+            self.conn.executemany(
+                "INSERT INTO memories VALUES (?, ?, ?, ?, ?)",
+                [(r["id"], palace, r["room"], json.dumps(r, ensure_ascii=False, default=str), r["created_at"])
+                 for r in records])
 
     def save_intention(self, cascade: Dict[str, Any]) -> str:
         cid = cascade.get("id") or f"intent-{uuid.uuid4().hex[:12]}"

@@ -1,7 +1,8 @@
 """The court's record of semantic knowledge (refinement §15): the one writer of its timeline.
 
 A session only declares what it read (``knowledge_declared``); the court folds
-every declaration of a window into memory, in history order, and gives each
+every declaration of a window into memory, in the order the world was read (the
+gateway's sequence of each statement's source observation), and gives each
 version its transaction time — the window it became known in:
 
 * the very same statement (same source version) is a copy and adds nothing;
@@ -42,10 +43,14 @@ from .habit_state import EFFECTIVE
 EVENTS = ("knowledge_declared", "memory_admission")
 
 
-def knowledge_events(found: Mapping[str, list], run_id: str) -> dict[str, list]:
-    """A session's statement declarations and admissions of statements, in history order."""
+def knowledge_events(found: Mapping[str, list], run_id: str, observed: Mapping[int, int]) -> dict[str, list]:
+    """A session's statement declarations, each with the gateway sequence of the observation it was read from
+    (``observed``, by history position; a declaration with none is the session's integrity problem and is not
+    folded), and admissions of statements, in history order."""
     declared = [{"run_id": run_id, "position": position, "statement": event["statement"],
-                 "vector": event.get("vector")} for position, event in found.get("knowledge_declared", [])]
+                 "vector": event.get("vector"), "embedded_by": event.get("embedded_by"),
+                 "observed": observed[position]}
+                for position, event in found.get("knowledge_declared", []) if position in observed]
     uses = [{"run_id": run_id, "statement": event["fact"]} for _, event in found.get("memory_admission", [])
             if event.get("decision") == "admitted" and str(event.get("fact") or "").startswith("stm_")]
     return {"declared": declared, "uses": uses}
@@ -99,6 +104,19 @@ def _revise_habits(state, habits, runs, statement_id, forced) -> list[str]:
     return found
 
 
+def _reindex(versions, section, entry, item) -> None:
+    """A copy adds no confidence, but its vector restores the search index (review DEEP-5, DEEP-6): a version
+    with no vector, or one of another embedder, takes the vector this reading brings. The statement, its
+    periods and its uses stay as they are."""
+    if item["vector"] is None or item["embedded_by"] is None or (
+            entry.get("vector") is not None and entry.get("embedded_by") == item["embedded_by"]):
+        return
+    identity = entry["record"]["id"]
+    versions[identity] = {**copy.deepcopy(versions.get(identity, entry)), "vector": copy.deepcopy(item["vector"]),
+                          "embedded_by": item["embedded_by"]}
+    section["reindexed"].append({"run_id": item["run_id"], "statement": identity})
+
+
 EMPTY = {"versions": {}, "uses": {}}
 
 
@@ -110,7 +128,7 @@ def known_of(state: Mapping[str, Any]) -> Mapping[str, Any]:
 def knowledge_stage(context, habits, forced, configuration) -> dict[str, Any]:
     """Versions, uses and hypothesis revisions of one window; the report's ``knowledge`` section."""
     state, window = {**context.state, "knowledge": known_of(context.state)}, context.window
-    section = {"declared": [], "copies": [], "corrections": [], "conflicts": [], "revisions": []}
+    section = {"declared": [], "copies": [], "corrections": [], "conflicts": [], "revisions": [], "reindexed": []}
     context.report["knowledge"] = section
     versions: dict[str, dict] = {}
     uses: dict[str, list] = {}
@@ -119,12 +137,16 @@ def knowledge_stage(context, habits, forced, configuration) -> dict[str, Any]:
     for item in knowledge["uses"]:
         uses.setdefault(item["statement"], sorted(set(state["knowledge"]["uses"].get(item["statement"], []))))
         uses[item["statement"]] = sorted(set(uses[item["statement"]]) | {item["run_id"]})
-    for item in sorted(knowledge["declared"], key=lambda value: (value["run_id"], value["position"])):
+    # In the order the world was read — the gateway's sequence of each statement's source — never by the names
+    # of the runs that read it: one consolidation of several sessions folds 20 then 25 as 25 (review DEEP-3).
+    for item in sorted(knowledge["declared"], key=lambda value: (value["observed"], value["run_id"],
+                                                                 value["position"])):
         record = verify(item["statement"], "statement")
         known = {**state["knowledge"]["versions"], **versions}
         earlier = known.get(record["id"])
         if earlier is not None and earlier.get("withdrawn") is None and earlier["known_until"] is None:
             section["copies"].append({"run_id": item["run_id"], "statement": record["id"], "of": record["id"]})
+            _reindex(versions, section, earlier, item)
             continue
         own_slot, source = slot(record), source_identity(record)
         current = [entry for entry in known.values() if entry["slot"] == own_slot and entry["known_until"] is None
@@ -134,9 +156,11 @@ def knowledge_stage(context, habits, forced, configuration) -> dict[str, Any]:
         if repeated is not None:
             section["copies"].append({"run_id": item["run_id"], "statement": record["id"],
                                       "of": repeated["record"]["id"]})
+            _reindex(versions, section, repeated, item)
             continue
         contract = configuration.tools.tools.get(record["source"]["tool"])
-        entry = {"record": copy.deepcopy(record), "vector": copy.deepcopy(item["vector"]), "slot": own_slot,
+        entry = {"record": copy.deepcopy(record), "vector": copy.deepcopy(item["vector"]),
+                 "embedded_by": item["embedded_by"] if item["vector"] is not None else None, "slot": own_slot,
                  "source_identity": source, "source": None if contract is None else contract.source,
                  "run_id": item["run_id"], "known_from": window, "known_until": None, "corrected_by": None}
         if earlier is not None:  # Held again: the periods it was held before stay in its history.

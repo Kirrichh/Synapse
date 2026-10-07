@@ -1,6 +1,6 @@
 """Synapse v1.9 Memory Palace engine."""
 from __future__ import annotations
-import hashlib, json, time
+import copy, hashlib, json, time
 from typing import Any, Dict, List, Optional
 from .storage_backends import InMemoryCognitiveStorage, SQLiteCognitiveStorage, PostgreSQLCognitiveStorage, CognitiveStorageBackend
 
@@ -26,11 +26,30 @@ class MemoryPalace:
         self.consolidate_during_dream = consolidate_during_dream
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"type": "memory_palace", "name": self.name, "rooms": self.rooms, "decay_policy": self.decay_policy, "backend": self.backend_name, "consolidate_during_dream": self.consolidate_during_dream}
+        return {"type": "memory_palace", "name": self.name, "rooms": list(self.rooms), "decay_policy": copy.deepcopy(self.decay_policy), "backend": self.backend_name, "consolidate_during_dream": self.consolidate_during_dream}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MemoryPalace":
-        return cls(data.get("name", "palace"), data.get("rooms", []), data.get("decay_policy", {}), data.get("backend", "sqlite"), bool(data.get("consolidate_during_dream", False)))
+        return cls(data.get("name", "palace"), list(data.get("rooms", [])), copy.deepcopy(data.get("decay_policy", {})), data.get("backend", "sqlite"), bool(data.get("consolidate_during_dream", False)))
+
+    def content(self) -> Dict[str, Any]:
+        """Rooms and records as data: what a transaction or a snapshot restores."""
+        return {"rooms": list(self.rooms), "records": self.backend.records(self.name)}
+
+    def restore_content(self, content: Dict[str, Any]) -> None:
+        self.rooms = list(content["rooms"])
+        self.backend.replace_records(self.name, content["records"])
+
+    def snapshot(self) -> Dict[str, Any]:
+        return {**self.to_dict(), **self.content()}
+
+    @classmethod
+    def restore(cls, data: Dict[str, Any]) -> "MemoryPalace":
+        """A palace from ``snapshot()``: its declaration, rooms and the records the snapshot carries."""
+        palace = cls.from_dict(data)
+        if "records" in data:
+            palace.restore_content(data)
+        return palace
 
     def imprint(self, room: str, record: Dict[str, Any]) -> str:
         if room not in self.rooms:

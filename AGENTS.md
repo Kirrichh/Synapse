@@ -108,7 +108,35 @@ Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:
 No Linux full suite was run for Patch 2. A recorded baseline is evidence of an
 observed run, not a command to rerun the full suite before each patch.
 
-The latest observed Linux verification is the independent audit of PR #108 at
+The latest observed Linux verification is the recheck package of PR #108 on
+`c4999a4`: the nine recheck findings (R1-R3, DEEP-1..6) and every earlier
+review family (C-R) still reproducible on that tree (failures inside `main()`,
+VM host calls and prompts, free-tier privacy declaration, integrate rollback,
+overlay closures and barrier, state ownership, policy guard purity). Python
+3.11, every file in its own process, four files in parallel, on the
+uncommitted working tree; the whole `tests/` directory ran because the
+interpreter, the CVM and the bridge changed:
+
+```text
+tests/:              208 files, 6 failed, 5216 passed, 12 skipped
+acceptance/memory:   88 files, 440 passed
+acceptance/runtime:  6 files, 56 passed (57 after the pause case)
+stage16 memory:      6 files, 14 passed
+```
+
+The six failures (`test_stage4_od10_execution_conformance.py`,
+`test_stage4_replay_vm_adapter_acceptance.py`) were this package's: the VM's
+LLM pause was marked halted, which the Gold replay adapter refuses as a pause
+that is not isolated. The pause now stops `run()` on the pending host call and
+keeps its scopes open; both files then passed (140 and 15), and every file
+naming the CVM or the bridge was rerun: 49 files, 1163 passed. Two
+interpreter golden fixtures (`inline_guard_*`) left the strict suite (see
+`docs/DETERMINISM_CONTRACT.md`). Mutation campaigns: 32/32 for the recheck
+findings, 59/59 for the earlier families
+(`reports/memory_second_review_mutation_evidence_v1.json`,
+`recheck_c4999a4`, `earlier_families_c4999a4`).
+
+The previous observed Linux verification is the independent audit of PR #108 at
 `746967d` (AUD-1 purity of a `parallel` graph belongs to the function called,
 not its name; AUD-2 an event is admitted at its moment only; AUD-3 a correction
 back to an answer memory held before holds it again and keeps its earlier
@@ -131,7 +159,7 @@ all 25 mutants (`reports/memory_second_review_mutation_evidence_v1.json`,
 `independent_audit`); its first round left two survivors, a dead fallback that
 was removed and accumulated earlier periods now covered by two returns.
 
-The previous observed Linux verification is the third review of PR #108 at
+An earlier observed Linux verification is the third review of PR #108 at
 `4905d47` (N1 a resolution found in stand trials stands only while the trials
 recorded so far name the same winner, decided in every ordinary consolidation;
 N2 a hypothesis status is reused and kept only on the check basis it was

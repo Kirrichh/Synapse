@@ -56,7 +56,8 @@ class DecisionContext:
 def _empty_report() -> dict[str, Any]:
     report: dict[str, Any] = {name: [] for name in REPORT_SECTIONS}
     report["cold_checks"] = {"dormant_matches": [], "extinct_matches": []}
-    report["knowledge"] = {"declared": [], "copies": [], "corrections": [], "conflicts": [], "revisions": []}
+    report["knowledge"] = {"declared": [], "copies": [], "corrections": [], "conflicts": [], "revisions": [],
+                           "reindexed": []}
     return report
 
 

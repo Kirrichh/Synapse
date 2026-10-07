@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from synapse.cvm import CognitiveVM, VMHostError
+from synapse.interpreter import RuntimeMode
 from synapse.bytecode import CognitiveCompiler, BytecodeProgram
 from synapse.lexer import Lexer
 from synapse.parser import Parser
@@ -44,6 +45,7 @@ def _compile(source: str) -> BytecodeProgram:
 
 def _make_host(agent_id="default_agent", replay=False, history=None):
     h = MagicMock()
+    h.runtime_mode = RuntimeMode.REPLAY if replay else RuntimeMode.LIVE
     h.current_agent_id = agent_id
     h.execution_history = history if history is not None else []
     h.current_trace_id.return_value = "test-trace-001"
@@ -57,8 +59,8 @@ def _make_host(agent_id="default_agent", replay=False, history=None):
 
 
 def _make_bridge(host, replay=False):
-    bridge = VMBridge(lambda: host, replay_mode=replay)
-    return bridge
+    # Replay is the host's mode; the bridge knows which mode value means it.
+    return VMBridge(lambda: host, live_mode=RuntimeMode.LIVE, replay_mode=RuntimeMode.REPLAY)
 
 
 # ---------------------------------------------------------------------------

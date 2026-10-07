@@ -19,7 +19,7 @@ from .hardening import hash_event_chain, verify_event_chain, canonical_json
 from .runtime.dataflow import Executor as GraphExecutor, GraphViolation
 from .memory import MemoryPalace
 from .intention import IntentionCascade, weave_plan
-from .habit import form_habit, EnergyPool, ContextTracker, AgentMode, ContextStackError, HabitRegistry, HabitEvaluator, HabitRuntimeRecord, HabitActivationEngine, HabitState, HabitRecursionError, PRIORITY_RANK
+from .habit import form_habit, EnergyPool, EnergyPoolView, ContextTracker, AgentMode, ContextStackError, HabitRegistry, HabitEvaluator, HabitRuntimeRecord, HabitActivationEngine, HabitState, HabitRecursionError, PRIORITY_RANK
 from .habit_triggers import TypedTrigger, declared_identity, typed_condition_holds
 from .affective import AffectiveState, modulation_from_state, affective_bridge, clamp
 from .somatic import compute_gut_feeling
@@ -94,7 +94,8 @@ from .runtime.mailbox_wait import (
     validate_replayed_message_received_event,
     validate_replayed_receive_timeout_event,
 )
-from .runtime.vm_routing import classify_ast_node_v22, fallback_reason_for
+from .prompt_template import render as render_prompt
+from .runtime.vm_routing import RECORDED_SIDE_EFFECT_HOST_SYMBOLS, classify_ast_node_v22, fallback_reason_for
 from .version import RUNTIME_VERSION
 from .memory_points import DURABLE_COGNITIVE_PROFILE, TypedCondition
 from .runtime.memory_engine import MemoryEngine
@@ -195,6 +196,33 @@ _CONSENSUS_VOTE_OPERATIONS = {
     "PlanWeaveStmt": "plan weave mutation",
     "VerifyBlock": "verification mutation",
 }
+
+
+# A policy guard is a read-only verdict: its history is discarded and only the
+# verdict is recorded, so a state change it made would live on without a record
+# and differ on replay (which consumes the verdict and never reruns the guard).
+# The guard keeps reads (recall, memory read), the semantic llm check and local
+# definitions; send, memory.write and memory.forget refuse in their handlers.
+_POLICY_GUARD_ALLOWED = frozenset({
+    "LLMCall", "RecallStmt", "MemoryAccess", "FnDef",
+    "SendStmt", "GovernedMemoryWrite", "GovernedMemoryForget",
+})
+_POLICY_GUARD_OPERATIONS = {
+    name: operation for name, operation in _CONSENSUS_VOTE_OPERATIONS.items()
+    if name not in _POLICY_GUARD_ALLOWED
+}
+
+
+# Runtime-owned state an integrate transaction can change besides the
+# environment, the agents and the durable logs. Owners are replaced by their
+# copies on rollback; registries are held by engines and are restored in place.
+_TRANSACTION_OWNERS = (
+    "affective_states", "affective_events", "_applied_affective_resonance_events", "resonance_cache",
+    "somatic_markers", "threshold_audit", "energy_pool", "habits", "intention_cascades", "intents",
+    "claims", "consequences", "policies", "evolution_tickets", "events_since_last_evolution",
+    "checkpoints", "current_context",
+)
+_TRANSACTION_REGISTRIES = ("habit_registry", "threshold_registry", "context_tracker")
 
 
 class FuelExhaustedError(Exception):
@@ -618,6 +646,39 @@ class IntegrateOverlayEnvironment(Environment):
             return
         super().define_agent(name, agent)
 
+    def scope_for(self, closure: Environment) -> Environment:
+        """The scope a function called inside the transaction runs over.
+
+        A function declared in the body already runs over the overlay. One
+        declared in the transaction's base scope or an enclosing one reads and
+        writes program state through the overlay, so its changes enter the
+        write-set and leave nothing behind on abort. A closure over any other
+        scope, or one whose bindings an inner scope shadows, would change state
+        the transaction neither records nor discards: it is refused.
+        """
+        cursor: Optional[Environment] = closure
+        while cursor is not None:
+            if cursor is self:
+                return closure
+            cursor = cursor.parent
+        chain: List[Environment] = []
+        cursor = self.parent
+        while cursor is not None and cursor is not closure:
+            chain.append(cursor)
+            cursor = cursor.parent
+        if cursor is None:
+            raise IntegrateIsolationViolation(
+                "a function closing over state outside the integrate scope cannot run inside the transaction")
+        visible: Set[str] = set()
+        while cursor is not None:
+            visible.update(cursor.variables)
+            cursor = cursor.parent
+        shadowed = sorted(visible & set().union(*(scope.variables for scope in chain)))
+        if shadowed:
+            raise IntegrateIsolationViolation(
+                f"a function declared outside the scope shadowing {shadowed} cannot run inside the transaction")
+        return self
+
     def get_agent(self, name: str) -> AgentRuntime:
         if self.parent:
             return self.parent.get_agent(name)
@@ -684,7 +745,7 @@ class Interpreter:
         self.telemetry_events: List[Dict[str, Any]] = []
         self.runtime_mode = RuntimeMode.LIVE
         self.replay_cursor = 0
-        self.deterministic_side_effects = {"time", "random", "uuid"}
+        self.deterministic_side_effects = set(RECORDED_SIDE_EFFECT_HOST_SYMBOLS)
         # Durable cognitive profile (synapse.durable.cognitive/v1): a reconstructed
         # run re-executes and verifies every recorded event, and the memory session
         # (bound only by the canonical durable launch) owns tools, plans and the court.
@@ -719,6 +780,9 @@ class Interpreter:
         # not silently migrated.
         self.integrate_hash_profile = ALPHA3G_LOCAL_JSON_PROFILE
         self.integrate_i2_skeleton_depth = 0
+        # The overlay scope of the running I2 transaction: functions called in
+        # it reach program state through the overlay (``scope_for``).
+        self._integrate_overlay_env: Optional["IntegrateOverlayEnvironment"] = None
         self.last_integrate_write_set: Optional[WriteSet] = None
         self._applied_integrate_replay_indices: Set[int] = set()
         self.evolve_depth = 0
@@ -818,6 +882,8 @@ class Interpreter:
             current_mood_snapshot_fn=self.current_mood_snapshot,
             policy_guard_depth_getter=lambda: self.policy_guard_depth,
             policy_guard_depth_setter=lambda value: setattr(self, "policy_guard_depth", value),
+            policy_guard_state_fn=self.policy_guard_state,
+            policy_guard_refusal=PolicyCompilationError,
             policy_violation_exception=PolicyViolationException,
             reject_exception=RejectException,
             resonance_privacy_exception=ResonancePrivacyException,
@@ -1071,6 +1137,9 @@ class Interpreter:
 
     def _print(self, *args):
         self._forbid_consensus_vote_side_effect("print")
+        self.forbid_integrate_i2_effect("print")
+        if self.policy_guard_depth > 0:
+            raise PolicyCompilationError("Policy guard cannot print")
         output = " ".join(str(a) for a in args)
         self.output_buffer.append(output)
         # CLI prints the final output buffer; avoid duplicate stdout emission here.
@@ -1164,39 +1233,23 @@ class Interpreter:
         # Synapse v0.2 convention: if a zero-argument main() exists, execute it
         # after top-level declarations have been loaded. This keeps scripts simple
         # while preserving top-level execution for existing programs.
+        # Only the lookup may find no main(); an error inside main() is the program's error, never swallowed.
         try:
             main_fn = self.global_env.get_function("main")
-            if isinstance(main_fn, FnDef) and len(main_fn.params) == 0:
-                result = self.call_function(main_fn, [], self.global_env)
         except RuntimeError:
-            pass
+            main_fn = None
+        if isinstance(main_fn, FnDef) and len(main_fn.params) == 0:
+            result = self.call_function(main_fn, [], self.global_env)
         return result
 
-    _PROMPT_VAR_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
-
     def _interpolate_prompt(self, template: str, env: Environment) -> str:
-        """Substitute {identifier} placeholders from the current environment.
-
-        Unknown identifiers are left untouched so that templates intended
-        for downstream rendering (e.g. CVM envelope variables) survive.
-        Doubled braces {{...}} escape interpolation.
-        """
-        if "{" not in template:
-            return template
-
-        sentinel_open, sentinel_close = "\x00OB\x00", "\x00CB\x00"
-        text = template.replace("{{", sentinel_open).replace("}}", sentinel_close)
-
-        def _sub(match: "re.Match[str]") -> str:
-            name = match.group(1)
+        """The template rendered from the current environment (``synapse.prompt_template``)."""
+        def value_of(name: str) -> Any:
             try:
-                value = env.get(name)
+                return env.get(name)
             except RuntimeError:
-                return match.group(0)
-            return str(value)
-
-        text = self._PROMPT_VAR_RE.sub(_sub, text)
-        return text.replace(sentinel_open, "{").replace(sentinel_close, "}")
+                raise KeyError(name) from None
+        return render_prompt(template, value_of)
 
     def evaluate(self, node: Node, env: Environment) -> Any:
         if self._loop_fuel_remaining < 0:
@@ -1209,6 +1262,9 @@ class Interpreter:
         operation = self._consensus_vote_forbidden_operation(node)
         if operation is not None:
             self._forbid_consensus_vote_side_effect(operation)
+        if self.policy_guard_depth > 0 and type(node).__name__ in _POLICY_GUARD_OPERATIONS:
+            raise PolicyCompilationError(
+                f"Policy guard cannot perform {_POLICY_GUARD_OPERATIONS[type(node).__name__]}")
         if self._consensus_vote_query_depth > 0:
             return self._evaluate_impl(node, env)
         _audit_fallback = self._audit_runtime_routing_decision(node)
@@ -1402,7 +1458,7 @@ class Interpreter:
                 pool = self.evaluate_energy_pool(node.energy_pool, env)
                 agent.energy_pool = pool
                 self.energy_pool = pool
-                env.define("energy_pool", pool.snapshot())
+                env.define("energy_pool", EnergyPoolView(lambda: self.energy_pool))
             soulprint = self.evaluate(node.soulprint, env) if getattr(node, "soulprint", None) else None
             if soulprint is not None:
                 agent.soulprint = soulprint
@@ -1495,7 +1551,7 @@ class Interpreter:
         if isinstance(node, EnergyPoolDecl):
             pool = self.evaluate_energy_pool(node, env)
             self.energy_pool = pool
-            env.define("energy_pool", pool.snapshot())
+            env.define("energy_pool", EnergyPoolView(lambda: self.energy_pool))
             return pool.snapshot()
 
         if isinstance(node, ContextBlock):
@@ -1651,7 +1707,7 @@ class Interpreter:
         if isinstance(node, EnergyPoolDecl):
             pool = self.evaluate_energy_pool(node, env)
             self.energy_pool = pool
-            env.define("energy_pool", pool.snapshot())
+            env.define("energy_pool", EnergyPoolView(lambda: self.energy_pool))
             return pool.snapshot()
 
         if isinstance(node, ContextBlock):
@@ -2172,6 +2228,13 @@ class Interpreter:
         env_snapshot = self.capture_env_state(env)
         agent_snapshots = self.capture_agent_state(env)
         log_snapshot = self.capture_durable_log_state()
+        cognitive_snapshot = self.capture_cognitive_state()
+
+        def rollback() -> None:
+            self.restore_env_state(env, env_snapshot)
+            self.restore_agent_state(env, agent_snapshots)
+            self.restore_durable_log_state(log_snapshot)
+            self.restore_cognitive_state(cognitive_snapshot)
 
         self.integrate_depth += 1
         tx_env = Environment(env)
@@ -2201,9 +2264,7 @@ class Interpreter:
                 "reason": reason_value,
             }
             if node.on_fail in {"rollback", "halt"}:
-                self.restore_env_state(env, env_snapshot)
-                self.restore_agent_state(env, agent_snapshots)
-                self.restore_durable_log_state(log_snapshot)
+                rollback()
             if self.runtime_mode == RuntimeMode.LIVE:
                 self.execution_history.append(event)
                 self.actor_log.append(dict(event))
@@ -2214,16 +2275,25 @@ class Interpreter:
                 self.output_buffer.append(f"Integrate warning: {exc}")
             return None
         except IntegrateIsolationViolation:
-            self.restore_env_state(env, env_snapshot)
-            self.restore_agent_state(env, agent_snapshots)
-            self.restore_durable_log_state(log_snapshot)
+            rollback()
+            raise
+        except Exception as exc:
+            # A body that fails does not commit, whatever its on_fail policy.
+            rollback()
+            event = {
+                "type": "integrate_rollback",
+                "on_fail": node.on_fail,
+                "cause": str(exc),
+                "error": type(exc).__name__,
+                "reason": reason_value,
+            }
+            if self.runtime_mode == RuntimeMode.LIVE:
+                self.execution_history.append(event)
+                self.actor_log.append(dict(event))
+                self.emit_runtime_event(event, env)
             raise
         finally:
             self.integrate_depth -= 1
-
-    def integrate_i2_forbidden_builtins(self) -> Set[str]:
-        """Builtins forbidden by the Alpha3g I2 runtime nondeterminism barrier."""
-        return {"print", "time", "random", "uuid"}
 
     def forbid_integrate_i2_effect(self, operation: str) -> None:
         """Fail closed for operations forbidden inside the Alpha3g I2 skeleton.
@@ -2293,6 +2363,7 @@ class Interpreter:
 
         self.integrate_depth += 1
         self.integrate_i2_skeleton_depth += 1
+        self._integrate_overlay_env = tx_env
         try:
             try:
                 result = self.execute_block(node.body, tx_env)
@@ -2336,6 +2407,7 @@ class Interpreter:
             self.emit_runtime_event(event, env)
             raise
         finally:
+            self._integrate_overlay_env = None
             self.integrate_i2_skeleton_depth -= 1
             self.integrate_depth -= 1
 
@@ -2661,6 +2733,28 @@ class Interpreter:
         del self.dream_audit[snapshot.get("dream_audit_len", len(getattr(self, "dream_audit", []))):]
         del self.soulprint_audit[snapshot.get("soulprint_audit_len", len(getattr(self, "soulprint_audit", []))):]
         del self.outbound_packets[snapshot.get("outbound_packets_len", len(getattr(self, "outbound_packets", []))):]
+
+    def capture_cognitive_state(self) -> Dict[str, Any]:
+        return {
+            "owners": {name: copy.deepcopy(getattr(self, name)) for name in _TRANSACTION_OWNERS},
+            "registries": {name: copy.deepcopy(vars(getattr(self, name))) for name in _TRANSACTION_REGISTRIES},
+            "palaces": dict(self.memory_palaces),
+            "palace_contents": {name: palace.content() for name, palace in self.memory_palaces.items()},
+        }
+
+    def restore_cognitive_state(self, snapshot: Dict[str, Any]) -> None:
+        for name, value in snapshot["owners"].items():
+            setattr(self, name, value)
+        for name, state in snapshot["registries"].items():
+            registry = vars(getattr(self, name))
+            registry.clear()
+            registry.update(state)
+        for name, palace in self.memory_palaces.items():
+            if name not in snapshot["palaces"]:
+                palace.restore_content({"rooms": palace.rooms, "records": []})
+        self.memory_palaces = snapshot["palaces"]
+        for name, content in snapshot["palace_contents"].items():
+            self.memory_palaces[name].restore_content(content)
 
     def safe_clone_value(self, value: Any) -> Any:
         # Keep runtime objects/callables by identity; deep-copy plain data only.
@@ -3869,6 +3963,11 @@ class Interpreter:
     def applicable_policies(self, receiver: str, method: str) -> List[Dict[str, Any]]:
         return self.runtime.governance.applicable_policies(receiver, method)
 
+    def policy_guard_state(self, args: List[Any]) -> Any:
+        """What a guard reaches without a statement: the program's data and the guarded arguments."""
+        data = {name: self._consensus_vote_stable_value(value) for name, value in self.global_env.variables.items()}
+        return data, self._consensus_vote_stable_value(list(args))
+
     def current_mood_snapshot(self) -> FrozenMoodSnapshot:
         return self.runtime.affective.current_mood_snapshot()
 
@@ -4277,6 +4376,7 @@ class Interpreter:
 
     def execute_side_effect(self, name: str, args: List[Any]) -> Any:
         self._forbid_consensus_vote_side_effect(name)
+        self.forbid_integrate_i2_effect(name)
         return self.runtime.replay.execute_side_effect(name, args)
 
     def peek_next_history_event(self) -> Optional[Dict[str, Any]]:
@@ -4357,7 +4457,7 @@ class Interpreter:
         if isinstance(node, EnergyPoolDecl):
             pool = self.evaluate_energy_pool(node, env)
             self.energy_pool = pool
-            env.define("energy_pool", pool.snapshot())
+            env.define("energy_pool", EnergyPoolView(lambda: self.energy_pool))
             return pool.snapshot()
 
         if isinstance(node, ContextBlock):
@@ -4735,7 +4835,7 @@ class Interpreter:
         self.memory_palaces[node.name] = palace
         env.define(node.binding, palace.to_dict())
         env.define(node.name, palace.to_dict())
-        event = {"type": "memory_palace_created", "name": node.name, "rooms": palace.rooms, "backend": palace.backend_name, "trace_id": self.current_trace_id()}
+        event = {"type": "memory_palace_created", "name": node.name, "rooms": list(palace.rooms), "backend": palace.backend_name, "trace_id": self.current_trace_id()}
         if palace.consolidate_during_dream:
             event["consolidate_during_dream"] = True
         self.record_history_event(event)
@@ -4841,7 +4941,8 @@ class Interpreter:
             raise RuntimeError("admit expects the recalled candidates and a claim")
         try:
             decision = admit(args[0], args[1], hypothesis_of=self.runtime.memory.hypothesis_of,
-                             identity_rules=self.runtime.memory.identity_rules())
+                             identity_rules=self.runtime.memory.identity_rules(),
+                             recorded=self.runtime.memory.recorded_statement)
         except ValueError as exc:
             raise RuntimeError(str(exc)) from None
         event = {"type": "memory_admission", "decision": decision["decision"],
@@ -5433,8 +5534,9 @@ class Interpreter:
             "version": "1.0.0",
             "label": label,
             "history_offset": len(self.execution_history),
-            "global_env": self.global_env.to_dict(),
-            "mailboxes": self.mailboxes,
+            # The artifact holds the state of this moment, not the live objects.
+            "global_env": copy.deepcopy(self.global_env.to_dict()),
+            "mailboxes": copy.deepcopy(self.mailboxes),
             "actor_log_length": len(self.actor_log),
         }
         self.checkpoints.append(checkpoint)
@@ -5443,7 +5545,7 @@ class Interpreter:
             "label": label,
             "history_offset": checkpoint["history_offset"],
         })
-        return checkpoint
+        return copy.deepcopy(checkpoint)
 
     def dump_state(
         self,
@@ -5526,7 +5628,7 @@ class Interpreter:
         self.intent_audit = runtime.get("intent_audit", [])
         self.evolution_tickets = runtime.get("evolution_tickets", {})
         self.resonance_cache = runtime.get("resonance_cache", {})
-        self.memory_palaces = {k: MemoryPalace.from_dict(v) for k, v in runtime.get("memory_palaces", {}).items()}
+        self.memory_palaces = {k: MemoryPalace.restore(v) for k, v in runtime.get("memory_palaces", {}).items()}
         self.intention_cascades = runtime.get("intention_cascades", {})
         self.habits = runtime.get("habits", {})
         # Rebuild deterministic state from source + history rather than trusting
@@ -5564,7 +5666,7 @@ class Interpreter:
             "intent_audit": self.intent_audit,
             "evolution_tickets": self.evolution_tickets,
             "resonance_cache": self.resonance_cache,
-            "memory_palaces": {k: v.to_dict() for k, v in self.memory_palaces.items()},
+            "memory_palaces": {k: v.snapshot() for k, v in self.memory_palaces.items()},
             "intention_cascades": self.intention_cascades,
             "habits": self.habits,
             # Observable program output and recorded VM states. Both are read by
@@ -5606,7 +5708,7 @@ class Interpreter:
         interpreter.intent_audit = snapshot.get("intent_audit", [])
         interpreter.evolution_tickets = snapshot.get("evolution_tickets", {})
         interpreter.resonance_cache = snapshot.get("resonance_cache", {})
-        interpreter.memory_palaces = {k: MemoryPalace.from_dict(v) for k, v in snapshot.get("memory_palaces", {}).items()}
+        interpreter.memory_palaces = {k: MemoryPalace.restore(v) for k, v in snapshot.get("memory_palaces", {}).items()}
         interpreter.intention_cascades = snapshot.get("intention_cascades", {})
         interpreter.habits = snapshot.get("habits", {})
         # Absent in pre-alpha3e-p1 snapshots; an empty default is the correct
@@ -5715,9 +5817,6 @@ class Interpreter:
             if self._consensus_vote_query_depth > 0 and fn_name in self.deterministic_side_effects:
                 self._forbid_consensus_vote_side_effect(fn_name)
 
-            if self.integrate_i2_skeleton_depth > 0 and fn_name in self.integrate_i2_forbidden_builtins():
-                raise IntegrateIsolationViolation(f"{fn_name} is forbidden inside Alpha3g I2 integrate skeleton")
-
             if fn_name in self.deterministic_side_effects:
                 return self.execute_side_effect(fn_name, args)
 
@@ -5741,26 +5840,27 @@ class Interpreter:
                     return memory.established(args)
                 return memory.declare_task_plan(args) if fn_name == "task_plan" else memory.digest()
 
-            # Сначала проверяем окружение (variables > functions > agents)
+            # Сначала проверяем окружение (variables > functions > agents). Only the lookup may fail here: an
+            # error raised by the function called is that function's error, never "undefined".
             try:
                 val = env.get(fn_name)
-                if callable(val) and not isinstance(val, FnDef):
-                    self._forbid_consensus_vote_side_effect("Python callable")
-                    return val(*args)
-                if isinstance(val, FnDef):
-                    return self.call_function(val, args, env)
-                if isinstance(val, AgentRuntime):
-                    if args:
-                        self._forbid_consensus_vote_side_effect("AgentRuntime.think")
-                        return val.think(str(args[0]))
-                    return val
-                if isinstance(val, FlowDef):
-                    self._forbid_consensus_vote_side_effect("FlowDef call")
-                    return self.execute_block(val.body, Environment(env))
-            except ConsensusVoteSideEffectError:
-                raise
             except RuntimeError:
-                pass
+                val = None
+            if callable(val) and not isinstance(val, FnDef):
+                recorded = self._side_effect_named(val)
+                if recorded is not None:  # random, time or uuid under another name: recorded all the same.
+                    return self.execute_side_effect(recorded, args)
+                return self._call_host_callable(val, args)
+            if isinstance(val, FnDef):
+                return self.call_function(val, args, env)
+            if isinstance(val, AgentRuntime):
+                if args:
+                    self._forbid_consensus_vote_side_effect("AgentRuntime.think")
+                    return self._agent_think(val, str(args[0]))
+                return val
+            if isinstance(val, FlowDef):
+                self._forbid_consensus_vote_side_effect("FlowDef call")
+                return self.execute_block(val.body, Environment(env))
 
             # Проверка встроенных
             if fn_name in BUILTINS:
@@ -5796,15 +5896,14 @@ class Interpreter:
                 if obj.env:
                     try:
                         fn_def = obj.env.get_function(member)
-                        return self.call_function(fn_def, args, obj.env, agent=obj)
-                    except ConsensusVoteSideEffectError:
-                        raise
                     except RuntimeError:
-                        pass
+                        fn_def = None
+                    if fn_def is not None:  # Only the lookup may fail; the method's own error is its error.
+                        return self.call_function(fn_def, args, obj.env, agent=obj)
 
                 # Специальные методы
                 if member == "think":
-                    return obj.think(str(args[0]) if args else "")
+                    return self._agent_think(obj, str(args[0]) if args else "")
                 if member == "memory":
                     return obj.memory
                 if member == "model":
@@ -5834,10 +5933,30 @@ class Interpreter:
             self._forbid_consensus_vote_side_effect("FlowDef call")
             return self.execute_block(fn_value.body, Environment(env))
         if callable(fn_value):
-            self._forbid_consensus_vote_side_effect("Python callable")
-            return fn_value(*args)
+            recorded = self._side_effect_named(fn_value)
+            if recorded is not None:
+                return self.execute_side_effect(recorded, args)
+            return self._call_host_callable(fn_value, args)
 
         raise RuntimeError(f"Uncallable object: {type(fn_value)}")
+
+    def _call_host_callable(self, fn: Any, args: List[Any]) -> Any:
+        """A Python callable from the environment: a host function whose effects the program cannot see."""
+        self._forbid_consensus_vote_side_effect("Python callable")
+        if getattr(fn, "__self__", None) is not self:  # the interpreter's own functions keep their own barrier
+            self.forbid_integrate_i2_effect("Python callable")
+        return fn(*args)
+
+    def _agent_think(self, agent: AgentRuntime, prompt: str) -> Any:
+        """A model call: its answer is not reproducible inside a transaction, as ``llm`` is not."""
+        if self.integrate_depth > 0:
+            raise IntegrateIsolationViolation("think is forbidden inside integrate transaction")
+        return agent.think(prompt)
+
+    def _side_effect_named(self, value: Any) -> Optional[str]:
+        """The nondeterministic builtin a callable value is, whatever name it is called under: its result is
+        recorded and replayed like a call by its own name, never drawn again (review N)."""
+        return next((name for name in sorted(self.deterministic_side_effects) if BUILTINS.get(name) is value), None)
 
     def call_function(self, fn_def: FnDef, args: List[Any], env: Environment, agent: Optional[AgentRuntime] = None) -> Any:
         if len(args) != len(fn_def.params):
@@ -5845,6 +5964,8 @@ class Interpreter:
 
         # Use closure environment if available, otherwise caller's environment
         parent_env = fn_def.closure if fn_def.closure else env
+        if self._integrate_overlay_env is not None:
+            parent_env = self._integrate_overlay_env.scope_for(parent_env)
         func_env = Environment(parent_env)
 
         # Если агент — добавляем в окружение

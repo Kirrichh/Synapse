@@ -17,11 +17,18 @@ import math
 import random
 from types import SimpleNamespace
 
+import pytest
+
 from synapse.memory_consolidation.court.dependencies import graph
+from synapse.memory_consolidation.configuration import parse_memory_configuration
 from synapse.memory_consolidation.court.knowledge import knowledge_stage
+from synapse.memory_consolidation.court.window import read_session
+from synapse.memory_consolidation.knowledge.search import recorded as recorded_statement
+from synapse.memory_consolidation.session import MemorySession
+from synapse.memory_consolidation.tools.gateway import Gateway
 from synapse.memory_consolidation.knowledge.search import fuse, semantic_ranking
 from synapse.memory_consolidation.knowledge.statements import declare, slot, source_identity
-from synapse.memory_consolidation.knowledge.timeline import known_at, resolve
+from synapse.memory_consolidation.knowledge.timeline import held_period, resolve
 from synapse.palace_admission import admit
 
 SOURCE = {"tool": "catalog_entry", "args": {"plan": "basic"}}
@@ -126,8 +133,10 @@ def _court(state, declared, uses=(), habits=None):
     return result, context.report["knowledge"], forced
 
 
-def _declared(record, position=1, run_id="run-b"):
-    return {"run_id": run_id, "position": position, "statement": record, "vector": None}
+def _declared(record, position=1, run_id="run-b", observed=None):
+    """A declaration whose source was observed at gateway sequence ``observed`` (its position by default)."""
+    return {"run_id": run_id, "position": position, "statement": record, "vector": None,
+            "observed": position if observed is None else observed}
 
 
 def test_the_court_folds_copies_corrections_and_conflicts_and_revises_what_depended_on_a_correction():
@@ -226,7 +235,7 @@ def test_a_correction_can_return_to_an_answer_memory_held_before():
         {"from": 2, "until": 3, "corrected_by": twenty["id"], "withdrawn": None}]
     # Every window answers as memory knew it then; now, the returned answer holds.
     for window, value in ((1, 20), (2, 25), (3, 20), (4, 25), (5, 20), (6, 20), (None, 20)):
-        held = [entry for entry in versions.values() if known_at(entry, window)]
+        held = [entry for entry in versions.values() if held_period(entry, window) is not None]
         assert _values(resolve(held, STATE, valid_at="2026-03-01T00:00:00Z", known_as_of=window)) == [
             (value, None, "current")], window
     # The dependency projection names both revisions.
@@ -259,3 +268,145 @@ def test_an_event_is_admitted_at_its_moment_only():
     outage = [_entry(_statement("eu", "2026-10-01T10:00:00Z", prop="outage"))]
     for at, holds in (("2026-10-01T10:00:00Z", True), ("2026-10-01T11:00:00Z", False)):
         assert bool(resolve(outage, {"freshness": "event"}, valid_at=at, known_as_of=None)) is holds
+
+
+@pytest.mark.parametrize("first, second", [("run-a", "run-z"), ("run-z", "run-a")])
+def test_one_consolidation_folds_readings_in_the_order_the_world_was_read(first, second):
+    twenty, twenty_five = _statement(20, "2026-01-01", ref="ev-20"), _statement(25, "2026-01-01", ref="ev-25")
+    state = {"window": 0, "knowledge": {"versions": {}, "uses": {}}, "hypotheses": {}, "frozen": {}, "quanta": {}}
+    result, report, _ = _court(state, [_declared(twenty_five, 1, second, observed=5),
+                                       _declared(twenty, 1, first, observed=1)])
+    current = [entry["record"]["value"] for entry in result["versions"].values() if entry["known_until"] is None]
+    assert current == [25] and report["corrections"][0]["statement"] == twenty["id"]
+
+
+def _recorded(view, reason=None):
+    """A memory session's resolution of its statements: ``view`` for ``stm_1``, nothing for a program's card."""
+    return lambda identity, at, known_as_of: None if identity != "stm_1" else (view, reason)
+
+
+def test_a_statement_of_memory_is_admitted_as_memory_recorded_it():
+    recorded = _candidate(text="basic monthly_price 20")
+    decide = lambda candidate, view, reason=None: admit(
+        [candidate], {**CLAIM}, hypothesis_of={"hyp_1": {
+            "status": "confirmed", "aspect": "content", "subject": "basic", "statement": {"monthly_price": 20},
+            "scope": "catalog", "conditions": {}, "source_ref": "ev-1",
+            "source": {"tool": "catalog_entry", "name": "shop:catalog", "ref": "ev-1"}}}.get,
+        recorded=_recorded(view, reason))["checked"][0]["reasons"]
+    assert decide(recorded, recorded) == []
+    # A copy's own validity or currency decides nothing; what memory recorded does.
+    assert decide({**recorded, "valid_until": None, "freshness": "current"}, None, "outside_validity") == [
+        "outside_validity"]
+    assert decide({**recorded, "freshness": "unknown"}, recorded) == []
+    # A copy that changes what the statement states is not the statement.
+    assert "candidate_not_as_recorded" in decide({**recorded, "conditions": {"region": "eu"}}, recorded)
+    assert decide(recorded, None, "statement_not_recorded") == ["statement_not_recorded"]
+    # A program's own card is no statement of memory: it is judged as given.
+    assert decide({**recorded, "id": "card-1"}, None, "statement_not_recorded") == []
+
+
+class _Catalog:
+    """The catalog's answers, in turn."""
+
+    def __init__(self, prices):
+        self.prices = list(prices)
+
+    def call(self, contract, args):
+        return "ok", {"ok": True, "price": self.prices.pop(0)}
+
+
+def _gateway(root, prices):
+    configuration = parse_memory_configuration({
+        "schema_version": "synapse.memory.configuration/v1", "advisor": None, "scorer": None, "element": "shop",
+        "court": {"decision_rule": "threshold", "parameters": {}},
+        "tools": {"schema_version": "synapse.memory.tool-configuration/v2", "servers": [{"id": "shop", "argv": ["x"]}],
+                  "tools": [{"name": "catalog_entry", "server": "shop", "descriptor_sha256": "0" * 64,
+                             "input_schema": {"type": "object"}, "output_schema": {"type": "object"},
+                             "source": "catalog:ops", "contract": {}}],
+                  "provenance": {"catalog:ops": {"ancestors": []}}}})
+    return configuration, Gateway(root, configuration.tools, executor="contract", transport=_Catalog(prices))
+
+
+def _read(gateway, ordinal):
+    request = {"tool": "catalog_entry", "args": SOURCE["args"], "run_id": "run-1", "ordinal": ordinal,
+               "episode": "read", "op_scope": "read", "path": "slow"}
+    return {"type": "external_action", "request": request, "outcome": gateway.invoke(request)}
+
+
+def test_a_statement_is_ordered_by_the_observation_it_was_read_from(tmp_path):
+    configuration, gateway = _gateway(tmp_path, [20, 25, 20, 20])
+    reads = [_read(gateway, ordinal) for ordinal in range(1, 5)]  # 20, 25, 20, 20: sequences 1..4.
+    twenty = reads[2]["outcome"]["ref"]
+    declared = {"type": "knowledge_declared", "statement": _statement(20, "2026-01-01", ref=twenty["evidence"]),
+                "vector": None}
+    unread = {"type": "knowledge_declared", "statement": _statement(99, "2026-01-01", ref="ev-none"), "vector": None}
+    # The last reading of 20 before the declaration orders it; the same answer read after it does not.
+    history = [reads[0], reads[1], reads[2], declared, reads[3], unread]
+    facts = read_session({"run_id": "run-1", "history": history, "from": 0, "to": len(history)}, configuration,
+                         gateway, gateway.records())
+    assert facts.observed == {3: twenty["gw_seq"]} and twenty["gw_seq"] != reads[0]["outcome"]["ref"]["gw_seq"]
+    assert facts.problems == ["run-1@5: a statement read from no recorded observation"]
+
+
+def test_a_forget_ends_every_period_before_it():
+    twenty = _statement(20, "2026-01-01", ref="ev-20")
+    mark = {"tombstone": "tmb_1", "window": 4}
+    entry = {**_entry(twenty, known_from=6), "earlier_known": [
+        {"from": 1, "until": 2, "corrected_by": "stm_25", "withdrawn": None},
+        {"from": 3, "until": 6, "corrected_by": None, "withdrawn": mark}]}
+    # Held, corrected away, held again, forgotten, read again: only the reading after the forget answers.
+    assert [held_period(entry, window) for window in (1, 3, 5)] == [None, None, None]
+    assert held_period(entry, 6) == held_period(entry, None) == {"from": 6, "until": None}
+
+
+def test_admission_resolves_a_statement_in_the_window_memory_held_the_copy_in():
+    asked = []
+
+    def recorded(identity, at, known_as_of):
+        asked.append(known_as_of)
+        return None
+    for held in ({"known_from": 1, "known_until": 2}, {"known_from": 4, "known_until": None}):
+        admit([_candidate(**held)], {**CLAIM}, recorded=recorded)
+    assert asked == [1, None]  # A historical copy is resolved in its period; a current one now.
+
+
+def test_the_record_resolved_is_the_statement_named():
+    mirror = {"tool": "mirror_entry", "args": {"plan": "basic"}}
+    one, other = _statement(20, "2026-01-01", ref="ev-1"), _statement(99, "2026-01-01", ref="ev-7", source=mirror)
+    versions = {record["id"]: _entry(record) for record in (one, other)}  # Both current in one slot: a conflict.
+    policy = SimpleNamespace(properties={"monthly_price": STATE})
+    for record in (one, other):
+        view, reason = recorded_statement(record["id"], versions, policy, valid_at="2026-03-01T00:00:00Z",
+                                          known_as_of=None)
+        assert (view["id"], view["value"], reason) == (record["id"], record["value"], None)
+
+
+def test_a_reading_reindexes_only_a_vector_the_index_cannot_compare():
+    record = _statement(20, "2026-01-01", ref="ev-20")
+    for vector, by, reindexed in (([1.0], "emb-1", False), (None, None, True), ([1.0], "emb-0", True)):
+        state = {"window": 1, "knowledge": {"versions": {record["id"]: {**_entry(record, vector=vector),
+                                                                        "embedded_by": by}}, "uses": {}},
+                 "hypotheses": {}, "frozen": {}, "quanta": {}}
+        _, report, _ = _court(state, [{**_declared(record), "vector": [1.0], "embedded_by": "emb-1"}])
+        assert len(report["copies"]) == 1 and bool(report["reindexed"]) is reindexed, (vector, by)
+
+
+def _embedder_configuration(version="v1", descriptor="0" * 64):
+    return parse_memory_configuration({
+        "schema_version": "synapse.memory.configuration/v2", "advisor": None, "scorer": None, "element": "shop",
+        "court": {"decision_rule": "threshold", "parameters": {}},
+        "knowledge": {"embedder": {"tool": "embed", "version": version}, "properties": {}, "budget": 3},
+        "tools": {"schema_version": "synapse.memory.tool-configuration/v2", "servers": [{"id": "model", "argv": ["x"]}],
+                  "tools": [{"name": "embed", "server": "model", "descriptor_sha256": descriptor, "role": "reason",
+                             "input_schema": {"type": "object"}, "output_schema": {"type": "object"},
+                             "source": "embed:model", "contract": {}}],
+                  "provenance": {"embed:model": {"ancestors": []}}}})
+
+
+def test_a_vector_names_the_embedder_tool_version_and_contract():
+    def embedded_by(configuration):
+        return MemorySession.embedded_by(SimpleNamespace(factory=SimpleNamespace(configuration=configuration)))
+    base = embedded_by(_embedder_configuration())
+    assert embedded_by(_embedder_configuration()) == base
+    assert embedded_by(_embedder_configuration(version="v2")) != base
+    assert embedded_by(_embedder_configuration(descriptor="1" * 64)) != base

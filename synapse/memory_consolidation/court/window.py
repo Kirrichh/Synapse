@@ -41,6 +41,8 @@ class SessionFacts:
     scopes: dict[str, dict[str, Any]]
     problems: list[str] = field(default_factory=list)
     evidence_problems: list[str] = field(default_factory=list)
+    #: The gateway sequence of the observation each statement declaration was read from, by history position.
+    observed: dict[int, int] = field(default_factory=dict)
 
     @property
     def run(self) -> str:
@@ -155,7 +157,30 @@ def read_session(session, configuration: MemoryConfiguration, gateway: Gateway, 
     evidence_problems: list[str] = []
     scopes = _scopes(run, referenced, gateway, gateway_records, configuration, evidence_problems)
     markers = {marker["id"]: (marker, plan) for plan in plans.values() for marker in plan["markers"]}
-    return SessionFacts(session, found, plans, markers, scopes, problems, evidence_problems)
+    observed = _observed(session["history"], found, run, problems)
+    return SessionFacts(session, found, plans, markers, scopes, problems, evidence_problems, observed)
+
+
+def _observed(history, found, run, problems) -> dict[int, int]:
+    """For each statement declared in the window, the gateway sequence of the observation it was read from: the
+    run's last recorded action before the declaration (in this window or an earlier one) that read the
+    statement's source and answered its recorded result — the order the court folds knowledge in (review
+    DEEP-3). A declaration read from no recorded observation is an integrity problem."""
+    observed = {}
+    for position, event in found.get("knowledge_declared", []):
+        source = event["statement"]["source"]
+        wanted = canonical({"tool": source["tool"], "args": source["args"]})
+        for action in reversed(history[:position]):
+            if not isinstance(action, Mapping) or action.get("type") != "external_action":
+                continue
+            request, ref = action.get("request") or {}, action["outcome"]["ref"]
+            if canonical({"tool": request.get("tool"), "args": request.get("args")}) == wanted \
+                    and ref.get("evidence") == source["ref"]:
+                observed[position] = ref["gw_seq"]
+                break
+        else:
+            problems.append(f"{run}@{position}: a statement read from no recorded observation")
+    return observed
 
 
 def learning_requests(facts: SessionFacts) -> list[dict[str, Any]]:

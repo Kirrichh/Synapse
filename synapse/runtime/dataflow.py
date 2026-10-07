@@ -52,6 +52,7 @@ versions the commit rested on.
 from __future__ import annotations
 
 import concurrent.futures
+import copy
 import queue
 import time
 from dataclasses import dataclass, field
@@ -395,6 +396,7 @@ class Executor:
         status = "stale" if stale else "cancelled" if cancelled else "integrated"
         self._step(name, entry["attempt"], status, entry["reads"], None, entry["started"])
         if status == "integrated":
+            self.host.runtime.memory.parallel_integrated(recorded)
             self._integrate(name, recorded["outcome"]["view"], entry["reads"], entry["events"])
 
     def _next_completion(self, *, cancelled: bool = False) -> None:
@@ -487,11 +489,14 @@ class Executor:
         finally:
             if self.pool is not None:
                 self.pool.shutdown(wait=True)
-        return {"graph": graph["graph"], "instance": self.instance, "value": value, "version": committed["version"],
+        # The program receives its own copy of the result (review DEEP-2), as a tool's answer is its own copy:
+        # what it does with it never rewrites the graph's recorded steps, commit and answers.
+        return copy.deepcopy({"graph": graph["graph"], "instance": self.instance, "value": value,
+                              "version": committed["version"],
                 "reads": committed["reads"], "effect": effect,
                 "steps": [{key: step[key] for key in ("node", "attempt", "status", "reads", "version", "started_ms",
                                                       "finished_ms")} for step in self.steps],
                 "signals": [{key: item[key] for key in ("event", "count", "by")} for item in self.signals],
                 "committed_ms": committed["at_ms"],
                 "stale": sum(1 for step in self.steps if step["status"] == "stale"),
-                "cancelled": sum(1 for step in self.steps if step["status"] == "cancelled")}
+                "cancelled": sum(1 for step in self.steps if step["status"] == "cancelled")})

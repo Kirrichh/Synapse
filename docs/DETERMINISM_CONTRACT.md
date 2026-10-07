@@ -589,6 +589,15 @@ unsafe event types and UUID identity patterns (`ares-`, `evo-`, `habit-`,
 
 **Result: all 6 programs are CLEAN.**
 
+*Later change (PR108 old-family recheck):* `inline_guard_pass` and
+`inline_guard_fail_recovery` left the suite. They are compiled-CVM programs
+(`catch (GUARD_VIOLATION)` exists only in compiled CVM programs) and the suite
+replays through the tree-walking interpreter; their recorded artifacts (no
+history, no output) recorded `main()` silently swallowing that refusal. The
+interpreter now reports errors raised inside `main()`, and the inline guard
+pass and recovery paths are accepted on the CVM in
+`acceptance/runtime/test_program_failures_contract.py`.
+
 | Program | Source scan | History events | Unsafe event types | UUID patterns | trace_id |
 |---------|-------------|----------------|--------------------|---------------|----------|
 | `actor_message` | clean | 1 | none | none | none |

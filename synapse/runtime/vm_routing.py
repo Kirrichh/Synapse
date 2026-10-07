@@ -32,6 +32,10 @@ FIXED_HOST_ABI_OPCODES: Set[str] = {
 # Alpha.3-D1 deterministic replay classification.
 DETERMINISTIC_PURE_HOST_SYMBOLS: Set[str] = {"len", "str", "int", "float", "bool", "abs", "range"}
 DETERMINISTIC_SIDE_EFFECT_HOST_SYMBOLS: Set[str] = {"print"}
+# Nondeterministic builtins: the host replay engine records each result on a
+# live run and returns the recorded one on replay, for the interpreter and the
+# VM alike.
+RECORDED_SIDE_EFFECT_HOST_SYMBOLS: frozenset = frozenset({"time", "random", "uuid"})
 NONDETERMINISTIC_HOST_SYMBOLS: Set[str] = {
     "SYS_MEMORY_READ",
     "SYS_MEMORY_WRITE",

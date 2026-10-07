@@ -39,6 +39,15 @@ class ReplayEngine:
         "evolution_ticket_created",
         "evolution_approved",
         "soulprint_evolved",
+        # VM audit records: the VM finds its LLM answers by content key
+        # (LLM_RESPONSE_CACHED) and its recorded builtins as side_effect events.
+        "vm_bytecode_compiled",
+        "vm_executed",
+        "vm_fallback",
+        "vm_host_call",
+        "vm_routing_cvm",
+        "vm_checkpoint_saved",
+        "LLM_RESPONSE_CACHED",
     }
 
     def __init__(

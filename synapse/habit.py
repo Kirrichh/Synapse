@@ -113,6 +113,39 @@ class EnergyPool:
         return False
 
 
+class EnergyPoolView:
+    """The program's read-only view of the energy pool: every read is the pool's current state.
+
+    The runtime alone changes the pool (consumption, recharge, rest); the
+    program reads it through this view and cannot assign to it.
+    """
+    __slots__ = ("_pool",)
+
+    def __init__(self, pool_getter: Callable[[], Optional["EnergyPool"]]):
+        object.__setattr__(self, "_pool", pool_getter)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return self._pool().snapshot()
+
+    def __getattr__(self, name: str) -> Any:
+        state = self.to_dict()
+        if name in state:
+            return state[name]
+        raise AttributeError(name)
+
+    def __getitem__(self, name: str) -> Any:
+        return self.to_dict()[name]
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError("the energy pool is changed only by the runtime")
+
+    def __deepcopy__(self, memo: Dict[int, Any]) -> "EnergyPoolView":
+        return self
+
+    def __repr__(self) -> str:
+        return f"EnergyPoolView({self.to_dict()})"
+
+
 class ContextTracker:
     def __init__(self):
         self.stack: List[str] = []

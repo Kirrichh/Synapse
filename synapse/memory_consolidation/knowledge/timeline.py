@@ -5,7 +5,8 @@ model, SQL:2011 system-versioned application-time tables): the interval of
 the world it is about (valid time, from the statement) and the interval of
 windows in which memory held it (transaction time, from the court:
 ``known_from`` and, once a correction replaced it, ``known_until``; a version
-held again later keeps its earlier periods in ``earlier_known``). A
+held again later keeps its earlier periods in ``earlier_known``; a period a
+forget ended holds at no window). A
 contradiction never deletes a version; a correction closes its transaction
 time, so both questions stay answerable: *what was true at T* reads the valid
 time, *as memory knew it at window K* reads the transaction time.
@@ -35,14 +36,24 @@ from synapse.palace_admission import holds_at
 _EARLIEST = ""  # Sorts before every canonical instant: a statement without a start holds from the beginning.
 
 
-def known_at(entry: Mapping[str, Any], window: int | None) -> bool:
-    """Whether memory held this version at ``window`` (``None``: now): in its current period, or in a period
-    it was held before and observed again since (``earlier_known``)."""
-    if window is None:
-        return entry["known_until"] is None
-    periods = [(item["from"], item["until"]) for item in entry.get("earlier_known", [])]
-    return any(start <= window and (end is None or end > window)
-               for start, end in [*periods, (entry["known_from"], entry["known_until"])])
+def held_period(entry: Mapping[str, Any], window: int | None) -> dict[str, Any] | None:
+    """The period in which memory held this version at ``window`` (``None``: now), ``{"from", "until"}``, or
+    ``None`` when it did not hold it then. A version held again keeps the periods it was held before
+    (``earlier_known``). A forget (``withdrawn``) ends the period it applied in and every period before it:
+    what was read from forgotten results answers no question, past or present, and a later observation holds
+    only from its own window (review R2)."""
+    periods: list = []
+    for period in [*entry.get("earlier_known", []), {"from": entry["known_from"], "until": entry["known_until"],
+                                                      "withdrawn": entry.get("withdrawn")}]:
+        periods = [] if period.get("withdrawn") is not None else [*periods, period]
+    for period in periods:
+        if window is None:
+            held = period["until"] is None
+        else:
+            held = period["from"] <= window and (period["until"] is None or period["until"] > window)
+        if held:
+            return {"from": period["from"], "until": period["until"]}
+    return None
 
 
 def _start(entry) -> str:
@@ -95,13 +106,21 @@ def _state(entries, valid_at, rule) -> list[dict[str, Any]]:
 
 def resolve(entries: Iterable[Mapping[str, Any]], rule: Mapping[str, Any] | None, *, valid_at: str | None,
             known_as_of: int | None) -> list[dict[str, Any]]:
-    """The versions of one slot that hold at ``valid_at`` as memory knew it at ``known_as_of``."""
-    held = [entry for entry in entries if known_at(entry, known_as_of)]
+    """The versions of one slot that hold at ``valid_at`` as memory knew it at ``known_as_of``, each with the
+    period memory held it in then (``known``)."""
+    periods = {}
+    for entry in entries:
+        period = held_period(entry, known_as_of)
+        if period is not None:
+            periods[entry["record"]["id"]] = period
+    held = [entry for entry in entries if entry["record"]["id"] in periods]
     if not held:
         return []
     if rule is None:
-        return [_resolved(entry, entry["record"]["valid"]["until"], "undeclared")
-                for entry in sorted(held, key=lambda item: item["record"]["id"])]
-    if rule["freshness"] == "event":
-        return _event(sorted(held, key=lambda item: item["record"]["id"]), valid_at)
-    return _state(held, valid_at, rule)
+        found = [_resolved(entry, entry["record"]["valid"]["until"], "undeclared")
+                 for entry in sorted(held, key=lambda item: item["record"]["id"])]
+    elif rule["freshness"] == "event":
+        found = _event(sorted(held, key=lambda item: item["record"]["id"]), valid_at)
+    else:
+        found = _state(held, valid_at, rule)
+    return [{**item, "known": periods[item["entry"]["record"]["id"]]} for item in found]

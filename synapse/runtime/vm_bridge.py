@@ -20,6 +20,7 @@ from synapse.cvm import (
     decode_vm_value,
     OutOfEnergy,
     VMSnapshot,
+    VMError,
     VMSnapshotFormatError,
     VMConflictingSourceError,
     VMResumeSyncError,
@@ -30,10 +31,11 @@ from synapse.cvm import (
     VMStepLimitExceeded,
 )
 from synapse.hardening import hash_event_chain
+from synapse.prompt_template import render as render_prompt
 from synapse.runtime.vm_routing import (
     classify_ast_node, classify_host_opcode, fallback_reason_for, VM_STRUCTURAL_RUNTIME,
     DETERMINISTIC_PURE_HOST_SYMBOLS, DETERMINISTIC_SIDE_EFFECT_HOST_SYMBOLS,
-    NONDETERMINISTIC_HOST_SYMBOLS,
+    NONDETERMINISTIC_HOST_SYMBOLS, RECORDED_SIDE_EFFECT_HOST_SYMBOLS,
 )
 from synapse.runtime.migration import validate_vm_state_program_hashes, iter_function_objects
 from synapse.runtime.host_abi import HOST_ABI_VERSION
@@ -925,6 +927,11 @@ class VMBridge:
             })
         event = {"type": "vm_host_call", "opcode": opcode, "host_call": result["host_call"], "from_cache": bool(result.get("from_cache")), "gas_cost": 0, "gas_refund": result.get("gas_refund", 0), "trace_id": h.current_trace_id()}
         h.execution_history.append(event)
+        if opcode == "HOST_EVAL":
+            # A construct the compiler did not lower has no value here: a placeholder would be read as one (review
+            # computed callee). The run fails instead of continuing on it.
+            raise VMError(f"run vm cannot evaluate {a if isinstance(a, str) else type(a).__name__}: it is not "
+                          f"compiled to bytecode")
         return result
 
 
@@ -1177,7 +1184,8 @@ class VMBridge:
                          or engine_params.get("model", "default"))
 
         # --- 2. Replay mode: must find cached response ---
-        is_replay = getattr(self, "replay_mode", False)
+        # A replay is the host's mode, not the bridge's constant naming it (which is always truthy).
+        is_replay = getattr(h, "runtime_mode", None) == self.replay_mode
         if is_replay:
             cached = self._llm_cache_lookup_replay(h, content_key)
             if cached is _SENTINEL:
@@ -1220,9 +1228,12 @@ class VMBridge:
         else:
             try:
                 prompt_text = self._render_prompt(envelope, h)
+                # "default" is the compiler's mark for a call that names no model:
+                # the provider then answers with the configured one.
+                named_model = engine_params.get("model", "default")
                 raw_result = llm_backend.complete(
                     prompt=prompt_text,
-                    model=engine_params.get("model", "default"),
+                    model=None if named_model == "default" else named_model,
                     temperature=engine_params.get("temperature", 0.0),
                     max_tokens=engine_params.get("max_tokens", 512),
                 )
@@ -1253,18 +1264,11 @@ class VMBridge:
         return result
 
     def _render_prompt(self, envelope: dict, h: Any) -> str:
-        """Render prompt envelope into text for LLM provider call."""
+        """The prompt text a request carries: its template rendered, or its inline text."""
         variables = envelope.get("variables", {})
-        template_hash = envelope.get("template_hash", "")
-        # Look up template text from host registry
-        template_registry = getattr(h, "llm_template_registry", {})
-        template_text = template_registry.get(template_hash)
-        if template_text:
-            try:
-                return template_text.format(**variables)
-            except (KeyError, ValueError):
-                pass
-        # Fallback: render variables as plain text
+        template = envelope.get("template")
+        if template is not None:
+            return render_prompt(template, variables.__getitem__)
         if "__text__" in variables:
             return str(variables["__text__"])
         parts = [f"{k}: {v}" for k, v in variables.items()]
@@ -1377,6 +1381,8 @@ class VMBridge:
                 }
                 h.side_effect_history.append(event)
                 return result
+            if symbol in RECORDED_SIDE_EFFECT_HOST_SYMBOLS:
+                return self.get_host().execute_side_effect(symbol, list(args))
             if symbol in VM_STRUCTURAL_RUNTIME:
                 return self._execute_structural_runtime(vm, symbol, args)
             if symbol in BRIDGE_DISPATCHED:
@@ -1555,9 +1561,6 @@ class VMBridge:
 
 
 
-            if symbol == "llm.request":
-                return self._execute_llm_request(h, args)
-
             if symbol in {"SYS_MSG_SEND", "SYS_MSG_CONSUME", "SYS_MSG_RECEIVE"}:
                 if symbol == "SYS_MSG_SEND":
                     message = copy.deepcopy(args[0]) if args and isinstance(args[0], dict) else {}
@@ -1651,6 +1654,8 @@ class VMBridge:
                 if hasattr(h, "runtime") and hasattr(h.runtime, "affective"):
                     return h.runtime.affective.apply_delta(delta, source=name)
                 return None
+            if symbol == "llm.request":  # The one owner of an LLM request a VM paused on (review L).
+                return self._execute_llm_request(h, args)
             if symbol == "SYS_POLICY_CHECK":
                 action = args[0] if args else "unknown"
                 context = args[1] if len(args) > 1 else {}
@@ -1869,9 +1874,14 @@ class VMBridge:
         Here a step ceiling is an explicit failure, not a completed application
         result. Existing host/message suspension handling remains unchanged.
         """
+        paused = False
         try:
             result = vm.run(*args, **kwargs)
             if not result["halted"]:
+                if vm.state.pending_host_call is not None:
+                    # Paused on a host call: neither the end nor a failure; its scopes stay open until resumed.
+                    paused = True
+                    return result
                 raise VMStepLimitExceeded(result["steps"])
             return result
         except Exception as exc:
@@ -1895,19 +1905,19 @@ class VMBridge:
                 )
             raise
         finally:
-            if getattr(vm.state, "actor_stack", None):
+            if not paused and getattr(vm.state, "actor_stack", None):
                 self.unwind_dangling_actors(
                     vm,
                     vm.state.actor_stack,
                     reason="vm_halted",
                 )
-            if getattr(vm.state, "policy_stack", None):
+            if not paused and getattr(vm.state, "policy_stack", None):
                 self.unwind_dangling_policies(
                     vm,
                     vm.state.policy_stack,
                     reason="vm_halted",
                 )
-            if getattr(vm.state, "context_stack", None):
+            if not paused and getattr(vm.state, "context_stack", None):
                 self.unwind_dangling_contexts(
                     vm,
                     vm.state.context_stack,
@@ -1927,6 +1937,9 @@ class VMBridge:
         else:
             program_value = h.evaluate(node.source, env) if node.source else env.get("bytecode")
             program = BytecodeProgram.from_dict(program_value) if isinstance(program_value, dict) else program_value
+            if not isinstance(program, BytecodeProgram):
+                raise VMError("run vm runs compiled bytecode (compile vm), not "
+                                   f"{type(program_value).__name__}")
             vm = CognitiveVM(program, host=None)
             vm.host = self.get_cvm_callback_adapter(vm)
             vm.state.gas_remaining = gas
@@ -1957,6 +1970,13 @@ class VMBridge:
 
         try:
             result = self.run_cvm_with_context_safety(vm, checkpoint_trigger=should_checkpoint, checkpoint_callback=save_checkpoint)
+            while (vm.state.pending_host_call or {}).get("symbol") == "llm.request":
+                # The VM paused on its LLM request (review K): the bridge performs it — capability, cache and
+                # replay included — and resumes the VM with the answer, as the routed path does.
+                pending = vm.state.pending_host_call
+                value = self.dispatch_host_call(vm, "llm.request", decode_vm_value(pending["args"]))
+                self.resume_host_call(vm, pending["call_id"], value)
+                result = self.run_cvm_with_context_safety(vm)
         except OutOfEnergy as exc:
             result = {"halted": False, "error": "OUT_OF_ENERGY", "message": str(exc), "snapshot": vm.snapshot()}
         except VMStepLimitExceeded as exc:

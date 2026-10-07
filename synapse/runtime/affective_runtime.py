@@ -228,14 +228,16 @@ class AffectiveRuntime:
         delta = {k: float(fields.get(k, 0.0) or 0.0) for k in ("valence", "arousal", "dominance")}
         tag = state.apply_event(node.name, delta, int(fields.get("duration", 0) or 0), str(fields.get("trace_id", h.current_trace_id())))
         h.affective_events.append(tag)
-        env.define(node.binding, tag)
+        # What the program holds is its own value; the records stay what happened.
+        bound = copy.deepcopy(tag)
+        env.define(node.binding, bound)
         env.define(state.name, state.to_dict())
         event = {"type": "affective_event_tagged", "name": node.name, "tag": tag, "trace_id": tag.get("trace_id")}
         h.execution_history.append(event)
         h.process_habits_on_event(event)
         # Affective tags are memory metadata candidates.
         h.memory_audit.append(event)
-        return tag
+        return bound
 
     def evaluate_affective_modulation(self, node: AffectiveModulationStmt, env: Any) -> Dict[str, Any]:
         h = self.get_host()
@@ -250,10 +252,11 @@ class AffectiveRuntime:
                 rule_results.append({"error": str(exc)})
         profile["rules_evaluated"] = len(node.rules or [])
         profile["rule_results"] = rule_results
-        env.define(node.binding, profile)
+        bound = copy.deepcopy(profile)
+        env.define(node.binding, bound)
         event = {"type": "affective_modulation_applied", "profile": profile, "trace_id": h.current_trace_id()}
         h.execution_history.append(event)
-        return profile
+        return bound
 
     def _lookup_resonance_profile_for_target(self, target: str, env: Any) -> _ResolvedResonanceProfile:
         """Return the most relevant resonance profile for affective bridge evaluation."""
@@ -423,9 +426,9 @@ class AffectiveRuntime:
         if h.runtime_mode == self.replay_mode:
             replay_event = h.next_history_event("affective_resonance_applied")
             if replay_event is not None:
-                bridge = self._apply_affective_resonance_event(replay_event, env, replay=True)
-                env.define(node.binding, bridge)
-                return bridge
+                bound = copy.deepcopy(self._apply_affective_resonance_event(replay_event, env, replay=True))
+                env.define(node.binding, bound)
+                return bound
 
         target = h.evaluate(node.target, env) if node.target else "@user"
         state = self._current_affective_state(env)
@@ -457,10 +460,11 @@ class AffectiveRuntime:
         final_bridge = self._apply_affective_resonance_event(event, env, replay=False)
         event["after"] = final_bridge.get("after")
         event["bridge"] = {k: v for k, v in final_bridge.items() if k not in {"events_applied", "profile_source"}}
-        env.define(node.binding, final_bridge)
+        bound = copy.deepcopy(final_bridge)
+        env.define(node.binding, bound)
         h.execution_history.append(event)
         h.process_habits_on_event(event)
-        return final_bridge
+        return bound
 
     def current_mood_snapshot(self) -> Any:
         """Return frozen PAD snapshot; neutral when no affective state exists."""

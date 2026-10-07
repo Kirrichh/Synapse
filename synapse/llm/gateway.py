@@ -18,6 +18,10 @@ class LLMGatewayConfig:
     tier: str = "paid"
     user_region: Optional[str] = None
     timeout: float = 30.0
+    # The operator's declaration of what the content sent through this gateway
+    # is; a call that declares its own content overrides it. Without either a
+    # free-tier call is refused.
+    privacy_context: Optional[PrivacyContext] = None
 
     @property
     def real_provider_enabled(self) -> bool:
@@ -26,6 +30,24 @@ class LLMGatewayConfig:
 
 def _env_bool(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_declared(value: str | None) -> Optional[bool]:
+    """A declared yes or no; anything else is not a declaration."""
+    text = str(value or "").strip().lower()
+    return True if text in {"1", "true", "yes", "on"} else False if text in {"0", "false", "no", "off"} else None
+
+
+def _privacy_from_env(env: Mapping[str, str]) -> Optional[PrivacyContext]:
+    classification = (env.get("SYNAPSE_LLM_DATA_CLASSIFICATION") or "").strip()
+    if not classification:
+        return None
+    return PrivacyContext(
+        data_classification=classification,
+        repository_visibility=(env.get("SYNAPSE_LLM_REPOSITORY_VISIBILITY") or "unknown").strip(),
+        contains_secrets=_env_declared(env.get("SYNAPSE_LLM_CONTAINS_SECRETS")),
+        contains_personal_data=_env_declared(env.get("SYNAPSE_LLM_CONTAINS_PERSONAL_DATA")),
+    )
 
 
 def config_from_env(
@@ -69,6 +91,7 @@ def config_from_env(
         tier=resolved_tier,
         user_region=user_region or env.get("SYNAPSE_LLM_USER_REGION"),
         timeout=timeout,
+        privacy_context=_privacy_from_env(env),
     )
 
 
@@ -146,7 +169,7 @@ class LLMGateway:
                 message="GEMINI_API_KEY not provided",
             )
         try:
-            context = privacy_context
+            context = privacy_context if privacy_context is not None else self.config.privacy_context
             if context is not None and context.user_region is None and self.config.user_region is not None:
                 context = PrivacyContext(
                     data_classification=context.data_classification,

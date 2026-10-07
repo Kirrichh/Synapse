@@ -8,13 +8,34 @@ runtime.
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
-import hashlib, json, time
+import copy, hashlib, json, math, time
 
 PAD_KEYS = ("valence", "arousal", "dominance")
 
 
+PAD_RANGES = {"valence": (-1.0, 1.0), "arousal": (0.0, 1.0), "dominance": (0.0, 1.0)}
+
+
+def _finite(v: Any, what: str) -> float:
+    value = float(v)
+    if not math.isfinite(value):
+        raise ValueError(f"{what} must be a finite number, got {v!r}")
+    return value
+
+
 def clamp(v: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, float(v)))
+    return max(lo, min(hi, _finite(v, "affective value")))
+
+
+def _pad(values: Dict[str, Any], what: str) -> Dict[str, float]:
+    """A declared PAD point: every dimension finite and inside its range."""
+    point = {}
+    for key, (lo, hi) in PAD_RANGES.items():
+        value = _finite(values[key], f"{what} {key}")
+        if not lo <= value <= hi:
+            raise ValueError(f"{what} {key} must lie in [{lo}, {hi}], got {value}")
+        point[key] = value
+    return point
 
 
 @dataclass
@@ -28,11 +49,11 @@ class AffectiveState:
     events: List[Dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self):
-        if not self.current:
-            self.current = {k: float(self.baseline.get(k, 0.0 if k == "valence" else 0.5)) for k in PAD_KEYS}
-        self.current["valence"] = clamp(self.current.get("valence", 0.0), -1.0, 1.0)
-        self.current["arousal"] = clamp(self.current.get("arousal", 0.0), 0.0, 1.0)
-        self.current["dominance"] = clamp(self.current.get("dominance", 0.0), 0.0, 1.0)
+        # The state owns its values: nothing the caller holds aliases them.
+        self.dimensions = copy.deepcopy(self.dimensions)
+        self.events = copy.deepcopy(list(self.events))
+        self.baseline = _pad({k: self.baseline.get(k, 0.0 if k == "valence" else 0.5) for k in PAD_KEYS}, "baseline")
+        self.current = _pad({**self.baseline, **self.current}, "current")
 
     def apply_event(self, event_name: str, delta: Dict[str, float], duration: int = 0, trace_id: str = "") -> Dict[str, Any]:
         before = dict(self.current)
@@ -49,7 +70,7 @@ class AffectiveState:
             "trace_id": trace_id,
         }
         self.events.append(tag)
-        return tag
+        return copy.deepcopy(tag)
 
     def decay_toward_baseline(self, steps: int = 1) -> Dict[str, float]:
         if self.decay <= 0:
@@ -60,7 +81,7 @@ class AffectiveState:
         return dict(self.current)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"type": "affective_state", "name": self.name, "dimensions": self.dimensions, "baseline": self.baseline, "current": self.current, "decay": self.decay, "decay_unit": self.decay_unit, "events": list(self.events)}
+        return copy.deepcopy({"type": "affective_state", "name": self.name, "dimensions": self.dimensions, "baseline": self.baseline, "current": self.current, "decay": self.decay, "decay_unit": self.decay_unit, "events": self.events})
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AffectiveState":

@@ -32,7 +32,7 @@ from .learning.behavior import execute, rivals
 from .learning.composition import (joins_of, merge_joins, planning_contingency, ranked, recorded_contingency,
                                    stack_of)
 from .learning.triggers import matches, render_template, typed_context
-from .records import digest
+from .records import KINDS, digest
 
 
 def opening_of(history) -> Mapping[str, Any] | None:
@@ -194,6 +194,15 @@ class MemorySession:
             return None
         return [float(item) for item in vector]
 
+    def embedded_by(self) -> str | None:
+        """What a vector of this session's embedder is comparable with: the declared embedding tool, its declared
+        version and the contract it is admitted under (review DEEP-6); ``None`` without an embedder."""
+        policy = self.factory.configuration.knowledge
+        if policy is None or policy.embedder is None:
+            return None
+        return digest({"tool": policy.embedder.tool, "version": policy.embedder.version,
+                       "contract": self.factory.configuration.tools.contract(policy.embedder.tool).contract_ref})
+
     def declare_statement(self, statement, source, source_ref) -> dict[str, Any]:
         return declare_statement(statement, source, source_ref)
 
@@ -204,7 +213,16 @@ class MemorySession:
             raise ValueError("this memory declares no knowledge policy")
         versions = {} if self.boundary is None else self.boundary["boundary"].get("knowledge") or {}
         return knowledge_search.search(query, versions, policy, valid_at=instant(valid_at), known_as_of=known_as_of,
-                                       embed=embed, channels=channels)
+                                       embed=embed, channels=channels, embedded_by=self.embedded_by())
+
+    def recorded_statement(self, identity, valid_at, known_as_of):
+        """A statement of the pinned snapshot's knowledge resolved again for admission (``None`` for a candidate
+        that is no statement of memory)."""
+        if not (isinstance(identity, str) and identity.startswith(KINDS["statement"][1])):
+            return None
+        versions = {} if self.boundary is None else self.boundary["boundary"].get("knowledge") or {}
+        return knowledge_search.recorded(identity, versions, self.factory.configuration.knowledge,
+                                         valid_at=valid_at, known_as_of=known_as_of)
 
     # -- actions ----------------------------------------------------------------
     def invoke_action(self, request: Mapping[str, Any]) -> dict[str, Any]:

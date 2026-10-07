@@ -21,8 +21,10 @@ tool or a model:
 Decisions an earlier rule recorded are judged again from the record too: every
 hypothesis status of an earlier check rule (its recorded check decided under the
 current rule), every promotion an earlier policy decided (on the confirmed
-experience of the habit's recorded fires) and every competitor resolution found
-in stand trials (decided again by the trials under the current rules).
+experience of the habit's recorded fires). Every competitor resolution the
+record still holds is given the basis it was found on — compared outcomes or
+stand trials — so the conflict ladder keeps it only while that basis holds under
+the current rules, as in any window.
 
 A habit keeps its basis when at least as many basis episodes are still
 verified as a birth requires (or all of them, for a smaller basis); otherwise
@@ -44,7 +46,7 @@ from ..learning.behavior import contracts_of
 from ..tools.gateway import Gateway
 from ..tools.semantics import interpret, repeat_admissible
 from .automaton import reverify_promotions
-from .conflicts import trial_resolutions
+from .conflicts import resolution_bases
 from .habit_state import EFFECTIVE
 from .hypotheses import reassess_hypotheses
 from .verdicts import scopes_by_marker, stage_one
@@ -169,7 +171,7 @@ def reassess_bases(state, configuration: MemoryConfiguration, gateway: Gateway, 
     return {"schema_version": REASSESSMENT_V2, "habits": habits,
             "hypotheses": reassess_hypotheses(state, configuration, gateway, gateway_records),
             "promotions": reverify_promotions(state, reports, configuration.parameters, configuration.policy["policy"]),
-            "trial_resolutions": trial_resolutions(reports)}
+            "resolutions": resolution_bases(reports)}
 
 
 def republication(state, reports, item) -> dict[str, Any]:

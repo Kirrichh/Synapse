@@ -17,6 +17,8 @@ ARCHIVED = ("dormant", "extinct")
 #: outcome, no evidence of errors. Metadata recorded before them is completed with these values, never with
 #: a positive one, and the completion is reported.
 NEUTRAL_FIELDS: dict[str, Any] = {"yields_to": [], "compared": [], "tail": [],
+                                  # The basis each resolution was found on (review N1): none is known.
+                                  "resolved_by": {},
                                   # Confirmed experience since birth (review R6): none is claimed.
                                   "counted_since_birth": 0, "counted_tasks_since_birth": []}
 
@@ -32,7 +34,7 @@ def new_metadata(parameters, *, habit_id: str, trigger_id: str, state: str, trus
             "exec_summary": {"fires_total": 0, "successes": 0, "failures": 0, "uncertain": 0},
             "energy_cost": energy_cost, "priority": parameters["learned_priority_class"],
             "born_in": consolidation_id, "supersedes": supersedes, "superseded_by": None, "recent": [],
-            "publication": None, "yields_to": [], "compared": []}
+            "publication": None, "yields_to": [], "resolved_by": {}, "compared": []}
 
 
 def complete_metadata(habits: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:

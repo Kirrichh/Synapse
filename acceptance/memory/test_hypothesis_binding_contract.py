@@ -16,12 +16,17 @@ scope (or the one scope the service answers for) and each condition:
   answer; another scope decides nothing;
 * every condition of the claim must be bound and equal; a condition the claim
   does not state but the check answered under is a narrower context;
-* a status the court recorded under the earlier rule, before checks were bound
-  to their claims, is never reused: the claim is checked again;
+* a status the court recorded is reused only under the rule and the check
+  basis it was decided on — the checking tool's contract, the provenance
+  relation of checker and source, the identity rules: under another rule or
+  basis the claim is checked again;
 * admission takes a status only from such a check: the foreign check admits
   nothing.
 """
 from __future__ import annotations
+
+import copy
+import dataclasses
 
 import pytest
 
@@ -126,16 +131,43 @@ def test_every_condition_is_bound_and_equal(conditions, check_args, decided):
     assert _status(record, _view(account="A", balance=20), configuration) == decided
 
 
-@pytest.mark.parametrize("rule, reused", [("synapse.memory.hypothesis-check/v1", False), (None, False),
-                                          (hypotheses.CHECK_RULE, True)])
-def test_a_status_decided_before_bound_checks_is_never_reused(rule, reused):
+@pytest.mark.parametrize("rule, basis, reason", [
+    ("synapse.memory.hypothesis-check/v1", "current", "checked_under_another_rule"),
+    (None, "current", "checked_under_another_rule"),
+    (hypotheses.CHECK_RULE, "other", "check_basis_changed"),  # Decided under another contract or graph.
+    (hypotheses.CHECK_RULE, None, "check_basis_changed"),
+    (hypotheses.CHECK_RULE, "unadmitted", "check_basis_changed"),  # The checking tool is no longer admitted.
+    (hypotheses.CHECK_RULE, "current", "court_record"),
+])
+def test_a_status_is_reused_only_under_its_rule_and_check_basis(rule, basis, reason):
     configuration = _configuration()
     record = _claim(configuration)
+    current = hypotheses.check_basis(record, configuration)
     known = {"status": "confirmed", "window": 5, "run_id": "r-1", "check_ref": {"evidence": "ev-check"},
-             "basis": None, **({"rule": rule} if rule is not None else {})}
-    found = hypotheses.reuse(record, known, {}, 6, configuration.parameters)
-    assert (found["status"], found["reason"]) == (("confirmed", "court_record") if reused
-                                                  else (None, "checked_under_another_rule"))
+             "basis": None, **({"rule": rule} if rule is not None else {}),
+             "check_basis": {"current": current, "other": "0" * 64, None: None, "unadmitted": None}[basis]}
+    if basis == "unadmitted":
+        raw = copy.deepcopy(configuration.raw)
+        raw["tools"]["tools"] = [item for item in raw["tools"]["tools"] if item["name"] != "check"]
+        current = hypotheses.check_basis(record, parse_memory_configuration(raw))
+    found = hypotheses.reuse(record, known, {}, 6, configuration.parameters, current)
+    assert (found["status"], found["reason"]) == (("confirmed" if reason == "court_record" else None), reason)
+
+
+@pytest.mark.parametrize("change", ["contract", "provenance", "identity"])
+def test_the_check_basis_names_the_contract_the_provenance_and_the_identity_rules(change):
+    configuration = _configuration()
+    record = _claim(configuration)
+    raw = copy.deepcopy(configuration.raw)
+    if change == "contract":
+        raw["tools"]["tools"][1]["contract"]["verifies"]["scope"] = {"value": "cards"}
+    elif change == "provenance":
+        raw["tools"]["provenance"]["ledger:bank"]["ancestors"] = ["core:bank"]
+    changed = (dataclasses.replace(configuration, identity={"bank": "insensitive"}) if change == "identity"
+               else parse_memory_configuration(raw))
+    assert hypotheses.check_basis(record, changed) != hypotheses.check_basis(record, configuration)
+    assert hypotheses.check_basis(record, parse_memory_configuration(copy.deepcopy(configuration.raw))) == \
+        hypotheses.check_basis(record, configuration)
 
 
 def _admission(configuration, record, view):

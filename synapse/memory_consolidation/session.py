@@ -25,7 +25,7 @@ from synapse.memory_points import ActionPorts, LearnedHabitEntry, ReplayHorizon,
 
 from .court.dependencies import forgotten_dependents
 from .formation import bind_event, plan_task
-from .hypotheses import declare, resolve, reuse, verification
+from .hypotheses import check_basis, declare, resolve, reuse, verification
 from .knowledge import search as knowledge_search
 from .knowledge.statements import declare as declare_statement, instant
 from .learning.behavior import execute, rivals
@@ -282,8 +282,9 @@ class MemorySession:
         if self.boundary is None:
             return {"status": None, "reason": "no_memory_snapshot"}
         boundary = self.boundary["boundary"]
+        configuration = self.factory.configuration
         return reuse(record, boundary["hypotheses"].get(record["id"]), boundary["claims"], boundary["window"],
-                     self.factory.configuration.parameters)
+                     configuration.parameters, check_basis(record, configuration))
 
     # -- learned bodies and their composition (refinement §14) --------------------
     def _part(self, habit_id: str) -> Mapping[str, Any] | None:

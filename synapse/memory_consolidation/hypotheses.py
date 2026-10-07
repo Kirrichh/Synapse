@@ -30,9 +30,12 @@ Confirming an entity says nothing about a content.
 
 Reuse: a status the court recorded for the same hypothesis (same claim, same
 source version) serves a later session only while it is fresh and only when it
-was decided under the current check rule; a changed source, unknown freshness
-or a status decided before checks were bound to their claim never inherits it
-— the claim is checked again or the program abstains.
+was decided under the current check rule *and* on the current check basis —
+the checking tool's contract, the provenance relation between the claim's
+source and the checker, and the identity rules (review N2): a check decided
+under another contract or another provenance graph is no check under these. A
+changed source, unknown freshness, an earlier rule or a changed basis never
+inherits it — the claim is checked again or the program abstains.
 """
 from __future__ import annotations
 
@@ -123,6 +126,19 @@ def claim_key(record: Mapping[str, Any]) -> str:
                    "source": {"tool": record["source"]["tool"], "args": record["source"]["args"]}})
 
 
+def check_basis(record: Mapping[str, Any], configuration: MemoryConfiguration) -> str | None:
+    """What a check's decision rests on besides its recorded answer: the checking tool's contract, the source the
+    claim was read from, the provenance relation between that source and the checker, and the identity rules
+    (``None`` when a tool is no longer admitted)."""
+    tools = configuration.tools.tools
+    check, source = tools.get(record["check"]["tool"]), tools.get(record["source"]["tool"])
+    if check is None or source is None:
+        return None
+    return digest({"check": check.contract_ref, "source": source.source,
+                   "relation": relation(configuration.tools.provenance, source.source, check.source),
+                   "identity": dict(sorted(configuration.identity.items()))})
+
+
 def _bound(binding: Mapping[str, str], args: Mapping[str, Any], payload: Mapping[str, Any]) -> list | str:
     """The values one binding reads from the check's request and answer, or why it cannot read them."""
     values = []
@@ -177,7 +193,8 @@ def resolve(record: Mapping[str, Any], view: Mapping[str, Any] | None,
             configuration: MemoryConfiguration) -> dict[str, Any]:
     """The status one recorded check gives the hypothesis (deterministic), under ``CHECK_RULE``."""
     def decided(status: str, reason: str) -> dict[str, Any]:
-        return {"status": status, "reason": reason, "rule": CHECK_RULE}
+        return {"status": status, "reason": reason, "rule": CHECK_RULE,
+                "check_basis": check_basis(record, configuration)}
 
     if record["source"]["ref"] is None:
         return decided("provisional", "source_absent")
@@ -206,8 +223,9 @@ def resolve(record: Mapping[str, Any], view: Mapping[str, Any] | None,
 
 
 def reuse(record: Mapping[str, Any], known: Mapping[str, Any] | None, claims: Mapping[str, Any],
-          window: int | None, parameters: Mapping[str, Any]) -> dict[str, Any]:
-    """Whether a status the court recorded serves this session, with the reason either way."""
+          window: int | None, parameters: Mapping[str, Any], basis: str | None) -> dict[str, Any]:
+    """Whether a status the court recorded serves this session, with the reason either way; ``basis`` is the
+    check basis under this session's configuration."""
     if record["source"]["ref"] is None:
         return {"status": None, "reason": "source_absent"}
     if known is None:
@@ -219,6 +237,8 @@ def reuse(record: Mapping[str, Any], known: Mapping[str, Any] | None, claims: Ma
         return {"status": None, "reason": "still_provisional"}
     if known.get("rule") != CHECK_RULE:
         return {"status": None, "reason": "checked_under_another_rule"}
+    if basis is None or known.get("check_basis") != basis:
+        return {"status": None, "reason": "check_basis_changed"}
     # The court's record of the check that decided it: which session checked, what it read, which case holds it.
     return {"status": known["status"], "reason": "court_record",
             "record": {"window": known["window"], "run_id": known.get("run_id"),

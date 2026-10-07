@@ -36,6 +36,7 @@ from ..records import canonical
 from ..session import opening_of
 from ..tools.gateway import Gateway
 from .cases import build_cases
+from .comparison import TRIAL_BASIS
 from .consolidation import session_window
 from .reactions import build_reactions
 from .signals import fire_signal
@@ -43,7 +44,6 @@ from .verdicts import judge_markers
 from .window import durations, read_session
 
 TRIAL_V1 = "synapse.memory.trial/v1"
-TRIAL_BASIS = "stand_trial"
 
 
 class TrialViolation(ValueError):

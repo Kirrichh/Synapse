@@ -25,7 +25,7 @@ import pytest
 
 from synapse.memory_consolidation.configuration import parse_memory_configuration
 from synapse.memory_consolidation.court.births import make_birth
-from synapse.memory_consolidation.court.comparison import compare
+from synapse.memory_consolidation.court.comparison import COMPARISON_BASIS, compare
 from synapse.memory_consolidation.court.decide import decide
 from synapse.memory_consolidation.court.projection import empty_state
 from synapse.memory_consolidation.learning.applicability import explanation_of
@@ -210,7 +210,7 @@ def test_the_verdict_does_not_move_with_the_advisors_answers(verified):
 
 def test_a_verified_result_stands_until_recorded_outcomes_contradict_it():
     configuration, state, ids = _world(q={"yields_to": []}, c={"yields_to": []})
-    state["habits"][ids["q"]]["yields_to"] = [ids["c"]]
+    state["habits"][ids["q"]].update(yields_to=[ids["c"]], resolved_by={ids["c"]: COMPARISON_BASIS})
     standing = _decide(configuration, state, _advice(ids, winner=None))
     conflict, = standing["sections"]["conflicts"]
     assert conflict["step"] == 2 and conflict["standing"] is True and standing["slow_only"] == []

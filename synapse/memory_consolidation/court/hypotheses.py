@@ -11,9 +11,12 @@ source version under the current rule and tells a changed source apart from an
 unknown claim. An emergency window changes nothing.
 
 A reassessment decides again, from the recorded check alone, every status the
-court recorded under an earlier check rule: the gateway journal and the
-evidence give back the answer the check recorded, and the current rule and
-contracts decide it — no tool is called. A check whose recorded answer no
+court decided: a configuration it adopts may change the check's contract, the
+provenance graph or the identity rules, and the check rule's version says
+nothing about those (review N2). The gateway journal and the evidence give
+back the answer the check recorded, and the current rule and configuration
+decide it — no tool is called, and an unchanged configuration decides it
+alike. A check whose recorded answer no
 longer resolves (forgotten, never recorded) decides nothing: the status becomes
 provisional, never confirmed on the record's word.
 """
@@ -23,7 +26,7 @@ import copy
 from typing import Any, Mapping
 
 from ..configuration import MemoryConfiguration
-from ..hypotheses import CHECK_RULE, claim_key, resolve
+from ..hypotheses import CHECK_RULE, check_basis, claim_key, resolve
 from ..tools.journal import GatewayIntegrityError
 
 EVENTS = ("hypothesis_declared", "hypothesis_probed", "hypothesis_reused")
@@ -39,7 +42,7 @@ def hypothesis_events(found: Mapping[str, list], run_id: str) -> list[dict[str, 
             items.append({"kind": kind, "position": position, "run_id": run_id, "hypothesis": event["hypothesis"],
                           "record": declared.get(event["hypothesis"]), "status": event["status"],
                           "reason": event["reason"], "check_ref": event.get("check_ref"),
-                          "rule": event.get("rule")})
+                          "rule": event.get("rule"), "check_basis": event.get("check_basis")})
     return sorted(items, key=lambda item: item["position"])
 
 
@@ -63,8 +66,8 @@ def hypothesis_stage(state: Mapping[str, Any], draft: Mapping[str, Any], cases, 
         entry = {"record": copy.deepcopy(item["record"]), "claim_key": claim_key(item["record"]),
                  "source_ref": item["record"]["source"]["ref"], "status": item["status"], "reason": item["reason"],
                  "window": window, "run_id": item["run_id"], "check_ref": item["check_ref"], "basis": basis,
-                 # The check rule the status was decided under: a status of an older rule is never reused.
-                 "rule": item["rule"]}
+                 # The rule and basis the status was decided under: another rule or basis is never reused.
+                 "rule": item["rule"], "check_basis": item["check_basis"]}
         updates[item["hypothesis"]] = entry
         section["probed"].append({key: entry[key] for key in ("run_id", "status", "reason", "basis")}
                                  | {"hypothesis": item["hypothesis"]})
@@ -78,29 +81,31 @@ def boundary_view(hypotheses: Mapping[str, Mapping[str, Any]]) -> tuple[dict, di
         statuses[hypothesis_id] = {"status": entry["status"], "window": entry["window"],
                                    "claim_key": entry["claim_key"], "source_ref": entry["source_ref"],
                                    "run_id": entry.get("run_id"), "check_ref": entry.get("check_ref"),
-                                   "basis": entry.get("basis"), "rule": entry.get("rule")}
+                                   "basis": entry.get("basis"), "rule": entry.get("rule"),
+                                   "check_basis": entry.get("check_basis")}
         claims[entry["claim_key"]] = hypothesis_id
     return statuses, claims
 
 
 def reassess_hypotheses(state: Mapping[str, Any], configuration: MemoryConfiguration, gateway,
                         records) -> list[dict[str, Any]]:
-    """Every decided status of an earlier check rule decided again from its recorded check (pure reading)."""
+    """Every decided status decided again from its recorded check under the configuration adopted now."""
     section = []
     for hypothesis_id, entry in sorted(state["hypotheses"].items()):
-        if entry.get("rule") == CHECK_RULE or entry["status"] == "provisional":
+        if entry["status"] == "provisional":
             continue
         check = entry.get("check_ref") or {}
-        unavailable = {"status": "provisional", "reason": "check_record_unavailable", "rule": CHECK_RULE}
+        unavailable = {"status": "provisional", "reason": "check_record_unavailable", "rule": CHECK_RULE,
+                       "check_basis": check_basis(entry["record"], configuration)}
         try:
             # No recorded check, an answer that no longer resolves, or a tool no longer admitted: nothing decided.
             decided = unavailable if check.get("gw_seq") is None else resolve(
                 entry["record"], gateway.recorded_outcome(check["gw_seq"], records)["view"], configuration)
         except (GatewayIntegrityError, PermissionError):
             decided = unavailable
-        section.append({"hypothesis": hypothesis_id, "from": {"status": entry["status"], "reason": entry["reason"],
-                                                              "rule": entry.get("rule")},
-                        "to": {"status": decided["status"], "reason": decided["reason"], "rule": decided["rule"]}})
+        section.append({"hypothesis": hypothesis_id,
+                        "from": {key: entry.get(key) for key in ("status", "reason", "rule", "check_basis")},
+                        "to": {key: decided[key] for key in ("status", "reason", "rule", "check_basis")}})
     return section
 
 

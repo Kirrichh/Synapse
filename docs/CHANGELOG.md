@@ -1,5 +1,26 @@
 # Synapse Changelog
 
+## Memory review of PR108, third pass — check basis, standing trial resolutions — 2026-10-07
+
+Hypothesis probe events, the court's hypothesis records and the snapshot
+boundary carry `check_basis`; learned habit metadata gains `resolved_by`; the
+reassessment section replaces `trial_resolutions` with `resolutions`.
+
+- N2: a hypothesis status is decided on a check basis — the checking tool's
+  contract, the provenance relation between the claim's source and the checker,
+  and the identity rules. A session reuses a recorded status only on the basis
+  of the configuration in force (`check_basis_changed` otherwise), and a
+  reassessment decides every recorded status again from its recorded check
+  under the adopted configuration, whatever rule decided it; an unchanged
+  configuration keeps a valid confirmation.
+- N1: a competitor resolution remembers what found it (`resolved_by`: compared
+  outcomes or stand trials). One found in trials stands only while the trials
+  recorded so far still name the same winner: a later contradicting trial takes
+  it away in an ordinary consolidation (step 3, the trigger slow-only again);
+  the same result tried again keeps it; a resolution whose basis is not known
+  does not stand. A reassessment gives recorded resolutions their basis from
+  the report record, and the ladder judges them like any other.
+
 ## Memory review of PR108, second pass — check relevance, stand scope, contradicting trials, confirmed experience — 2026-10-06
 
 New tool contract field `verifies`; hypothesis check rule

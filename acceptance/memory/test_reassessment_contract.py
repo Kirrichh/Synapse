@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from synapse.memory_consolidation.configuration import parse_memory_configuration
 from synapse.memory_consolidation.court.births import make_birth
+from synapse.memory_consolidation.court.comparison import COMPARISON_BASIS
 from synapse.memory_consolidation.court.decide import decide
 from synapse.memory_consolidation.court.evaluate import empty_draft
 from synapse.memory_consolidation.court.projection import empty_state
@@ -127,7 +128,7 @@ def test_competitors_resolved_on_advice_alone_return_to_the_slow_path():
 
 def test_a_recorded_verified_resolution_stands():
     configuration, state, ids = _state("q", "c", legacy=False, c={"state": "probation"})
-    state["habits"][ids["c"]]["yields_to"] = [ids["q"]]
+    state["habits"][ids["c"]].update(yields_to=[ids["q"]], resolved_by={ids["q"]: COMPARISON_BASIS})
     decision = _reassess(configuration, state, {ids["q"]: 3, ids["c"]: 3})
     conflict, = decision["sections"]["conflicts"]
     assert conflict["step"] == 2 and conflict["standing"] is True and decision["slow_only"] == []

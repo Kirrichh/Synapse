@@ -4,23 +4,30 @@ Pure data through the court's reassessment entries and decision. Memory decided
 by a court of an earlier policy keeps statuses and states the corrected rules
 would not grant. A reassessment, which calls no tool, corrects them:
 
-* a hypothesis status of an earlier check rule is decided again from the check
-  the gateway recorded: a check that answered about another object no longer
-  confirms; a check about the claim confirms (or refutes) under the current
-  rule; a check whose record no longer resolves decides nothing; a status of
-  the current rule and a provisional one are left as they are;
+* every decided hypothesis status is decided again from the check the gateway
+  recorded, under the configuration adopted now — the check rule's version
+  says nothing about the contract, provenance or identity rules a check rests
+  on: a check that answered about another object, or outside the checker's
+  scope now, or from a checker the graph now shows dependent on the source, no
+  longer confirms; a check about the claim confirms (or refutes) alike under
+  an unchanged configuration; a check whose record no longer resolves decides
+  nothing; a provisional status is left as it is;
 * a promotion an earlier policy decided is judged on the confirmed experience
   of the habit's recorded fires — reached with undecided fires, or at a fire
   no longer recorded, it returns the habit to probation (TU), where it keeps
   acting; a promotion with enough confirmed fires in enough tasks, or one the
   current policy decided, stands; the confirmed experience since birth is
   counted from the recorded fires — a lower bound when some were not kept;
-* a resolution an earlier rule found in stand trials is decided again by the
-  trials under the current rules: on a stand that did not cover the trigger
-  the slow-only ban is restored; on a covering stand, or for a resolution
-  found in compared outcomes, it stays lifted.
+* every resolution the record still holds is given the basis it was found
+  on, read from the last decision of the ladder for the pair: a resolution
+  found in stand trials stays only while the trials decide it under the current
+  rules — on a stand that did not cover the trigger the slow-only ban is
+  restored; on a covering stand, or for a resolution found in compared
+  outcomes, it stays lifted.
 """
 from __future__ import annotations
+
+import copy
 
 import pytest
 
@@ -29,7 +36,8 @@ from synapse.memory_consolidation import hypotheses
 from synapse.memory_consolidation.configuration import parse_memory_configuration
 from synapse.memory_consolidation.court.advice import conflict_advice
 from synapse.memory_consolidation.court.automaton import reverify_promotions
-from synapse.memory_consolidation.court.conflicts import trial_resolutions
+from synapse.memory_consolidation.court.comparison import COMPARISON_BASIS, TRIAL_BASIS
+from synapse.memory_consolidation.court.conflicts import resolution_bases
 from synapse.memory_consolidation.court.decide import decide
 from synapse.memory_consolidation.court.evaluate import empty_draft
 from synapse.memory_consolidation.court.hypotheses import reassess_hypotheses, reassessed
@@ -87,28 +95,57 @@ def _entry(configuration, asked, *, status="confirmed", rule=None, seq=1):
     ("A", {"account": "A", "balance": 99}, "refuted", V1, 1, ("refuted", "contradicted:balance")),
     ("A", {"account": "A", "balance": 20}, "confirmed", V1, 2, ("provisional", "check_record_unavailable")),
     ("A", {"account": "A", "balance": 20}, "confirmed", V1, None, ("provisional", "check_record_unavailable")),
+    # A status of the current rule under an unchanged configuration is decided again — and alike.
+    ("A", {"account": "A", "balance": 20}, "confirmed", hypotheses.CHECK_RULE, 1, ("confirmed", "check_agrees")),
 ])
-def test_an_earlier_status_is_decided_again_from_its_recorded_check(asked, answered, status, rule, seq, decided):
+def test_a_recorded_status_is_decided_again_from_its_recorded_check(asked, answered, status, rule, seq, decided):
     configuration = _bank()
     hypothesis_id, entry = _entry(configuration, asked, status=status, rule=rule, seq=seq)
     state = {"hypotheses": {hypothesis_id: entry}}
     section = reassess_hypotheses(state, configuration, _Recorded({1: answered}), [])
-    assert section == [{"hypothesis": hypothesis_id, "from": {"status": status, "reason": "check_agrees", "rule": rule},
-                        "to": {"status": decided[0], "reason": decided[1], "rule": hypotheses.CHECK_RULE}}]
+    basis = hypotheses.check_basis(entry["record"], configuration)
+    assert section == [{"hypothesis": hypothesis_id,
+                        "from": {"status": status, "reason": "check_agrees", "rule": rule, "check_basis": None},
+                        "to": {"status": decided[0], "reason": decided[1], "rule": hypotheses.CHECK_RULE,
+                               "check_basis": basis}}]
     found = reassessed(state, section)[hypothesis_id]
-    assert (found["status"], found["reason"], found["rule"]) == (*decided, hypotheses.CHECK_RULE)
+    assert (found["status"], found["reason"], found["rule"], found["check_basis"]) == (
+        *decided, hypotheses.CHECK_RULE, basis)
     assert {key: found[key] for key in ("window", "check_ref", "run_id", "record")} == {
         key: entry[key] for key in ("window", "check_ref", "run_id", "record")}
-    # The corrected status is what a later session may reuse.
-    reused = hypotheses.reuse(entry["record"], found, {}, 5, configuration.parameters)
+    # The status decided again is what a later session may reuse.
+    reused = hypotheses.reuse(entry["record"], found, {}, 5, configuration.parameters, basis)
     assert reused["status"] == (decided[0] if decided[0] != "provisional" else None)
 
 
-@pytest.mark.parametrize("status, rule", [("confirmed", hypotheses.CHECK_RULE), ("provisional", V1)])
-def test_a_current_or_undecided_status_is_left_as_recorded(status, rule):
+def test_an_undecided_status_is_left_as_recorded():
     configuration = _bank()
-    hypothesis_id, entry = _entry(configuration, "B", status=status, rule=rule)
+    hypothesis_id, entry = _entry(configuration, "B", status="provisional", rule=V1)
     assert reassess_hypotheses({"hypotheses": {hypothesis_id: entry}}, configuration, _Recorded({}), []) == []
+
+
+@pytest.mark.parametrize("change, reason", [("scope", "check_about_another:scope"),
+                                            ("provenance", "checking_source_dependent")])
+def test_a_confirmation_decided_on_another_check_basis_does_not_survive_the_new_one(change, reason):
+    # Confirmed under the configuration of the time; then the checker's scope or its provenance changes.
+    before = _bank()
+    hypothesis_id, entry = _entry(before, "A", rule=hypotheses.CHECK_RULE)
+    entry["check_basis"] = hypotheses.check_basis(entry["record"], before)
+    raw = copy.deepcopy(before.raw)
+    if change == "scope":
+        raw["tools"]["tools"][1]["contract"]["verifies"]["scope"] = {"value": "another-bank"}
+    else:
+        raw["tools"]["provenance"]["ledger:bank"]["ancestors"] = ["core:bank"]
+    after = parse_memory_configuration(raw)
+    basis = hypotheses.check_basis(entry["record"], after)
+    # Not reused on the record's word before the reassessment decides it again ...
+    assert hypotheses.reuse(entry["record"], entry, {}, 5, after.parameters, basis)["reason"] == "check_basis_changed"
+    # ... and decided again from the recorded answer under the new contract and graph.
+    state = {"hypotheses": {hypothesis_id: entry}}
+    section = reassess_hypotheses(state, after, _Recorded({1: {"account": "A", "balance": 20}}), [])
+    found = reassessed(state, section)[hypothesis_id]
+    assert (found["status"], found["reason"], found["check_basis"]) == ("provisional", reason, basis)
+    assert hypotheses.reuse(entry["record"], found, {}, 5, after.parameters, basis)["status"] is None
 
 
 # -- promotions -----------------------------------------------------------------------------------------------
@@ -271,7 +308,7 @@ def test_the_reassessment_judges_every_earlier_decision_from_the_record():
     assert [item["to"]["status"] for item in found["hypotheses"]] == ["provisional"]
     assert [(item["habit_id"], item["verdict"]) for item in found["promotions"]] == [
         (habit_id, "promotion_not_verified")]
-    assert found["trial_resolutions"] == ["|".join(sorted((habit_id, loser)))]
+    assert found["resolutions"] == [{"winner": habit_id, "loser": loser, "basis": TRIAL_BASIS}]
 
 
 # -- conflicts ------------------------------------------------------------------------------------------------
@@ -282,20 +319,23 @@ def _resolved(winner, loser, *, by_trial):
                                              "resolution": f"{winner}_stays_{loser}_probation"}]}
 
 
-@pytest.mark.parametrize("ladder, retried", [
-    ([("trial", 2)], True),
-    ([("trial", 2), ("standing", 2)], True),  # A standing resolution keeps the basis it was found on.
-    ([("trial", 2), ("comparison", 2)], False),
-    ([("trial", 2), ("unresolved", 3)], False),  # Unresolved since: nothing stands to be decided again.
+@pytest.mark.parametrize("ladder, basis", [
+    ([("trial", 2)], TRIAL_BASIS),
+    ([("trial", 2), ("standing", 2)], TRIAL_BASIS),  # A standing resolution keeps the basis it was found on.
+    ([("trial", 2), ("comparison", 2)], COMPARISON_BASIS),
+    ([("comparison", 2), ("trial", 2)], TRIAL_BASIS),
+    ([("both", 2)], COMPARISON_BASIS),  # The ladder took the compared outcomes first.
+    ([("trial", 2), ("unresolved", 3)], None),  # Unresolved since: nothing stands.
 ])
-def test_a_resolution_found_in_trials_is_named_for_the_trials_to_decide_again(ladder, retried):
+def test_a_resolution_is_given_the_basis_its_last_decision_found_it_on(ladder, basis):
     reports = []
-    for basis, step in ladder:
-        advice = {"comparison": {"winner": "hab_a" if basis == "comparison" else None},
-                  "trial": {"winner": "hab_a" if basis == "trial" else None}}
+    for kind, step in ladder:
+        advice = {"comparison": {"winner": "hab_a" if kind in ("comparison", "both") else None},
+                  "trial": {"winner": "hab_a" if kind in ("trial", "both") else None}}
         reports.append({"conflicts": [{"habits": {"A": "hab_a", "B": "hab_b"}, "step": step, "advice": advice,
-                                       **({"standing": True} if basis == "standing" else {})}]})
-    assert trial_resolutions(reports) == (["hab_a|hab_b"] if retried else [])
+                                       **({"standing": True} if kind == "standing" else {})}]})
+    assert resolution_bases(reports) == ([] if basis is None else [{"winner": "hab_a", "loser": "hab_b",
+                                                                      "basis": basis}])
 
 
 @pytest.mark.parametrize("fields, by_trial, restored", [
@@ -313,10 +353,12 @@ def test_a_ban_lifted_on_trials_that_did_not_cover_the_trigger_is_restored(field
               for name in "123"]
     advice = conflict_advice(None, state, config.parameters, [], [], [], trials)
     reassessment = {"schema_version": "synapse.memory.reassessment/v2",
-                    "trial_resolutions": trial_resolutions([_resolved(winner, loser, by_trial=by_trial)]),
+                    "resolutions": resolution_bases([_resolved(winner, loser, by_trial=by_trial)]),
                     "habits": [{"habit_id": habit_id, "state": "active", "verified": 3, "required": 3, "episodes": [],
                                 "contracts": {}, "contracts_changed": [], "verdict": "basis_holds"}
                                for habit_id in (winner, loser)]}
     decision = _reassess(config, state, {"conflict_advice": advice, "reassessment": reassessment})
     assert (decision["slow_only"] == [data.CONDITION]) is restored
     assert (decision["reassessment"]["slow_only_added"] == [data.CONDITION]) is restored
+    assert decision["habits"][loser]["resolved_by"] == ({} if restored else {
+        winner: TRIAL_BASIS if by_trial else COMPARISON_BASIS})

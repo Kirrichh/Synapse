@@ -38,6 +38,8 @@ from typing import Any, Iterable, Mapping
 from ..records import canonical
 
 COMPARISON_BASIS = "recorded_outcomes_same_situation"
+#: The basis of a comparison of stand trials: experiments in copies of one initial state.
+TRIAL_BASIS = "stand_trial"
 
 
 def decided(entry: Mapping[str, Any]) -> str | None:
@@ -167,7 +169,7 @@ def compare_trials(left: str, right: str, trials: Iterable[Mapping[str, Any]], m
             winner, reason = right, "better_in_stand_trials"
         else:
             reason = "no_difference_established"
-    return {"basis": "stand_trial", "winner": winner, "reason": reason, "pairs": len(situations),
+    return {"basis": TRIAL_BASIS, "winner": winner, "reason": reason, "pairs": len(situations),
             "better": better, "mixed_situations": len(mixed), "trials": sorted(item["id"] for item in relevant),
             "outside_scope": len(relevant) - len(inside),
             "stands": sorted({item["stand"] for item in inside})}

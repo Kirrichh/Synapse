@@ -108,7 +108,29 @@ Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:
 No Linux full suite was run for Patch 2. A recorded baseline is evidence of an
 observed run, not a command to rerun the full suite before each patch.
 
-The latest observed Linux verification is the reassessment package of the
+The latest observed Linux verification is the third review of PR #108 at
+`4905d47` (N1 a resolution found in stand trials stands only while the trials
+recorded so far name the same winner, decided in every ordinary consolidation;
+N2 a hypothesis status is reused and kept only on the check basis it was
+decided on: the checking tool's contract, the provenance relation, the identity
+rules). It is a targeted run, not a full suite: Python 3.11, every
+`acceptance/memory` file in its own process, four files in parallel, on the
+uncommitted working tree, plus six stage16 memory court files and
+`tests/test_memory_dependency_direction.py`:
+
+```text
+acceptance/memory:  79 files, 397 passed
+stage16 court:      6 files, 14 passed
+tests/ (memory):    1 file, 2 passed
+```
+
+The reviewer's battery (3 counterexamples, 2 positive controls, 10 earlier
+regressions) passes 15/15; its N2 probe calls `reuse` with the check basis of
+the configuration in force, the argument the corrected signature requires. A
+mutation campaign over N1 and N2 killed all 26 mutants
+(`reports/memory_second_review_mutation_evidence_v1.json`, `third_review`).
+
+The previous observed Linux verification is the reassessment package of the
 second review of PR #108 (court policy v4: memory decided under v3 is
 reassessed before use, deciding again from the record hypothesis statuses,
 promotions and trial-based resolutions). It is a targeted run, not a full
@@ -131,7 +153,7 @@ the file passed, replaying the failing example. A mutation campaign over the
 reassessment killed all 26 mutants
 (`reports/memory_second_review_mutation_evidence_v1.json`).
 
-The previous observed Linux verification is the second review of PR #108 at
+An earlier observed Linux verification is the second review of PR #108 at
 `5580007` (F1 a check decides only the claim its contract binds it to; F2 a
 stand trial covers a trigger only inside the tested scope; F3 contradicting
 trials name no winner; F4 promotion reads confirmed experience only). It is a

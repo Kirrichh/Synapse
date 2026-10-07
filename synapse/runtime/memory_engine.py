@@ -321,7 +321,8 @@ class MemoryEngine:
         result = session.resolve_hypothesis(record, view)
         self.recorded_event("hypothesis_probed", {
             "hypothesis": record["id"], "status": result["status"], "reason": result["reason"],
-            "rule": result["rule"], "check_ref": check_ref, "trace_id": self.host.current_trace_id()},
+            "rule": result["rule"], "check_basis": result["check_basis"], "check_ref": check_ref,
+            "trace_id": self.host.current_trace_id()},
             {"hypothesis": record["id"], "status": result["status"], "reason": result["reason"]})
         entry.update(status=result["status"], reason=result["reason"], decided_by="probe",
                      decision={"method": "probe", "observation": check_ref, "checked_in": session.run["run_id"],

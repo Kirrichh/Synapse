@@ -963,6 +963,8 @@ jobs:
             file: acceptance/memory/test_reassessment_rules_contract.py
           - shard: earlier-policy-reassessment
             file: acceptance/memory/test_earlier_policy_reassessment_acceptance.py
+          - shard: check-basis-reassessment
+            file: acceptance/memory/test_check_basis_reassessment_acceptance.py
           - shard: fast-path-attestation
             file: acceptance/memory/test_fast_path_attestation_acceptance.py
           - shard: contract-violation
@@ -985,6 +987,8 @@ jobs:
             file: acceptance/memory/test_stand_trial_contract.py
           - shard: stand-trials
             file: acceptance/memory/test_stand_trial_acceptance.py
+          - shard: stand-trial-revocation
+            file: acceptance/memory/test_stand_trial_revocation_acceptance.py
           - shard: confidence-sequence-contract
             file: acceptance/memory/test_automaton_confidence_sequence_contract.py
           - shard: order-outage

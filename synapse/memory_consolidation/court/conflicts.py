@@ -21,6 +21,13 @@ result lifts it. Partly overlapping rivals keep their own triggers: the runtime
 holds both back on the overlap only. Equal trust never yields an arbitrary
 winner: identity order breaks the tie.
 
+A resolution remembers its basis (``resolved_by`` of the habit that yields):
+the recorded outcomes or the stand trials. Only one found in recorded outcomes
+stands on its record; one found in trials holds only while the trials recorded
+so far still name the same winner — a later trial that contradicts them, in an
+ordinary window, takes the resolution away and the pair returns to step 3
+(review N1); the same result tried again keeps it.
+
 A habit born in this window meets its competitors at once, before any session
 could fire either: an established trust gap selects the senior habit, anything
 else makes the shared trigger slow-only — an unresolved conflict is blocked
@@ -33,6 +40,7 @@ from typing import Any, Iterable, Mapping
 from ..learning.behavior import rivals
 from ..learning.triggers import condition_key
 from ..records import canonical
+from .comparison import COMPARISON_BASIS, TRIAL_BASIS
 from .habit_state import EFFECTIVE
 
 _ADVICE_FIELDS = ("basis", "asked", "calls", "answer", "agreed", "reasons", "refs", "component", "comparison",
@@ -77,21 +85,30 @@ def _entry(habits, left, right, frozen) -> dict[str, Any]:
                                          "B": condition_key(frozen[junior]["trigger"])}, **entry}
 
 
-def _yield(habits, winner, loser) -> None:
+def _yield(habits, winner, loser, basis) -> None:
+    """The loser yields to the winner; ``basis`` names what found the winner (``None``: a standing resolution
+    keeps the basis it was found on)."""
     habits[loser]["yields_to"] = sorted(set(habits[loser].get("yields_to", [])) | {winner})
     habits[winner]["yields_to"] = [item for item in habits[winner].get("yields_to", []) if item != loser]
+    if basis is not None:
+        habits[loser]["resolved_by"] = {**habits[loser].get("resolved_by", {}), winner: basis}
+    habits[winner]["resolved_by"] = {key: value for key, value in habits[winner].get("resolved_by", {}).items()
+                                     if key != loser}
 
 
 def _unyield(habits, pair) -> None:
     left, right = pair
     for one, other in ((left, right), (right, left)):
         habits[one]["yields_to"] = [item for item in habits[one].get("yields_to", []) if item != other]
+        habits[one]["resolved_by"] = {key: value for key, value in habits[one].get("resolved_by", {}).items()
+                                      if key != other}
 
 
-def _step_two(entry, habits, winner, advice, blocked, slow_only, forced, *, standing=False) -> dict[str, Any]:
+def _step_two(entry, habits, winner, advice, blocked, slow_only, forced, *, standing=False,
+              basis=None) -> dict[str, Any]:
     """The verified comparison found ``winner`` better: it stays, the other yields to it."""
     loser = entry["habits"]["B"] if winner == entry["habits"]["A"] else entry["habits"]["A"]
-    _yield(habits, winner, loser)
+    _yield(habits, winner, loser, basis)
     if entry["trigger"] is not None:
         forced.setdefault(loser, ("TC", f"lost the verified comparison on {entry['trigger']['event_types']}"))
     if blocked:
@@ -102,12 +119,19 @@ def _step_two(entry, habits, winner, advice, blocked, slow_only, forced, *, stan
 
 
 def _standing(habits, pair, comparison) -> str | None:
-    """The winner of an earlier verified comparison, while the recorded outcomes do not contradict it."""
+    """The winner of an earlier comparison of recorded outcomes, while those outcomes do not contradict it.
+
+    Only such a resolution stands on its record. One found in stand trials stands on the trials themselves:
+    every recorded trial is compared again in every window, so once they name no winner — a later trial
+    contradicts them — the resolution they gave is gone (review N1). One whose basis is not known does not
+    stand either: what found it must find it again."""
     left, right = pair
     earlier = (right if right in habits[left].get("yields_to", []) else
                left if left in habits[right].get("yields_to", []) else None)
     if earlier is None or comparison.get("reason") == "contradicting_situations" \
             or comparison.get("winner") not in (None, earlier):
+        return None
+    if habits[left if earlier == right else right].get("resolved_by", {}).get(earlier) != COMPARISON_BASIS:
         return None
     return earlier
 
@@ -119,29 +143,38 @@ def _keep_compared(parameters, metadata, attributed) -> None:
     metadata["compared"] = [*metadata.get("compared", []), *added][-parameters["recent_fires"]:]
 
 
-def trial_resolutions(reports) -> list[str]:
-    """The competitor pairs whose recorded resolution rests on stand trials: the last decision of the ladder
-    for the pair found its winner in trials, not in compared outcomes (a standing resolution keeps its basis)."""
-    basis: dict[str, str] = {}
+def resolution_bases(reports) -> list[dict[str, Any]]:
+    """The basis of every resolution the recorded ladder still holds, read from the reports: the last step-2
+    decision of the pair named its winner from compared outcomes or from stand trials (a standing resolution
+    keeps the basis it was found on; a later step 1 or 3 leaves nothing standing). Memory recorded before
+    resolutions kept their basis is given it from its record, so the ladder judges its basis like any other."""
+    found: dict[str, dict[str, Any]] = {}
     for report in reports:
         for entry in report.get("conflicts", []):
             key = "|".join(sorted(entry["habits"].values()))
             if entry["step"] != 2:
-                basis.pop(key, None)
+                found.pop(key, None)
             elif not entry.get("standing"):
                 advice = entry.get("advice") or {}
-                by_trial = ((advice.get("comparison") or {}).get("winner") is None
-                            and (advice.get("trial") or {}).get("winner") is not None)
-                basis[key] = "trial" if by_trial else "comparison"
-    return sorted(key for key, found in basis.items() if found == "trial")
+                comparison = advice.get("comparison") or {}
+                decided = comparison if comparison.get("winner") is not None else advice.get("trial") or {}
+                winner = decided["winner"]
+                loser = next(item for item in entry["habits"].values() if item != winner)
+                found[key] = {"winner": winner, "loser": loser,
+                              "basis": TRIAL_BASIS if decided is not comparison else COMPARISON_BASIS}
+    return [found[key] for key in sorted(found)]
+
+
+def recorded_bases(habits, bases) -> None:
+    """Give each resolution the reassessment found in the record the basis it was found on."""
+    for item in bases:
+        loser = habits[item["loser"]]
+        loser["resolved_by"] = {**loser.get("resolved_by", {}), item["winner"]: item["basis"]}
 
 
 def conflict_stage(parameters, state, habits, draft, report, forced) -> list[dict[str, Any]]:
-    """Resolve every competitor pair; returns the slow-only triggers after this window. A reassessment does not
-    let a resolution found in stand trials stand on its record: the trials must decide it again under the rules
-    in force (second review, F2–F3)."""
+    """Resolve every competitor pair; returns the slow-only triggers after this window."""
     slow_only = [dict(item) for item in state["slow_only"]]
-    retried = set((draft.get("reassessment") or {}).get("trial_resolutions", []))
     met = met_at_runtime(draft["suppressed"])
     for left, right in competitors({"habits": habits, "frozen": state["frozen"]}, parameters, met):
         entry = _entry(habits, left, right, state["frozen"])
@@ -157,9 +190,9 @@ def conflict_stage(parameters, state, habits, draft, report, forced) -> list[dic
             comparison = advice["trial"]  # Stand trials inside their transfer scope decide what history cannot.
         if comparison.get("winner") is not None:
             report["conflicts"].append(_step_two(entry, habits, comparison["winner"], advice, blocked, slow_only,
-                                                 forced))
+                                                 forced, basis=comparison["basis"]))
             continue
-        standing = None if f"{left}|{right}" in retried else _standing(habits, (left, right), comparison)
+        standing = _standing(habits, (left, right), comparison)
         if standing is not None:
             report["conflicts"].append(_step_two(entry, habits, standing, advice, blocked, slow_only, forced,
                                                  standing=True))

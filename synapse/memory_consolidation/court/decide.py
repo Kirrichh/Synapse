@@ -25,7 +25,7 @@ from .boundaries import boundary_stage
 from .cold import cold_stage
 from .dependencies import forgotten_stage
 from .compositions import composition_stage
-from .conflicts import birth_conflicts, conflict_stage
+from .conflicts import birth_conflicts, conflict_stage, recorded_bases
 from .habit_state import complete_metadata
 from .hypotheses import reassessed
 from .knowledge import knowledge_stage
@@ -114,6 +114,7 @@ def _reassess(context, state, draft) -> dict[str, Any]:
         if item["verdict"] == "basis_holds":
             # Its bases were judged again under these contracts: its applicability is verified under them.
             habits[item["habit_id"]]["verified_under"] = {"contracts": dict(item["contracts"])}
+    recorded_bases(habits, draft["reassessment"].get("resolutions", []))
     forced = {**unverified, **lost_bases(draft["reassessment"])}  # A lost basis archives over a probation.
     slow_only = conflict_stage(context.parameters, state, habits, draft, context.report, forced)
     forced_transitions(context, habits, forced)

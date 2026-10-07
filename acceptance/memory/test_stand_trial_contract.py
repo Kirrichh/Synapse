@@ -16,7 +16,14 @@
   contracts forbid has failed whatever the anchor says; an undecided segment
   leaves the arm undecided;
 * on the ladder a trial winner is a verified step-2 result of its own basis:
-  it lifts the slow-only ban and the loser yields to it.
+  it lifts the slow-only ban and the loser yields to it;
+* a resolution found in trials stands only while the trials recorded so far
+  name the same winner: a later trial that contradicts them takes it away in an
+  ordinary window — the loser no longer yields, both go on probation, the
+  trigger is slow-only again — whatever the order of the records; the same
+  result tried again keeps it; a resolution found in compared outcomes rests on
+  them, not on the trials, and a resolution whose basis is not known does not
+  stand (review N1).
 """
 from __future__ import annotations
 
@@ -24,7 +31,7 @@ import pytest
 
 from acceptance.memory import _court_data as data
 from synapse.memory_consolidation.court.advice import conflict_advice
-from synapse.memory_consolidation.court.comparison import compare_trials
+from synapse.memory_consolidation.court.comparison import COMPARISON_BASIS, TRIAL_BASIS, compare_trials
 from synapse.memory_consolidation.court.trials import arm_outcome
 
 SCOPE = {"fields": {"route_kind": ["intl"]}}
@@ -141,3 +148,72 @@ def test_the_trial_decides_for_either_competitor(label):
     assert conflict["step"] == 2 and conflict["slow_only_lifted"] is True and decision["slow_only"] == []
     assert conflict["advice"]["trial"]["basis"] == "stand_trial"
     assert decision["habits"][loser]["yields_to"] == [winner]
+
+
+def _trials_window(config, state, trials, comparison=None):
+    advice = conflict_advice(None, state, config.parameters, [], [], [], trials)
+    if comparison is not None:
+        next(iter(advice.values()))["comparison"].update(winner=comparison, reason="better_in_same_situation")
+    after, decision = data.window(config, state, advice=advice)
+    conflict, = decision["sections"]["conflicts"]
+    return after, decision, conflict
+
+
+def _found_in_trials():
+    config, state, ids = data.world(labels=("q", "c"), trust=0.7, state_name="active")
+    state["slow_only"] = [data.CONDITION]
+    winner, loser = ids["q"], ids["c"]
+    trials = [_trial(winner, loser, ("success", "failure"), name) for name in ("s1", "s2", "s3")]
+    after, _, conflict = _trials_window(config, state, trials)
+    assert conflict["step"] == 2 and after["slow_only"] == [] and after["habits"][loser]["yields_to"] == [winner]
+    assert after["habits"][loser]["resolved_by"] == {winner: TRIAL_BASIS}
+    return config, after, winner, loser, trials
+
+
+@pytest.mark.parametrize("contradiction", [
+    ("failure", "success", "s1", 1),  # The same situation tried again with other results.
+    ("success", "success", "s2", 1),
+    ("failure", "success", "s4", 1),  # The loser did better in a situation of its own.
+])
+@pytest.mark.parametrize("later_first", [False, True])
+def test_a_later_contradicting_trial_takes_away_the_resolution_trials_gave(contradiction, later_first):
+    config, won, winner, loser, trials = _found_in_trials()
+    *outcomes, situation, run = contradiction
+    later = _trial(winner, loser, tuple(outcomes), situation, run=run)
+    after, decision, conflict = _trials_window(config, won, [later, *trials] if later_first else [*trials, later])
+    assert conflict["advice"]["trial"]["reason"] == "contradicting_trials"
+    assert conflict["step"] == 3 and after["slow_only"] == [data.CONDITION]
+    assert after["habits"][loser]["yields_to"] == [] and after["habits"][loser]["resolved_by"] == {}
+    assert {decision["habits"][habit_id]["state"] for habit_id in (winner, loser)} == {"probation"}
+
+
+def test_the_same_result_tried_again_keeps_the_winner():
+    config, won, winner, loser, trials = _found_in_trials()
+    after, _, conflict = _trials_window(config, won, [*trials, _trial(winner, loser, ("success", "failure"), "s1",
+                                                                      run=1)])
+    assert conflict["step"] == 2 and after["slow_only"] == [] and after["habits"][loser]["yields_to"] == [winner]
+
+
+def test_a_resolution_compared_outcomes_found_since_rests_on_them():
+    config, won, winner, loser, trials = _found_in_trials()
+    compared, _, conflict = _trials_window(config, won, trials, comparison=winner)
+    assert conflict["step"] == 2 and compared["habits"][loser]["resolved_by"] == {winner: COMPARISON_BASIS}
+    after, _, conflict = _trials_window(config, compared, [*trials, _trial(winner, loser, ("failure", "success"),
+                                                                           "s1", run=1)])
+    assert (conflict["step"], conflict.get("standing")) == (2, True) and after["slow_only"] == []
+
+
+def test_a_reversed_resolution_rests_on_what_reversed_it():
+    config, won, winner, loser, trials = _found_in_trials()
+    after, _, conflict = _trials_window(config, won, trials, comparison=loser)
+    assert conflict["step"] == 2 and after["habits"][winner]["yields_to"] == [loser]
+    assert (after["habits"][winner]["resolved_by"], after["habits"][loser]["resolved_by"]) == (
+        {loser: COMPARISON_BASIS}, {})
+
+
+@pytest.mark.parametrize("basis, stands", [(COMPARISON_BASIS, True), (None, False)])
+def test_a_resolution_whose_basis_is_not_known_does_not_stand(basis, stands):
+    config, won, winner, loser, _ = _found_in_trials()
+    won["habits"][loser]["resolved_by"] = {} if basis is None else {winner: basis}
+    after, _, conflict = _trials_window(config, won, [])  # Neither history nor trials decide in this window.
+    assert (conflict["step"] == 2) is stands and (after["slow_only"] == []) is stands

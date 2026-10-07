@@ -665,5 +665,351 @@
         "status": "KILLED"
       }
     ]
+  },
+  "third_review": {
+    "scope": "review of 4905d47: N1 standing trial resolutions, N2 check basis of hypothesis statuses",
+    "method": "one mutation at a time in a fresh copy of the working tree; its killer file run alone; the file restored byte for byte before the next mutation; the killer files listed for a mutant run in order until one fails",
+    "mutants": 26,
+    "killed": 26,
+    "items": [
+      {
+        "mutant_id": "MEM4-MUT-01",
+        "finding": "N1",
+        "production_file": "synapse/memory_consolidation/court/conflicts.py",
+        "original": "if habits[left if earlier == right else right].get(\"resolved_by\", {}).get(earlier) != COMPARISON_BASIS:",
+        "mutation": "if habits[left if earlier == right else right].get(\"resolved_by\", {}).get(earlier) == TRIAL_BASIS:",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "9d62dcbe46e60a6192cb5651e50305a0d46650280f43f8abb6f465329b9563d8"
+        },
+        "killer_file": "acceptance/memory/test_stand_trial_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-02",
+        "finding": "N1",
+        "production_file": "synapse/memory_consolidation/court/conflicts.py",
+        "original": "if habits[left if earlier == right else right].get(\"resolved_by\", {}).get(earlier) != COMPARISON_BASIS:",
+        "mutation": "if False:",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "21b1d6bf141f7bd79111d1c03f5bab6a594fc85ae0c4be3dc7e0567d0ff420d8"
+        },
+        "killer_file": "acceptance/memory/test_stand_trial_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-03",
+        "finding": "N1",
+        "production_file": "synapse/memory_consolidation/court/conflicts.py",
+        "original": "if basis is not None:\n        habits[loser][\"resolved_by\"] = {**habits[loser].get(\"resolved_by\", {}), winner: basis}",
+        "mutation": "if False:\n        habits[loser][\"resolved_by\"] = {**habits[loser].get(\"resolved_by\", {}), winner: basis}",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "aab071d93cdd73dc068aba1f1a05d85dee805d2d5852da45de82bb68b71686ea"
+        },
+        "killer_file": "acceptance/memory/test_stand_trial_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-04",
+        "finding": "N1",
+        "production_file": "synapse/memory_consolidation/court/conflicts.py",
+        "original": "habits[winner][\"resolved_by\"] = {key: value for key, value in habits[winner].get(\"resolved_by\", {}).items()\n                                     if key != loser}",
+        "mutation": "pass",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "e40f412bf7cc1cac9c18b4758b4c6bd9fd2d363e51172eb2372dd0c38f14e946"
+        },
+        "killer_file": "acceptance/memory/test_stand_trial_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-05",
+        "finding": "N1",
+        "production_file": "synapse/memory_consolidation/court/conflicts.py",
+        "original": "habits[one][\"resolved_by\"] = {key: value for key, value in habits[one].get(\"resolved_by\", {}).items()\n                                      if key != other}",
+        "mutation": "pass",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "c09333f31120f2f9c12c332d66fc247b3300b26a886035661875dd292ac958c2"
+        },
+        "killer_file": "acceptance/memory/test_stand_trial_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-06",
+        "finding": "N1",
+        "production_file": "synapse/memory_consolidation/court/conflicts.py",
+        "original": "forced, basis=comparison[\"basis\"]))",
+        "mutation": "forced, basis=TRIAL_BASIS))",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "bb821d42b4105d58be368072919b235b475bab72bc836d6976f60beadc2d75f9"
+        },
+        "killer_file": "acceptance/memory/test_stand_trial_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-07",
+        "finding": "N1",
+        "production_file": "synapse/memory_consolidation/court/conflicts.py",
+        "original": "forced, basis=comparison[\"basis\"]))",
+        "mutation": "forced, basis=COMPARISON_BASIS))",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "b2d3c723712ea85fd43866e62e089a534ed2aca3100777c2f69f89067c7bb814"
+        },
+        "killer_file": "acceptance/memory/test_stand_trial_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-08",
+        "finding": "N1",
+        "production_file": "synapse/memory_consolidation/court/conflicts.py",
+        "original": "if entry[\"step\"] != 2:\n                found.pop(key, None)",
+        "mutation": "if entry[\"step\"] != 2:\n                pass",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "44644d392cd710b90b59e0a68a5fa7bd0776418cf3660d9e1a2b2396525079bc"
+        },
+        "killer_file": "acceptance/memory/test_reassessment_rules_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-09",
+        "finding": "N1",
+        "production_file": "synapse/memory_consolidation/court/conflicts.py",
+        "original": "elif not entry.get(\"standing\"):",
+        "mutation": "else:",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "ef11dc730fffb5b9b582ec40470e6f784d25a0a1c31f786d6e933e2b1f7d55b5"
+        },
+        "killer_file": "acceptance/memory/test_reassessment_rules_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-10",
+        "finding": "N1",
+        "production_file": "synapse/memory_consolidation/court/conflicts.py",
+        "original": "decided = comparison if comparison.get(\"winner\") is not None else advice.get(\"trial\") or {}",
+        "mutation": "decided = advice.get(\"trial\") if (advice.get(\"trial\") or {}).get(\"winner\") is not None else comparison",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "284a7e2cbe46684251e87d1c92425422af47cfb6a3e2a8e3297856fefedbdd94"
+        },
+        "killer_file": "acceptance/memory/test_reassessment_rules_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-11",
+        "finding": "N1",
+        "production_file": "synapse/memory_consolidation/court/conflicts.py",
+        "original": "\"basis\": TRIAL_BASIS if decided is not comparison else COMPARISON_BASIS}",
+        "mutation": "\"basis\": TRIAL_BASIS}",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "30fd859dd9f1d620c66e0f707e34aee84341989ddd642ae78ba119aedda63b0e"
+        },
+        "killer_file": "acceptance/memory/test_reassessment_rules_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-12",
+        "finding": "N1",
+        "production_file": "synapse/memory_consolidation/court/conflicts.py",
+        "original": "\"basis\": TRIAL_BASIS if decided is not comparison else COMPARISON_BASIS}",
+        "mutation": "\"basis\": COMPARISON_BASIS}",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "fc73e05f2310d51a70a8a2ffee4f0d0c854958fba081c57ccb63b7e1ce6bf6c2"
+        },
+        "killer_file": "acceptance/memory/test_reassessment_rules_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-13",
+        "finding": "N1",
+        "production_file": "synapse/memory_consolidation/court/decide.py",
+        "original": "recorded_bases(habits, draft[\"reassessment\"].get(\"resolutions\", []))",
+        "mutation": "",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "0bbd60e580348fd7f1182b53641cd49db599d46431a648139616ba33a2f09b10"
+        },
+        "killer_file": "acceptance/memory/test_reassessment_rules_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-14",
+        "finding": "N1",
+        "production_file": "synapse/memory_consolidation/court/reassessment.py",
+        "original": "\"resolutions\": resolution_bases(reports)}",
+        "mutation": "\"resolutions\": []}",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "e427a312305c007e910855a8c94be45b73b2db373165268799bd7f8a216c087a"
+        },
+        "killer_file": "acceptance/memory/test_reassessment_rules_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-15",
+        "finding": "N2",
+        "production_file": "synapse/memory_consolidation/hypotheses.py",
+        "original": "return digest({\"check\": check.contract_ref, \"source\": source.source,",
+        "mutation": "return digest({\"source\": source.source,",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "fe051c48179e0ae82bc49b74056dcf17fc7a2988c7a2d0737988ce024480ec76"
+        },
+        "killer_file": "acceptance/memory/test_hypothesis_binding_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-16",
+        "finding": "N2",
+        "production_file": "synapse/memory_consolidation/hypotheses.py",
+        "original": "\"relation\": relation(configuration.tools.provenance, source.source, check.source),",
+        "mutation": "",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "7aac0a0cca52f77b26445ab32cdbf8cc2a53c8eb2384cc0b9306b694f49b0e3f"
+        },
+        "killer_file": "acceptance/memory/test_hypothesis_binding_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-17",
+        "finding": "N2",
+        "production_file": "synapse/memory_consolidation/hypotheses.py",
+        "original": "\"identity\": dict(sorted(configuration.identity.items()))})",
+        "mutation": "})",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "5c6b4b9f771c9d4f398b185a3dd06e4f0736bda7bfc05e93c8cd3500c5e858c5"
+        },
+        "killer_file": "acceptance/memory/test_hypothesis_binding_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-18",
+        "finding": "N2",
+        "production_file": "synapse/memory_consolidation/hypotheses.py",
+        "original": "if basis is None or known.get(\"check_basis\") != basis:\n        return {\"status\": None, \"reason\": \"check_basis_changed\"}",
+        "mutation": "if False:\n        return {\"status\": None, \"reason\": \"check_basis_changed\"}",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "b410661125d82a92d0ade232c548fa498ebb5ae70e9fc86209d03a225afb3f4a"
+        },
+        "killer_file": "acceptance/memory/test_hypothesis_binding_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-19",
+        "finding": "N2",
+        "production_file": "synapse/memory_consolidation/hypotheses.py",
+        "original": "if basis is None or known.get(\"check_basis\") != basis:",
+        "mutation": "if known.get(\"check_basis\") != basis:",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "79210a580f0331f1590cdc4991cbc2e3d1f5f0cbece2612cf7686b1f90efc555"
+        },
+        "killer_file": "acceptance/memory/test_hypothesis_binding_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-20",
+        "finding": "N2",
+        "production_file": "synapse/memory_consolidation/hypotheses.py",
+        "original": "return {\"status\": status, \"reason\": reason, \"rule\": CHECK_RULE,\n                \"check_basis\": check_basis(record, configuration)}",
+        "mutation": "return {\"status\": status, \"reason\": reason, \"rule\": CHECK_RULE, \"check_basis\": None}",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "5b88fe668238b9f38d4881bf075533b4472d75f3393a70e26f53e017781615be"
+        },
+        "killer_file": "acceptance/memory/test_hypothesis_binding_acceptance.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-21",
+        "finding": "N2",
+        "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+        "original": "if entry[\"status\"] == \"provisional\":",
+        "mutation": "if entry.get(\"rule\") == CHECK_RULE or entry[\"status\"] == \"provisional\":",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "b7ee47352740dd03057a90f03c7b38e25d105dc97629a860dc09296bda5dc165"
+        },
+        "killer_file": "acceptance/memory/test_reassessment_rules_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-22",
+        "finding": "N2",
+        "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+        "original": "\"rule\": item[\"rule\"], \"check_basis\": item[\"check_basis\"]}",
+        "mutation": "\"rule\": item[\"rule\"], \"check_basis\": None}",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "8c885342f3740081b28e19cfbefd915dcfbee630e5d6fe354369ae1d3bde1355"
+        },
+        "killer_file": "acceptance/memory/test_hypothesis_binding_acceptance.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-23",
+        "finding": "N2",
+        "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+        "original": "\"check_basis\": entry.get(\"check_basis\")}",
+        "mutation": "\"check_basis\": None}",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "5ee0f527ee19050c796b8303b331d0539ef642432158a13c56fd112a539d5fbd"
+        },
+        "killer_file": "acceptance/memory/test_hypothesis_binding_acceptance.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-24",
+        "finding": "N2",
+        "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+        "original": "\"rule\": event.get(\"rule\"), \"check_basis\": event.get(\"check_basis\")})",
+        "mutation": "\"rule\": event.get(\"rule\"), \"check_basis\": None})",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "f69bd55513001fe912f7d86e654c9a6536eee706c062d68ed7a81dc13ba28d3e"
+        },
+        "killer_file": "acceptance/memory/test_hypothesis_binding_acceptance.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-25",
+        "finding": "N2",
+        "production_file": "synapse/runtime/memory_engine.py",
+        "original": "\"rule\": result[\"rule\"], \"check_basis\": result[\"check_basis\"], \"check_ref\": check_ref,",
+        "mutation": "\"rule\": result[\"rule\"], \"check_ref\": check_ref,",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "7ec12d20b8a866b7df627e23cc23bdff2c3658aeb8bebfee2dc8cd22053e9bfd"
+        },
+        "killer_file": "acceptance/memory/test_hypothesis_binding_acceptance.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM4-MUT-26",
+        "finding": "N2",
+        "production_file": "synapse/memory_consolidation/session.py",
+        "original": "configuration.parameters, check_basis(record, configuration))",
+        "mutation": "configuration.parameters, None)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "c4f999d640d54a719f7303e125dad148da9b1a43591e629cb6db1e49f31e2a05"
+        },
+        "killer_file": "acceptance/memory/test_hypothesis_binding_acceptance.py",
+        "status": "KILLED"
+      }
+    ]
   }
 }

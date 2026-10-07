@@ -86,6 +86,22 @@ def test_a_committed_transaction_keeps_what_it_changed():
     assert transaction_event(interp)["type"] == "integrate_committed"
 
 
+def test_a_rollback_puts_back_enclosing_scopes_closure_state_and_shared_references():
+    interp, error = run(
+        'let x = 1\nlet box = {"n": 1}\nlet alias = box\nlet nest = {"inner": {"n": 1}}\nlet rows = [[1]]\n'
+        'fn counter() {\n    let cell = {"n": 0}\n    fn bump() { cell.n = cell.n + 1\n return cell.n }\n    return bump\n}\n'
+        'let bump = counter()\nfn change() { x = 9 }\n'
+        'fn outer() {\n    let d = "d"\n    integrate d {\n        change()\n        box.n = 2\n        bump()\n        nest.inner.n = 2\n'
+        '        let row = rows[0]\n        row.append(2)\n'
+        '        assert false, "abort"\n    } on fail rollback\n}\nouter()\nalias.n = 3\nlet next = bump()\n')
+    assert error is None
+    assert interp.global_env.get("x") == 1
+    assert interp.global_env.get("box") == {"n": 3} and interp.global_env.get("alias") is interp.global_env.get("box")
+    assert interp.global_env.get("next") == 1
+    assert interp.global_env.get("nest") == {"inner": {"n": 1}} and interp.global_env.get("rows") == [[1]]
+    assert transaction_event(interp)["type"] == "integrate_rollback"
+
+
 CLOSURE = 'let x = 1\nfn setx() { x = 9 }\nintegrate x {\n    setx()\nBODY} on fail rollback\n'
 
 
@@ -148,6 +164,44 @@ def test_a_nondeterministic_call_is_refused_under_any_name(prelude, call, operat
     assert live.global_env.get("x") == 1
     event = transaction_event(live)
     assert (event["abort_reason"], event["barrier_op"]) == ("barrier_violation", operation)
+
+
+def test_random_reached_through_its_call_method_is_recorded_and_refused_in_the_overlay():
+    live, error = run("let r = random\nlet value = r.__call__()\n")
+    assert error is None
+    assert [event["name"] for event in live.execution_history if event["type"] == "side_effect"] == ["random"]
+    overlay, error = run("let r = random\nlet value = 1\nintegrate value {\n    value = r.__call__()\n} on fail rollback\n",
+                         overlay=True)
+    assert str(error) == "random is forbidden inside Alpha3g I2 integrate skeleton"
+    assert overlay.global_env.get("value") == 1
+
+
+def test_a_host_object_method_is_refused_inside_the_overlay_transaction_before_it_runs():
+    calls = []
+
+    class Provider:
+        def complete(self):
+            calls.append("performed")
+            return 0.75
+    interp = Interpreter()
+    interp.integrate_i2_skeleton_enabled = True
+    interp.global_env.define("provider", Provider())
+    with pytest.raises(Exception, match="Python callable is forbidden"):
+        interp.interpret(compile_to_ast("let x = 1\nintegrate x {\n    x = provider.complete()\n} on fail rollback\n"))
+    assert calls == [] and interp.global_env.get("x") == 1
+
+
+def test_a_model_call_through_an_alias_is_refused_inside_the_default_transaction():
+    interp, error = run('agent Oracle { model "mock" }\nlet ask = Oracle.think\nlet x = 1\nlet d = "d"\n'
+                        'integrate d {\n    x = ask("value")\n} on fail rollback\n')
+    assert str(error) == "think is forbidden inside integrate transaction"
+    assert interp.global_env.get("x") == 1
+
+
+def test_a_deterministic_builtin_under_another_name_runs_inside_the_overlay_transaction():
+    live, error = run("let size = len\nlet x = 1\nintegrate x {\n    x = size([1, 2, 3])\n} on fail rollback\n", overlay=True)
+    assert error is None
+    assert live.global_env.get("x") == 3
 
 
 def test_a_host_function_is_refused_inside_the_overlay_transaction():

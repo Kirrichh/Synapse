@@ -2764,5 +2764,404 @@
         "status": "KILLED"
       }
     ]
+  },
+  "review_59e6ab3": {
+    "scope": "review of 59e6ab3: F1 integrate rollback of every writable scope in place, F2 policy guard state put back and refused, F3 call forms classified by the operation called, F4 model answer records owning their copy",
+    "method": "one mutation at a time in a fresh copy of the working tree; its killer files run alone in order until one fails; the file restored byte for byte before the next mutation",
+    "first_round": {
+      "mutants": 25,
+      "killed": 21,
+      "survivors_closed": [
+        "contract cases added: nested containers in dicts and lists rolled back, a same-length list element change and a rebinding alone seen as changes"
+      ]
+    },
+    "mutants": 25,
+    "killed": 25,
+    "items": [
+      {
+        "mutant_id": "R59-MUT-01",
+        "finding": "F1",
+        "production_file": "synapse/program_state.py",
+        "original": "                    pending_scopes.append(closure)",
+        "mutation": "                    pass",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "baaf780deb21a5f3df84d27b1c01030c09d4149cd5816918b92f2014756ec29e"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py",
+          "acceptance/runtime/test_runtime_state_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-02",
+        "finding": "F1",
+        "production_file": "synapse/program_state.py",
+        "original": "                    scope = scope.parent",
+        "mutation": "                    scope = None",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "09b478e323ac5d8d69e59951edf969317dcb37cc4877da1687686565bc70f687"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py",
+          "acceptance/runtime/test_runtime_state_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-03",
+        "finding": "F1",
+        "production_file": "synapse/program_state.py",
+        "original": "                    pending_values.extend(value.values())",
+        "mutation": "                    pass",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "24fe08cd06c3f3302356da281d5e07f693ac7075ae66420626044127c72ea36c"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py",
+          "acceptance/runtime/test_runtime_state_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-04",
+        "finding": "F1",
+        "production_file": "synapse/program_state.py",
+        "original": "                    pending_values.extend(value)\n                elif isinstance(value, set):",
+        "mutation": "                    pass\n                elif isinstance(value, set):",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "3410a5d764ede6de42f2b90f9939b7ad022e7122cc727a8a0bb7456f759f0c62"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py",
+          "acceptance/runtime/test_runtime_state_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-05",
+        "finding": "F1",
+        "production_file": "synapse/program_state.py",
+        "original": "                    self._containers[id(value)] = (value, set(value))",
+        "mutation": "                    pass",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "01526213098e42117bd9c382315638f03d83f917fd562a9e470336ab90953832"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_runtime_state_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-06",
+        "finding": "F1",
+        "production_file": "synapse/program_state.py",
+        "original": "                elif isinstance(value, tuple):\n                    pending_values.extend(value)",
+        "mutation": "                elif isinstance(value, tuple):\n                    pass",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "930e7d04ac1fdc9d804d614f701e3027ae054de3600284d892bbb83f87b4b3ca"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_runtime_state_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-07",
+        "finding": "F1",
+        "production_file": "synapse/program_state.py",
+        "original": "    return a is b or (type(a) is type(b) and isinstance(a, _SCALARS) and a == b)",
+        "mutation": "    return a is b",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "ee3624aba458d9165db875e11ffcab01755b6a2c6beb00ffec6ba3366d489688"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_runtime_state_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-08",
+        "finding": "F1",
+        "production_file": "synapse/program_state.py",
+        "original": "    return current.keys() == recorded.keys() and all(",
+        "mutation": "    return all(",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "2920dd5775fa5ef6d44176d5fb6e57130f7e17533be46e47e83487e1ef4482f8"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py",
+          "acceptance/runtime/test_runtime_state_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-09",
+        "finding": "F1",
+        "production_file": "synapse/program_state.py",
+        "original": "        return len(value) != len(contents) or not all(_same(a, b) for a, b in zip(value, contents))",
+        "mutation": "        return len(value) != len(contents)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "860b8b57fd2c984cf8b5b246cbcd79d385ac54d2957aa37b011dced09bbd2994"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py",
+          "acceptance/runtime/test_runtime_state_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-10",
+        "finding": "F1",
+        "production_file": "synapse/program_state.py",
+        "original": "    return value != contents\n",
+        "mutation": "    return False\n",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "76e365ade47f48f69885d6e1010009546556e9dff94eba423cc610cbc3cabea6"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_runtime_state_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-11",
+        "finding": "F1",
+        "production_file": "synapse/program_state.py",
+        "original": "        return (any(not _same_mapping(scope.variables, bindings) for scope, bindings in self._scopes.values())\n                or any(",
+        "mutation": "        return (False\n                or any(",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "79cb59830c3df77c0bd54b7cef4cab654f5c1efac5bab50d4995e4d5a4c16790"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_runtime_state_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-12",
+        "finding": "F1",
+        "production_file": "synapse/program_state.py",
+        "original": "                    value[:] = contents",
+        "mutation": "                    pass",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "7a4f096d92b640c9838bda651ccc57cefaa9a5cb67e755bb335d623e8ce04d59"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py",
+          "acceptance/runtime/test_runtime_state_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-13",
+        "finding": "F1",
+        "production_file": "synapse/program_state.py",
+        "original": "                    value.clear()\n                    value.update(contents)",
+        "mutation": "                    pass",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "89220199850c81e9d22ddf04ee896903086d81bca5bdb2561a12f94780ad0911"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py",
+          "acceptance/runtime/test_runtime_state_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-14",
+        "finding": "F1",
+        "production_file": "synapse/program_state.py",
+        "original": "                scope.variables.clear()\n                scope.variables.update(bindings)",
+        "mutation": "                pass",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "6ba7cd7f589bc8662f33b2547047ee485251cef1a556e414c8768aeeec3deb83"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py",
+          "acceptance/runtime/test_runtime_state_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-15",
+        "finding": "F1",
+        "production_file": "synapse/interpreter.py",
+        "original": "            program_state.restore()\n",
+        "mutation": "            pass\n",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "9f71ef083f7f078a77ce33d5ddfd791a5bdd4c08dcd444456ccf1b10222cba9d"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-16",
+        "finding": "F2",
+        "production_file": "synapse/runtime/governance_engine.py",
+        "original": "                state.restore()\n",
+        "mutation": "                pass\n",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "b89436b78dd3f03e55281c1838656ee9333e5281399910a8ac1388dd831ba205"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_runtime_state_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-17",
+        "finding": "F2",
+        "production_file": "synapse/runtime/governance_engine.py",
+        "original": "            if state.changed():",
+        "mutation": "            if False:",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "fa1dc39a80649a33408542dfd1883f33bd21b8d8babfc7f37d878c69092feee7"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_runtime_state_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-18",
+        "finding": "F2",
+        "production_file": "synapse/interpreter.py",
+        "original": "            program_state_fn=lambda args: ProgramState([self.global_env], args),",
+        "mutation": "            program_state_fn=lambda args: ProgramState([self.global_env]),",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "b5bbb0b0dfefe81522adab8cdfadd9b8bbded87dd09d25a5f22abde5af80f2b5"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_runtime_state_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-19",
+        "finding": "F3",
+        "production_file": "synapse/interpreter.py",
+        "original": "        while getattr(fn, \"__name__\", None) == \"__call__\" and callable(getattr(fn, \"__self__\", None)):\n            fn = fn.__self__  # ``f.__call__`` is ``f``",
+        "mutation": "        pass",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "e03755585c9f3e401a32e843d09640500da9aa6cac9b270ed6f53eee4de461ee"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-20",
+        "finding": "F3",
+        "production_file": "synapse/interpreter.py",
+        "original": "        if isinstance(owner, AgentRuntime) and getattr(fn, \"__func__\", None) is AgentRuntime.think:",
+        "mutation": "        if False:",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "c87f26e4172940bab3fea66b8881bc561ca9e3fac3beb8883d232f84f64e220a"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-21",
+        "finding": "F3",
+        "production_file": "synapse/interpreter.py",
+        "original": "                if isinstance(obj, _DATA_TYPES):  # an operation of the program's own data",
+        "mutation": "                if True:",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "833b28d4e2e92f7407bfb67d75276ce7f57e87e649fe629868034ebea21fd800"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-22",
+        "finding": "F3",
+        "production_file": "synapse/interpreter.py",
+        "original": "        if owner is not self and not any(fn is BUILTINS.get(name) for name in _DETERMINISTIC_BUILTINS):",
+        "mutation": "        if owner is not self:",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "c57f75971afce2950ae80d42eb5b2bd201402811c1e444fb9578fb63a91ba7ac"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-23",
+        "finding": "F4",
+        "production_file": "synapse/runtime/vm_bridge.py",
+        "original": "        result = copy.deepcopy(result)\n        h._llm_response_cache[content_key] = result",
+        "mutation": "        h._llm_response_cache[content_key] = result",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "fcff14c0e898e540363077b45efb07d14ea13f62c176e2666e318211a905653a"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_vm_host_calls_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-24",
+        "finding": "F4",
+        "production_file": "synapse/runtime/vm_bridge.py",
+        "original": "                        \"cache_policy\": cache_policy,\n                    })\n                return copy.deepcopy(cached)",
+        "mutation": "                        \"cache_policy\": cache_policy,\n                    })\n                return cached",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "c1f844f24160e47597c0eb709ecdde366e22589152d0aade83972f58f0eb593a"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_vm_host_calls_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R59-MUT-25",
+        "finding": "F4",
+        "production_file": "synapse/runtime/vm_bridge.py",
+        "original": "                    symbol=\"llm.request\",\n                )\n            return copy.deepcopy(cached)",
+        "mutation": "                    symbol=\"llm.request\",\n                )\n            return cached",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "d71181e39ed1ca79314b03763b41f9c4902cfe776ef4c23f59ef412f421fa8c7"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_vm_host_calls_contract.py"
+        ],
+        "status": "KILLED"
+      }
+    ]
   }
 }

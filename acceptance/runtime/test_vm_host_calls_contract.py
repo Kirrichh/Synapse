@@ -108,3 +108,26 @@ def test_a_model_call_inside_a_context_keeps_the_context_open_until_it_closes_no
     assert trail == [("context_entered", None), ("LLM_RESPONSE_CACHED", None), ("context_exited", None)]
     assert interp.global_env.get("vm_result")["output"] == ["inside"]
     assert prompts == ["What is two plus two?"]
+
+
+def test_a_program_changing_its_model_answer_rewrites_neither_the_record_nor_the_cache():
+    prompts = []
+    interp = Interpreter()
+    interp.llm_backend = gemini({**FREE_TIER, **DECLARED_PUBLIC}, prompts)
+    interp.global_env.define("src", 'let answer = llm "question"\n')
+    changed_twice = (RUN_VM + 'vm_result.locals.answer.text = "changed by the program"\n'
+                     'run vm { source code }\nlet second = vm_result.locals.answer.text\n'
+                     'vm_result.locals.answer.text = "changed again"\nrun vm { source code }\n')
+    interp.interpret(compile_to_ast(changed_twice))
+    recorded = [event["result"]["text"] for event in interp.execution_history if event["type"] == "LLM_RESPONSE_CACHED"]
+    assert recorded == ["four"]
+    assert interp.global_env.get("second") == "four"
+    assert interp.global_env.get("vm_result")["locals"]["answer"]["text"] == "four"
+    assert prompts == ["question"]
+    replay = Interpreter()
+    replay.load_snapshot(interp.snapshot())
+    replay.global_env.define("src", 'let answer = llm "question"\n')
+    replay.interpret(compile_to_ast(changed_twice))
+    assert [event["result"]["text"] for event in replay.execution_history
+            if event["type"] == "LLM_RESPONSE_CACHED"][:1] == ["four"]
+    assert replay.global_env.get("second") == "four"

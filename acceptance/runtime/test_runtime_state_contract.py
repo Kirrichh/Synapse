@@ -116,13 +116,16 @@ def test_a_nondeterministic_builtin_is_recorded_and_replayed_under_another_name(
 
 GUARDED = ('memory palace "Palace" { rooms { episodic } backend sqlite bind palace }\n'
            'affective state "Mood" { baseline { valence 0.0 arousal 0.8 dominance 0.0 } bind mood }\n'
-           'let box = {"value": 1}\nlet items = [1]\n'
+           'let box = {"value": 1}\nlet items = [1]\nlet alias = box\n'
+           'fn counter() {\n    let cell = {"n": 0}\n    fn bump() { cell.n = cell.n + 1\n return cell.n }\n    return bump\n}\n'
+           'let bump = counter()\nfn double(v) { return v * 2 }\n'
            'policy Gov {\n    target "Worker.process"\n    guard (args) {\n        BODY\n    }\n}\n'
            'agent Worker { model "mock" }\nsend Worker.process({"value": 1})\n')
 
 
 @pytest.mark.parametrize("body, refusal", [
     ("box.value = 9", "Policy guard of Gov changed program state"),
+    ("let hidden = bump()", "Policy guard of Gov changed program state"),
     ("items.append(2)", "Policy guard of Gov changed program state"),
     ("args[0].value = 7", "Policy guard of Gov changed program state"),
     ('imprint into palace.hidden { content "secret" confidence 1.0 bind mid }', "Policy guard cannot perform memory imprint"),
@@ -130,14 +133,53 @@ GUARDED = ('memory palace "Palace" { rooms { episodic } backend sqlite bind pala
     ('somatic marker "gut" { gut_feeling 0.9 bind marker }', "Policy guard cannot perform somatic mutation"),
     ('print("inside guard")', "Policy guard cannot print"),
 ])
-def test_a_policy_guard_that_would_change_state_refuses_the_guarded_call(body, refusal):
+def test_a_policy_guard_that_would_change_state_refuses_the_guarded_call_and_changes_nothing(body, refusal):
+    interp = Interpreter()
     with pytest.raises(PolicyCompilationError, match=refusal):
-        run(GUARDED.replace("BODY", body))
+        interp.interpret(compile_to_ast(GUARDED.replace("BODY", body)))
+    assert interp.global_env.get("box") == {"value": 1} and interp.global_env.get("alias") is interp.global_env.get("box")
+    assert interp.global_env.get("items") == [1]
+    interp.interpret(compile_to_ast("let first = bump()\n"))
+    assert interp.global_env.get("first") == 1
+    assert interp.mailboxes.get("Worker") in (None, [])
 
 
 def test_a_policy_guard_that_only_reads_lets_the_call_through_with_no_trace_but_its_verdict():
-    interp = run(GUARDED.replace("BODY", 'let seen = args[0].value + box.value\nif seen > 5 {\n            reject "too big"\n        }'))
+    interp = run(GUARDED.replace("BODY", 'let seen = double(args[0].value) + box.value\nif seen > 5 {\n            reject "too big"\n        }'))
     assert [event["type"] for event in interp.execution_history][-2:] == ["policy_evaluated", "message_sent"]
     assert interp.memory_palaces["Palace"].rooms == ["episodic"]
     assert interp.global_env.get("box") == {"value": 1}
     assert interp.affective_states["Mood"].current["valence"] == 0.0
+
+
+def test_program_state_sees_and_puts_back_every_reachable_change_in_place():
+    from synapse.interpreter import Environment
+    from synapse.program_state import ProgramState
+    outer = Environment()
+    inner = Environment(outer)
+    shared, tags, pair_item = {"n": 1}, {"a"}, [1]
+    big = 10 ** 20
+    outer.define("shared", shared)
+    outer.define("alias", shared)
+    outer.define("tags", tags)
+    outer.define("pair", (pair_item, 2))
+    inner.define("big", big)
+    state = ProgramState([inner])
+    inner.variables["big"] = int(str(big))  # an equal number, another object: nothing changed
+    assert not state.changed()
+    inner.variables["big"] = big + 1  # a rebinding alone is a change
+    assert state.changed()
+    state.restore()
+    pair_item[0] = 5  # the same length, another element
+    assert state.changed()
+    state.restore()
+    assert pair_item == [1] and not state.changed()
+    outer.variables["shared"] = {"n": 1}
+    tags.add("b")
+    pair_item.append(2)
+    inner.define("created", 1)
+    assert state.changed()
+    state.restore()
+    assert outer.variables["shared"] is shared and outer.variables["alias"] is shared
+    assert tags == {"a"} and pair_item == [1] and "created" not in inner.variables
+    assert not state.changed()

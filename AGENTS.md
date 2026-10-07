@@ -108,7 +108,29 @@ Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:
 No Linux full suite was run for Patch 2. A recorded baseline is evidence of an
 observed run, not a command to rerun the full suite before each patch.
 
-The latest observed Linux verification is the recheck package of PR #108 on
+The latest observed Linux verification is the review of PR #108 at `59e6ab3`
+(F1 a rolled-back `integrate` puts back every scope it could write, in place;
+F2 a policy guard that changed program data, a closure's state or the guarded
+arguments is refused and the change put back; F3 every call form is the
+operation it calls; F4 a recorded or cached model answer is the bridge's own
+copy). Python 3.11, every file in its own process, four files in parallel, on
+the uncommitted working tree; the whole `tests/` directory ran because the
+interpreter's call path changed:
+
+```text
+tests/:              208 files, 5224 passed, 12 skipped
+acceptance/memory:   88 files, 440 passed
+acceptance/runtime:  6 files, 65 passed
+stage16 memory/CVM:  8 files, 16 passed
+```
+
+The reviewer's battery (9 counterexamples, 4 positive controls, 15 earlier
+regressions) passes 28/28. A mutation campaign over the four fixes killed all
+25 mutants (`reports/memory_second_review_mutation_evidence_v1.json`,
+`review_59e6ab3`); its first round left four survivors, closed by contract
+cases (nested containers, a same-length list change, a rebinding alone).
+
+The previous observed Linux verification is the recheck package of PR #108 on
 `c4999a4`: the nine recheck findings (R1-R3, DEEP-1..6) and every earlier
 review family (C-R) still reproducible on that tree (failures inside `main()`,
 VM host calls and prompts, free-tier privacy declaration, integrate rollback,
@@ -136,7 +158,7 @@ findings, 59/59 for the earlier families
 (`reports/memory_second_review_mutation_evidence_v1.json`,
 `recheck_c4999a4`, `earlier_families_c4999a4`).
 
-The previous observed Linux verification is the independent audit of PR #108 at
+An earlier observed Linux verification is the independent audit of PR #108 at
 `746967d` (AUD-1 purity of a `parallel` graph belongs to the function called,
 not its name; AUD-2 an event is admitted at its moment only; AUD-3 a correction
 back to an answer memory held before holds it again and keeps its earlier

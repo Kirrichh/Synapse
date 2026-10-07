@@ -94,6 +94,7 @@ from .runtime.mailbox_wait import (
     validate_replayed_message_received_event,
     validate_replayed_receive_timeout_event,
 )
+from .program_state import ProgramState
 from .prompt_template import render as render_prompt
 from .runtime.vm_routing import RECORDED_SIDE_EFFECT_HOST_SYMBOLS, classify_ast_node_v22, fallback_reason_for
 from .version import RUNTIME_VERSION
@@ -223,6 +224,13 @@ _TRANSACTION_OWNERS = (
     "checkpoints", "current_context",
 )
 _TRANSACTION_REGISTRIES = ("habit_registry", "threshold_registry", "context_tracker")
+
+
+# Values that are the program's own data: their methods are data operations.
+_DATA_TYPES = (str, int, float, list, dict, tuple, set, frozenset, bytes, type(None))
+# Builtins that only compute from their arguments.
+_DETERMINISTIC_BUILTINS = frozenset(
+    name for name in BUILTINS if name not in RECORDED_SIDE_EFFECT_HOST_SYMBOLS | {"print"})
 
 
 class FuelExhaustedError(Exception):
@@ -882,7 +890,7 @@ class Interpreter:
             current_mood_snapshot_fn=self.current_mood_snapshot,
             policy_guard_depth_getter=lambda: self.policy_guard_depth,
             policy_guard_depth_setter=lambda value: setattr(self, "policy_guard_depth", value),
-            policy_guard_state_fn=self.policy_guard_state,
+            program_state_fn=lambda args: ProgramState([self.global_env], args),
             policy_guard_refusal=PolicyCompilationError,
             policy_violation_exception=PolicyViolationException,
             reject_exception=RejectException,
@@ -2226,12 +2234,13 @@ class Interpreter:
 
         # v1.4.1: transaction snapshot covers both mutable state and durable logs.
         env_snapshot = self.capture_env_state(env)
+        program_state = ProgramState([env])
         agent_snapshots = self.capture_agent_state(env)
         log_snapshot = self.capture_durable_log_state()
         cognitive_snapshot = self.capture_cognitive_state()
 
         def rollback() -> None:
-            self.restore_env_state(env, env_snapshot)
+            program_state.restore()
             self.restore_agent_state(env, agent_snapshots)
             self.restore_durable_log_state(log_snapshot)
             self.restore_cognitive_state(cognitive_snapshot)
@@ -2767,9 +2776,6 @@ class Interpreter:
 
     def capture_env_state(self, env: Environment) -> Dict[str, Any]:
         return {"variables": {k: self.safe_clone_value(v) for k, v in env.variables.items()}, "agents": list(env.agents.keys())}
-
-    def restore_env_state(self, env: Environment, snapshot: Dict[str, Any]):
-        env.variables = {k: self.safe_clone_value(v) for k, v in snapshot.get("variables", {}).items()}
 
     def capture_agent_state(self, env: Environment) -> Dict[str, Dict[str, Any]]:
         snapshots = {}
@@ -3962,11 +3968,6 @@ class Interpreter:
 
     def applicable_policies(self, receiver: str, method: str) -> List[Dict[str, Any]]:
         return self.runtime.governance.applicable_policies(receiver, method)
-
-    def policy_guard_state(self, args: List[Any]) -> Any:
-        """What a guard reaches without a statement: the program's data and the guarded arguments."""
-        data = {name: self._consensus_vote_stable_value(value) for name, value in self.global_env.variables.items()}
-        return data, self._consensus_vote_stable_value(list(args))
 
     def current_mood_snapshot(self) -> FrozenMoodSnapshot:
         return self.runtime.affective.current_mood_snapshot()
@@ -5847,16 +5848,13 @@ class Interpreter:
             except RuntimeError:
                 val = None
             if callable(val) and not isinstance(val, FnDef):
-                recorded = self._side_effect_named(val)
-                if recorded is not None:  # random, time or uuid under another name: recorded all the same.
-                    return self.execute_side_effect(recorded, args)
                 return self._call_host_callable(val, args)
             if isinstance(val, FnDef):
                 return self.call_function(val, args, env)
             if isinstance(val, AgentRuntime):
                 if args:
                     self._forbid_consensus_vote_side_effect("AgentRuntime.think")
-                    return self._agent_think(val, str(args[0]))
+                    return self._agent_think(val, args[0])
                 return val
             if isinstance(val, FlowDef):
                 self._forbid_consensus_vote_side_effect("FlowDef call")
@@ -5903,7 +5901,7 @@ class Interpreter:
 
                 # Специальные методы
                 if member == "think":
-                    return self._agent_think(obj, str(args[0]) if args else "")
+                    return self._agent_think(obj, *args[:1])
                 if member == "memory":
                     return obj.memory
                 if member == "model":
@@ -5921,7 +5919,9 @@ class Interpreter:
                 return obj[args[0]]
             if hasattr(obj, member):
                 method = getattr(obj, member)
-                return method(*args)
+                if isinstance(obj, _DATA_TYPES):  # an operation of the program's own data
+                    return method(*args)
+                return self._call_host_callable(method, args)
 
             raise RuntimeError(f"Object has no method '{member}'")
 
@@ -5933,25 +5933,39 @@ class Interpreter:
             self._forbid_consensus_vote_side_effect("FlowDef call")
             return self.execute_block(fn_value.body, Environment(env))
         if callable(fn_value):
-            recorded = self._side_effect_named(fn_value)
-            if recorded is not None:
-                return self.execute_side_effect(recorded, args)
             return self._call_host_callable(fn_value, args)
 
         raise RuntimeError(f"Uncallable object: {type(fn_value)}")
 
     def _call_host_callable(self, fn: Any, args: List[Any]) -> Any:
-        """A Python callable from the environment: a host function whose effects the program cannot see."""
+        """A Python callable the program reaches, under any name or form (alias, ``__call__``, bound method).
+
+        The operation it actually is decides how it runs, before it runs: a
+        nondeterministic builtin is recorded (and refused where the barrier
+        holds), a model call is ``think`` wherever it is reached, a deterministic
+        builtin is data work, and any other host function is an effect the
+        program cannot see into.
+        """
+        while getattr(fn, "__name__", None) == "__call__" and callable(getattr(fn, "__self__", None)):
+            fn = fn.__self__  # ``f.__call__`` is ``f``
+        recorded = self._side_effect_named(fn)
+        if recorded is not None:
+            return self.execute_side_effect(recorded, args)
+        owner = getattr(fn, "__self__", None)
+        if isinstance(owner, AgentRuntime) and getattr(fn, "__func__", None) is AgentRuntime.think:
+            self._forbid_consensus_vote_side_effect("AgentRuntime.think")
+            return self._agent_think(owner, *args)
         self._forbid_consensus_vote_side_effect("Python callable")
-        if getattr(fn, "__self__", None) is not self:  # the interpreter's own functions keep their own barrier
+        if owner is not self and not any(fn is BUILTINS.get(name) for name in _DETERMINISTIC_BUILTINS):
+            # The interpreter's own functions keep their own barrier.
             self.forbid_integrate_i2_effect("Python callable")
         return fn(*args)
 
-    def _agent_think(self, agent: AgentRuntime, prompt: str) -> Any:
+    def _agent_think(self, agent: AgentRuntime, prompt: Any = "") -> Any:
         """A model call: its answer is not reproducible inside a transaction, as ``llm`` is not."""
         if self.integrate_depth > 0:
             raise IntegrateIsolationViolation("think is forbidden inside integrate transaction")
-        return agent.think(prompt)
+        return agent.think(str(prompt))
 
     def _side_effect_named(self, value: Any) -> Optional[str]:
         """The nondeterministic builtin a callable value is, whatever name it is called under: its result is

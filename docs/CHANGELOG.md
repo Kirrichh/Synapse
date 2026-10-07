@@ -1,5 +1,27 @@
 # Synapse Changelog
 
+## Review of PR108 at 59e6ab3 — state, guards, call forms, model evidence — 2026-10-07
+
+Program data is one state for transactions and guards
+(`synapse.program_state.ProgramState`); a host value is classified by the
+operation it is, under any call form; the record of a model answer owns its
+copy.
+
+- F1: a rolled-back `integrate` puts back every scope it could write (the
+  enclosing chain, closures of reachable functions, nested containers) in
+  place: shared references survive and enclosing scopes are restored.
+- F2: a policy guard that changed program data, a closure's state or the
+  guarded arguments is refused and the change put back; a reading guard runs
+  as before, live and on replay alike.
+- F3: `f.__call__`, aliases and bound methods are the operation they call: a
+  nondeterministic builtin is recorded (refused in the overlay transaction), a
+  model call is `think` wherever reached, a host object's method is refused in
+  the overlay transaction before it runs; deterministic builtins under another
+  name stay available.
+- F4: the cached and recorded model answer is the bridge's own copy; a program
+  changing its answer rewrites neither the history, the cache, a cache hit nor
+  a replay.
+
 ## Earlier review families (C–R) rechecked on the current tree — 2026-10-07
 
 Every family of the earlier PR108 reviews was reproduced again on `c4999a4`;

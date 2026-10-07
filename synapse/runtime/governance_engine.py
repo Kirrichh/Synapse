@@ -36,7 +36,7 @@ class GovernanceEngine:
         current_mood_snapshot_fn: Callable[[], Any],
         policy_guard_depth_getter: Callable[[], int],
         policy_guard_depth_setter: Callable[[int], None],
-        policy_guard_state_fn: Callable[[List[Any]], Any],
+        program_state_fn: Callable[[List[Any]], Any],
         policy_guard_refusal: type[Exception],
         policy_violation_exception: type[Exception],
         reject_exception: type[Exception],
@@ -63,7 +63,7 @@ class GovernanceEngine:
         self.current_mood_snapshot = current_mood_snapshot_fn
         self.get_policy_guard_depth = policy_guard_depth_getter
         self.set_policy_guard_depth = policy_guard_depth_setter
-        self.policy_guard_state = policy_guard_state_fn
+        self.program_state = program_state_fn
         self.PolicyGuardRefusal = policy_guard_refusal
         self.PolicyViolationException = policy_violation_exception
         self.RejectException = reject_exception
@@ -172,9 +172,10 @@ class GovernanceEngine:
             guard_env.define("trust_at_least", self.trust_at_least)
             guard_env.define("mood", self.current_mood_snapshot())
 
-            # The guard reads; a change it made to the program's data or to the
-            # guarded arguments would outlive its discarded history.
-            state_before = self.policy_guard_state(args)
+            # The guard reads; a change it made to the program's data, to a
+            # closure's state or to the guarded arguments would outlive its
+            # discarded history. Such a change is put back and the call refused.
+            state = self.program_state(args)
             self.set_policy_guard_depth(self.get_policy_guard_depth() + 1)
             try:
                 self.execute_block(guard_body, guard_env)
@@ -189,7 +190,8 @@ class GovernanceEngine:
                 del actor_log[actor_log_len:]
                 self.set_mailboxes(mailbox_snapshot)
                 del memory_audit[memory_audit_len:]
-            if self.policy_guard_state(args) != state_before:
+            if state.changed():
+                state.restore()
                 raise self.PolicyGuardRefusal(f"Policy guard of {policy_name} changed program state")
 
         if rejected:

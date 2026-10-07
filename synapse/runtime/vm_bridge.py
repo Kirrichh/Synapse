@@ -1104,6 +1104,9 @@ class VMBridge:
         # Live cache
         if not hasattr(h, "_llm_response_cache"):
             h._llm_response_cache = {}
+        # The record owns its answer: what the program does with its own copy
+        # never rewrites the cache or the history.
+        result = copy.deepcopy(result)
         h._llm_response_cache[content_key] = result
 
         # Deterministic history event (embedded replay source-of-truth)
@@ -1202,7 +1205,7 @@ class VMBridge:
                              f"content_key={content_key[:16]}..."),
                     symbol="llm.request",
                 )
-            return cached
+            return copy.deepcopy(cached)
 
         # --- 3. Live mode: check live cache (unless policy=never) ---
         if cache_policy != "never":
@@ -1215,7 +1218,7 @@ class VMBridge:
                         "content_key": content_key,
                         "cache_policy": cache_policy,
                     })
-                return cached
+                return copy.deepcopy(cached)
 
         # --- 4. Dispatch to LLM provider ---
         llm_backend = getattr(h, "llm_backend", None)

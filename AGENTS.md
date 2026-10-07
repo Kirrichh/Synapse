@@ -108,7 +108,30 @@ Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:
 No Linux full suite was run for Patch 2. A recorded baseline is evidence of an
 observed run, not a command to rerun the full suite before each patch.
 
-The latest observed Linux verification is the second review of PR #108 at
+The latest observed Linux verification is the reassessment package of the
+second review of PR #108 (court policy v4: memory decided under v3 is
+reassessed before use, deciding again from the record hypothesis statuses,
+promotions and trial-based resolutions). It is a targeted run, not a full
+suite: Python 3.11, every `acceptance/memory` file in its own process, four
+files in parallel, on the uncommitted working tree, plus the stage16 memory
+court files and `tests/test_memory_dependency_direction.py`:
+
+```text
+acceptance/memory:  77 files, 372 passed
+stage16 court:      6 files, 30 passed
+tests/ (memory):    1 file, 2 passed
+```
+
+`test_memory_lifecycle_sequence_acceptance.py` first failed on two defects of
+the acceptance harness, both present on `0a229eb`: the crash driver's
+`boundary` point also killed a session that opens on a lagging boundary of an
+earlier crash (no run artifact, nothing to resume), and the scripted world was
+read without the lock it is written under. Both were fixed in the harness and
+the file passed, replaying the failing example. A mutation campaign over the
+reassessment killed all 26 mutants
+(`reports/memory_second_review_mutation_evidence_v1.json`).
+
+The previous observed Linux verification is the second review of PR #108 at
 `5580007` (F1 a check decides only the claim its contract binds it to; F2 a
 stand trial covers a trigger only inside the tested scope; F3 contradicting
 trials name no winner; F4 promotion reads confirmed experience only). It is a

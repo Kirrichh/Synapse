@@ -23,7 +23,10 @@ the causes apart (review R6):
   successor, TC for a conflict, TR for a basis a reassessment no longer
   verifies), and a cold match wakes it;
 * a contract violation — the gateway refused, before any effect, something
-  the body attempted — archives the habit at once (TV), whatever its trust.
+  the body attempted — archives the habit at once (TV), whatever its trust;
+* a promotion an earlier policy decided that the habit's recorded fires do not
+  show to rest on confirmed experience returns it to probation at a
+  reassessment (TU): it keeps acting and earns its promotion again.
 
 Too little experience is never a cause: a habit that has not yet fired often
 enough keeps its state. Under ``threshold`` the window's fires are read one by
@@ -44,7 +47,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..learning.triggers import condition_key, covers
-from ..policy import cs_radius, sprt_decision, sprt_step
+from ..policy import cs_radius, signal, sprt_decision, sprt_step
 from .habit_state import EFFECTIVE, enter_state, mean
 
 #: Where a confirmed error or a promotion leads, by state (threshold rule).
@@ -267,6 +270,9 @@ def _forced(context, step: _Step, forced) -> bool:
     if rule == "TV" and step.metadata["state"] in EFFECTIVE:
         _move(context, step, "dormant", "TV", basis, "contract_violation")
         return True
+    if rule == "TU" and current == "active":
+        _move(context, step, "probation", "TU", basis, "promotion_not_verified")
+        return True
     return False
 
 
@@ -318,3 +324,85 @@ def automaton(context, habits, forced, wakes, legitimacy) -> None:
     for habit_id in sorted(habits):
         _one(context, _Step(habit_id, habits[habit_id], fires_by_habit.get(habit_id, [])), habits, forced, wakes,
              legitimacy)
+
+
+def _confirmed(parameters, fires) -> list[dict[str, Any]]:
+    """The recorded fires the environment decided: those a signal is computed for."""
+    return [fire for fire in fires if signal(parameters, fire["outcome"], fire["segment_verdict"]) is not None]
+
+
+def _experience(parameters, fires) -> dict[str, Any]:
+    counted = _confirmed(parameters, fires)
+    signals = [signal(parameters, fire["outcome"], fire["segment_verdict"]) for fire in counted]
+    return {"counted": len(counted), "tasks": sorted({fire["task_id"] or f"run:{fire['run_id']}" for fire in counted}),
+            "mean": round(mean(signals), 6) if signals else None}
+
+
+def reverify_promotions(state, reports, parameters, policy: str) -> list[dict[str, Any]]:
+    """Every live learned habit's confirmed experience since birth from its recorded fires, and every promotion
+    into its current active state that a court of another policy decided, judged again on confirmed experience
+    (review F4); nothing is written. Only a lower bound of the experience is ever credited: fires the habit's
+    recorded list no longer holds, and fires of a run that may have preceded the state's entry, count for
+    nothing."""
+    windows: dict[str, set[int]] = {}
+    for report in reports:
+        for cursor in report["window"]["sessions"]:
+            windows.setdefault(cursor["run_id"], set()).add(report["window"]["index"])
+    found = []
+    for habit_id, metadata in sorted(state["habits"].items()):
+        if metadata["state"] not in EFFECTIVE:
+            continue
+        recent = list(metadata.get("recent", []))
+        complete = len(recent) == metadata["exec_summary"]["fires_total"]
+        since_birth = _experience(parameters, recent)
+        item = {"habit_id": habit_id, "complete": complete, "counted_since_birth": since_birth["counted"],
+                "counted_tasks_since_birth": since_birth["tasks"], "promotion": None, "verdict": None}
+        moves = [(report["window"]["index"], report["policy"]["policy"], move) for report in reports
+                 for move in report.get("transitions", [])
+                 if move["habit_id"] == habit_id and move["from"] != move["to"]]
+        if (metadata["state"] == "active" and moves and moves[-1][2]["rule"] in _ON_PROMOTION_RULES
+                and moves[-1][1] != policy):
+            window, _, promotion = moves[-1]
+            item["promotion"] = {"rule": promotion["rule"], "window": window, "at": promotion.get("at")}
+            item.update(_judged_promotion(parameters, recent, moves, windows))
+        found.append(item)
+    return found
+
+
+_ON_PROMOTION_RULES = ("T1", "T4")
+
+
+def _position(fires, at) -> int | None:
+    return next((index for index, fire in enumerate(fires)
+                 if at is not None and (fire["run_id"], fire["event_id"]) == (at["run_id"], at["event_id"])), None)
+
+
+def _judged_promotion(parameters, recent, moves, windows) -> dict[str, Any]:
+    """Whether the recorded fires show the confirmed experience the last move (a promotion) needed."""
+    window, _, promotion = moves[-1]
+    if promotion.get("at") is not None:  # Reached at a fire: the fires up to it, in the court's order.
+        position = _position(recent, promotion["at"])
+        if position is None:
+            return {"verdict": "promotion_not_verified", "reason": "promotion_fire_not_recorded"}
+        fires = recent[:position + 1]
+    else:  # Reached at a window (sprt): only runs that had ended by that window count.
+        fires = [fire for fire in recent if max(windows.get(fire["run_id"], {window + 1})) <= window]
+    if promotion["rule"] == "T4":  # From the entry into probation on.
+        entry = next(((at_window, move) for at_window, _, move in reversed(moves[:-1]) if move["to"] == "probation"),
+                     None)
+        start = None if entry is None else _position(fires, entry[1].get("at"))
+        if start is not None:
+            fires = fires[start + 1:]
+        else:  # An entry not anchored at a recorded fire: only runs wholly after its window count.
+            fires = [] if entry is None else [fire for fire in fires
+                                              if min(windows.get(fire["run_id"], {entry[0]})) > entry[0]]
+    experience = _experience(parameters, fires)
+    if promotion["rule"] == "T1":
+        enough = (experience["counted"] >= parameters["t1_fires"]
+                  and len(experience["tasks"]) >= parameters["t1_tasks"])
+    else:
+        enough = (experience["counted"] >= parameters["t4_fires"] and experience["mean"] is not None
+                  and experience["mean"] >= parameters["t4_signal"])
+    return {"verdict": "promotion_verified" if enough else "promotion_not_verified",
+            "reason": f"{experience['counted']} confirmed fires in {len(experience['tasks'])} tasks, "
+                      f"mean {experience['mean']}", "experience": experience}

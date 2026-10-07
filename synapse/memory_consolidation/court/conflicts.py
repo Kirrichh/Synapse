@@ -119,9 +119,29 @@ def _keep_compared(parameters, metadata, attributed) -> None:
     metadata["compared"] = [*metadata.get("compared", []), *added][-parameters["recent_fires"]:]
 
 
+def trial_resolutions(reports) -> list[str]:
+    """The competitor pairs whose recorded resolution rests on stand trials: the last decision of the ladder
+    for the pair found its winner in trials, not in compared outcomes (a standing resolution keeps its basis)."""
+    basis: dict[str, str] = {}
+    for report in reports:
+        for entry in report.get("conflicts", []):
+            key = "|".join(sorted(entry["habits"].values()))
+            if entry["step"] != 2:
+                basis.pop(key, None)
+            elif not entry.get("standing"):
+                advice = entry.get("advice") or {}
+                by_trial = ((advice.get("comparison") or {}).get("winner") is None
+                            and (advice.get("trial") or {}).get("winner") is not None)
+                basis[key] = "trial" if by_trial else "comparison"
+    return sorted(key for key, found in basis.items() if found == "trial")
+
+
 def conflict_stage(parameters, state, habits, draft, report, forced) -> list[dict[str, Any]]:
-    """Resolve every competitor pair; returns the slow-only triggers after this window."""
+    """Resolve every competitor pair; returns the slow-only triggers after this window. A reassessment does not
+    let a resolution found in stand trials stand on its record: the trials must decide it again under the rules
+    in force (second review, F2–F3)."""
     slow_only = [dict(item) for item in state["slow_only"]]
+    retried = set((draft.get("reassessment") or {}).get("trial_resolutions", []))
     met = met_at_runtime(draft["suppressed"])
     for left, right in competitors({"habits": habits, "frozen": state["frozen"]}, parameters, met):
         entry = _entry(habits, left, right, state["frozen"])
@@ -139,7 +159,7 @@ def conflict_stage(parameters, state, habits, draft, report, forced) -> list[dic
             report["conflicts"].append(_step_two(entry, habits, comparison["winner"], advice, blocked, slow_only,
                                                  forced))
             continue
-        standing = _standing(habits, (left, right), comparison)
+        standing = None if f"{left}|{right}" in retried else _standing(habits, (left, right), comparison)
         if standing is not None:
             report["conflicts"].append(_step_two(entry, habits, standing, advice, blocked, slow_only, forced,
                                                  standing=True))

@@ -10,6 +10,7 @@ own world record.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -182,7 +183,12 @@ class MemoryWorld:
         return opening
 
     def world(self) -> dict:
-        return json.loads(self.world_path.read_text()) if self.world_path.exists() else {"calls": [], "effects": []}
+        """The servers' world, read under the lock they write it under: never a half-written file."""
+        if not self.world_path.exists():
+            return {"calls": [], "effects": []}
+        with open(self.world_path.with_suffix(".lock"), "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_SH)
+            return json.loads(self.world_path.read_text())
 
     def restore(self, environment: dict) -> None:
         """Put the environment back into a recorded state (a paired experiment's common start)."""

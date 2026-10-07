@@ -84,7 +84,7 @@ def _state(*labels, legacy=True, **overrides):
 
 def _reassess(configuration, state, verdicts):
     draft = {**empty_draft("con_reassess", "reassess", {"ok": True, "problems": []}), "conflict_advice": {},
-             "arbitration": {}, "reassessment": {"schema_version": "synapse.memory.reassessment/v1", "habits": [
+             "arbitration": {}, "reassessment": {"schema_version": "synapse.memory.reassessment/v2", "habits": [
                  {"habit_id": habit_id, "state": state["habits"][habit_id]["state"], "verified": verified,
                   "required": 3, "episodes": [], "contracts": {"quota_status": "c" * 64}, "contracts_changed": [],
                   "verdict": "basis_holds" if verified >= 3 else "basis_no_longer_verified"}

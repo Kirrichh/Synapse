@@ -18,6 +18,12 @@ tool or a model:
 * an episode whose recorded material no longer resolves supports nothing — a
   missing trace is never read as a verified one.
 
+Decisions an earlier rule recorded are judged again from the record too: every
+hypothesis status of an earlier check rule (its recorded check decided under the
+current rule), every promotion an earlier policy decided (on the confirmed
+experience of the habit's recorded fires) and every competitor resolution found
+in stand trials (decided again by the trials under the current rules).
+
 A habit keeps its basis when at least as many basis episodes are still
 verified as a birth requires (or all of them, for a smaller basis); otherwise
 it is archived by the decision, for a changed basis. A kept habit records the
@@ -37,11 +43,16 @@ from ..configuration import MemoryConfiguration
 from ..learning.behavior import contracts_of
 from ..tools.gateway import Gateway
 from ..tools.semantics import interpret, repeat_admissible
+from .automaton import reverify_promotions
+from .conflicts import trial_resolutions
 from .habit_state import EFFECTIVE
+from .hypotheses import reassess_hypotheses
 from .verdicts import scopes_by_marker, stage_one
 from .window import read_session
 
-REASSESSMENT_V1 = "synapse.memory.reassessment/v1"
+#: v2 (second review): the reassessment also decides recorded hypothesis statuses again and judges recorded
+#: promotions on confirmed experience.
+REASSESSMENT_V2 = "synapse.memory.reassessment/v2"
 _UNAVAILABLE = {"forgotten", "rolled_up"}
 
 
@@ -154,7 +165,11 @@ def reassess_bases(state, configuration: MemoryConfiguration, gateway: Gateway, 
                            name for name in current if recorded_contracts.get(name) != current[name]),
                        "contracts": current,
                        "verdict": "basis_holds" if episodes and verified >= required else "basis_no_longer_verified"})
-    return {"schema_version": REASSESSMENT_V1, "habits": habits}
+    # Recorded decisions of earlier rules, judged again from what was recorded (second review, F1–F4).
+    return {"schema_version": REASSESSMENT_V2, "habits": habits,
+            "hypotheses": reassess_hypotheses(state, configuration, gateway, gateway_records),
+            "promotions": reverify_promotions(state, reports, configuration.parameters, configuration.policy["policy"]),
+            "trial_resolutions": trial_resolutions(reports)}
 
 
 def republication(state, reports, item) -> dict[str, Any]:

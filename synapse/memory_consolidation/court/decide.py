@@ -7,7 +7,10 @@ ties are broken by identity. An emergency consolidation stops after stage 3:
 verdicts and signals are kept as pending evidence and nothing else changes
 (fail-closed). A reassessment observes no window: it completes recorded
 metadata with neutral values, archives habits whose basis the reassessment no
-longer verifies (TR) and judges every competitor pair again.
+longer verifies (TR), returns to probation habits whose recorded promotion it
+does not find resting on confirmed experience (TU), records the hypothesis
+statuses it decided again from their recorded checks and judges every
+competitor pair again.
 """
 from __future__ import annotations
 
@@ -24,6 +27,7 @@ from .dependencies import forgotten_stage
 from .compositions import composition_stage
 from .conflicts import birth_conflicts, conflict_stage
 from .habit_state import complete_metadata
+from .hypotheses import reassessed
 from .knowledge import knowledge_stage
 from .reassessment import lost_bases
 from .trust import trust_stage
@@ -96,17 +100,27 @@ def _reassess(context, state, draft) -> dict[str, Any]:
     is no longer verified and judges every competitor pair again under the policy in force."""
     habits = copy.deepcopy(state["habits"])
     completed = complete_metadata(habits)
+    unverified = {}
+    for item in draft["reassessment"].get("promotions", []):
+        # Confirmed experience since birth, from the recorded fires (a lower bound when some were not kept).
+        habits[item["habit_id"]].update(counted_since_birth=item["counted_since_birth"],
+                                        counted_tasks_since_birth=list(item["counted_tasks_since_birth"]))
+        if item["verdict"] == "promotion_not_verified":
+            unverified[item["habit_id"]] = ("TU", f"{item['promotion']['rule']} of window "
+                                                  f"{item['promotion']['window']}: {item['reason']}")
     for item in draft["reassessment"]["habits"]:
         if (item.get("republication") or {}).get("admitted"):
             habits[item["habit_id"]]["publication"] = item["republication"]["publication"]
         if item["verdict"] == "basis_holds":
             # Its bases were judged again under these contracts: its applicability is verified under them.
             habits[item["habit_id"]]["verified_under"] = {"contracts": dict(item["contracts"])}
-    forced = lost_bases(draft["reassessment"])
+    forced = {**unverified, **lost_bases(draft["reassessment"])}  # A lost basis archives over a probation.
     slow_only = conflict_stage(context.parameters, state, habits, draft, context.report, forced)
     forced_transitions(context, habits, forced)
     return {"sections": context.report, "habits": habits, "declared": copy.deepcopy(state["declared"]), "births": [],
-            "pool": {}, "slow_only": slow_only, "knowledge": {"versions": {}, "uses": {}, "hypotheses": {}},
+            "pool": {}, "slow_only": slow_only,
+            "knowledge": {"versions": {}, "uses": {},
+                          "hypotheses": reassessed(state, draft["reassessment"].get("hypotheses", []))},
             "reassessment": {**draft["reassessment"], "fields_completed": completed,
                              "slow_only_added": [item for item in slow_only if item not in state["slow_only"]]}}
 

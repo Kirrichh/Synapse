@@ -6,7 +6,7 @@ New tool contract field `verifies`; hypothesis check rule
 `synapse.memory.hypothesis-check/v2`; hypothesis probe events and the court's
 hypothesis records carry `rule`; stand trial comparisons report
 `mixed_situations`; learned habit metadata gains `counted_since_birth` and
-`counted_tasks_since_birth`.
+`counted_tasks_since_birth`; new automaton rule TU.
 
 - F1: a check decides a hypothesis only when the checking tool's contract
   binds its request and answer to the claim's subject, scope and conditions; a
@@ -19,6 +19,17 @@ hypothesis records carry `rule`; stand trial comparisons report
   other and name no winner, whatever their order.
 - F4: promotion (T1, T4, and T1 under SPRT) reads confirmed experience only;
   undecided fires count as use, neither as experience nor as errors.
+- Court policy v4: memory decided under v3 is reassessed before use. The
+  reassessment (schema `synapse.memory.reassessment/v2`) decides again, from
+  the record and without calling anything, every hypothesis status of the
+  earlier check rule, every promotion of the earlier policy (an unverified one
+  returns the habit to probation, rule TU) and every competitor resolution
+  found in stand trials; confirmed experience since birth is recounted from
+  the recorded fires.
+- Acceptance harness: the crash driver's `boundary` point dies only when the
+  court writes a decision's boundary (a session opening that rebuilds a
+  lagging boundary of an earlier crash lives through it), and the scripted
+  servers' world is read under the lock it is written under.
 
 ## Memory review of PR108, completed — attestations, dependencies, trials, measurements — 2026-10-06
 

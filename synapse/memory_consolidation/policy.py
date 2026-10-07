@@ -18,7 +18,10 @@ from .records import digest
 #: v3 (review R5, R6): a conflict is resolved only by a verified comparison and judged at a competitor's
 #: birth; the automaton demotes on confirmed errors (the last ``t3_fires`` counted signals in a state,
 #: across windows) or disuse, never on a count of windows. Same parameters, other meaning: another version.
-POLICY_V3 = "synapse.memory.court-policy/v3"
+#: v4 (second review, F1–F4): a hypothesis check decides only the claim its contract binds it to; a stand
+#: trial speaks only for a trigger inside its tested scope, and contradicting trials decide nothing; a
+#: promotion reads confirmed experience only. Memory decided under v3 is reassessed before it is used.
+POLICY_V4 = "synapse.memory.court-policy/v4"
 DECISION_RULES = ("threshold", "sprt", "confidence_sequence")
 
 PARAMETERS: dict[str, Any] = {
@@ -101,7 +104,7 @@ def resolve_parameters(overrides: Mapping[str, Any] | None) -> dict[str, Any]:
 def policy_identity(parameters: Mapping[str, Any], decision_rule: str) -> dict[str, Any]:
     if decision_rule not in DECISION_RULES:
         raise PolicyViolation("decision rule is threshold, sprt or confidence_sequence")
-    return {"policy": POLICY_V3, "decision_rule": decision_rule, "parameters": dict(parameters),
+    return {"policy": POLICY_V4, "decision_rule": decision_rule, "parameters": dict(parameters),
             "parameters_ref": digest({"rule": decision_rule, "parameters": dict(parameters)})}
 
 

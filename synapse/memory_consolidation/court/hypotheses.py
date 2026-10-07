@@ -9,13 +9,22 @@ statuses with the check rule each was decided under and, per claim, the source
 version last checked, so a later session reuses a status only for the very same
 source version under the current rule and tells a changed source apart from an
 unknown claim. An emergency window changes nothing.
+
+A reassessment decides again, from the recorded check alone, every status the
+court recorded under an earlier check rule: the gateway journal and the
+evidence give back the answer the check recorded, and the current rule and
+contracts decide it — no tool is called. A check whose recorded answer no
+longer resolves (forgotten, never recorded) decides nothing: the status becomes
+provisional, never confirmed on the record's word.
 """
 from __future__ import annotations
 
 import copy
 from typing import Any, Mapping
 
-from ..hypotheses import claim_key
+from ..configuration import MemoryConfiguration
+from ..hypotheses import CHECK_RULE, claim_key, resolve
+from ..tools.journal import GatewayIntegrityError
 
 EVENTS = ("hypothesis_declared", "hypothesis_probed", "hypothesis_reused")
 
@@ -72,3 +81,30 @@ def boundary_view(hypotheses: Mapping[str, Mapping[str, Any]]) -> tuple[dict, di
                                    "basis": entry.get("basis"), "rule": entry.get("rule")}
         claims[entry["claim_key"]] = hypothesis_id
     return statuses, claims
+
+
+def reassess_hypotheses(state: Mapping[str, Any], configuration: MemoryConfiguration, gateway,
+                        records) -> list[dict[str, Any]]:
+    """Every decided status of an earlier check rule decided again from its recorded check (pure reading)."""
+    section = []
+    for hypothesis_id, entry in sorted(state["hypotheses"].items()):
+        if entry.get("rule") == CHECK_RULE or entry["status"] == "provisional":
+            continue
+        check = entry.get("check_ref") or {}
+        unavailable = {"status": "provisional", "reason": "check_record_unavailable", "rule": CHECK_RULE}
+        try:
+            # No recorded check, an answer that no longer resolves, or a tool no longer admitted: nothing decided.
+            decided = unavailable if check.get("gw_seq") is None else resolve(
+                entry["record"], gateway.recorded_outcome(check["gw_seq"], records)["view"], configuration)
+        except (GatewayIntegrityError, PermissionError):
+            decided = unavailable
+        section.append({"hypothesis": hypothesis_id, "from": {"status": entry["status"], "reason": entry["reason"],
+                                                              "rule": entry.get("rule")},
+                        "to": {"status": decided["status"], "reason": decided["reason"], "rule": decided["rule"]}})
+    return section
+
+
+def reassessed(state: Mapping[str, Any], section) -> dict[str, dict[str, Any]]:
+    """The court's entries of the statuses a reassessment decided again: the check and its window stay."""
+    return {item["hypothesis"]: {**copy.deepcopy(state["hypotheses"][item["hypothesis"]]), **item["to"]}
+            for item in section}

@@ -959,6 +959,10 @@ jobs:
             file: acceptance/memory/test_hypothesis_binding_contract.py
           - shard: hypothesis-binding
             file: acceptance/memory/test_hypothesis_binding_acceptance.py
+          - shard: reassessment-rules-contract
+            file: acceptance/memory/test_reassessment_rules_contract.py
+          - shard: earlier-policy-reassessment
+            file: acceptance/memory/test_earlier_policy_reassessment_acceptance.py
           - shard: fast-path-attestation
             file: acceptance/memory/test_fast_path_attestation_acceptance.py
           - shard: contract-violation

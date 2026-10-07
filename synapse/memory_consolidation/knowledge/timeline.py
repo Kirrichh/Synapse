@@ -4,7 +4,8 @@ Every version the court folded carries two times (Snodgrass's bitemporal
 model, SQL:2011 system-versioned application-time tables): the interval of
 the world it is about (valid time, from the statement) and the interval of
 windows in which memory held it (transaction time, from the court:
-``known_from`` and, once a correction replaced it, ``known_until``). A
+``known_from`` and, once a correction replaced it, ``known_until``; a version
+held again later keeps its earlier periods in ``earlier_known``). A
 contradiction never deletes a version; a correction closes its transaction
 time, so both questions stay answerable: *what was true at T* reads the valid
 time, *as memory knew it at window K* reads the transaction time.
@@ -29,14 +30,19 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, Iterable, Mapping
 
+from synapse.palace_admission import holds_at
+
 _EARLIEST = ""  # Sorts before every canonical instant: a statement without a start holds from the beginning.
 
 
 def known_at(entry: Mapping[str, Any], window: int | None) -> bool:
-    """Whether memory held this version at ``window`` (``None``: now)."""
+    """Whether memory held this version at ``window`` (``None``: now): in its current period, or in a period
+    it was held before and observed again since (``earlier_known``)."""
     if window is None:
         return entry["known_until"] is None
-    return entry["known_from"] <= window and (entry["known_until"] is None or entry["known_until"] > window)
+    periods = [(item["from"], item["until"]) for item in entry.get("earlier_known", [])]
+    return any(start <= window and (end is None or end > window)
+               for start, end in [*periods, (entry["known_from"], entry["known_until"])])
 
 
 def _start(entry) -> str:
@@ -55,7 +61,8 @@ def _resolved(entry, valid_until, freshness) -> dict[str, Any]:
 
 def _event(entries, valid_at) -> list[dict[str, Any]]:
     return [_resolved(entry, entry["record"]["valid"]["until"], "event") for entry in entries
-            if valid_at is None or entry["record"]["valid"]["from"] == valid_at]
+            if valid_at is None or holds_at("event", entry["record"]["valid"]["from"],
+                                            entry["record"]["valid"]["until"], valid_at)]
 
 
 def _state(entries, valid_at, rule) -> list[dict[str, Any]]:

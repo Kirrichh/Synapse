@@ -55,9 +55,10 @@ import concurrent.futures
 import queue
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .. import ast as synapse_ast
+from ..builtins import BUILTINS
 from .replay_engine import ReplayIntegrityError
 
 #: Calls a pure node, a signal or a call node's arguments may make: deterministic and effect-free.
@@ -103,10 +104,16 @@ def _calls(expr: Any) -> list:
     return found
 
 
-def _pure(expr: Any, where: str) -> None:
+def _pure(expr: Any, where: str, builtin: Callable[[str], bool], known: set) -> None:
+    """Purity is a property of the function called, not of its name: every call names a pure builtin that its
+    name still resolves to — a function bound to that name (``fn len``, ``let len = change``) or a graph node of
+    that name is another callee."""
     for call in _calls(expr):
         if not isinstance(call.callee, synapse_ast.Variable) or call.callee.name not in PURE_CALLS:
             raise GraphViolation(f"{where} is pure: effects belong to call nodes and to the commit")
+        if call.callee.name in known or not builtin(call.callee.name):
+            raise GraphViolation(f"{where} is pure: {call.callee.name} is bound to another callee here, "
+                                 f"not to the builtin")
     for node in _walk(expr):
         if isinstance(node, (synapse_ast.LLMCall, synapse_ast.PromptExpr)):
             raise GraphViolation(f"{where} is pure: effects belong to call nodes and to the commit")
@@ -144,8 +151,16 @@ class Graph:
     upstream: set = field(default_factory=set)
 
 
-def analyse(stmt: synapse_ast.ParallelStmt) -> Graph:
-    """Validate a graph: unique names, known inputs, no cycle of data, pure nodes pure, a commit it has."""
+def builtin_in(env) -> Callable[[str], bool]:
+    """Whether a name of a builtin, read in ``env``, still resolves to it (builtins are the last scope a name is
+    looked up in, so the name always resolves)."""
+    return lambda name: env.get(name) is BUILTINS[name]
+
+
+def analyse(stmt: synapse_ast.ParallelStmt, builtin: Callable[[str], bool]) -> Graph:
+    """Validate a graph: unique names, known inputs, no cycle of data, pure nodes pure, a commit it has.
+
+    ``builtin`` says whether a name still resolves to its builtin where the graph runs."""
     names = [node.name for node in stmt.nodes]
     if not names or len(set(names)) != len(names):
         raise GraphViolation(f"parallel {stmt.name}: nodes have unique names")
@@ -161,15 +176,15 @@ def analyse(stmt: synapse_ast.ParallelStmt) -> Graph:
             if len(node.expr.args) != 2:
                 raise GraphViolation(f"node {node.name}: a call node is tool(name, arguments)")
             for argument in node.expr.args:
-                _pure(argument, f"node {node.name}'s arguments")
+                _pure(argument, f"node {node.name}'s arguments", builtin, known)
         else:
-            _pure(node.expr, f"node {node.name}")
+            _pure(node.expr, f"node {node.name}", builtin, known)
         deps[node.name] = sorted(_names(node.expr) & known - {node.name})
         if node.name in _names(node.expr):
             raise GraphViolation(f"node {node.name} reads itself")
     signals = []
     for signal in stmt.signals:
-        _pure(signal.condition, f"signal {signal.event!r}")
+        _pure(signal.condition, f"signal {signal.event!r}", builtin, known)
         signals.append({"event": signal.event, "condition": signal.condition,
                         "deps": sorted(_names(signal.condition) & known)})
     subscribed = {node.event for node in stmt.nodes if node.event is not None}
@@ -227,7 +242,7 @@ class Executor:
     """One execution of one graph instance by the interpreter ``host``."""
 
     def __init__(self, host, stmt: synapse_ast.ParallelStmt, env, instance: str) -> None:
-        self.host, self.graph, self.env, self.instance = host, analyse(stmt), env, instance
+        self.host, self.graph, self.env, self.instance = host, analyse(stmt, builtin_in(env)), env, instance
         names = self.graph.order
         self.version = {name: 0 for name in names}
         self.values: Dict[str, Dict[int, Any]] = {name: {} for name in names}

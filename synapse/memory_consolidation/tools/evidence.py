@@ -8,8 +8,12 @@ Store D also holds the owner's raw traces and replay data (spec part 3 §2.2).
 Retention may remove a body only through ``discard``: a durable marker naming
 why it is gone (``compacted`` — provably reconstructible — or ``forgotten``
 with its tombstone) is written before the body is unlinked, so a missing body
-is always an explained end, never a dangling reference. Writing the same
-content again restores the body and clears the marker.
+is always an explained end, never a dangling reference. The marker only
+strengthens: a forget of a compacted body replaces ``compacted`` with
+``forgotten`` and its tombstone; a compaction never lowers ``forgotten``; a body
+already forgotten keeps the tombstone of the forget it left with — a later forget
+finds it gone (review AUD-5). Writing the same content again restores the body
+and clears the marker.
 """
 from __future__ import annotations
 
@@ -25,7 +29,7 @@ from .journal import GatewayIntegrityError
 
 EVIDENCE_V1 = "synapse.memory.evidence/v1"
 EVIDENCE_GONE_V1 = "synapse.memory.evidence-gone/v1"
-GONE_REASONS = ("compacted", "forgotten")
+GONE_REASONS = ("compacted", "forgotten")  # In order of strength.
 
 
 class EvidenceStore:
@@ -57,11 +61,12 @@ class EvidenceStore:
         return ref, preexisting
 
     def discard(self, ref: str, reason: str, *, tombstone: str | None = None) -> None:
-        """Remove one body behind a durable marker (idempotent)."""
+        """Remove one body behind a durable marker (idempotent; the marker only strengthens)."""
         if reason not in GONE_REASONS or (reason == "forgotten") != (tombstone is not None):
             raise ValueError("a removed body is compacted, or forgotten with its tombstone")
         marker = self.root / f"{ref}.gone.json"
-        if not marker.exists():
+        recorded = self.gone(ref)
+        if recorded is None or GONE_REASONS.index(recorded["reason"]) < GONE_REASONS.index(reason):
             temp = self.root / f".{ref}.gone.{os.getpid()}.{threading.get_ident()}.tmp"
             self._write(temp, canonical({"schema": EVIDENCE_GONE_V1, "ref": ref, "reason": reason,
                                          "tombstone": tombstone}))
@@ -78,7 +83,8 @@ class EvidenceStore:
             value = json.loads((self.root / f"{ref}.gone.json").read_bytes())
         except FileNotFoundError:
             return None
-        if not isinstance(value, dict) or value.get("schema") != EVIDENCE_GONE_V1 or value.get("ref") != ref:
+        if not isinstance(value, dict) or value.get("schema") != EVIDENCE_GONE_V1 or value.get("ref") != ref \
+                or value.get("reason") not in GONE_REASONS:
             raise GatewayIntegrityError("an evidence removal marker is unreadable")
         return value
 

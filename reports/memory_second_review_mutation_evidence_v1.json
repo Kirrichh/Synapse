@@ -1011,5 +1011,346 @@
         "status": "KILLED"
       }
     ]
+  },
+  "independent_audit": {
+    "scope": "independent audit of 746967d: AUD-1 parallel purity, AUD-2 event admission, AUD-3 return to an earlier answer, AUD-4 forget applied by an explicit consolidation, AUD-5 removal marker strengthening",
+    "method": "one mutation at a time in a fresh copy of the working tree; its killer file run alone; the file restored byte for byte before the next mutation; the killer files listed for a mutant run in order until one fails",
+    "first_round": {
+      "mutants": 26,
+      "killed": 24,
+      "survivors_closed": [
+        "a dead fallback of the builtin resolution, removed",
+        "accumulated earlier periods, covered by two returns"
+      ]
+    },
+    "mutants": 25,
+    "killed": 25,
+    "items": [
+      {
+        "mutant_id": "MEM5-MUT-01",
+        "finding": "AUD-1",
+        "production_file": "synapse/runtime/dataflow.py",
+        "original": "if call.callee.name in known or not builtin(call.callee.name):",
+        "mutation": "if not builtin(call.callee.name):",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "41c96e8c89b9c2277dddafcd757556e85ff1e5ea83b4f11b7aef39e91adc49bf"
+        },
+        "killer_file": "acceptance/memory/test_dataflow_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-02",
+        "finding": "AUD-1",
+        "production_file": "synapse/runtime/dataflow.py",
+        "original": "if call.callee.name in known or not builtin(call.callee.name):",
+        "mutation": "if call.callee.name in known:",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "349524f20520810830c98e64b6410dce7a6c1cc712c9da34677e1d25e365f086"
+        },
+        "killer_file": "acceptance/memory/test_dataflow_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-03",
+        "finding": "AUD-1",
+        "production_file": "synapse/runtime/dataflow.py",
+        "original": "return lambda name: env.get(name) is BUILTINS[name]",
+        "mutation": "return lambda name: True",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "1159036f1f3494530b6f98b3b6f0ecb08716c6e8527486a94f8269668f0a6dd2"
+        },
+        "killer_file": "acceptance/memory/test_dataflow_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-04",
+        "finding": "AUD-1",
+        "production_file": "synapse/runtime/dataflow.py",
+        "original": "analyse(stmt, builtin_in(env)), env, instance",
+        "mutation": "analyse(stmt, lambda name: True), env, instance",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "6b6fdfee96ddf5cec83006e5c0836daee4b49d47c6792fcef54d8c0630a4c4d8"
+        },
+        "killer_file": "acceptance/memory/test_dataflow_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-05",
+        "finding": "AUD-1",
+        "production_file": "synapse/durable_profile.py",
+        "original": "analyse(node, lambda name: name not in scope.owned)",
+        "mutation": "analyse(node, lambda name: True)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "e271c2f205a8ed304cf90f63f097299daeebc5d16a0fa2db33eed47f37fe0046"
+        },
+        "killer_file": "acceptance/memory/test_dataflow_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-06",
+        "finding": "AUD-1",
+        "production_file": "synapse/durable_profile.py",
+        "original": "\"in_integrate\": self.in_integrate, \"functions\": self.functions, \"owned\": self.owned}",
+        "mutation": "\"in_integrate\": self.in_integrate, \"functions\": self.functions}",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "2a0c6358cf5d791ad9c3d7364e9bc62f387c808ded48f92b71e12a5903bb6c50"
+        },
+        "killer_file": "acceptance/memory/test_dataflow_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-07",
+        "finding": "AUD-1",
+        "production_file": "synapse/durable_profile.py",
+        "original": "owned.update({node.name, node.binding})",
+        "mutation": "",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "37c9fd0b6c44f5d4a3f6c2e4616fa8e03229af5c3835f42e6c272414ee020a73"
+        },
+        "killer_file": "acceptance/memory/test_dataflow_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-08",
+        "finding": "AUD-2",
+        "production_file": "synapse/palace_admission.py",
+        "original": "return at == start",
+        "mutation": "return start is None or start <= at",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "3e5149d42676deb98d51001d95f6286ccbbaacba051cfa201cf2dff849051d27"
+        },
+        "killer_file": "acceptance/memory/test_knowledge_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-09",
+        "finding": "AUD-2",
+        "production_file": "synapse/palace_admission.py",
+        "original": "timed = start is not None or end is not None or record.get(\"freshness\") == \"event\"",
+        "mutation": "timed = start is not None or end is not None",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "a0a6d49e9508096b96633f2ef876d7892f1c9d96960a5b83fe13b3a8e325a146"
+        },
+        "killer_file": "acceptance/memory/test_knowledge_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-10",
+        "finding": "AUD-2",
+        "production_file": "synapse/palace_admission.py",
+        "original": "elif timed and not holds_at(record.get(\"freshness\"), start, end, claim[\"at\"]):",
+        "mutation": "elif timed and not holds_at(None, start, end, claim[\"at\"]):",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "4ea216aab71d091d665d458dca717d4173985a02448a473165a913a9343650ba"
+        },
+        "killer_file": "acceptance/memory/test_knowledge_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-11",
+        "finding": "AUD-2",
+        "production_file": "synapse/palace_admission.py",
+        "original": "return (start is None or start <= at) and (end is None or at < end)",
+        "mutation": "return (start is None or start <= at) and (end is None or at <= end)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "e9b998ab18c5b47ec92dbddfd65795db42442991f246e423a278775e8d1f3710"
+        },
+        "killer_file": "acceptance/memory/test_knowledge_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-12",
+        "finding": "AUD-2",
+        "production_file": "synapse/memory_consolidation/knowledge/timeline.py",
+        "original": "if valid_at is None or holds_at(\"event\", entry[\"record\"][\"valid\"][\"from\"],",
+        "mutation": "if valid_at is None or holds_at(\"state\", entry[\"record\"][\"valid\"][\"from\"],",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "71066276d4daae069adab96f22297ca587751512b0789d02f6a3498efa80f860"
+        },
+        "killer_file": "acceptance/memory/test_knowledge_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-13",
+        "finding": "AUD-3",
+        "production_file": "synapse/memory_consolidation/court/knowledge.py",
+        "original": "if earlier is not None and earlier.get(\"withdrawn\") is None and earlier[\"known_until\"] is None:",
+        "mutation": "if earlier is not None and earlier.get(\"withdrawn\") is None:",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "2565dc62e1667392846d27bc8ac59507c1bcce27ab895283c280593bbc77aa39"
+        },
+        "killer_file": "acceptance/memory/test_knowledge_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-14",
+        "finding": "AUD-3",
+        "production_file": "synapse/memory_consolidation/court/knowledge.py",
+        "original": "if earlier is not None:  # Held again: the periods it was held before stay in its history.",
+        "mutation": "if False:",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "f6503f361c5c0a491e8753ad56462af3a15508aecc4d8f8ee36b05fe88f09ac8"
+        },
+        "killer_file": "acceptance/memory/test_knowledge_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-15",
+        "finding": "AUD-3",
+        "production_file": "synapse/memory_consolidation/court/knowledge.py",
+        "original": "\"from\": earlier[\"known_from\"], \"until\": window if earlier[\"known_until\"] is None\n                else earlier[\"known_until\"], \"corrected_by\": earlier.get(\"corrected_by\"),",
+        "mutation": "\"from\": earlier[\"known_from\"], \"until\": earlier[\"known_until\"],\n                \"corrected_by\": earlier.get(\"corrected_by\"),",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "e844d1a012e48ab915c4dd1a854a5c03c69531e5d2eb0fe496914624c50c7a87"
+        },
+        "killer_file": "acceptance/memory/test_knowledge_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-16",
+        "finding": "AUD-3",
+        "production_file": "synapse/memory_consolidation/court/knowledge.py",
+        "original": "entry[\"earlier_known\"] = [*copy.deepcopy(earlier.get(\"earlier_known\", [])), {",
+        "mutation": "entry[\"earlier_known\"] = [{",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "66859195b05e35542729b83525a24fea5be4552201e876d5a4cf6b263cc74c28"
+        },
+        "killer_file": "acceptance/memory/test_knowledge_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-17",
+        "finding": "AUD-3",
+        "production_file": "synapse/memory_consolidation/court/knowledge.py",
+        "original": "\"withdrawn\": copy.deepcopy(earlier.get(\"withdrawn\"))}]",
+        "mutation": "\"withdrawn\": None}]",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "92f457f914b9a1cc0e8142c9949d882fd8e66f6108630eb65ca1518a3d54c6f2"
+        },
+        "killer_file": "acceptance/memory/test_knowledge_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-18",
+        "finding": "AUD-3",
+        "production_file": "synapse/memory_consolidation/knowledge/timeline.py",
+        "original": "for start, end in [*periods, (entry[\"known_from\"], entry[\"known_until\"])])",
+        "mutation": "for start, end in [(entry[\"known_from\"], entry[\"known_until\"])])",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "aecde3c3cf2f21d1e38541832ebf3af0fe4ba9b7ab1231d992822adaf0896637"
+        },
+        "killer_file": "acceptance/memory/test_knowledge_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-19",
+        "finding": "AUD-3",
+        "production_file": "synapse/memory_consolidation/court/dependencies.py",
+        "original": "for corrected_by in [entry.get(\"corrected_by\"), *(item[\"corrected_by\"] for item in entry.get(\n                \"earlier_known\", []))]:",
+        "mutation": "for corrected_by in [entry.get(\"corrected_by\")]:",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "c6ec972207ebe520691f5b540eb77fa10ea937aa82077b125e856e471bd1aa8c"
+        },
+        "killer_file": "acceptance/memory/test_knowledge_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-20",
+        "finding": "AUD-3",
+        "production_file": "synapse/memory_consolidation/court/knowledge.py",
+        "original": "**({\"held_again\": True} if earlier is not None else {})})",
+        "mutation": "})",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "cc52583310bba8039d861279ffad49e7cf4e688f57213dbba00678aace5d5f2c"
+        },
+        "killer_file": "acceptance/memory/test_knowledge_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-21",
+        "finding": "AUD-4",
+        "production_file": "synapse/memory_consolidation/court/consolidation.py",
+        "original": "if not sessions and tail[\"unchanged\"] and not acts:",
+        "mutation": "if not sessions and tail[\"unchanged\"]:",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "a701f961b9fbc4dc068d230399959ac1425f76b66b99b9bb0f36de69984d8cd3"
+        },
+        "killer_file": "acceptance/memory/test_forget_maintenance_acceptance.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-22",
+        "finding": "AUD-5",
+        "production_file": "synapse/memory_consolidation/tools/evidence.py",
+        "original": "if recorded is None or GONE_REASONS.index(recorded[\"reason\"]) < GONE_REASONS.index(reason):",
+        "mutation": "if recorded is None:",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "146561574cc0132ec32279de1ff7015d66fc2fd8aeef2f618d3f42030e0cc384"
+        },
+        "killer_file": "acceptance/memory/test_evidence_marker_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-23",
+        "finding": "AUD-5",
+        "production_file": "synapse/memory_consolidation/tools/evidence.py",
+        "original": "if recorded is None or GONE_REASONS.index(recorded[\"reason\"]) < GONE_REASONS.index(reason):",
+        "mutation": "if recorded is None or GONE_REASONS.index(recorded[\"reason\"]) <= GONE_REASONS.index(reason):",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "28af0de4aef91486b80bd9fb0fcfd65b10074c74eb796cf1e529f8e3fd93702c"
+        },
+        "killer_file": "acceptance/memory/test_evidence_marker_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-24",
+        "finding": "AUD-5",
+        "production_file": "synapse/memory_consolidation/tools/evidence.py",
+        "original": "if recorded is None or GONE_REASONS.index(recorded[\"reason\"]) < GONE_REASONS.index(reason):",
+        "mutation": "if True:",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "01a922a4f0058d9c375b9ed90e1494fe25b0ce9ad66d5edcca2d17573b45b52c"
+        },
+        "killer_file": "acceptance/memory/test_evidence_marker_contract.py",
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "MEM5-MUT-25",
+        "finding": "AUD-5",
+        "production_file": "synapse/memory_consolidation/tools/evidence.py",
+        "original": "or value.get(\"reason\") not in GONE_REASONS:",
+        "mutation": "or False:",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "45dc44014028257c5975756efbf31e07d0814ca48c753dac911b145324b88bc2"
+        },
+        "killer_file": "acceptance/memory/test_evidence_marker_contract.py",
+        "status": "KILLED"
+      }
+    ]
   }
 }

@@ -873,6 +873,12 @@ jobs:
             file: acceptance/memory/test_retention_capacity_acceptance.py
           - shard: forget
             file: acceptance/memory/test_forget_acceptance.py
+          - shard: forget-maintenance
+            file: acceptance/memory/test_forget_maintenance_acceptance.py
+          - shard: forget-compacted
+            file: acceptance/memory/test_forget_compacted_acceptance.py
+          - shard: evidence-marker-contract
+            file: acceptance/memory/test_evidence_marker_contract.py
           - shard: hypothesis-protocol
             file: acceptance/memory/test_hypothesis_protocol_acceptance.py
           - shard: hypothesis-reuse
@@ -917,6 +923,10 @@ jobs:
             file: acceptance/memory/test_knowledge_timeline_acceptance.py
           - shard: knowledge-correction
             file: acceptance/memory/test_knowledge_correction_acceptance.py
+          - shard: knowledge-return
+            file: acceptance/memory/test_knowledge_return_acceptance.py
+          - shard: event-admission
+            file: acceptance/memory/test_event_admission_acceptance.py
           - shard: dataflow-contract
             file: acceptance/memory/test_dataflow_contract.py
           - shard: dataflow-overlap

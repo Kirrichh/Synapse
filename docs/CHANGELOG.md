@@ -1,5 +1,33 @@
 # Synapse Changelog
 
+## Independent audit of PR108 (AUD-1…AUD-5) — 2026-10-07
+
+Knowledge versions held again gain `earlier_known`; knowledge declarations held
+again are reported with `held_again`; removal markers of store D only
+strengthen.
+
+- AUD-1: purity of a `parallel` graph belongs to the function called, not to
+  its name. A call in a pure node, a signal condition or a call node's
+  arguments must name a pure builtin that its name still resolves to where the
+  graph runs; a builtin's name bound to a user function (`fn len`,
+  `let len = change`) or to a graph node is refused before anything runs, by
+  the executor and by the durable profile.
+- AUD-2: an event is admitted at its moment only. Admission and the knowledge
+  timeline place a time with one rule (`palace_admission.holds_at`): a claim
+  about another moment is `outside_validity` however the candidate was found,
+  and a claim without a time is `freshness_unknown`.
+- AUD-3: a correction back to an answer memory held before (20 → 25 → 20) holds
+  it again: it corrects the current version, and the periods it was held
+  before stay in `earlier_known`, so every earlier window answers as it did and
+  the dependency projection names both revisions.
+- AUD-4: an explicit consolidation applies retention acts not applied yet (a
+  recorded forget or restore) without a new business session; with nothing to
+  apply it stays a no-op.
+- AUD-5: a forget of a compacted body replaces `compacted` with `forgotten` and
+  its tombstone; a compaction never lowers `forgotten`; a forgotten body keeps
+  the tombstone of the forget it left with; a marker with an unknown reason is
+  an integrity error.
+
 ## Memory review of PR108, third pass — check basis, standing trial resolutions — 2026-10-07
 
 Hypothesis probe events, the court's hypothesis records and the snapshot

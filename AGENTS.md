@@ -108,7 +108,30 @@ Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:
 No Linux full suite was run for Patch 2. A recorded baseline is evidence of an
 observed run, not a command to rerun the full suite before each patch.
 
-The latest observed Linux verification is the third review of PR #108 at
+The latest observed Linux verification is the independent audit of PR #108 at
+`746967d` (AUD-1 purity of a `parallel` graph belongs to the function called,
+not its name; AUD-2 an event is admitted at its moment only; AUD-3 a correction
+back to an answer memory held before holds it again and keeps its earlier
+periods; AUD-4 an explicit consolidation applies a recorded forget; AUD-5 a
+removal marker only strengthens). It is a targeted run, not a full suite:
+Python 3.11, every file in its own process, four files in parallel, on the
+uncommitted working tree:
+
+```text
+acceptance/memory:  84 files, 420 passed
+stage16 court:      6 files, 14 passed
+tests/:             test_memory_dependency_direction.py 2 passed,
+                    test_durable_execution.py 78 passed,
+                    test_durable_mailbox_wait.py 16 passed
+```
+
+The auditor's battery (6 regressions, 2 positive controls) passes 8/8; it was
+6 failed, 2 passed on `746967d`. A mutation campaign over the five fixes killed
+all 25 mutants (`reports/memory_second_review_mutation_evidence_v1.json`,
+`independent_audit`); its first round left two survivors, a dead fallback that
+was removed and accumulated earlier periods now covered by two returns.
+
+The previous observed Linux verification is the third review of PR #108 at
 `4905d47` (N1 a resolution found in stand trials stands only while the trials
 recorded so far name the same winner, decided in every ordinary consolidation;
 N2 a hypothesis status is reused and kept only on the check basis it was
@@ -130,7 +153,7 @@ the configuration in force, the argument the corrected signature requires. A
 mutation campaign over N1 and N2 killed all 26 mutants
 (`reports/memory_second_review_mutation_evidence_v1.json`, `third_review`).
 
-The previous observed Linux verification is the reassessment package of the
+An earlier observed Linux verification is the reassessment package of the
 second review of PR #108 (court policy v4: memory decided under v3 is
 reassessed before use, deciding again from the record hypothesis statuses,
 promotions and trial-based resolutions). It is a targeted run, not a full

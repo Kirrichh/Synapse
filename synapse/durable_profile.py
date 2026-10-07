@@ -50,11 +50,13 @@ class _Scope:
     in_dream: bool = False
     in_integrate: bool = False
     functions: frozenset[str] = frozenset()
+    #: Every identifier the program binds: a builtin of that name is no longer the builtin wherever it is read.
+    owned: frozenset[str] = frozenset()
 
     def nested(self, **changes: Any) -> "_Scope":
         values = {"top_level": False, "suspension_allowed": self.suspension_allowed,
                   "in_function": self.in_function, "in_dream": self.in_dream,
-                  "in_integrate": self.in_integrate, "functions": self.functions}
+                  "in_integrate": self.in_integrate, "functions": self.functions, "owned": self.owned}
         values.update(changes)
         return _Scope(**values)
 
@@ -75,9 +77,15 @@ def validate_cognitive_program(root: synapse_ast.Program) -> set[str]:
     functions = frozenset(stmt.name for stmt in _walk(root) if isinstance(stmt, synapse_ast.FnDef) and stmt.name)
     parameters = frozenset(param for stmt in _walk(root) if isinstance(stmt, synapse_ast.FnDef)
                            for param in stmt.params)
-    scope = _Scope(functions=functions | parameters)
+    owned = _owned(root)
+    scope = _Scope(functions=functions | parameters, owned=frozenset(owned))
     for statement in root.statements:
         _statement(statement, scope)
+    return owned
+
+
+def _owned(root: synapse_ast.Program) -> set[str]:
+    """The identifiers the source binds."""
     owned: set[str] = set()
     for node in _walk(root):
         if isinstance(node, synapse_ast.LetStmt):
@@ -253,7 +261,7 @@ def _parallel(node: synapse_ast.ParallelStmt, scope: _Scope) -> None:
     if scope.in_dream or scope.in_integrate:
         raise _fail("a parallel graph runs outside dream and integrate")
     try:
-        analyse(node)
+        analyse(node, lambda name: name not in scope.owned)
     except GraphViolation as exc:
         raise _fail(str(exc)) from None
     inner = scope.nested(suspension_allowed=False)

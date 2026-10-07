@@ -4,6 +4,9 @@ The rules the heavy scenarios rely on, on the language itself: the shape a
 ``parallel`` graph must have (known inputs, no cycle of data, pure nodes
 pure, a raised event for every subscription, an effect that acts on the
 committed value only, a bounded limit), where the durable profile admits it,
+that purity belongs to the function called and not to its name (a builtin's
+name rebound to a user function, or a graph node of that name, is refused
+before anything runs, wherever the graph reads it),
 what an observation contract is, and how a graph of pure nodes runs in one
 interpreter — a dependent node after its inputs, mutually consistent input
 versions in a diamond, a signal raised once per version of its inputs, and a
@@ -14,11 +17,11 @@ from __future__ import annotations
 import pytest
 
 from synapse.durable_profile import CognitiveProfileViolation, validate_cognitive_program
-from synapse.interpreter import Interpreter, RuntimeError as ProgramError
+from synapse.interpreter import Environment, Interpreter, RuntimeError as ProgramError
 from synapse.lexer import Lexer
 from synapse.memory_consolidation.tools.contracts import ToolConfigurationViolation, parse_tool_configuration
 from synapse.parser import Parser
-from synapse.runtime.dataflow import MAX_ATTEMPTS, GraphViolation, analyse
+from synapse.runtime.dataflow import MAX_ATTEMPTS, GraphViolation, analyse, builtin_in
 
 
 def _program(source: str):
@@ -28,6 +31,10 @@ def _program(source: str):
 def _graph(body: str, header: str = "parallel g"):
     program = _program(f"{header} {{\n{body}\n}}\n")
     return program.statements[0]
+
+
+def _analyse(stmt):
+    return analyse(stmt, builtin_in(Environment()))  # Where nothing rebinds a builtin's name.
 
 
 def _run(source: str):
@@ -52,11 +59,11 @@ def _run(source: str):
 ])
 def test_a_graph_outside_its_shape_is_refused_before_it_runs(body, header, reason):
     with pytest.raises(GraphViolation, match=reason):
-        analyse(_graph(body, header))
+        _analyse(_graph(body, header))
 
 
 def test_the_analysis_names_inputs_calls_and_what_the_commit_depends_on():
-    graph = analyse(_graph('''
+    graph = _analyse(_graph('''
 node price on "repriced" = tool("price_feed", {"plan": plan})
 node watch = tool("price_watch", {"plan": plan})
 node audit = tool("audit_trail", {"plan": plan})
@@ -82,6 +89,42 @@ def test_the_durable_profile_admits_a_graph_only_where_it_can_be_persisted_and_o
         validate_cognitive_program(_program(f"dream {{\n{graph}\n}}\n"))
     with pytest.raises(CognitiveProfileViolation, match="is pure"):
         validate_cognitive_program(_program('parallel g {\n  node a = {"x": print(1)}\n  commit a\n}\n'))
+
+
+REBOUND = {
+    "function": "fn len(items) {\n  x = x + 1\n  return 7\n}\n",
+    "alias": "fn change(items) {\n  x = x + 1\n  return 7\n}\nlet len = change\n",
+}
+#: Where a graph reads a call: a pure node, a signal's condition, a call node's arguments.
+READS = {
+    "node": 'node value = len([1, 2])\ncommit value',
+    "signal": 'node a = {"n": 1}\nnode b on "bump" = {"n": 2}\nsignal "bump" when len([1]) == 7\ncommit b',
+    "arguments": 'node value = tool("quote", {"n": len([1, 2])})\ncommit value',
+}
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("read", sorted(READS))
+@pytest.mark.parametrize("rebound", sorted(REBOUND))
+def test_a_builtin_name_bound_to_another_function_is_refused_before_anything_runs(rebound, read, nested):
+    graph = f"parallel calculation {{\n{READS[read]}\n}}\n"
+    source = f"let x = 0\n{REBOUND[rebound]}" + (f"if x == 0 {{\n{graph}}}\n" if nested else graph)
+    interpreter = Interpreter()
+    with pytest.raises(ProgramError, match="bound to another callee"):
+        interpreter.interpret(_program(source))
+    assert interpreter.global_env.get("x") == 0  # Refused before the function could run.
+    with pytest.raises(CognitiveProfileViolation, match="bound to another callee"):
+        validate_cognitive_program(_program(source))
+
+
+def test_a_graph_node_named_after_a_builtin_is_no_builtin():
+    with pytest.raises(GraphViolation, match="bound to another callee"):
+        _analyse(_graph('node len = {"n": 1}\nnode value = len([1, 2])\ncommit value'))
+
+
+def test_the_builtin_itself_stays_pure():
+    interpreter = _run('let x = 0\nparallel calculation {\n  node value = len([1, 2])\n  commit value\n}\n')
+    assert interpreter.global_env.get("calculation")["value"] == 2 and interpreter.global_env.get("x") == 0
 
 
 def _tools(contract: dict) -> dict:

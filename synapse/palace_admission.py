@@ -78,6 +78,16 @@ METADATA_FIELDS = frozenset({
     "polarity", "conditions", "freshness", "known_from", "known_until", "rank", "found_by"})
 
 
+def holds_at(freshness: Any, start: Any, end: Any, at: Any) -> bool:
+    """Whether a statement valid over ``[start, end)`` holds at the instant ``at`` (canonical forms): an event
+    holds exactly at its moment and nowhere else (no end makes it a state); anything else holds from its start
+    until its end. ``at`` is a time: an event placed nowhere holds at none. The one rule admission and the
+    knowledge timeline place a time with."""
+    if freshness == "event":
+        return at == start
+    return (start is None or start <= at) and (end is None or at < end)
+
+
 def instant(value: Any) -> Any:
     """A validity time in the one form admission compares: ISO 8601 dates and date-times become
     ``YYYY-MM-DDTHH:MM:SSZ`` (UTC, ordering as text); a number stays a number; ``None`` stays ``None``."""
@@ -283,10 +293,11 @@ def _checks(record, claim, key_tokens, hypothesis_of, rules) -> tuple[list[str],
     if claim["scope"] is not None and scope not in (None, "any", claim["scope"]):
         reasons.append("another_scope")
     start, end = instant(record.get("valid_from")), instant(record.get("valid_until"))
-    bounded = start is not None or end is not None
-    if bounded and claim["at"] is None:
+    # An event is a moment: it never holds without one (review AUD-2), however the candidate was found.
+    timed = start is not None or end is not None or record.get("freshness") == "event"
+    if timed and claim["at"] is None:
         reasons.append("freshness_unknown")
-    elif bounded and ((start is not None and claim["at"] < start) or (end is not None and claim["at"] >= end)):
+    elif timed and not holds_at(record.get("freshness"), start, end, claim["at"]):
         reasons.append("outside_validity")
     if not record.get("source"):
         reasons.append("no_provenance")

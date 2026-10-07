@@ -163,11 +163,13 @@ def consolidate(owner: MemoryOwner, configuration: MemoryConfiguration, ports: C
     state = owner.state(guard=guard)
     sessions = _window(owner, ports, state, mode, current, guard)
     tail = establish_tail(owner.store, guard, project_identity=owner.identity)
-    if not sessions and tail["unchanged"]:
-        return _head(owner, guard, None if current is None else current["run_id"])
-    # Retention facts recorded since the last report enter this one; nothing edits the state in place.
+    # Retention facts recorded since the last report enter this one; nothing edits the state in place. An act
+    # not applied yet (an operator's forget or restore, a retention step) is work even without a new session:
+    # memory state follows the store at the next consolidation (review AUD-4).
     passes = owner.retention_passes(guard=guard)
     acts = pending_acts(passes, state)
+    if not sessions and tail["unchanged"] and not acts:
+        return _head(owner, guard, None if current is None else current["run_id"])
     retained, retention_section = apply_acts(state, acts, len(passes))
     state = {**state, "quanta": {**state["quanta"], **retained}, "retention": retention_section}
     gateway_records = ports.gateway.records()

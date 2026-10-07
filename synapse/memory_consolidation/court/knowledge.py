@@ -15,7 +15,13 @@ version its transaction time — the window it became known in:
   **conflict**: both versions stay current and admission lets neither win by
   similarity, confidence or insertion time;
 * any other statement is a new version; its valid time places it on the
-  timeline (a late report about the past never overrides a later start).
+  timeline (a late report about the past never overrides a later start);
+* a version memory held before — closed by a correction, or withdrawn with
+  forgotten results — observed again is held again from this window: it
+  corrects what holds its slot now (a correction back to an earlier answer,
+  20 → 25 → 20), and the periods it was held before stay in its history
+  (``earlier_known``), so every earlier window still answers as it did
+  (review AUD-3).
 
 A correction revises what depended on the corrected answer, as a truth
 maintenance system withdraws beliefs with their premises (Doyle 1979), without
@@ -116,8 +122,8 @@ def knowledge_stage(context, habits, forced, configuration) -> dict[str, Any]:
     for item in sorted(knowledge["declared"], key=lambda value: (value["run_id"], value["position"])):
         record = verify(item["statement"], "statement")
         known = {**state["knowledge"]["versions"], **versions}
-        # A version withdrawn with forgotten results and observed again is a new observation, not a copy.
-        if record["id"] in known and known[record["id"]].get("withdrawn") is None:
+        earlier = known.get(record["id"])
+        if earlier is not None and earlier.get("withdrawn") is None and earlier["known_until"] is None:
             section["copies"].append({"run_id": item["run_id"], "statement": record["id"], "of": record["id"]})
             continue
         own_slot, source = slot(record), source_identity(record)
@@ -133,8 +139,14 @@ def knowledge_stage(context, habits, forced, configuration) -> dict[str, Any]:
         entry = {"record": copy.deepcopy(record), "vector": copy.deepcopy(item["vector"]), "slot": own_slot,
                  "source_identity": source, "source": None if contract is None else contract.source,
                  "run_id": item["run_id"], "known_from": window, "known_until": None, "corrected_by": None}
+        if earlier is not None:  # Held again: the periods it was held before stay in its history.
+            entry["earlier_known"] = [*copy.deepcopy(earlier.get("earlier_known", [])), {
+                "from": earlier["known_from"], "until": window if earlier["known_until"] is None
+                else earlier["known_until"], "corrected_by": earlier.get("corrected_by"),
+                "withdrawn": copy.deepcopy(earlier.get("withdrawn"))}]
         versions[record["id"]] = entry
-        section["declared"].append({"run_id": item["run_id"], "statement": record["id"], "slot": own_slot})
+        section["declared"].append({"run_id": item["run_id"], "statement": record["id"], "slot": own_slot,
+                                    **({"held_again": True} if earlier is not None else {})})
         for old in same:
             closed = {**copy.deepcopy(old), "known_until": window, "corrected_by": record["id"]}
             versions[old["record"]["id"]] = closed

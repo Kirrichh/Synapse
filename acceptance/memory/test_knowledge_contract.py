@@ -6,7 +6,10 @@ report, a declared end, bounded and event currency, an undeclared property,
 disagreeing versions), reciprocal rank fusion, the exactness of the semantic
 ranking against one cosine per pair (equal scores included), the court's fold of
 declarations (copy, repetition, correction with the revision of dependent
-hypotheses and habits, conflict) and admission's structured checks.
+hypotheses and habits, conflict, a correction back to an answer memory held
+before, which is held again while every earlier window keeps its answer) and
+admission's structured checks (an event is admitted at its moment only, however
+the candidate was found — the timeline places events by the same rule).
 """
 from __future__ import annotations
 
@@ -14,10 +17,11 @@ import math
 import random
 from types import SimpleNamespace
 
+from synapse.memory_consolidation.court.dependencies import graph
 from synapse.memory_consolidation.court.knowledge import knowledge_stage
 from synapse.memory_consolidation.knowledge.search import fuse, semantic_ranking
 from synapse.memory_consolidation.knowledge.statements import declare, slot, source_identity
-from synapse.memory_consolidation.knowledge.timeline import resolve
+from synapse.memory_consolidation.knowledge.timeline import known_at, resolve
 from synapse.palace_admission import admit
 
 SOURCE = {"tool": "catalog_entry", "args": {"plan": "basic"}}
@@ -199,3 +203,59 @@ def test_admission_reads_the_statements_structure():
     assert _reasons(_candidate(), {"subject": "basic-plus"}) == ["basis_about_another_entity"]
     assert _reasons(_candidate(), {"source_ref": "ev-0"}) == ["basis_for_another_version"]
     assert _reasons(_candidate(), {"status": "provisional"}) == ["not_confirmed:provisional"]
+
+
+def test_a_correction_can_return_to_an_answer_memory_held_before():
+    twenty, twenty_five = _statement(20, "2026-01-01", ref="ev-20"), _statement(25, "2026-01-01", ref="ev-25")
+    state = {"window": 0, "knowledge": {"versions": {}, "uses": {}}, "hypotheses": {}, "frozen": {}, "quanta": {}}
+    history = []
+    for record in (twenty, twenty_five, twenty, twenty_five, twenty, twenty):
+        result, report, _ = _court(state, [_declared(record)])
+        state = {**state, "window": state["window"] + 1,
+                 "knowledge": {"versions": {**state["knowledge"]["versions"], **result["versions"]}, "uses": {}}}
+        history.append(report)
+    assert [len(item["corrections"]) for item in history] == [0, 1, 1, 1, 1, 0]
+    assert history[2]["corrections"] == [{"statement": twenty_five["id"], "corrected_by": twenty["id"],
+                                          "slot": slot(twenty)}]
+    assert history[2]["declared"][0].get("held_again") is True and len(history[5]["copies"]) == 1
+    versions = state["knowledge"]["versions"]
+    assert versions[twenty["id"]]["earlier_known"] == [
+        {"from": 1, "until": 2, "corrected_by": twenty_five["id"], "withdrawn": None},
+        {"from": 3, "until": 4, "corrected_by": twenty_five["id"], "withdrawn": None}]
+    assert versions[twenty_five["id"]]["earlier_known"] == [
+        {"from": 2, "until": 3, "corrected_by": twenty["id"], "withdrawn": None}]
+    # Every window answers as memory knew it then; now, the returned answer holds.
+    for window, value in ((1, 20), (2, 25), (3, 20), (4, 25), (5, 20), (6, 20), (None, 20)):
+        held = [entry for entry in versions.values() if known_at(entry, window)]
+        assert _values(resolve(held, STATE, valid_at="2026-03-01T00:00:00Z", known_as_of=window)) == [
+            (value, None, "current")], window
+    # The dependency projection names both revisions.
+    edges = graph({**state, "retention": {"tombstones": {}}})["edges"]
+    assert {(f"statement:{twenty_five['id']}", "wasRevisionOf", f"statement:{twenty['id']}"),
+            (f"statement:{twenty['id']}", "wasRevisionOf", f"statement:{twenty_five['id']}")} <= set(edges)
+
+
+def test_a_version_withdrawn_while_held_keeps_that_period_when_held_again():
+    twenty = _statement(20, "2026-01-01", ref="ev-20")
+    mark = {"tombstone": "tmb_1", "window": 3}
+    state = {"window": 4, "knowledge": {"versions": {twenty["id"]: {**_entry(twenty), "withdrawn": mark}},
+                                        "uses": {}}, "hypotheses": {}, "frozen": {}, "quanta": {}}
+    result, report, _ = _court(state, [_declared(twenty)])
+    held = result["versions"][twenty["id"]]
+    assert (held["known_from"], held["known_until"], held.get("withdrawn")) == (5, None, None)
+    assert held["earlier_known"] == [{"from": 1, "until": 5, "corrected_by": None, "withdrawn": mark}]
+
+
+def test_an_event_is_admitted_at_its_moment_only():
+    event = _candidate(attribute="outage", value="eu", freshness="event", valid_from="2026-10-01T10:00:00Z")
+    basis = {"statement": {"outage": "eu"}}
+    assert _reasons(event, basis, attribute="outage", keys=["basic", "outage"], at="2026-10-01T10:00:00Z") == []
+    assert _reasons(event, basis, attribute="outage", keys=["basic", "outage"], at="2026-10-01T11:00:00Z") == ["outside_validity"]
+    assert _reasons(event, basis, attribute="outage", keys=["basic", "outage"], at="2026-10-01T09:00:00Z") == ["outside_validity"]
+    assert _reasons(event, basis, attribute="outage", keys=["basic", "outage"], at=None) == ["freshness_unknown"]
+    # An event placed nowhere holds at no moment; the timeline places it by the same rule.
+    assert _reasons({**event, "valid_from": None}, basis, attribute="outage", keys=["basic", "outage"], at="2026-10-01T10:00:00Z") == [
+        "outside_validity"]
+    outage = [_entry(_statement("eu", "2026-10-01T10:00:00Z", prop="outage"))]
+    for at, holds in (("2026-10-01T10:00:00Z", True), ("2026-10-01T11:00:00Z", False)):
+        assert bool(resolve(outage, {"freshness": "event"}, valid_at=at, known_as_of=None)) is holds

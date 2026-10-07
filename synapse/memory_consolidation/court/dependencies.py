@@ -77,8 +77,10 @@ def graph(state: Mapping[str, Any]) -> dict[str, Any]:
     knowledge = state.get("knowledge") or {"versions": {}, "uses": {}}
     for statement_id, entry in knowledge["versions"].items():
         edges.add((f"statement:{statement_id}", "wasDerivedFrom", f"observation:{entry['record']['source']['ref']}"))
-        if entry.get("corrected_by") is not None:
-            edges.add((f"statement:{entry['corrected_by']}", "wasRevisionOf", f"statement:{statement_id}"))
+        for corrected_by in [entry.get("corrected_by"), *(item["corrected_by"] for item in entry.get(
+                "earlier_known", []))]:
+            if corrected_by is not None:
+                edges.add((f"statement:{corrected_by}", "wasRevisionOf", f"statement:{statement_id}"))
     for habit_id, frozen in state["frozen"].items():
         node = f"habit:{habit_id}"
         for qid in frozen["habit"]["born_from"]["episodes"]:

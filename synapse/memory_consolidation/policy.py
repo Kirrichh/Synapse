@@ -21,7 +21,10 @@ from .records import digest
 #: v4 (second review, F1–F4): a hypothesis check decides only the claim its contract binds it to; a stand
 #: trial speaks only for a trigger inside its tested scope, and contradicting trials decide nothing; a
 #: promotion reads confirmed experience only. Memory decided under v3 is reassessed before it is used.
-POLICY_V4 = "synapse.memory.court-policy/v4"
+#: v5 (review M1–M6): hypothesis statuses follow the gateway's order of checks, corrections and forgets (never
+#: run names or windows), a check after a consolidation names the hypothesis its session declared earlier, and a
+#: statement read or admitted opens a window. Memory decided under v4 is reassessed before it is used.
+POLICY_V5 = "synapse.memory.court-policy/v5"
 DECISION_RULES = ("threshold", "sprt", "confidence_sequence")
 
 PARAMETERS: dict[str, Any] = {
@@ -104,7 +107,7 @@ def resolve_parameters(overrides: Mapping[str, Any] | None) -> dict[str, Any]:
 def policy_identity(parameters: Mapping[str, Any], decision_rule: str) -> dict[str, Any]:
     if decision_rule not in DECISION_RULES:
         raise PolicyViolation("decision rule is threshold, sprt or confidence_sequence")
-    return {"policy": POLICY_V4, "decision_rule": decision_rule, "parameters": dict(parameters),
+    return {"policy": POLICY_V5, "decision_rule": decision_rule, "parameters": dict(parameters),
             "parameters_ref": digest({"rule": decision_rule, "parameters": dict(parameters)})}
 
 

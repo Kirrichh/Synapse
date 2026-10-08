@@ -775,6 +775,48 @@ def _remove_lock_directory(lock_path: Path) -> None:
     shutil.rmtree(lock_path)
 
 
+#: Run locks of one state directory are taken under this operating-system lock, which the kernel releases when
+#: its holder dies: no two processes decide about a run's lock at once.
+_LOCK_GUARD = ".synapse-run-locks.guard"
+_LOCK_GUARD_WAIT_SECONDS = 10.0
+
+
+def _take_run_lock(lock_path: Path, *, named: bool, clearable: bool) -> None:
+    """Take a run's lock, or raise ``FileExistsError`` while another process holds it.
+
+    Deciding happens under the state directory's guard: an existing lock is cleared only when ``clearable`` and
+    the cognitive profile proves it stale, and a new one is created. A ``named`` (cognitive) lock appears with its
+    owner already in it, so a process killed at any point leaves either no lock or a lock whose owner proves it
+    stale (review LOCK); a P2a lock names no owner and is never cleared.
+    """
+    from filelock import FileLock, Timeout
+
+    guard = FileLock(str(lock_path.parent / _LOCK_GUARD), timeout=_LOCK_GUARD_WAIT_SECONDS)
+    try:
+        guard.acquire()
+    except Timeout as exc:
+        raise FileExistsError(str(lock_path)) from exc
+    try:
+        if lock_path.exists():
+            if not (clearable and _cognitive.clear_stale_cognitive_lock(lock_path)):
+                raise FileExistsError(str(lock_path))
+        if named:
+            _cognitive.create_named_lock(lock_path)
+        else:
+            lock_path.mkdir()
+    finally:
+        guard.release()
+
+
+def _artifact_profile(artifact_path: Path) -> Any:
+    """The execution profile an artifact declares, read before its lock is taken (``None``: unreadable). A
+    durable artifact keeps the profile it was created with."""
+    try:
+        return json.loads(artifact_path.read_text(encoding="utf-8")).get("execution_profile")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 def _read_source(source_path: Path) -> str:
     try:
         return source_path.read_text(encoding="utf-8")
@@ -2108,14 +2150,10 @@ def execute_durable_resume(request: DurableResumeRequest, *, stdin: TextIO | Non
         artifact_path = _resolve_state_file(request.state_file)
         lock_path = artifact_path.with_name(f"{artifact_path.name}.lock")
         try:
-            try:
-                lock_path.mkdir()
-            except FileExistsError:
-                # Only a cognitive run names its lock owner; a crashed one leaves
-                # a provably stale lock that recovery may clear, nothing else.
-                if not _cognitive.clear_stale_cognitive_lock(lock_path):
-                    raise
-                lock_path.mkdir()
+            # Only a cognitive run names its lock owner; a crashed one leaves
+            # a provably stale lock that recovery may clear, nothing else.
+            named = _artifact_profile(artifact_path) == DURABLE_COGNITIVE_PROFILE
+            _take_run_lock(lock_path, named=named, clearable=named)
             lock_acquired = True
         except FileExistsError:
             return _durable_failure(
@@ -2154,12 +2192,9 @@ def execute_durable_resume(request: DurableResumeRequest, *, stdin: TextIO | Non
                 return _state_file_invalid_input()
             if not cognitive or artifact["status"] != "RUNNING":
                 return _stale_suspension_failure(artifact)
-            _cognitive.write_lock_owner(lock_path)
             result = _cognitive.recover_cognitive_run(artifact, artifact_path, request)
             committed = result.status in {"COMPLETED", "PENDING", "ERROR"} and "artifact_path" in result.public_payload
             return result
-        if cognitive:
-            _cognitive.write_lock_owner(lock_path)
 
         try:
             signal_value, signal_hash = _read_signal_value(request, stdin)
@@ -2448,14 +2483,9 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
         cognitive = request.memory is not None or _cognitive.is_cognitive_program(ast)
 
         try:
-            try:
-                lock_path.mkdir()
-            except FileExistsError:
-                # A cognitive run that crashed before its first crash point left
-                # only its named lock; nothing else may clear a lock.
-                if not cognitive or artifact_path.exists() or not _cognitive.clear_stale_cognitive_lock(lock_path):
-                    raise
-                lock_path.mkdir()
+            # A cognitive run that crashed before its first crash point left
+            # only its named lock; nothing else may clear a lock.
+            _take_run_lock(lock_path, named=cognitive, clearable=cognitive and not artifact_path.exists())
             lock_acquired = True
         except FileExistsError:
             return _durable_failure(
@@ -2502,7 +2532,6 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
         _validate_initial_bindings(initial_bindings, source_owned)
 
         if cognitive:
-            _cognitive.write_lock_owner(lock_path)
             source_hash = _sha256_prefixed_bytes(source_code.encode("utf-8"))
             base = {"run_id": run_id, "correlation_id": request.correlation_id, "source_path": request.source_path,
                     "source_code": source_code, "initial_bindings": copy.deepcopy(initial_bindings),

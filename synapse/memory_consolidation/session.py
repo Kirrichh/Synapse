@@ -23,7 +23,8 @@ from typing import Any, Mapping
 
 from synapse.memory_points import ActionPorts, LearnedHabitEntry, ReplayHorizon, TypedCondition
 
-from .court.dependencies import forgotten_dependents
+from .court.dependencies import forgotten_since
+from .court.hypotheses import changed_since
 from .formation import bind_event, plan_task
 from .hypotheses import check_basis, declare, resolve, reuse, verification
 from .knowledge import search as knowledge_search
@@ -258,24 +259,25 @@ class MemorySession:
         return self._bases_changed(requires)
 
     def _bases_changed(self, requires) -> str | None:
-        """Before an effect, every basis read from the court's record is read again (review §8.2, after
-        Kubernetes resourceVersion): a status the court revised after the window it was read at — a corrected
-        source, a later check — or one resting on results the operator forgot, refuses the effect. A check this
-        run made is fresh; an exam reads its fixed snapshot."""
-        recorded = {item["hypothesis"]: item["read"]["window"] for item in requires
-                    if (item.get("read") or {}).get("method") == "court_record"}
-        if self.exam is not None or not recorded:
+        """Before an effect, every requirement is read again against what memory recorded since the decision it
+        relies on (review §8.2 and M6, after Kubernetes resourceVersion) — a check this run made as much as a
+        status read from the court's record: a later check, a correction of what it rests on, or a forget of the
+        observations it was decided on (one the operator recorded acts before the next consolidation applies it)
+        refuses the effect. A decision made after such a change stands. An exam reads its fixed snapshot: nothing
+        recorded later changes what it relies on."""
+        if self.exam is not None:
             return None
         state = self.factory.memory_now()
-        changed = [f"{hypothesis_id} is now {entry['status']} ({entry['reason']})"
-                   for hypothesis_id, window in recorded.items()
-                   for entry in [state["hypotheses"].get(hypothesis_id)]
-                   if entry is not None and entry["window"] > window and entry["status"] != "confirmed"]
-        # A forget the operator recorded acts before the next consolidation applies it.
-        for _, tombstone, found in forgotten_dependents(state):
-            changed.extend(f"{hypothesis_id} rests on forgotten results ({tombstone['tombstone']})"
-                           for hypothesis_id in found.get("hypothesis", [])
-                           if hypothesis_id in recorded and recorded[hypothesis_id] <= tombstone["window"])
+        changed = []
+        for item in requires:
+            hypothesis_id, read = item["hypothesis"], item["read"]
+            entry = state["hypotheses"].get(hypothesis_id)
+            if entry is not None and changed_since(entry, read):
+                changed.append(f"{hypothesis_id} is now {entry['status']} ({entry['reason']})")
+            observations = read.get("observations") or {}
+            check = observations.get("check") or {}
+            changed.extend(f"{hypothesis_id} rests on forgotten results ({tombstone})" for tombstone in forgotten_since(
+                state, (observations.get("source"), check.get("evidence")), check.get("gw_seq"), read.get("window")))
         changed = sorted(set(changed))
         return "a required basis changed since it was read: " + "; ".join(changed) if changed else None
 

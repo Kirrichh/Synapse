@@ -1,5 +1,65 @@
 # Synapse Changelog
 
+## Resilience review of PR108 at 1b58d18 — gateway order, relied bases, ownership, replay end, run locks — 2026-10-08
+
+Memory decides in the gateway's order and reads an action's basis again before
+its effect (court policy v5, `synapse.memory.reassessment/v3`,
+`synapse.memory.retention-pass/v2`: memory decided under v4 is reassessed
+before use); a record is never shared with the program going on; ordinary
+replay ends where its record does; a cognitive run lock carries its owner from
+the moment it exists.
+
+- M1: a check made after a consolidation names a hypothesis declared earlier in
+  the same session; a window applies only its own checks.
+- M2: the latest check by the place of its answer on the gateway's sequence
+  decides, whatever the run names or the consolidation order; an older check
+  consolidated later is reported as `superseded`; a check without a recorded
+  answer never displaces one.
+- M3: a window in which a session declared knowledge is consolidated even when
+  nothing else happened in it.
+- M4: a source correction returns to `provisional` what was decided before it,
+  also when both sessions fold in one window; a check at or after it stands; a
+  correction without a known place reaches every status.
+- M5: an `admit` decision is a recorded event; session replay verification and
+  crash recovery consume it in its place and compare it byte for byte.
+- M6: an action's `requires` carries how its decision was read (own check or
+  the court's record, the source observation, the check's answer); admission
+  compares it with memory now, pending operator acts included: a later
+  refutation, a correction of what the decision rests on or a forget of its
+  observations refuses the action before any effect. An exam reads its fixed
+  snapshot. The report section `relied` says whether a status was revoked
+  before or after the action's admission; a forget records the gateway's head
+  (`after`).
+- F1: a policy guard puts back program data on every exit (a reject, an error
+  raised after a change, a refused call); an agent's memory is program data.
+- F2: a rolled-back `integrate` puts back an agent's memory in place: a
+  reference the program kept sees the restored contents.
+- F3: a model call through a callback (`map`, `filter`) or a compiled VM `llm`
+  request is refused inside a transaction or a guard by one barrier, also when a
+  data value shadows the builtin's name; the VM unwinds its open scopes. Pure
+  callbacks and pure VM programs run as before.
+- F4: a delivered message, its send and receive records, a policy verdict, an
+  observer's event, a VM execution record, what a memory keeps and returns, a
+  snapshot and a mobility envelope are each their own copy.
+- F5: snapshot `1.1.0` records the positions holding one object and restores
+  that sharing; inconsistent positions are refused (`SNAPSHOT_INTEGRITY`); the
+  input snapshot is never changed; `1.0.0` restores without sharing.
+- F6: ordinary replay returns to LIVE at the end of the top-level statement that
+  consumed the last record; a send after the consumed history is delivered once
+  and judged by its policy, also inside that statement; a send that meets
+  another record raises `REPLAY_INTEGRITY_ERROR`. A record the replayed program
+  produces again (segments, VM runs and checkpoints, affective declarations,
+  palace imprints and recalls, intentions, collective records, intents, forgets,
+  deferred evolutions) takes its recorded place instead of a second one, so a
+  draw or a send after a `context` block or a `run vm` replays; positions derived
+  from the history are read at the replay's position. Records of reactions an
+  ordinary replay does not re-run are passed over by the next operation.
+- K1: `time`, `random` and `uuid` are refused inside every `integrate`.
+- LOCK: a cognitive run lock appears with its owner record (a prepared directory
+  renamed into place), decided under a kernel-released lock of the state
+  directory; a process killed while taking it leaves none. An ownerless lock
+  (P2a, or written before this protocol) is still cleared only by an operator.
+
 ## Review of PR108 at 59e6ab3 — state, guards, call forms, model evidence — 2026-10-07
 
 Program data is one state for transactions and guards

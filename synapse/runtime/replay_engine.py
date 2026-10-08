@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 class ReplayIntegrityError(RuntimeError):
@@ -50,6 +50,30 @@ class ReplayEngine:
         "LLM_RESPONSE_CACHED",
     }
 
+    # Records an ordinary replay never produces again and no lookup of it consumes: those of the reactions it does
+    # not run again (the energy pool, habits, affective thresholds) and of live-only work (a model answer's cache
+    # hit, a resonance profile computed from the live history). An operation looking for its own record passes over
+    # them (review F6).
+    UNREPLAYED_TYPES = frozenset({
+        "energy_pool_recharged",
+        "agent_entered_rest",
+        "agent_exited_rest",
+        "habit_activated",
+        "habit_suppressed",
+        "habit_near_miss",
+        "habit_miss",
+        "habit_candidate_suggested",
+        "habit_execution_failed",
+        "habit_fatigued",
+        "habit_resting",
+        "habit_recovered",
+        "affective_threshold_triggered",
+        "affective_threshold_action_failed",
+        "threshold_suspend_requested",
+        "LLM_RESPONSE_CACHED_HIT",
+        "resonance_profile_computed",
+    })
+
     def __init__(
         self,
         *,
@@ -85,12 +109,14 @@ class ReplayEngine:
         self.get_history().append(event)
 
     def record_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
-        """Append one event, or verify it against the history being replayed.
+        """Append one event, or take the place the replayed run recorded for it.
 
-        A verified replay re-executes the program; an event it produces must be
-        the recorded event at the cursor, byte for byte in canonical form. The
-        recorded event is consumed, and once the history is exhausted the run
-        continues LIVE. Outside a verified replay this is a plain append.
+        A replay re-executes the program, and an event it produces again is the
+        recorded one. A verified replay requires it at the cursor, byte for byte
+        in canonical form; an ordinary replay finds it by its type as any other
+        lookup does, past the audit records it passes over, and refuses another
+        record standing first (review F6). The recorded event is consumed; once
+        the history is exhausted the run continues LIVE and the event is appended.
         """
         if self.get_runtime_mode() == self.replay_mode and self.get_verified_replay():
             history = self.get_history()
@@ -107,17 +133,23 @@ class ReplayEngine:
                     self.set_runtime_mode(self.live_mode)
                 return recorded
             self.set_runtime_mode(self.live_mode)
+        if self.get_runtime_mode() == self.replay_mode:
+            recorded = self.next_history_event(event.get("type"))
+            if recorded is not None:
+                return recorded
         self.get_history().append(event)
         return event
 
     def recorded_length(self) -> int:
         """How many events existed at this point of execution.
 
-        A verified replay holds the whole record, but execution has only
-        reached the cursor; identities derived from the history must see that
-        prefix, exactly as the original run did.
+        A replay holds the whole record, but execution has only reached the
+        cursor; identities and positions derived from the history must see that
+        prefix, exactly as the original run did — in a verified replay and, now
+        that it consumes the records it produces again, an ordinary one (review
+        F6).
         """
-        if self.get_runtime_mode() == self.replay_mode and self.get_verified_replay():
+        if self.get_runtime_mode() == self.replay_mode:
             return self.get_replay_cursor()
         return len(self.get_history())
 
@@ -131,37 +163,100 @@ class ReplayEngine:
         if self.get_runtime_mode() != self.replay_mode:
             return None
         idx = self.get_replay_cursor()
+        unreplayed = frozenset() if self.get_verified_replay() else self.UNREPLAYED_TYPES
         while idx < len(self.get_history()):
             event = self.get_history()[idx]
-            if event.get("type") in self.AUDIT_ONLY_PEEK_TYPES:
+            if event.get("type") in self.AUDIT_ONLY_PEEK_TYPES or event.get("type") in unreplayed:
                 idx += 1
                 continue
             return event
         self.set_runtime_mode(self.live_mode)
         return None
 
+    def _frontier(self, wanted: Callable[[Dict[str, Any]], bool],
+                  ends: Callable[[Dict[str, Any]], bool]) -> Tuple[int, Optional[Dict[str, Any]]]:
+        """Where an operation looking for its record stands: the first event at or after the cursor that it
+        ``wanted``, that ``ends`` its search, or that this replay does not pass over. An ordinary replay passes
+        over the audit records it does not re-check and the records it never produces again; a verified replay
+        over none. No event: the record is exhausted."""
+        history, index = self.get_history(), self.get_replay_cursor()
+        verified = self.get_verified_replay()
+        while index < len(history):
+            event = history[index]
+            unreplayed = not verified and event.get("type") in self.UNREPLAYED_TYPES
+            if not unreplayed and (wanted(event) or ends(event) or verified
+                                   or event.get("type") not in self.SKIPPABLE_REPLAY_TYPES):
+                return index, event
+            index += 1
+        return index, None
+
+    def _consume(self, index: int) -> Dict[str, Any]:
+        """Consume the record at ``index`` with the audit records passed over before it. A verified replay
+        continues LIVE the moment its record ends; an ordinary one at the end of the statement (``settle``)."""
+        history = self.get_history()
+        self.set_replay_cursor(index + 1)
+        if self.get_verified_replay() and index + 1 == len(history):
+            self.set_runtime_mode(self.live_mode)
+        return history[index]
+
+    def settle(self) -> None:
+        """Between two statements of the program: a record consumed to its end ends the replay, and the run
+        continues LIVE (review F6). Inside a statement it does not — an operation that records several events finds
+        a record cut between them incomplete, never the end of the replay. Records the replay never produces again
+        do not end it here: a reaction recorded last may follow a statement still to come, and would run twice; the
+        next operation passes over them."""
+        if self.get_runtime_mode() == self.replay_mode and self.get_replay_cursor() >= len(self.get_history()):
+            self.set_runtime_mode(self.live_mode)
+
+    def _exhausted(self, index: int) -> None:
+        """Nothing is left to follow: the audit records before ``index`` are passed over and the run is LIVE."""
+        self.set_replay_cursor(index)
+        self.set_runtime_mode(self.live_mode)
+
+    def recorded(self, wanted: Callable[[Dict[str, Any]], bool],
+                 ends: Callable[[Dict[str, Any]], bool] = lambda event: False) -> Optional[Dict[str, Any]]:
+        """The record a re-executed operation left, consumed: the first event at the frontier ``wanted`` accepts.
+
+        ``None`` with the run LIVE: it is not replaying, or the record is exhausted, which ends the replay here —
+        the operation is new and acts now, once. ``None`` with the run still replaying: another operation's
+        record, or one ``ends`` names, stands first — this operation left no record here and nothing is consumed.
+        """
+        if self.get_runtime_mode() != self.replay_mode:
+            return None
+        index, event = self._frontier(wanted, ends)
+        if event is None:
+            self._exhausted(index)
+            return None
+        return self._consume(index) if wanted(event) else None
+
+    def audit(self, event: Dict[str, Any]) -> bool:
+        """An operation's audit record: appended while the run is live. An ordinary replay that re-executed the
+        operation consumes the record it left when that record is next, so the replay ends where its record ends
+        (review F6); past that end the operation is new and its record is appended. Whether it was appended."""
+        if self.get_runtime_mode() == self.replay_mode and not self.get_verified_replay():
+            self.recorded(lambda item: item.get("type") == event.get("type"), lambda item: True)
+        if self.get_runtime_mode() != self.live_mode:
+            return False
+        self.get_history().append(event)
+        return True
+
     def next_history_event(self, expected_type: str, name: Optional[str] = None) -> Optional[Dict[str, Any]]:
         if self.get_runtime_mode() != self.replay_mode:
             return None
-        while self.get_replay_cursor() < len(self.get_history()):
-            cursor = self.get_replay_cursor()
-            event = self.get_history()[cursor]
-            self.set_replay_cursor(cursor + 1)
-            if event.get("type") == expected_type:
-                if name is not None and event.get("name") != name:
-                    raise RuntimeError(
-                        f"Replay history mismatch: expected {expected_type}:{name}, "
-                        f"got {event.get('type')}:{event.get('name')}"
-                    )
-                if self.get_verified_replay() and cursor + 1 == len(self.get_history()):
-                    # A verified replay continues LIVE the moment its record ends.
-                    self.set_runtime_mode(self.live_mode)
-                return event
-            if event.get("type") in self.SKIPPABLE_REPLAY_TYPES and not self.get_verified_replay():
-                continue
+        index, event = self._frontier(lambda item: item.get("type") == expected_type, lambda item: False)
+        if event is None:
+            self._exhausted(index)
+            return None
+        if event.get("type") != expected_type:
+            self.set_replay_cursor(index + 1)
             raise RuntimeError(f"Replay history mismatch: expected {expected_type}, got {event.get('type')}")
-        self.set_runtime_mode(self.live_mode)
-        return None
+        if name is not None and event.get("name") != name:
+            self.set_replay_cursor(index + 1)
+            raise RuntimeError(
+                f"Replay history mismatch: expected {expected_type}:{name}, "
+                f"got {event.get('type')}:{event.get('name')}"
+            )
+        return self._consume(index)
 
     def execute_side_effect(self, name: str, args: List[Any]) -> Any:
         event = self.next_history_event("side_effect", name=name)

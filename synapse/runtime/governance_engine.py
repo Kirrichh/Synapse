@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional
 
+from synapse.program_state import detached
+from synapse.runtime.actor_runtime import records_send
+
 
 class GovernanceEngine:
     """Governance/policy helper extracted from Interpreter.
@@ -17,11 +20,9 @@ class GovernanceEngine:
         *,
         policies_getter: Callable[[], Dict[str, Dict[str, Any]]],
         runtime_mode_getter: Callable[[], Any],
-        replay_cursor_getter: Callable[[], int],
-        replay_cursor_setter: Callable[[int], None],
         live_mode: Any,
         replay_mode: Any,
-        peek_history_event_fn: Callable[[], Optional[Dict[str, Any]]],
+        replay_record_fn: Callable[..., Optional[Dict[str, Any]]],
         execution_history_getter: Callable[[], List[Dict[str, Any]]],
         actor_log_getter: Callable[[], List[Dict[str, Any]]],
         mailboxes_getter: Callable[[], Dict[str, List[Dict[str, Any]]]],
@@ -44,11 +45,9 @@ class GovernanceEngine:
     ):
         self.get_policies = policies_getter
         self.get_runtime_mode = runtime_mode_getter
-        self.get_replay_cursor = replay_cursor_getter
-        self.set_replay_cursor = replay_cursor_setter
         self.live_mode = live_mode
         self.replay_mode = replay_mode
-        self.peek_history_event = peek_history_event_fn
+        self.replay_record = replay_record_fn
         self.get_execution_history = execution_history_getter
         self.get_actor_log = actor_log_getter
         self.get_mailboxes = mailboxes_getter
@@ -98,27 +97,34 @@ class GovernanceEngine:
         execution_history. LIVE mode executes it in a read-only policy context
         and then stores one atomic event: policy_evaluated or policy_violation.
         REPLAY mode consumes that event and never re-runs the guard, so policy
-        evolution cannot corrupt historical workflow replay.
+        evolution cannot corrupt historical workflow replay. An evaluation
+        made after the record is exhausted is new: the replay is over and the
+        guard runs (review F6).
         """
         target_path = f"{receiver}.{method}"
         policy_name = policy.get("name")
 
         if self.get_runtime_mode() == self.replay_mode:
-            event = self.peek_history_event()
-            if event and event.get("type") in {"policy_evaluated", "policy_violation"} and event.get("policy") == policy_name:
-                self.set_replay_cursor(self.get_replay_cursor() + 1)
+            # The verdict stands before the record of the action it governs.
+            event = self.replay_record(
+                lambda item: (item.get("type") in {"policy_evaluated", "policy_violation"}
+                              and item.get("policy") == policy_name and item.get("target") in (None, target_path)),
+                lambda item: records_send(item, sender, receiver, method))
+            if event is not None:
                 if event.get("type") == "policy_violation":
                     raise self.PolicyViolationException(event.get("reason") or f"Governance Policy Blocked execution of {target_path}")
                 return event
-            # Backward-compatible replay of v0.4/v0.5 logs, where successful
-            # policy evaluations were not represented as durable events.
-            return {
-                "type": "policy_evaluated",
-                "policy": policy_name,
-                "target": target_path,
-                "result": "pass",
-                "replayed_without_event": True,
-            }
+            if self.get_runtime_mode() == self.replay_mode:
+                # Backward-compatible replay of v0.4/v0.5 logs, where successful
+                # policy evaluations were not represented as durable events, and of
+                # a policy declared after this point of the recorded run.
+                return {
+                    "type": "policy_evaluated",
+                    "policy": policy_name,
+                    "target": target_path,
+                    "result": "pass",
+                    "replayed_without_event": True,
+                }
 
         history = self.get_execution_history()
         actor_log = self.get_actor_log()
@@ -138,7 +144,7 @@ class GovernanceEngine:
                     "sender": sender,
                     "receiver": receiver,
                     "method": method,
-                    "args": args,
+                    "args": detached(args),
                     "reason": f"forbidden value: {forbidden}",
                 }
                 history.append(violation)
@@ -174,8 +180,12 @@ class GovernanceEngine:
 
             # The guard reads; a change it made to the program's data, to a
             # closure's state or to the guarded arguments would outlive its
-            # discarded history. Such a change is put back and the call refused.
+            # discarded history. However the guard ends — its verdict, a
+            # rejection or an error of its own (review F1) — such a change is
+            # put back; a guard that ended normally is then refused, and an
+            # error stays the guard's error.
             state = self.program_state(args)
+            changed = False
             self.set_policy_guard_depth(self.get_policy_guard_depth() + 1)
             try:
                 self.execute_block(guard_body, guard_env)
@@ -190,8 +200,10 @@ class GovernanceEngine:
                 del actor_log[actor_log_len:]
                 self.set_mailboxes(mailbox_snapshot)
                 del memory_audit[memory_audit_len:]
-            if state.changed():
-                state.restore()
+                changed = state.changed()
+                if changed:
+                    state.restore()
+            if changed:
                 raise self.PolicyGuardRefusal(f"Policy guard of {policy_name} changed program state")
 
         if rejected:
@@ -202,7 +214,7 @@ class GovernanceEngine:
                 "sender": sender,
                 "receiver": receiver,
                 "method": method,
-                "args": args,
+                "args": detached(args),
                 "reason": reason or "semantic guard rejected action",
             }
             history.append(violation)
@@ -217,7 +229,7 @@ class GovernanceEngine:
             "sender": sender,
             "receiver": receiver,
             "method": method,
-            "args": args,
+            "args": detached(args),
             "result": "pass",
         }
         history.append(evaluated)

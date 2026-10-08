@@ -72,7 +72,7 @@ def apply_acts(state: Mapping[str, Any], acts: list[Mapping[str, Any]], passes: 
             # The forgotten recorded results stay named: what depended on them is found by them.
             retention["tombstones"][qid] = {"tombstone": act["tombstone"], "reason": act["reason"],
                                             "authority": act["authority"], "window": act["window"],
-                                            "refs": list(act["refs"])}
+                                            "refs": list(act["refs"]), "after": act.get("after")}
         elif kind == "restored":
             entry = {**entry, "retention_state": "full", "tier": "medium", "tier_rule": "restored",
                      "retention": act["retention"]}

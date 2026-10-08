@@ -11,7 +11,18 @@ names bound to one dict still share it afterwards), and anything created inside
 is simply no longer referenced.
 
 Scopes are recognised by shape (``variables`` and ``parent``) and functions by
-their ``closure``; this module imports no runtime class.
+their ``closure``; a runtime object that holds program data names its
+containers (``program_data``: an agent's memory, review F1 and F2) wherever it
+is reached. An agent is reached from the variable its declaration binds (its
+name, or ``self``); the agents table only answers trust lookups. This module
+imports no runtime class.
+
+A value crossing an ownership boundary — a message delivered, an event
+journaled, a result returned, a snapshot published — is ``detached``: its
+containers are the receiver's own, so a later change on either side never
+rewrites the other (review F4). Shared references inside the value stay shared
+in the copy; runtime objects and functions are not program data and keep their
+identity.
 """
 from __future__ import annotations
 
@@ -41,6 +52,31 @@ def _differs(value: Any, contents: Any) -> bool:
     return value != contents
 
 
+def detached(value: Any) -> Any:
+    """A copy of ``value`` that shares no list, dict, set or tuple with it (aliases inside it are kept)."""
+    memo: Dict[int, Any] = {}
+
+    def copy(item: Any) -> Any:
+        kind = type(item)
+        if kind not in (dict, list, set, tuple):
+            return item  # A scalar, or a runtime object or function: never the program's container.
+        if id(item) in memo:
+            return memo[id(item)]
+        if kind is tuple:
+            result = memo[id(item)] = tuple(copy(element) for element in item)
+            return result
+        result = memo[id(item)] = kind()
+        if kind is dict:
+            result.update((key, copy(element)) for key, element in item.items())
+        elif kind is list:
+            result.extend(copy(element) for element in item)
+        else:
+            result.update(copy(element) for element in item)
+        return result
+
+    return copy(value)
+
+
 class ProgramState:
     """The data reachable from ``scopes`` (and from ``values``) at the moment of capture."""
 
@@ -64,6 +100,9 @@ class ProgramState:
                 closure = getattr(value, "closure", None)
                 if _is_scope(closure):
                     pending_scopes.append(closure)
+                data = getattr(type(value), "program_data", None)
+                if callable(data):
+                    pending_values.extend(data(value))
                 if id(value) in self._containers:
                     continue
                 if isinstance(value, dict):

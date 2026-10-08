@@ -18,7 +18,6 @@ from typing import Any, Mapping
 from .. import records
 from .boundary import boundary_record
 from .digest import digest_record
-from .hypotheses import hypothesis_stage
 from .knowledge import known_of
 from .quantization import quantize
 
@@ -83,10 +82,9 @@ def assemble(*, state, draft, decision, configuration, inputs_hash, window_sessi
     habits, frozen, legitimacy_after, births_view = _births(decision, admitted, legitimacy)
     window = state["window"] + 1
     quantized = quantize(state, draft, decision, configuration, admitted, window, custody)
-    hypotheses, hypotheses_section = hypothesis_stage(state, draft, draft["cases"], window)
+    # The window's checks, the corrections and forgets of what they rest on, in the gateway's order (decide).
+    hypotheses, hypotheses_section = decision["hypotheses"]["updates"], decision["hypotheses"]["section"]
     knowledge = decision["knowledge"]
-    # A correction revises what depended on the corrected answer after this window's own checks.
-    hypotheses = {**hypotheses, **knowledge["hypotheses"]}
     held = known_of(state)
     known = {"versions": {**held["versions"], **knowledge["versions"]}, "uses": {**held["uses"], **knowledge["uses"]}}
     boundary = digest = None

@@ -11,6 +11,15 @@ import uuid
 
 from synapse.ast import CallExpr, Variable, MemberAccess, ReceiveBlock, Node
 from synapse.builtins import AgentRuntime, DurableActorRef, DurablePromise
+from synapse.program_state import detached
+from synapse.runtime.replay_engine import ReplayIntegrityError
+
+
+def records_send(event: Dict[str, Any], sender: str, receiver: str, method: str) -> bool:
+    """Whether ``event`` is the record a send of ``method`` from ``sender`` to ``receiver`` leaves."""
+    message = event.get("message") or {}
+    return (event.get("type") in {"message_sent", "message_forwarded"}
+            and (message.get("sender"), message.get("receiver"), message.get("method")) == (sender, receiver, method))
 
 
 class ActorRuntime:
@@ -265,48 +274,49 @@ class ActorRuntime:
 
     def send_message(self, sender: str, receiver: str, method: str, args: List[Any]) -> Dict[str, Any]:
         h = self.get_host()
-        if h.runtime_mode == self.replay_mode:
-            # Governance verdicts are durable events and must be consumed during
-            # replay, but delivery itself must not mutate mailboxes or emit
-            # network packets again.
-            h.check_send_governance(sender, receiver, method, args)
-            return {
-                "sender": sender,
-                "receiver": receiver,
-                "method": method,
-                "args": args,
-                "payload": args[0] if len(args) == 1 else args,
-                "replayed": True,
-            }
-
+        # Governance verdicts are durable events: a replay consumes them.
         h.check_send_governance(sender, receiver, method, args)
+        # The delivered message, its records and the value returned to the sender
+        # each own their data: a later change by the sender or by the receiver
+        # rewrites none of the others (review F4).
+        delivered = detached(args)
         message = {
             "sender": sender,
             "receiver": receiver,
             "method": method,
-            "args": args,
-            "payload": args[0] if len(args) == 1 else args,
+            "args": delivered,
+            "payload": delivered[0] if len(delivered) == 1 else delivered,
         }
+        if h.runtime_mode == self.replay_mode:
+            # Delivery itself must not mutate mailboxes or emit network packets
+            # again: a replayed send consumes the record it left. Past the end of
+            # the record the replay is over and this send is new (review F6).
+            if h.runtime.replay.recorded(lambda event: records_send(event, sender, receiver, method)) is not None:
+                return {**detached(message), "replayed": True}
+            if h.runtime_mode == self.replay_mode:
+                raise ReplayIntegrityError(
+                    f"REPLAY_INTEGRITY_ERROR: the record holds no message for {receiver}.{method} at this send")
+
         location = self.resolve_actor_location(receiver)
         if location != "local":
-            packet = self.build_forward_packet(message, location)
+            packet = self.build_forward_packet(detached(message), location)
             h.outbound_packets.append(packet)
             event = {
                 "type": "message_forwarded",
-                "message": message,
+                "message": detached(message),
                 "target_node": location,
             }
             h.actor_log.append(event)
             h.execution_history.append(event)
             h.emit_runtime_event(event, h.global_env)
-            return {**message, "forwarded": True, "target_node": location}
+            return {**detached(message), "forwarded": True, "target_node": location}
 
         h.mailboxes.setdefault(receiver, []).append(message)
-        h.actor_log.append(message)
-        event = {"type": "message_sent", "message": message}
+        h.actor_log.append(detached(message))
+        event = {"type": "message_sent", "message": detached(message)}
         h.execution_history.append(event)
         h.emit_runtime_event(event, h.global_env)
-        return message
+        return detached(message)
 
     def apply_receive_patterns(self, node: ReceiveBlock, message: Dict[str, Any], env, async_mode: bool = False):
         h = self.get_host()
@@ -327,7 +337,7 @@ class ActorRuntime:
         replay_event = h.peek_next_history_event()
         if replay_event and replay_event.get("type") == "message_received":
             event = h.next_history_event("message_received")
-            return self.apply_receive_patterns(node, event.get("message"), env)
+            return self.apply_receive_patterns(node, detached(event.get("message")), env)
         if replay_event and replay_event.get("type") == "receive_timeout":
             h.next_history_event("receive_timeout")
             return h.execute_block(node.else_body, h.make_environment(env)) if node.else_body else None
@@ -343,7 +353,7 @@ class ActorRuntime:
                 return h.execute_block(node.else_body, h.make_environment(env)) if node.else_body else None
             return None
         message = mailbox.pop(0)
-        event = {"type": "message_received", "actor": actor_name, "message": message}
+        event = {"type": "message_received", "actor": actor_name, "message": detached(message)}
         h.execution_history.append(event)
         h.emit_runtime_event(event, env)
         return self.apply_receive_patterns(node, message, env)
@@ -355,7 +365,7 @@ class ActorRuntime:
         replay_event = h.peek_next_history_event()
         if replay_event and replay_event.get("type") == "message_received":
             event = h.next_history_event("message_received")
-            message = event.get("message")
+            message = detached(event.get("message"))
             return (yield from self.apply_receive_patterns(node, message, env, async_mode=True))
         if replay_event and replay_event.get("type") == "receive_timeout":
             h.next_history_event("receive_timeout")
@@ -383,7 +393,7 @@ class ActorRuntime:
                 return (yield from h.execute_block_async(node.else_body, h.make_environment(env))) if node.else_body else None
             return None
         message = mailbox.pop(0)
-        h.execution_history.append({"type": "message_received", "actor": actor_name, "message": message})
+        h.execution_history.append({"type": "message_received", "actor": actor_name, "message": detached(message)})
         return (yield from self.apply_receive_patterns(node, message, env, async_mode=True))
 
     def request_migration_async(self, node, env, target):

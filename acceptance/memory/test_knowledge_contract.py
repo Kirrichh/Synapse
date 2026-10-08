@@ -21,6 +21,7 @@ import pytest
 
 from synapse.memory_consolidation.court.dependencies import graph
 from synapse.memory_consolidation.configuration import parse_memory_configuration
+from synapse.memory_consolidation.court.hypotheses import hypothesis_stage
 from synapse.memory_consolidation.court.knowledge import knowledge_stage
 from synapse.memory_consolidation.court.window import read_session
 from synapse.memory_consolidation.knowledge.search import recorded as recorded_statement
@@ -125,11 +126,14 @@ def test_the_semantic_ranking_is_exact():
 
 def _court(state, declared, uses=(), habits=None):
     context = SimpleNamespace(state=state, window=state["window"] + 1, report={},
-                              draft={"knowledge": {"declared": declared, "uses": list(uses)}})
+                              draft={"knowledge": {"declared": declared, "uses": list(uses)}, "hypotheses": [],
+                                     "cases": [], "relied": []})
     configuration = SimpleNamespace(tools=SimpleNamespace(tools={"catalog_entry": SimpleNamespace(
         source="catalog:ops")}))
     forced = {}
     result = knowledge_stage(context, habits or {}, forced, configuration)
+    # The decision's next stage revises what the window's corrections reached, in the gateway's order.
+    result["hypotheses"] = hypothesis_stage(context, result.pop("corrections"))["updates"]
     return result, context.report["knowledge"], forced
 
 

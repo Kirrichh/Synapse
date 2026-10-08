@@ -30,6 +30,10 @@ class FakeHost:
         self.actor_stack = []
         self.actor_runtime = ActorRuntime(lambda: self, live_mode=None, replay_mode=None)
 
+    def record_history_event(self, event):
+        self.execution_history.append(event)
+        return event
+
     def next_event_id(self):
         return f"evt-{len(self.execution_history):08d}"
 

@@ -9,6 +9,8 @@ import time
 import uuid
 from typing import Any, List, Dict, Optional, Mapping, TYPE_CHECKING
 
+from .program_state import detached
+
 if TYPE_CHECKING:
     from .llm import LLMGateway, LLMResult, PrivacyContext
 
@@ -176,7 +178,14 @@ class LLMBackend:
         return list(branches.values())[0]
 
 class Memory:
-    """Система памяти для агентов."""
+    """Система памяти для агентов.
+
+    The memory owns its records: a value written is copied in, a record read is
+    copied out, and the records change only through its operations. It keeps the
+    same list and dict for its whole life, so a transaction or a guard that
+    captured them puts them back in place, and every holder of this memory sees
+    the state restored (review F1, F2).
+    """
 
     def __init__(self, capacity: int = 100):
         self.short_term = []
@@ -185,10 +194,11 @@ class Memory:
 
     def read(self, key: Optional[str] = None) -> Any:
         if key is None:
-            return self.short_term[-5:] if self.short_term else []
-        return self.long_term.get(key)
+            return detached(self.short_term[-5:])
+        return detached(self.long_term.get(key))
 
     def write(self, value: Any, key: Optional[str] = None):
+        value = detached(value)
         if key:
             self.long_term[key] = value
         else:
@@ -197,34 +207,38 @@ class Memory:
                 self.short_term.pop(0)
 
     def clear(self):
-        self.short_term = []
+        self.short_term.clear()
 
     def forget(self, key: Optional[str] = None):
         if key is None:
             removed = list(self.short_term)
-            self.short_term = []
+            self.short_term.clear()
             return removed
         if key in self.long_term:
             return self.long_term.pop(key)
         before = len(self.short_term)
-        self.short_term = [x for x in self.short_term if str(key) not in str(x)]
+        self.short_term[:] = [x for x in self.short_term if str(key) not in str(x)]
         return {"removed_from_short_term": before - len(self.short_term)}
 
     def recall(self, pattern: str) -> List[Any]:
-        return [x for x in self.short_term if pattern in str(x)]
+        return detached([x for x in self.short_term if pattern in str(x)])
+
+    def program_data(self) -> tuple:
+        """The containers holding the records: the program's data a transaction or a guard captures."""
+        return (self.short_term, self.long_term)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        return detached({
             "short_term": self.short_term,
             "long_term": self.long_term,
             "capacity": self.capacity,
-        }
+        })
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Memory":
         memory = cls(capacity=data.get("capacity", 100))
-        memory.short_term = data.get("short_term", [])
-        memory.long_term = data.get("long_term", {})
+        memory.short_term.extend(detached(data.get("short_term", [])))
+        memory.long_term.update(detached(data.get("long_term", {})))
         return memory
 
 class AgentRuntime:
@@ -258,6 +272,10 @@ class AgentRuntime:
         result = self.llm.complete(prompt, model=self.model)
         self.memory.write({"prompt": prompt, "result": result})
         return result
+
+    def program_data(self) -> tuple:
+        """The program's data this agent holds: its memory's records."""
+        return self.memory.program_data()
 
     def to_dict(self) -> Dict[str, Any]:
         return {

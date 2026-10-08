@@ -13,6 +13,7 @@ import copy
 import threading
 
 from synapse.ast import Program, AtIpTrigger, BeforeOpTrigger
+from synapse.program_state import detached
 from synapse.bytecode import CognitiveCompiler, BytecodeProgram
 from synapse.cvm import (
     CognitiveVM,
@@ -436,7 +437,7 @@ class VMBridge:
         data["version"] = "2.1"
         env.define(node.binding, data)
         event = {"type": "vm_bytecode_compiled", "instructions": len(data.get("instructions", [])), "trace_id": h.current_trace_id()}
-        h.execution_history.append(event)
+        h.record_history_event(event)
         return data
 
     def event_id_for_index(self, idx: int) -> str:
@@ -800,7 +801,8 @@ class VMBridge:
                 value = self._find_host_call_resolution(call_id).get("result")
             vm.resume_host_call(call_id, value)
 
-    def make_vm_snapshot(self, vm: CognitiveVM, label: str, embed_history: bool = False) -> Dict[str, Any]:
+    def make_vm_snapshot(self, vm: CognitiveVM, label: str, embed_history: bool = False,
+                         trigger: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         h = self.get_host()
         self._ensure_history_streams(h)
         # Phase 1: copy-on-read under lock only. Slow serialization/enrichment stays outside.
@@ -853,7 +855,9 @@ class VMBridge:
             "current_context": snapshot["current_context"],
             "trace_id": h.current_trace_id(),
         }
-        h.execution_history.append(event)
+        if trigger is not None:
+            event["trigger"] = trigger
+        h.record_history_event(event)
         return snapshot
 
     def restore_vm_from_checkpoint(self, label: str, gas: Optional[int] = None, cognitive_budget: Optional[int] = None) -> CognitiveVM:
@@ -888,7 +892,7 @@ class VMBridge:
         self.sync_actor_runtime_from_vm_state(vm)
         self.sync_policy_runtime_from_vm_state(vm)
         h.current_context = getattr(getattr(h, "context_tracker", None), "current", vm.state.current_context)
-        h.execution_history.append({"type": "vm_resumed", "from_checkpoint": label, "hash_valid": True, "sync_valid": True, "resumed_at_ip": vm.state.ip, "trace_id": h.current_trace_id()})
+        h.record_history_event({"type": "vm_resumed", "from_checkpoint": label, "hash_valid": True, "sync_valid": True, "resumed_at_ip": vm.state.ip, "trace_id": h.current_trace_id()})
         return vm
 
     def vm_host_call(self, opcode: str, a: Any, b: Any) -> Dict[str, Any]:
@@ -912,7 +916,7 @@ class VMBridge:
             structured_reason = dict(fallback_reason_for(opcode))
             if decision.route != "HOST_EVAL":
                 structured_reason = {"code": "HOST_ABI_FALLBACK", "detail": "Legacy HOST_ABI fallback path"}
-            h.execution_history.append({
+            h.record_history_event({
                 "type": "vm_fallback",
                 "node": opcode,
                 "ast_node_type": opcode,
@@ -926,7 +930,7 @@ class VMBridge:
                 "trace_id": h.current_trace_id(),
             })
         event = {"type": "vm_host_call", "opcode": opcode, "host_call": result["host_call"], "from_cache": bool(result.get("from_cache")), "gas_cost": 0, "gas_refund": result.get("gas_refund", 0), "trace_id": h.current_trace_id()}
-        h.execution_history.append(event)
+        h.record_history_event(event)
         if opcode == "HOST_EVAL":
             # A construct the compiler did not lower has no value here: a placeholder would be read as one (review
             # computed callee). The run fails instead of continuing on it.
@@ -1029,13 +1033,12 @@ class VMBridge:
             return
         h = self.get_host()
         # Write SIDE_EFFECT_BLOCKED event to history for audit trail
-        if hasattr(h, "execution_history"):
-            h.execution_history.append({
-                "type": "SIDE_EFFECT_BLOCKED_BY_GUARD",
-                "request_symbol": symbol,
-                "agent_id": getattr(state, "agent_id", None),
-                "instruction_pointer": getattr(state, "ip", None),
-            })
+        h.record_history_event({
+            "type": "SIDE_EFFECT_BLOCKED_BY_GUARD",
+            "request_symbol": symbol,
+            "agent_id": getattr(state, "agent_id", None),
+            "instruction_pointer": getattr(state, "ip", None),
+        })
         raise VMHostError(
             code="SIDE_EFFECT_BLOCKED_BY_GUARD",
             message=(
@@ -1169,6 +1172,8 @@ class VMBridge:
         """
         import json as _j
 
+        # The host's transaction holds across the VM boundary: a model call there is refused before it is made.
+        h.forbid_model_call("llm")
         envelope    = args[0] if args else {}
         schema_hash = str(args[1]) if len(args) > 1 and args[1] else ""
         engine_params = args[2] if len(args) > 2 and isinstance(args[2], dict) else {}
@@ -1331,8 +1336,7 @@ class VMBridge:
                 "instruction_pointer": ctx.instruction_pointer,
                 "history_hash": event_hash,
             }
-            if hasattr(h, "execution_history"):
-                h.execution_history.append(denial_event)
+            h.record_history_event(denial_event)
 
             # Event 2: capability missing record (second layer for security audit)
             missing_event = {
@@ -1343,8 +1347,7 @@ class VMBridge:
                     (event_hash + required).encode()
                 ).hexdigest(),
             }
-            if hasattr(h, "execution_history"):
-                h.execution_history.append(missing_event)
+            h.record_history_event(missing_event)
 
             raise VMHostError(
                 code="CAPABILITY_DENIED",
@@ -1407,8 +1410,7 @@ class VMBridge:
         return f"evt-{len(getattr(h, 'execution_history', []) or []):08d}"
 
     def _emit_context_event(self, h: Any, event: Dict[str, Any]) -> None:
-        if hasattr(h, "execution_history"):
-            h.execution_history.append(event)
+        h.record_history_event(event)
         emit = getattr(h, "emit_runtime_event", None)
         if callable(emit):
             emit(event, getattr(h, "current_env", None))
@@ -1792,8 +1794,7 @@ class VMBridge:
                 event["unwind_reason"] = reason
                 if actor_runtime is not None and hasattr(actor_runtime, "current") and hasattr(h, "current_actor"):
                     h.current_actor = actor_runtime.current
-                if hasattr(h, "execution_history"):
-                    h.execution_history.append(event)
+                h.record_history_event(event)
                 emit = getattr(h, "emit_runtime_event", None)
                 if callable(emit):
                     emit(event, getattr(h, "current_env", None))
@@ -1851,8 +1852,7 @@ class VMBridge:
                 event["unwind_reason"] = reason
                 if hasattr(tracker, "current"):
                     h.current_context = tracker.current
-                if hasattr(h, "execution_history"):
-                    h.execution_history.append(event)
+                h.record_history_event(event)
                 emit = getattr(h, "emit_runtime_event", None)
                 if callable(emit):
                     emit(event, getattr(h, "current_env", None))
@@ -1888,44 +1888,20 @@ class VMBridge:
                 raise VMStepLimitExceeded(result["steps"])
             return result
         except Exception as exc:
-            if getattr(vm.state, "actor_stack", None):
-                self.unwind_dangling_actors(
-                    vm,
-                    vm.state.actor_stack,
-                    reason=f"exception:{type(exc).__name__}",
-                )
-            if getattr(vm.state, "policy_stack", None):
-                self.unwind_dangling_policies(
-                    vm,
-                    vm.state.policy_stack,
-                    reason=f"exception:{type(exc).__name__}",
-                )
-            if getattr(vm.state, "context_stack", None):
-                self.unwind_dangling_contexts(
-                    vm,
-                    vm.state.context_stack,
-                    reason=f"exception:{type(exc).__name__}",
-                )
+            self.unwind_open_scopes(vm, f"exception:{type(exc).__name__}")
             raise
         finally:
-            if not paused and getattr(vm.state, "actor_stack", None):
-                self.unwind_dangling_actors(
-                    vm,
-                    vm.state.actor_stack,
-                    reason="vm_halted",
-                )
-            if not paused and getattr(vm.state, "policy_stack", None):
-                self.unwind_dangling_policies(
-                    vm,
-                    vm.state.policy_stack,
-                    reason="vm_halted",
-                )
-            if not paused and getattr(vm.state, "context_stack", None):
-                self.unwind_dangling_contexts(
-                    vm,
-                    vm.state.context_stack,
-                    reason="vm_halted",
-                )
+            if not paused:
+                self.unwind_open_scopes(vm, "vm_halted")
+
+    def unwind_open_scopes(self, vm: CognitiveVM, reason: str) -> None:
+        """Close every actor, policy and context scope the VM still holds open."""
+        if getattr(vm.state, "actor_stack", None):
+            self.unwind_dangling_actors(vm, vm.state.actor_stack, reason=reason)
+        if getattr(vm.state, "policy_stack", None):
+            self.unwind_dangling_policies(vm, vm.state.policy_stack, reason=reason)
+        if getattr(vm.state, "context_stack", None):
+            self.unwind_dangling_contexts(vm, vm.state.context_stack, reason=reason)
 
     def evaluate_run_vm(self, node, env) -> Dict[str, Any]:
         h = self.get_host()
@@ -1965,11 +1941,10 @@ class VMBridge:
         def save_checkpoint(candidate_vm: CognitiveVM):
             nonlocal saved_snapshot
             label = node.checkpoint_label or "checkpoint"
-            saved_snapshot = self.make_vm_snapshot(candidate_vm, label)
-            h.vm_checkpoints[label]["program"] = candidate_vm.program.to_dict()
             trigger_kind = "at_ip" if isinstance(node.checkpoint_trigger, AtIpTrigger) else "before_op"
             trigger_value = getattr(node.checkpoint_trigger, "ip", getattr(node.checkpoint_trigger, "op", None))
-            h.execution_history[-1]["trigger"] = {"kind": trigger_kind, "value": trigger_value}
+            saved_snapshot = self.make_vm_snapshot(candidate_vm, label, trigger={"kind": trigger_kind, "value": trigger_value})
+            h.vm_checkpoints[label]["program"] = candidate_vm.program.to_dict()
 
         try:
             result = self.run_cvm_with_context_safety(vm, checkpoint_trigger=should_checkpoint, checkpoint_callback=save_checkpoint)
@@ -1977,7 +1952,12 @@ class VMBridge:
                 # The VM paused on its LLM request (review K): the bridge performs it — capability, cache and
                 # replay included — and resumes the VM with the answer, as the routed path does.
                 pending = vm.state.pending_host_call
-                value = self.dispatch_host_call(vm, "llm.request", decode_vm_value(pending["args"]))
+                try:
+                    value = self.dispatch_host_call(vm, "llm.request", decode_vm_value(pending["args"]))
+                except Exception as exc:
+                    # A refused request ends the run: the scopes the paused VM held open close (review F3).
+                    self.unwind_open_scopes(vm, f"exception:{type(exc).__name__}")
+                    raise
                 self.resume_host_call(vm, pending["call_id"], value)
                 result = self.run_cvm_with_context_safety(vm)
         except OutOfEnergy as exc:
@@ -1988,8 +1968,9 @@ class VMBridge:
         snapshot = vm.snapshot()
         h.vm_snapshots.append(snapshot)
         env.define(node.binding, result)
-        event = {"type": "vm_executed", "result": result, "transition_hash": snapshot["state"].get("transition_hash"), "trace_id": h.current_trace_id()}
+        # The program owns the result it binds; the record keeps its own copy (review F4).
+        event = {"type": "vm_executed", "result": detached(result), "transition_hash": snapshot["state"].get("transition_hash"), "trace_id": h.current_trace_id()}
         if saved_snapshot:
             event["checkpoint_label"] = node.checkpoint_label
-        h.execution_history.append(event)
+        h.record_history_event(event)
         return result

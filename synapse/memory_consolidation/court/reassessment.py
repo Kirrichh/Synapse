@@ -19,9 +19,10 @@ tool or a model:
   missing trace is never read as a verified one.
 
 Decisions an earlier rule recorded are judged again from the record too: every
-hypothesis status of an earlier check rule (its recorded check decided under the
-current rule), every promotion an earlier policy decided (on the confirmed
-experience of the habit's recorded fires). Every competitor resolution the
+hypothesis status (the consolidated checks of every session and the corrections
+of the knowledge timeline folded again in the gateway's order, each check
+decided under the current rule — ``hypotheses.py``), every promotion an earlier
+policy decided (on the confirmed experience of the habit's recorded fires). Every competitor resolution the
 record still holds is given the basis it was found on — compared outcomes or
 stand trials — so the conflict ladder keeps it only while that basis holds under
 the current rules, as in any window.
@@ -53,8 +54,9 @@ from .verdicts import scopes_by_marker, stage_one
 from .window import read_session
 
 #: v2 (second review): the reassessment also decides recorded hypothesis statuses again and judges recorded
-#: promotions on confirmed experience.
-REASSESSMENT_V2 = "synapse.memory.reassessment/v2"
+#: promotions on confirmed experience. v3 (review M1–M6): hypothesis statuses are folded again from every
+#: consolidated check and correction in the gateway's order; each entry names its place (``at``).
+REASSESSMENT_V3 = "synapse.memory.reassessment/v3"
 _UNAVAILABLE = {"forgotten", "rolled_up"}
 
 
@@ -167,9 +169,9 @@ def reassess_bases(state, configuration: MemoryConfiguration, gateway: Gateway, 
                            name for name in current if recorded_contracts.get(name) != current[name]),
                        "contracts": current,
                        "verdict": "basis_holds" if episodes and verified >= required else "basis_no_longer_verified"})
-    # Recorded decisions of earlier rules, judged again from what was recorded (second review, F1–F4).
-    return {"schema_version": REASSESSMENT_V2, "habits": habits,
-            "hypotheses": reassess_hypotheses(state, configuration, gateway, gateway_records),
+    # Recorded decisions of earlier rules, judged again from what was recorded (second review, F1–F4; M1–M6).
+    return {"schema_version": REASSESSMENT_V3, "habits": habits,
+            "hypotheses": reassess_hypotheses(state, configuration, gateway, gateway_records, sessions, reports),
             "promotions": reverify_promotions(state, reports, configuration.parameters, configuration.policy["policy"]),
             "resolutions": resolution_bases(reports)}
 

@@ -27,6 +27,7 @@ from synapse.memory_consolidation.configuration import parse_memory_configuratio
 from synapse.memory_consolidation.court.births import make_birth
 from synapse.memory_consolidation.court.comparison import COMPARISON_BASIS, compare
 from synapse.memory_consolidation.court.decide import decide
+from synapse.memory_consolidation.court.evaluate import empty_draft
 from synapse.memory_consolidation.court.projection import empty_state
 from synapse.memory_consolidation.learning.applicability import explanation_of
 from synapse.memory_consolidation.session import rivalry
@@ -147,8 +148,7 @@ def _world(conditions=None, **overrides):
 
 
 def _decide(configuration, state, advice=None, suppressed=()):
-    draft = {"consolidation_id": "con_conflicts", "mode": "full", "fires": [], "declared_fires": [], "reactions": [],
-             "near_misses": [], "misses": [], "requests": [], "cases": [], "replay": {},
+    draft = {**empty_draft("con_conflicts", "full", {"ok": True, "problems": []}),
              "conflict_advice": advice or {}, "arbitration": {}, "suppressed": list(suppressed)}
     return decide(state, draft, configuration, {habit_id: {"admitted": True} for habit_id in state["habits"]})
 

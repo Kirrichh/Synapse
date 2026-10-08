@@ -9,8 +9,8 @@ verdicts and signals are kept as pending evidence and nothing else changes
 metadata with neutral values, archives habits whose basis the reassessment no
 longer verifies (TR), returns to probation habits whose recorded promotion it
 does not find resting on confirmed experience (TU), records the hypothesis
-statuses it decided again from their recorded checks and judges every
-competitor pair again.
+statuses it decided again from the record (with the forgets of what they rest
+on) and judges every competitor pair again.
 """
 from __future__ import annotations
 
@@ -23,11 +23,11 @@ from .automaton import automaton, forced_transitions
 from .births import pool_stage
 from .boundaries import boundary_stage
 from .cold import cold_stage
-from .dependencies import forgotten_stage
+from .dependencies import forgotten_stage, revoke_forgotten
 from .compositions import composition_stage
 from .conflicts import birth_conflicts, conflict_stage, recorded_bases
 from .habit_state import complete_metadata
-from .hypotheses import reassessed
+from .hypotheses import empty_section, hypothesis_stage, reassessed
 from .knowledge import knowledge_stage
 from .reassessment import lost_bases
 from .trust import trust_stage
@@ -119,10 +119,12 @@ def _reassess(context, state, draft) -> dict[str, Any]:
     forced = {**unverified, **lost_bases(draft["reassessment"])}  # A lost basis archives over a probation.
     slow_only = conflict_stage(context.parameters, state, habits, draft, context.report, forced)
     forced_transitions(context, habits, forced)
+    # Every status decided again from the record, then the forgets of what it rests on applied to it.
+    hypotheses = reassessed(draft["reassessment"].get("hypotheses", []))
+    revoke_forgotten({**state, "hypotheses": {}}, hypotheses, context.window)
     return {"sections": context.report, "habits": habits, "declared": copy.deepcopy(state["declared"]), "births": [],
-            "pool": {}, "slow_only": slow_only,
-            "knowledge": {"versions": {}, "uses": {},
-                          "hypotheses": reassessed(state, draft["reassessment"].get("hypotheses", []))},
+            "pool": {}, "slow_only": slow_only, "knowledge": {"versions": {}, "uses": {}},
+            "hypotheses": {"updates": hypotheses, "section": empty_section()},
             "reassessment": {**draft["reassessment"], "fields_completed": completed,
                              "slow_only_added": [item for item in slow_only if item not in state["slow_only"]]}}
 
@@ -143,12 +145,14 @@ def decide(state, draft, configuration, legitimacy, refused: Mapping[str, str] |
     habits, declared = trust_stage(configuration.parameters, state, draft, draft["mode"], context.report)
     if draft["mode"] == "emergency":
         return {"sections": context.report, "habits": habits, "declared": declared, "births": [], "pool": {},
-                "slow_only": copy.deepcopy(state["slow_only"]),
-                "knowledge": {"versions": {}, "uses": {}, "hypotheses": {}}}
+                "slow_only": copy.deepcopy(state["slow_only"]), "knowledge": {"versions": {}, "uses": {}},
+                "hypotheses": {"updates": {}, "section": empty_section()}}
     forced: dict[str, tuple[str, str]] = {}
     slow_only = conflict_stage(configuration.parameters, state, habits, draft, context.report, forced)
     knowledge = knowledge_stage(context, habits, forced, configuration)
-    forgotten_stage(context, habits, forced, knowledge)
+    # The window's checks and corrections in the gateway's order, then the forgets of what they rest on.
+    hypotheses = hypothesis_stage(context, knowledge.pop("corrections"))
+    forgotten_stage(context, habits, forced, knowledge, hypotheses["updates"])
     wakes, consumed = cold_stage(context, legitimacy)
     births: list[dict[str, Any]] = []
     boundary_stage(context, habits, births, forced, refused)
@@ -161,4 +165,4 @@ def decide(state, draft, configuration, legitimacy, refused: Mapping[str, str] |
     _contract_violations(context, habits, forced)
     automaton(context, habits, forced, wakes, legitimacy)
     return {"sections": context.report, "habits": habits, "declared": declared, "births": births, "pool": pool,
-            "slow_only": slow_only, "knowledge": knowledge}
+            "slow_only": slow_only, "knowledge": knowledge, "hypotheses": hypotheses}

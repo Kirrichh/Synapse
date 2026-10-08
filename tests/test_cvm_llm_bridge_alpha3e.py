@@ -48,6 +48,7 @@ def _make_host(agent_id="default_agent", replay=False, history=None):
     h.runtime_mode = RuntimeMode.REPLAY if replay else RuntimeMode.LIVE
     h.current_agent_id = agent_id
     h.execution_history = history if history is not None else []
+    h.record_history_event.side_effect = lambda event: h.execution_history.append(event) or event
     h.current_trace_id.return_value = "test-trace-001"
     h.telemetry_events = []
     h.llm_backend = None        # mock mode — no real LLM calls

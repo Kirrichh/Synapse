@@ -28,6 +28,7 @@ would not grant. A reassessment, which calls no tool, corrects them:
 from __future__ import annotations
 
 import copy
+from types import SimpleNamespace
 
 import pytest
 
@@ -42,7 +43,9 @@ from synapse.memory_consolidation.court.decide import decide
 from synapse.memory_consolidation.court.evaluate import empty_draft
 from synapse.memory_consolidation.court.hypotheses import reassess_hypotheses, reassessed
 from synapse.memory_consolidation.court.reassessment import reassess_bases
-from synapse.memory_consolidation.policy import POLICY_V4
+from synapse.memory_consolidation.court.hypotheses import declarations
+from synapse.memory_consolidation.court.window import index_events
+from synapse.memory_consolidation.policy import POLICY_V5
 from synapse.memory_consolidation.tools.journal import GatewayIntegrityError
 
 EARLIER = "synapse.memory.court-policy/v3"
@@ -89,30 +92,59 @@ def _entry(configuration, asked, *, status="confirmed", rule=None, seq=1):
     return record["id"], entry
 
 
-@pytest.mark.parametrize("asked, answered, status, rule, seq, decided", [
-    ("B", {"account": "B", "balance": 20}, "confirmed", V1, 1, ("provisional", "check_about_another:subject")),
-    ("A", {"account": "A", "balance": 20}, "confirmed", None, 1, ("confirmed", "check_agrees")),
-    ("A", {"account": "A", "balance": 99}, "refuted", V1, 1, ("refuted", "contradicted:balance")),
-    ("A", {"account": "A", "balance": 20}, "confirmed", V1, 2, ("provisional", "check_record_unavailable")),
-    ("A", {"account": "A", "balance": 20}, "confirmed", V1, None, ("provisional", "check_record_unavailable")),
+class _Read:
+    """The sessions a reassessment reads: each run's whole recorded history, indexed as the court reads it."""
+
+    def __init__(self, runs):
+        self.runs = runs
+
+    def facts(self, run_id):
+        history = self.runs.get(run_id)
+        if history is None:
+            return None  # A run whose record is no longer readable.
+        return SimpleNamespace(found=index_events(history, 0, len(history)), observed={}, problems=[],
+                               declared=declarations(history, len(history)))
+
+
+def _probed(record, seq, status="confirmed", rule=None):
+    return {"type": "hypothesis_probed", "hypothesis": record["id"], "status": status, "reason": "check_agrees",
+            "rule": rule, "check_basis": None, "check_ref": {"gw_seq": seq, "evidence": f"ev-{seq}"}}
+
+
+def _memory(entry, histories):
+    """Memory an earlier court decided: its entry, and every session consolidated to its end."""
+    return {"window": 4, "hypotheses": {entry["record"]["id"]: entry}, "quanta": {},
+            "knowledge": {"versions": {}, "uses": {}},
+            "cursors": {run_id: {"to": len(history)} for run_id, history in histories.items()}}
+
+
+@pytest.mark.parametrize("asked, answered, status, rule, readable, decided", [
+    ("B", {"account": "B", "balance": 20}, "confirmed", V1, True, ("provisional", "check_about_another:subject")),
+    ("A", {"account": "A", "balance": 20}, "confirmed", None, True, ("confirmed", "check_agrees")),
+    ("A", {"account": "A", "balance": 99}, "refuted", V1, True, ("refuted", "contradicted:balance")),
+    ("A", None, "confirmed", V1, True, ("provisional", "check_record_unavailable")),  # The answer no longer resolves.
+    # A session no longer readable: the status is decided again from the answer the gateway recorded for its check.
+    ("A", {"account": "A", "balance": 20}, "confirmed", V1, False, ("confirmed", "check_agrees")),
+    ("A", None, "confirmed", V1, False, ("provisional", "check_record_unavailable")),
     # A status of the current rule under an unchanged configuration is decided again — and alike.
-    ("A", {"account": "A", "balance": 20}, "confirmed", hypotheses.CHECK_RULE, 1, ("confirmed", "check_agrees")),
+    ("A", {"account": "A", "balance": 20}, "confirmed", hypotheses.CHECK_RULE, True, ("confirmed", "check_agrees")),
 ])
-def test_a_recorded_status_is_decided_again_from_its_recorded_check(asked, answered, status, rule, seq, decided):
+def test_a_recorded_status_is_decided_again_from_its_recorded_check(asked, answered, status, rule, readable, decided):
     configuration = _bank()
-    hypothesis_id, entry = _entry(configuration, asked, status=status, rule=rule, seq=seq)
-    state = {"hypotheses": {hypothesis_id: entry}}
-    section = reassess_hypotheses(state, configuration, _Recorded({1: answered}), [])
+    hypothesis_id, entry = _entry(configuration, asked, status=status, rule=rule)
+    history = [{"type": "hypothesis_declared", "hypothesis": entry["record"]}, _probed(entry["record"], 1, status, rule)]
+    state = _memory(entry, {"run-1": history})
+    section = reassess_hypotheses(state, configuration, _Recorded({} if answered is None else {1: answered}), [],
+                                  _Read({"run-1": history} if readable else {}), [])
     basis = hypotheses.check_basis(entry["record"], configuration)
-    assert section == [{"hypothesis": hypothesis_id,
-                        "from": {"status": status, "reason": "check_agrees", "rule": rule, "check_basis": None},
-                        "to": {"status": decided[0], "reason": decided[1], "rule": hypotheses.CHECK_RULE,
-                               "check_basis": basis}}]
-    found = reassessed(state, section)[hypothesis_id]
+    item, = section
+    assert (item["hypothesis"], item["from"]["status"], item["from"]["rule"]) == (hypothesis_id, status, rule)
+    assert item["to"] == {"status": decided[0], "reason": decided[1], "rule": hypotheses.CHECK_RULE,
+                          "check_basis": basis, "at": 1}
+    found = reassessed(section)[hypothesis_id]
     assert (found["status"], found["reason"], found["rule"], found["check_basis"]) == (
         *decided, hypotheses.CHECK_RULE, basis)
-    assert {key: found[key] for key in ("window", "check_ref", "run_id", "record")} == {
-        key: entry[key] for key in ("window", "check_ref", "run_id", "record")}
+    assert {key: found[key] for key in ("run_id", "record")} == {key: entry[key] for key in ("run_id", "record")}
     # The status decided again is what a later session may reuse.
     reused = hypotheses.reuse(entry["record"], found, {}, 5, configuration.parameters, basis)
     assert reused["status"] == (decided[0] if decided[0] != "provisional" else None)
@@ -121,7 +153,34 @@ def test_a_recorded_status_is_decided_again_from_its_recorded_check(asked, answe
 def test_an_undecided_status_is_left_as_recorded():
     configuration = _bank()
     hypothesis_id, entry = _entry(configuration, "B", status="provisional", rule=V1)
-    assert reassess_hypotheses({"hypotheses": {hypothesis_id: entry}}, configuration, _Recorded({}), []) == []
+    assert reassess_hypotheses(_memory(entry, {}), configuration, _Recorded({}), [], _Read({}), []) == []
+
+
+@pytest.mark.parametrize("names", [("z-first", "a-second"), ("a-first", "z-second")])
+def test_the_latest_recorded_check_decides_whatever_its_session_is_named(names):
+    # Two sessions checked the claim: the ledger agreed at sequence 3 and contradicted it at sequence 7.
+    configuration = _bank()
+    hypothesis_id, entry = _entry(configuration, "A", rule=hypotheses.CHECK_RULE, seq=3)
+    first, second = ([{"type": "hypothesis_declared", "hypothesis": entry["record"]}, _probed(entry["record"], seq)]
+                     for seq in (3, 7))
+    state = _memory(entry, {names[0]: first, names[1]: second})
+    section = reassess_hypotheses(state, configuration, _Recorded({3: {"account": "A", "balance": 20},
+                                                                  7: {"account": "A", "balance": 99}}),
+                                  [], _Read({names[0]: first, names[1]: second}), [])
+    found = reassessed(section)[hypothesis_id]
+    assert (found["status"], found["at"], found["run_id"]) == ("refuted", 7, names[1])
+
+
+def test_a_check_after_a_consolidation_names_the_hypothesis_its_session_declared_before():
+    # One session: declared and checked (agreed at 3), consolidated, then checked again (contradicted at 9).
+    configuration = _bank()
+    hypothesis_id, entry = _entry(configuration, "A", rule=hypotheses.CHECK_RULE, seq=3)
+    history = [{"type": "hypothesis_declared", "hypothesis": entry["record"]}, _probed(entry["record"], 3),
+               {"type": "memory_consolidated"}, _probed(entry["record"], 9)]
+    section = reassess_hypotheses(_memory(entry, {"run-1": history}), configuration,
+                                  _Recorded({3: {"account": "A", "balance": 20}, 9: {"account": "A", "balance": 99}}),
+                                  [], _Read({"run-1": history}), [])
+    assert reassessed(section)[hypothesis_id]["status"] == "refuted"
 
 
 @pytest.mark.parametrize("change, reason", [("scope", "check_about_another:scope"),
@@ -141,9 +200,10 @@ def test_a_confirmation_decided_on_another_check_basis_does_not_survive_the_new_
     # Not reused on the record's word before the reassessment decides it again ...
     assert hypotheses.reuse(entry["record"], entry, {}, 5, after.parameters, basis)["reason"] == "check_basis_changed"
     # ... and decided again from the recorded answer under the new contract and graph.
-    state = {"hypotheses": {hypothesis_id: entry}}
-    section = reassess_hypotheses(state, after, _Recorded({1: {"account": "A", "balance": 20}}), [])
-    found = reassessed(state, section)[hypothesis_id]
+    history = [{"type": "hypothesis_declared", "hypothesis": entry["record"]}, _probed(entry["record"], 1)]
+    section = reassess_hypotheses(_memory(entry, {"run-1": history}), after,
+                                  _Recorded({1: {"account": "A", "balance": 20}}), [], _Read({"run-1": history}), [])
+    found = reassessed(section)[hypothesis_id]
     assert (found["status"], found["reason"], found["check_basis"]) == ("provisional", reason, basis)
     assert hypotheses.reuse(entry["record"], found, {}, 5, after.parameters, basis)["status"] is None
 
@@ -187,7 +247,7 @@ def _t1(at, policy=EARLIER):
     ([_fire(0, True)] + [_fire(i, False) for i in range(1, 5)], lambda: [_t1(_at(4))], None,
      "promotion_not_verified"),
     ([_fire(i, True) for i in range(5)], lambda: [_t1(_at(9))], 70, "promotion_not_verified"),  # Not recorded.
-    ([_fire(i, True) for i in range(5)], lambda: [_t1(_at(4), POLICY_V4)], None, None),  # Decided by this policy.
+    ([_fire(i, True) for i in range(5)], lambda: [_t1(_at(4), POLICY_V5)], None, None),  # Decided by this policy.
     ([_fire(i, True, "one") for i in range(5)], lambda: [_t1(_at(4))], None, "promotion_not_verified"),  # One task.
     # Confirmed fires after the promotion were no part of it.
     ([_fire(0, True)] + [_fire(i, False) for i in range(1, 5)] + [_fire(i, True) for i in range(5, 10)],
@@ -196,7 +256,7 @@ def _t1(at, policy=EARLIER):
 def test_an_earlier_promotion_stands_only_on_confirmed_experience(recent, reports, total, verdict):
     reports = reports()
     config, state, habit_id = _promoted(recent, reports, total=total)
-    item, = reverify_promotions(state, reports, config.parameters, POLICY_V4)
+    item, = reverify_promotions(state, reports, config.parameters, POLICY_V5)
     assert item["verdict"] == verdict
 
 
@@ -209,12 +269,12 @@ def test_a_probation_promotion_counts_from_the_entry_into_probation():
                _report(3, [{"from": "probation", "to": "active", "rule": "T4", "basis": "x", "cause": "x",
                             "at": _at(10)}])]
     config, state, habit_id = _promoted(recent, reports)
-    item, = reverify_promotions(state, reports, config.parameters, POLICY_V4)
+    item, = reverify_promotions(state, reports, config.parameters, POLICY_V5)
     assert item["verdict"] == "promotion_not_verified" and item["experience"]["counted"] == 1
     later = recent + [_fire(i, True) for i in range(11, 15)]
     reports[-1]["transitions"][0]["at"] = _at(14)
     config, state, habit_id = _promoted(later, reports)
-    item, = reverify_promotions(state, reports, config.parameters, POLICY_V4)
+    item, = reverify_promotions(state, reports, config.parameters, POLICY_V5)
     assert item["verdict"] == "promotion_verified" and item["experience"]["counted"] == 5
 
 
@@ -227,7 +287,7 @@ def test_a_probation_promotion_needs_its_mean_and_counts_after_a_window_entry():
                _report(3, [{"from": "probation", "to": "active", "rule": "T4", "basis": "x", "cause": "x",
                             "at": _at(9)}], runs=[f"run-{i:04d}" for i in range(5, 10)])]
     config, state, habit_id = _promoted(recent, reports)
-    item, = reverify_promotions(state, reports, config.parameters, POLICY_V4)
+    item, = reverify_promotions(state, reports, config.parameters, POLICY_V5)
     # Five confirmed fires in probation, but three were failures: the mean is below what a promotion needs.
     assert item["verdict"] == "promotion_not_verified" and item["experience"]["counted"] == 5
     assert item["experience"]["mean"] < config.parameters["t4_signal"]
@@ -240,7 +300,7 @@ def test_a_window_promotion_counts_runs_ended_by_its_window():
                        runs=[f"run-{i:04d}" for i in range(3, 5)]),
                _report(3, [], runs=["run-0004"])]  # The last run went on after the promotion's window.
     config, state, habit_id = _promoted(recent, reports)
-    item, = reverify_promotions(state, reports, config.parameters, POLICY_V4)
+    item, = reverify_promotions(state, reports, config.parameters, POLICY_V5)
     assert item["verdict"] == "promotion_not_verified" and item["experience"]["counted"] == 4
 
 
@@ -248,7 +308,7 @@ def test_a_window_promotion_counts_runs_ended_by_its_window():
 def test_confirmed_experience_since_birth_is_counted_from_the_recorded_fires(total, counted):
     recent = [_fire(0, True, "a"), _fire(1, False), _fire(2, True, "b"), _fire(3, True, "b")]
     config, state, habit_id = _promoted(recent, [], total=total, state_name="born")
-    item, = reverify_promotions(state, [], config.parameters, POLICY_V4)
+    item, = reverify_promotions(state, [], config.parameters, POLICY_V5)
     assert (item["counted_since_birth"], item["counted_tasks_since_birth"], item["complete"]) == (
         counted, ["a", "b"], total is None)
 
@@ -256,7 +316,7 @@ def test_confirmed_experience_since_birth_is_counted_from_the_recorded_fires(tot
 def _reassess(config, state, draft_extra, habits=()):
     draft = {**empty_draft("con_reassess", "reassess", {"ok": True, "problems": []}), "conflict_advice": {},
              "arbitration": {}, **draft_extra}
-    draft.setdefault("reassessment", {"schema_version": "synapse.memory.reassessment/v2", "habits": [
+    draft.setdefault("reassessment", {"schema_version": "synapse.memory.reassessment/v3", "habits": [
         {"habit_id": habit_id, "state": state["habits"][habit_id]["state"], "verified": 3, "required": 3,
          "episodes": [], "contracts": {}, "contracts_changed": [], "verdict": "basis_holds"} for habit_id in habits]})
     return decide(state, draft, config, {habit_id: {"admitted": True} for habit_id in state["habits"]})
@@ -266,10 +326,10 @@ def test_the_decision_returns_an_unverified_promotion_to_probation_and_keeps_a_v
     recent = [_fire(0, True)] + [_fire(i, False) for i in range(1, 5)]
     reports = [_t1(_at(4))]
     config, state, habit_id = _promoted(recent, reports)
-    promotions = reverify_promotions(state, reports, config.parameters, POLICY_V4)
+    promotions = reverify_promotions(state, reports, config.parameters, POLICY_V5)
     decision = _reassess(config, state, {}, [habit_id])
     assert decision["habits"][habit_id]["state"] == "active"  # Without the promotion's judgment nothing moves.
-    draft = {"reassessment": {"schema_version": "synapse.memory.reassessment/v2", "promotions": promotions,
+    draft = {"reassessment": {"schema_version": "synapse.memory.reassessment/v3", "promotions": promotions,
                               "habits": [{"habit_id": habit_id, "state": "active", "verified": 3, "required": 3,
                                           "episodes": [], "contracts": {}, "contracts_changed": [],
                                           "verdict": "basis_holds"}]}}
@@ -286,11 +346,13 @@ def test_the_decision_records_the_statuses_decided_again():
     hypothesis_id, entry = _entry(configuration, "B", rule=V1)
     config, state, _ = data.world()
     state["hypotheses"] = {hypothesis_id: entry}
-    section = reassess_hypotheses(state, configuration, _Recorded({1: {"account": "B", "balance": 20}}), [])
-    decision = _reassess(config, state, {"reassessment": {"schema_version": "synapse.memory.reassessment/v2",
+    history = [{"type": "hypothesis_declared", "hypothesis": entry["record"]}, _probed(entry["record"], 1)]
+    section = reassess_hypotheses({**state, "cursors": {"run-1": {"to": 2}}}, configuration,
+                                  _Recorded({1: {"account": "B", "balance": 20}}), [], _Read({"run-1": history}), [])
+    decision = _reassess(config, state, {"reassessment": {"schema_version": "synapse.memory.reassessment/v3",
                                                           "habits": [], "hypotheses": section}})
-    assert decision["knowledge"]["hypotheses"] == reassessed(state, section)
-    assert decision["knowledge"]["hypotheses"][hypothesis_id]["status"] == "provisional"
+    assert decision["hypotheses"]["updates"] == reassessed(section)
+    assert decision["hypotheses"]["updates"][hypothesis_id]["status"] == "provisional"
 
 
 def test_the_reassessment_judges_every_earlier_decision_from_the_record():
@@ -304,8 +366,11 @@ def test_the_reassessment_judges_every_earlier_decision_from_the_record():
     state["hypotheses"] = {hypothesis_id: entry}
     found = reassess_bases(state, configuration, _Recorded({1: {"account": "B", "balance": 20}}), [], [],
                            lambda entry: None, reports)
-    assert found["schema_version"] == "synapse.memory.reassessment/v2"
-    assert [item["to"]["status"] for item in found["hypotheses"]] == ["provisional"]
+    assert found["schema_version"] == "synapse.memory.reassessment/v3"
+    # No session of the memory is readable here: the confirmation is decided again from the answer the gateway
+    # recorded for its check, under the rule now in force — a check about another subject.
+    assert [(item["to"]["status"], item["to"]["reason"]) for item in found["hypotheses"]] == [
+        ("provisional", "check_about_another:subject")]
     assert [(item["habit_id"], item["verdict"]) for item in found["promotions"]] == [
         (habit_id, "promotion_not_verified")]
     assert found["resolutions"] == [{"winner": habit_id, "loser": loser, "basis": TRIAL_BASIS}]
@@ -352,7 +417,7 @@ def test_a_ban_lifted_on_trials_that_did_not_cover_the_trigger_is_restored(field
                "decided": True, "arms": {winner: {"outcome": "success"}, loser: {"outcome": "failure"}}}
               for name in "123"]
     advice = conflict_advice(None, state, config.parameters, [], [], [], trials)
-    reassessment = {"schema_version": "synapse.memory.reassessment/v2",
+    reassessment = {"schema_version": "synapse.memory.reassessment/v3",
                     "resolutions": resolution_bases([_resolved(winner, loser, by_trial=by_trial)]),
                     "habits": [{"habit_id": habit_id, "state": "active", "verified": 3, "required": 3, "episodes": [],
                                 "contracts": {}, "contracts_changed": [], "verdict": "basis_holds"}

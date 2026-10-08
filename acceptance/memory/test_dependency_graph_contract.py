@@ -79,19 +79,20 @@ def test_the_decision_withdraws_revokes_and_archives_separately():
     knowledge = decision["knowledge"]
     assert knowledge["versions"]["s_forgotten"]["withdrawn"]["tombstone"] == "tmb_1"
     assert knowledge["versions"]["s_forgotten"]["record"] == state["knowledge"]["versions"]["s_forgotten"]["record"]
+    revoked = decision["hypotheses"]["updates"]
     assert {hypothesis_id: (item["status"], item["reason"]) for hypothesis_id, item in
-            knowledge["hypotheses"].items()} == {"h_read": ("provisional", "basis_forgotten:tmb_1"),
-                                                  "h_checked": ("provisional", "basis_forgotten:tmb_1")}
+            revoked.items()} == {"h_read": ("provisional", "basis_forgotten:tmb_1"),
+                                 "h_checked": ("provisional", "basis_forgotten:tmb_1")}
     moves = {(item["habit_id"], item["rule"], item["to"]) for item in decision["sections"]["transitions"]}
     assert moves == {(ids["q"], "TR", "dormant"), (ids["c"], "TC", "probation")}
 
     # The next window reads the applied state and changes nothing more.
     folded = copy.deepcopy(after)
-    folded["hypotheses"] = {**state["hypotheses"], **knowledge["hypotheses"]}
+    folded["hypotheses"] = {**state["hypotheses"], **revoked}
     folded["knowledge"] = {"versions": {**state["knowledge"]["versions"], **knowledge["versions"]},
                            "uses": state["knowledge"]["uses"]}
     _, again = data.window(config, folded)
-    assert again["sections"]["dependencies"] == [] and again["knowledge"]["hypotheses"] == {}
+    assert again["sections"]["dependencies"] == [] and again["hypotheses"]["updates"] == {}
     assert [item for item in again["sections"]["transitions"] if item["rule"] in {"TR", "TC"}] == []
 
 

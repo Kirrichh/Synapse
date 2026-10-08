@@ -7,7 +7,7 @@ place of the current one: it confirmed the claim about account A from a ledger
 answer about account B, and the transfer went through; it confirmed the claim
 again from a ledger answer about A itself.
 
-Under the current court (v4), in its own processes:
+Under the current court (v5), in its own processes:
 
 * a session is refused before anything runs — the memory was decided under the
   earlier policy and must be reassessed first;
@@ -40,7 +40,7 @@ def _earlier_court(world, monkeypatch, run_id, read, check):
     from synapse.memory_consolidation import hypotheses, policy
 
     with monkeypatch.context() as earlier:
-        earlier.setattr(policy, "POLICY_V4", EARLIER_POLICY)
+        earlier.setattr(policy, "POLICY_V5", EARLIER_POLICY)
         earlier.setattr(hypotheses, "CHECK_RULE", EARLIER_RULE)
         earlier.setattr(hypotheses, "_about_claim", lambda record, payload, configuration: None)
         assert cli.main([str(item) for item in world._run_arguments(
@@ -66,7 +66,7 @@ def test_an_earlier_courts_confirmations_are_decided_again_before_use(tmp_path, 
     assert code == 0 and result["status"] == "RECORDED", (code, result, stderr)
     assert len(world.world()["calls"]) == calls  # Decided from the record: no tool was called.
     reassessment = result["consolidation"]["reassessment"]
-    assert reassessment["policy"] == {"from": EARLIER_POLICY, "to": "synapse.memory.court-policy/v4"}
+    assert reassessment["policy"] == {"from": EARLIER_POLICY, "to": "synapse.memory.court-policy/v5"}
     decided = {item["hypothesis"]: (item["from"]["status"], item["to"]["status"], item["to"]["reason"])
                for item in reassessment["hypotheses"]}
     foreign, own = (next(key for key, item in earlier.items() if item["run_id"] == run) for run in ("foreign", "own"))

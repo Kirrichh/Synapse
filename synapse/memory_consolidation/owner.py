@@ -32,7 +32,8 @@ OWNER_BINDING_V1 = "synapse.memory.owner-binding/v1"
 #: the first binding) and the reassessment that adopts it.
 OWNER_BINDING_V2 = "synapse.memory.owner-binding/v2"
 SESSION_OPENED_V1 = "synapse.memory.session-opened/v1"
-RETENTION_PASS_V1 = "synapse.memory.retention-pass/v1"
+#: v2 (review M6): a forget names the gateway's head it was recorded at (``after``); a v1 forget names none.
+RETENTION_PASS_V2 = "synapse.memory.retention-pass/v2"
 STATE_SNAPSHOT_V1 = "synapse.memory.state-snapshot/v1"
 #: How many applied reports a state snapshot follows the previous one by.
 SNAPSHOT_EVERY = 8
@@ -235,7 +236,7 @@ class MemoryOwner:
             raise MemoryOwnerViolation("retention passes are recorded in order")
         return self.store.put(kind="MEMORY_RETENTION", job_key=_key("synapse.memory.retention", self.identity,
                                                                     str(sequence)), guard=guard,
-                              payload={"schema_version": RETENTION_PASS_V1, "project_identity": self.identity,
+                              payload={"schema_version": RETENTION_PASS_V2, "project_identity": self.identity,
                                        "sequence": sequence, "window": window, "acts": acts})
 
     def retention_passes(self, *, guard=None) -> list[dict[str, Any]]:

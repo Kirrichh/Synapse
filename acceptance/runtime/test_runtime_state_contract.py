@@ -4,8 +4,10 @@ A program's binding, a history event and the live state never share one
 object; declared values are checked; a checkpoint keeps its moment; the energy
 pool is read live and changed only by the runtime; a palace snapshot carries
 its records; a nondeterministic builtin is recorded under any name; a policy
-guard reads and changes nothing.
+guard reads and changes nothing, however it ends (review F1), and what it reads
+from an agent's memory is its own copy.
 """
+import copy
 import math
 
 import pytest
@@ -13,6 +15,7 @@ import pytest
 from synapse import Interpreter, compile_to_ast
 from synapse.affective import AffectiveState, clamp
 from synapse.interpreter import PolicyCompilationError
+from synapse.interpreter import RuntimeError as SynapseError
 
 
 def run(source, snapshot=None):
@@ -183,3 +186,42 @@ def test_program_state_sees_and_puts_back_every_reachable_change_in_place():
     assert outer.variables["shared"] is shared and outer.variables["alias"] is shared
     assert tags == {"a"} and pair_item == [1] and "created" not in inner.variables
     assert not state.changed()
+
+
+@pytest.mark.parametrize("ending, failure, message", [
+    ("let bad = 1 / 0", SynapseError, "Division by zero"),
+    ('print("refused")', PolicyCompilationError, "Policy guard cannot print"),
+    ('reject "no"', PolicyCompilationError, "Policy guard of Gov changed program state"),
+])
+def test_a_guard_ending_in_any_way_after_a_change_leaves_nothing_changed(ending, failure, message):
+    interp = Interpreter()
+    source = ('let box = {"value": 1}\npolicy Gov { target "Worker.process"\n guard(args) {\n box.value = 9\n '
+              + ending + '\n }\n}\nagent Worker { model "mock" }\nsend Worker.process("hello")\n')
+    with pytest.raises(failure, match=message):
+        interp.interpret(compile_to_ast(source))
+    assert interp.global_env.get("box") == {"value": 1}
+    assert interp.mailboxes.get("Worker") in (None, []) and interp.execution_history == []
+
+
+def test_control_a_guard_that_only_read_keeps_its_own_error():
+    interp = Interpreter()
+    with pytest.raises(SynapseError, match="Division by zero"):
+        interp.interpret(compile_to_ast('let box = {"value": 1}\npolicy Gov { target "Worker.process"\n guard(args) {\n'
+                                        ' let seen = box.value\n let bad = 1 / 0\n }\n}\nagent Worker { model "mock" }\n'
+                                        'send Worker.process("hello")\n'))
+    assert interp.global_env.get("box") == {"value": 1}
+
+
+@pytest.mark.parametrize("edit", [True, False])
+def test_a_guard_reading_an_agents_memory_changes_nothing_and_replays_alike(edit):
+    source = ('agent Worker { model "mock" }\nlet self = Worker\nmemory.write({"n": 1}) { reason "setup" }\n'
+              'policy Gov { target "Worker.process"\n guard(args) {\n let rows = Worker.memory.read()\n'
+              + (' rows[0].value.n = 9\n' if edit else ' let seen = rows[0].value.n\n') + ' }\n}\n'
+              'send Worker.process("hello")\n')
+    live = run(source)
+    replay = Interpreter()
+    replay.load_snapshot(copy.deepcopy(live.snapshot()))
+    replay.interpret(compile_to_ast(source))
+    for interp in (live, replay):
+        assert [entry["value"] for entry in interp.global_env.get("Worker").memory.short_term] == [{"n": 1}]
+    assert [message["payload"] for message in live.mailboxes["Worker"]] == ["hello"]

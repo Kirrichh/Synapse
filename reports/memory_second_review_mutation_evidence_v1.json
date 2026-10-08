@@ -3163,5 +3163,1582 @@
         "status": "KILLED"
       }
     ]
+  },
+  "resilience_1b58d18": {
+    "scope": "resilience review of 1b58d18: M1 a declaration resolved across windows, M2 checks in the gateway's order, M3 a window stating knowledge consolidated, M4 corrections placed by their observation, M5 the admission in the replay record, M6 an action's basis read again before its effect, reassessment of a status whose session is unreadable, F1 a guard put back on every exit, F2 memory restored in place, F3 one model-call barrier for callbacks and the VM, F4 records owning their copies, F5 snapshot aliases and a detached input, F6 replay ending with its record and an ordinary replay's own records taking their places (F6R), K1 nondeterministic builtins refused in integrate, LOCK a run lock created with its owner",
+    "method": "one mutation at a time in a fresh copy of the working tree; its killer files run alone in order until one fails; the file restored byte for byte before the next mutation",
+    "first_round": {
+      "mutants": 64,
+      "killed": 61,
+      "survivors_closed": [
+        "R1B5-MUT-27: the agents-table traversal of ProgramState was redundant: an agent is reached from the variable its declaration binds (its name or self) and the table only answers trust lookups; the code was removed",
+        "R1B5-MUT-34: a call by a builtin's name, also when data shadows that name, routes through the one dispatcher (_call_host_callable); the replacing line's mutant R1B5-FU-02 is killed by the shadowed-name case",
+        "R1B5-MUT-58: killed in the follow-up campaign (R1B5-FU-01) by a verdict past the end of the record inside one statement"
+      ]
+    },
+    "follow_up": {
+      "mutants": 37,
+      "first_round_killed": 34,
+      "survivors_closed": [
+        "R1B5-FU-11: a recall made before its tag expires: at the end of the record it would see the tag expired",
+        "R1B5-FU-12: the expiry check read the record, whose imprint ids are another palace's (a replay's palace draws its own): a second recall reported the expiry again; it now reads this execution's memory audit (three recalls)",
+        "R1B5-FU-33: a VM checkpoint's record names the trigger that saved it, in the run and in its replay"
+      ]
+    },
+    "rechecked_on_final_tree": {
+      "findings": [
+        "F1",
+        "F2",
+        "F3",
+        "F4",
+        "F5",
+        "F6",
+        "K1",
+        "M5"
+      ],
+      "killed": 36,
+      "not_applicable": [
+        "R1B5-MUT-27",
+        "R1B5-MUT-34"
+      ],
+      "note": "the first campaign's mutants on files the follow-up changed, run again on the final tree; the two not applicable name code that was removed or replaced"
+    },
+    "mutants": 101,
+    "killed": 99,
+    "removed_or_replaced": 2,
+    "items": [
+      {
+        "mutant_id": "R1B5-MUT-01",
+        "finding": "M1",
+        "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+        "original": "for event in history[:end]",
+        "mutation": "for event in history[end:end]",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "8db473807a803ee8a8526994465759ee9f3f647dd92b170646727ae2206b5025"
+        },
+        "killer_files": [
+          "acceptance/memory/test_reassessment_rules_contract.py",
+          "acceptance/memory/test_hypothesis_order_acceptance.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-02",
+        "finding": "M2",
+        "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+        "original": "(-1 if _at(item[\"check_ref\"]) is None else _at(item[\"check_ref\"])), 1, item[\"run_id\"]",
+        "mutation": "0, 1, item[\"run_id\"]",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "1cc3f1d2fef9f8a8f6b016d9bbfee8dd309bcac8d60aa5d1dee6ce958eb2963e"
+        },
+        "killer_files": [
+          "acceptance/memory/test_causal_order_contract.py",
+          "acceptance/memory/test_hypothesis_order_acceptance.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-03",
+        "finding": "M2",
+        "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+        "original": "at is None or (current.get(\"at\") is not None and at < current[\"at\"])",
+        "mutation": "at is None",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "68459e3c3516a04c270e3c4f6d4a520cb7a9fc0ef7e92e84c59bbfc97636df1b"
+        },
+        "killer_files": [
+          "acceptance/memory/test_causal_order_contract.py",
+          "acceptance/memory/test_hypothesis_order_acceptance.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-04",
+        "finding": "M2",
+        "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+        "original": "if current is not None and (at is None or (current.get(\"at\")",
+        "mutation": "if current is not None and (False or (current.get(\"at\")",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "84fdbe29638754470aac4b43e6b89ccb01fa4031c3c2388a840ca1d67e304d55"
+        },
+        "killer_files": [
+          "acceptance/memory/test_causal_order_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-05",
+        "finding": "M4",
+        "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+        "original": "entry.get(\"at\") is not None and entry[\"at\"] >= at):",
+        "mutation": "entry.get(\"at\") is not None and entry[\"at\"] > at):",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "b82bdc26bd98f65e6113e7133f7d079d068c7c17ac3a409c667f83dcdfa13544"
+        },
+        "killer_files": [
+          "acceptance/memory/test_causal_order_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-06",
+        "finding": "M4",
+        "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+        "original": "(math.inf if item[\"at\"] is None else item[\"at\"]), 0, \"\"",
+        "mutation": "(math.inf if item[\"at\"] is None else item[\"at\"]), 2, \"\"",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "0ff3cf25d974924e0e109e437d989398b27cd6fbb4133e9057fa24e39697be1e"
+        },
+        "killer_files": [
+          "acceptance/memory/test_causal_order_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-07",
+        "finding": "M4",
+        "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+        "original": "(math.inf if item[\"at\"] is None else item[\"at\"])",
+        "mutation": "(-1 if item[\"at\"] is None else item[\"at\"])",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "9dd6e0feed00e06de25fb7dc7ec6aa525fa52481a4d25c1ca6fe8934bc1e4477"
+        },
+        "killer_files": [
+          "acceptance/memory/test_causal_order_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-08",
+        "finding": "M4",
+        "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+        "original": "                            corrections, holding, context.window)",
+        "mutation": "                            [], holding, context.window)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "5759331f848910b7aa7fdd6bd25dd87dba2d741e41e6c9d2b73a8b3f3f0403ec"
+        },
+        "killer_files": [
+          "acceptance/memory/test_knowledge_contract.py",
+          "acceptance/memory/test_knowledge_window_acceptance.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-09",
+        "finding": "M3",
+        "production_file": "synapse/memory_consolidation/court/window.py",
+        "original": "event.get(\"type\") in SIGNIFICANT or changes_knowledge(event)",
+        "mutation": "event.get(\"type\") in SIGNIFICANT",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "e9c1752507d91b418ed452509d751a34e2ee1c04253992023969efc99d9e24b5"
+        },
+        "killer_files": [
+          "acceptance/memory/test_knowledge_window_acceptance.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-10",
+        "finding": "M6",
+        "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+        "original": "    if entry[\"status\"] == \"confirmed\":\n        return False\n    at = ",
+        "mutation": "    if False:\n        return False\n    at = ",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "ad9e12793869898ccd25d6e08631ece10361a81e3d557c8fe387ccb1816c107e"
+        },
+        "killer_files": [
+          "acceptance/memory/test_causal_order_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-11",
+        "finding": "M6",
+        "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+        "original": "        return entry[\"at\"] >= at",
+        "mutation": "        return entry[\"at\"] > at",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "da5ad414ed8457b20caf30e871957a113b1d27e3ab6e42118f2cce5d1ab437ff"
+        },
+        "killer_files": [
+          "acceptance/memory/test_causal_order_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-12",
+        "finding": "M6",
+        "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+        "original": "        return entry[\"window\"] > read[\"window\"]",
+        "mutation": "        return entry[\"window\"] >= read[\"window\"]",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "b3939c9031d734f1ad7c6cd141c1ba644b624e144a6eac09b709c411f61cbebc"
+        },
+        "killer_files": [
+          "acceptance/memory/test_causal_order_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-13",
+        "finding": "M6",
+        "production_file": "synapse/memory_consolidation/court/dependencies.py",
+        "original": "        return at <= tombstone[\"after\"]",
+        "mutation": "        return at < tombstone[\"after\"]",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "a7d2d65bd4bd03cee37d0fcb4db221c530d7ae4de0fb7f4cad61f4b828d78643"
+        },
+        "killer_files": [
+          "acceptance/memory/test_causal_order_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-14",
+        "finding": "M6",
+        "production_file": "synapse/memory_consolidation/court/dependencies.py",
+        "original": "    return window is None or window <= tombstone[\"window\"]",
+        "mutation": "    return window is not None and window <= tombstone[\"window\"]",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "057d175bb85514f1929e995df2493f990f72173ecc50620b7afbe009a9a223f5"
+        },
+        "killer_files": [
+          "acceptance/memory/test_causal_order_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-15",
+        "finding": "M6",
+        "production_file": "synapse/memory_consolidation/court/dependencies.py",
+        "original": " and decided_before(at, window, tombstone))",
+        "mutation": ")",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "735ea6725bd2bad7a06dbde2a8325d43b6351e72daa72860279df39b2578adaa"
+        },
+        "killer_files": [
+          "acceptance/memory/test_causal_order_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-16",
+        "finding": "M6",
+        "production_file": "synapse/memory_consolidation/court/dependencies.py",
+        "original": "\"at\": tombstone.get(\"after\")}",
+        "mutation": "\"at\": None}",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "16d610661ecd4fc550f92ad8638ee58d661297424e9fd23ac051b03cdcd74b2c"
+        },
+        "killer_files": [
+          "acceptance/memory/test_causal_order_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-17",
+        "finding": "M6",
+        "production_file": "synapse/memory_consolidation/operator_acts.py",
+        "original": "\"refs\": refs, \"after\": after})",
+        "mutation": "\"refs\": refs, \"after\": None})",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "5bb71e213a0188131b2a8095fc82f1024a98fa13d3d58db5189eb32b65925fcd"
+        },
+        "killer_files": [
+          "acceptance/memory/test_relied_revocation_acceptance.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-18",
+        "finding": "M6",
+        "production_file": "synapse/memory_consolidation/court/retention.py",
+        "original": "\"after\": act.get(\"after\")}",
+        "mutation": "\"after\": None}",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "4fb1690917b9a3b10abb8922915f8685e2e67fc0a552484ac60a80ca32948ab2"
+        },
+        "killer_files": [
+          "acceptance/memory/test_relied_revocation_acceptance.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-19",
+        "finding": "M6",
+        "production_file": "synapse/memory_consolidation/session.py",
+        "original": "        if self.exam is not None:\n            return None\n",
+        "mutation": "",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "2ea3ff0ba5c91c890fa46d1c8267d2ebfeacb4c91835e6bdfd14d7e2a0e67dea"
+        },
+        "killer_files": [
+          "acceptance/memory/test_relied_revocation_acceptance.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-20",
+        "finding": "M6",
+        "production_file": "synapse/memory_consolidation/session.py",
+        "original": "            changed.extend(f\"{hypothesis_id} rests on forgotten results ({tombstone})\" for tombstone in forgotten_since(",
+        "mutation": "            changed.extend(f\"{hypothesis_id} rests on forgotten results ({tombstone})\" for tombstone in [] and forgotten_since(",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "974a52500c4f624aa5f6b7f2295554950eb855b271d36218c35635254d5525f0"
+        },
+        "killer_files": [
+          "acceptance/memory/test_relied_revocation_acceptance.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-21",
+        "finding": "M6",
+        "production_file": "synapse/runtime/memory_engine.py",
+        "original": "\"check\": copy.deepcopy(decision.get(\"observation\"))",
+        "mutation": "\"check\": None",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "56ec6b94a12b1a8d48c3f5af065c1cd20be058497eaa9ad3ec47edbba6064eee"
+        },
+        "killer_files": [
+          "acceptance/memory/test_relied_revocation_acceptance.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-22",
+        "finding": "M5",
+        "production_file": "synapse/interpreter.py",
+        "original": "        recorded = self.next_history_event(\"memory_admission\")\n        if recorded is None:\n            recorded = self.record_history_event(event)\n        elif canonical_json(recorded) != canonical_json(event):\n            raise ReplayIntegrityError(\"REPLAY_INTEGRITY_ERROR: memory_admission differs from its record\")",
+        "mutation": "        recorded = event\n        self.execution_history.append(event)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "c830566850f3e524cb29cef871dff71143c42e1256b42638bed384d1bce81a2a"
+        },
+        "killer_files": [
+          "acceptance/memory/test_admission_record_acceptance.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-23",
+        "finding": "RA",
+        "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+        "original": "        checks.append({**item, **_decided_again(item, configuration, gateway, records), \"window\": entry[\"window\"]})",
+        "mutation": "        pass",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "c429a190f9d33b7c39ec09759c3c0a05a913ee6e458462b33d172b780f6fe1ab"
+        },
+        "killer_files": [
+          "acceptance/memory/test_reassessment_rules_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-24",
+        "finding": "F1",
+        "production_file": "synapse/runtime/governance_engine.py",
+        "original": "                changed = state.changed()\n",
+        "mutation": "                changed = False\n",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "efb9523525165b86c40e30706c4d699584c955136c4edba99ea8a665f3116fd9"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_runtime_state_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-25",
+        "finding": "F1",
+        "production_file": "synapse/runtime/governance_engine.py",
+        "original": "                if changed:\n                    state.restore()\n",
+        "mutation": "",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "f7463e6fdafcec4216f8615cab2e3787ccc5411e0777dac037ec6b9e941abdf7"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_runtime_state_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-26",
+        "finding": "F1",
+        "production_file": "synapse/builtins.py",
+        "original": "            return detached(self.short_term[-5:])",
+        "mutation": "            return self.short_term[-5:]",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "881537bcb3af67375d45816e5589a774f0af7cbfeda909876cf17cce8bfeffca"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_runtime_state_contract.py",
+          "acceptance/runtime/test_ownership_boundaries_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-27",
+        "finding": "F2",
+        "production_file": "synapse/program_state.py",
+        "original": "                    pending_values.extend(getattr(scope, \"agents\", {}).values())\n",
+        "mutation": "",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "0c96f531604dea5e15cb4ffad8c6f25e6f31be85d6ed6586b852c0441f5056a4"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py"
+        ],
+        "status": "REMOVED",
+        "first_round_status": "SURVIVED",
+        "closure": "the agents-table traversal of ProgramState was redundant: an agent is reached from the variable its declaration binds (its name or self) and the table only answers trust lookups; the code was removed"
+      },
+      {
+        "mutant_id": "R1B5-MUT-28",
+        "finding": "F2",
+        "production_file": "synapse/program_state.py",
+        "original": "                if callable(data):\n                    pending_values.extend(data(value))",
+        "mutation": "                if False:\n                    pending_values.extend(data(value))",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "f30cd044b6138f136e6010cfc55f4bf0d9b05b237e9a9b76f775074a1151e59b"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-29",
+        "finding": "F2",
+        "production_file": "synapse/builtins.py",
+        "original": "    def clear(self):\n        self.short_term.clear()",
+        "mutation": "    def clear(self):\n        self.short_term = []",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "f59669502d95e1e9e8736af2fcb945e4d680d2715c1da0adbf0c04f5ea73fd41"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-30",
+        "finding": "F2",
+        "production_file": "synapse/builtins.py",
+        "original": "            removed = list(self.short_term)\n            self.short_term.clear()",
+        "mutation": "            removed = list(self.short_term)\n            self.short_term = []",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "b64068f796f4ccb2c7c24c3e0931d0a656afed47fb70536f908ebde0ff5bf4e9"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-31",
+        "finding": "F2",
+        "production_file": "synapse/builtins.py",
+        "original": "        value = detached(value)\n        if key:",
+        "mutation": "        if key:",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "960ef13bfa94bea965a94e9038954386c1b5bfd3e6567e97b5d57b819e8212a2"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_ownership_boundaries_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-32",
+        "finding": "F2",
+        "production_file": "synapse/interpreter.py",
+        "original": "                    agent.soulprint = copy.deepcopy(snap.get(\"soulprint\"))",
+        "mutation": "                    agent.memory = type(agent.memory).from_dict(snap.get(\"memory\", {}))\n                    agent.soulprint = copy.deepcopy(snap.get(\"soulprint\"))",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "a2aac6d369b42348061caa7b03fed616d68d3ad2468a40bb665a6ccaa47de122"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-33",
+        "finding": "F3",
+        "production_file": "synapse/interpreter.py",
+        "original": "        callback = next((name for name in _CALLBACK_BUILTINS if BUILTINS[name] is fn), None)\n        if callback is not None:",
+        "mutation": "        callback = None\n        if callback is not None:",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "fc5963ee3d00b93ba16502b9779a2435a0b969f3ef4b644359d3152fa8b4ba49"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-34",
+        "finding": "F3",
+        "production_file": "synapse/interpreter.py",
+        "original": "                if fn_name in _CALLBACK_BUILTINS:\n                    return self._apply_callbacks(fn_name, args, env)",
+        "mutation": "",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "b70ff4f1764cb6e44d7f1f3eb79bc94589b134ba29fdbcf01114eb0850fea5b6"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py"
+        ],
+        "status": "REPLACED",
+        "first_round_status": "SURVIVED",
+        "closure": "a call by a builtin's name, also when data shadows that name, routes through the one dispatcher (_call_host_callable); the replacing line's mutant R1B5-FU-02 is killed by the shadowed-name case"
+      },
+      {
+        "mutant_id": "R1B5-MUT-35",
+        "finding": "F3",
+        "production_file": "synapse/runtime/vm_bridge.py",
+        "original": "        h.forbid_model_call(\"llm\")\n",
+        "mutation": "",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "4fe55b9842e5b7e5ab3fd73860c05e204e9cbdeae4c59f6eefae4162ede02c49"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_vm_host_calls_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-36",
+        "finding": "F3",
+        "production_file": "synapse/runtime/vm_bridge.py",
+        "original": "                except Exception as exc:\n                    # A refused request ends the run: the scopes the paused VM held open close (review F3).\n                    self.unwind_open_scopes(vm, f\"exception:{type(exc).__name__}\")\n                    raise",
+        "mutation": "                except Exception as exc:\n                    raise",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "3a21ca2c07b604567b75888bb8ec5d88e7daace18b4e7518a1f667129f289aef"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_vm_host_calls_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-37",
+        "finding": "F4",
+        "production_file": "synapse/runtime/actor_runtime.py",
+        "original": "        delivered = detached(args)\n",
+        "mutation": "        delivered = args\n",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "5bdddd66a544c52f33d38642be74a1864177bf8eed0897ea5543ddf717030a5a"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_ownership_boundaries_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-38",
+        "finding": "F4",
+        "production_file": "synapse/runtime/actor_runtime.py",
+        "original": "        h.actor_log.append(detached(message))\n        event = {\"type\": \"message_sent\", \"message\": detached(message)}",
+        "mutation": "        h.actor_log.append(message)\n        event = {\"type\": \"message_sent\", \"message\": message}",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "cca7417680e0561207706027c070ee781fb87274ca01e258714ed0610e8e088e"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_ownership_boundaries_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-39",
+        "finding": "F4",
+        "production_file": "synapse/runtime/actor_runtime.py",
+        "original": "        event = {\"type\": \"message_received\", \"actor\": actor_name, \"message\": detached(message)}",
+        "mutation": "        event = {\"type\": \"message_received\", \"actor\": actor_name, \"message\": message}",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "5da58a12d86aaae392d3b756c71416283a9acde200bdc5a0bfa4c3c6c33e6f6e"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_ownership_boundaries_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-40",
+        "finding": "F4",
+        "production_file": "synapse/runtime/actor_runtime.py",
+        "original": "            return self.apply_receive_patterns(node, detached(event.get(\"message\")), env)",
+        "mutation": "            return self.apply_receive_patterns(node, event.get(\"message\"), env)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "06c1e749b1d112e4ce8cb2a8b8b9777551e06113d4ee28c4042edb205e53ade5"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_ownership_boundaries_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-41",
+        "finding": "F4",
+        "production_file": "synapse/interpreter.py",
+        "original": "                    obs_env.define(handler.binding, detached(event))",
+        "mutation": "                    obs_env.define(handler.binding, event)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "86b305fae414697f87a636cf404a02cff0623c3467f5d125017f5ae47e83db4c"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_ownership_boundaries_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-42",
+        "finding": "F4",
+        "production_file": "synapse/runtime/vm_bridge.py",
+        "original": "\"result\": detached(result), \"transition_hash\"",
+        "mutation": "\"result\": result, \"transition_hash\"",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "09649b0f26d1d5c14905a50e3b8fa4ef19f89de004d1c9704079780ea810e9eb"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_ownership_boundaries_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-43",
+        "finding": "F4",
+        "production_file": "synapse/runtime/governance_engine.py",
+        "original": "\"args\": detached(args),\n            \"result\": \"pass\",",
+        "mutation": "\"args\": args,\n            \"result\": \"pass\",",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "d5309780dae2990cb3da8ade60a19ec1357ce406558d02656a7ee7a2cdffd343"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_ownership_boundaries_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-44",
+        "finding": "F4",
+        "production_file": "synapse/interpreter.py",
+        "original": "        return detached({\n            \"version\": SNAPSHOT_VERSION,",
+        "mutation": "        return ({\n            \"version\": SNAPSHOT_VERSION,",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "f2f0730010d128a98364a7810a29888554cadf5fd00c65c651850cba90f4d127"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_snapshot_restore_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-45",
+        "finding": "F4",
+        "production_file": "synapse/interpreter.py",
+        "original": "        return detached({\n            \"type\": \"synapse_mobility_envelope\",",
+        "mutation": "        return ({\n            \"type\": \"synapse_mobility_envelope\",",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "293b21159dcf56dbd4f7db831fd0b45d5cc67e7b4dda4f15a3bce75bf0412b1f"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_ownership_boundaries_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-46",
+        "finding": "F5",
+        "production_file": "synapse/interpreter.py",
+        "original": "        return [paths for paths in seen.values() if len(paths) > 1]",
+        "mutation": "        return []",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "607b9775a6ebb476c1d7fadb2d826e493f5f39f30408416eba28f13ea5c21372"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_snapshot_restore_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-47",
+        "finding": "F5",
+        "production_file": "synapse/interpreter.py",
+        "original": "            if len(set(recorded)) != 1:\n                raise RuntimeError(\"SNAPSHOT_INTEGRITY: positions recorded as one object hold different values\")",
+        "mutation": "",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "abf6f87a6223981b1a8b8cca25795ae2fe7925041fc146bb37577cd8ed2379f1"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_snapshot_restore_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-48",
+        "finding": "F5",
+        "production_file": "synapse/interpreter.py",
+        "original": "        if snapshot.get(\"version\") not in RESTORABLE_SNAPSHOTS:\n            raise RuntimeError(f\"Unsupported snapshot version: {snapshot.get('version')!r}\")\n        snapshot = detached(snapshot)",
+        "mutation": "        snapshot = detached(snapshot)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "f73871c86355cd50b588ab1873645069ba082dd6c9648e69bc20ab204937df1c"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_snapshot_restore_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-49",
+        "finding": "F5",
+        "production_file": "synapse/interpreter.py",
+        "original": "            raise RuntimeError(f\"Unsupported snapshot version: {snapshot.get('version')!r}\")\n        snapshot = detached(snapshot)",
+        "mutation": "            raise RuntimeError(f\"Unsupported snapshot version: {snapshot.get('version')!r}\")",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "7fc92df67da9f02809e5f5bd09d876388a6bc5c4e41885a9796a000416ff5c7f"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_snapshot_restore_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-50",
+        "finding": "F5",
+        "production_file": "synapse/builtins.py",
+        "original": "        memory.short_term.extend(detached(data.get(\"short_term\", [])))",
+        "mutation": "        memory.short_term = data.get(\"short_term\", [])",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "637c73a3f0cde0b36460df275331a0f6a0e5b8a9ea5b16e692ca602bb81d8cfb"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_ownership_boundaries_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-51",
+        "finding": "F5",
+        "production_file": "synapse/interpreter.py",
+        "original": "            return {\"__type__\": \"agent\", \"data\": value} if path[index] == \"agents\" and len(path) == index + 2 else value",
+        "mutation": "            return value",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "4cd646bd7e6e81501de2dde998b410ab29fc267a39a374155afca87ce61704ce"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_snapshot_restore_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-52",
+        "finding": "F6",
+        "production_file": "synapse/runtime/replay_engine.py",
+        "original": "        if self.get_runtime_mode() == self.replay_mode and self.get_replay_cursor() >= len(self.get_history()):\n            self.set_runtime_mode(self.live_mode)",
+        "mutation": "        if False:\n            self.set_runtime_mode(self.live_mode)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "013774bcbd68e83851062ff7ac5846e981b0f85534337e4d669adafe444f3843"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-53",
+        "finding": "F6",
+        "production_file": "synapse/interpreter.py",
+        "original": "                self.process_affective_thresholds(self.global_env)\n            self.runtime.replay.settle()\n",
+        "mutation": "                self.process_affective_thresholds(self.global_env)\n",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "412fe4be8e41e834af7c06fe265773db738e2918bb6bca36b3188dd1b6e8d254"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-54",
+        "finding": "F6",
+        "production_file": "synapse/interpreter.py",
+        "original": "                    result = yield from self.evaluate_async(stmt, self.global_env)\n                    self.runtime.replay.settle()\n",
+        "mutation": "                    result = yield from self.evaluate_async(stmt, self.global_env)\n",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "8e9f8ff8c3368570be848521f6fa607cb5b9d0859e477414e0a3dcfa6e0ccddf"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-55",
+        "finding": "F6",
+        "production_file": "synapse/runtime/replay_engine.py",
+        "original": "        if self.get_verified_replay() and index + 1 == len(history):",
+        "mutation": "        if index + 1 == len(history):",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "6d1ecbf08ba2b9bd90bb8f3c5ed0531e4bea4cc32d2940008adf7eadea6efd1a"
+        },
+        "killer_files": [
+          "tests/test_consensus_ticket_lifecycle_p3c.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-56",
+        "finding": "F6",
+        "production_file": "synapse/runtime/actor_runtime.py",
+        "original": "            if h.runtime.replay.recorded(lambda event: records_send(event, sender, receiver, method)) is not None:\n                return {**detached(message), \"replayed\": True}",
+        "mutation": "            if True:\n                return {**detached(message), \"replayed\": True}",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "84f33d675192101c3da15d84b4b89e9a3195340c58fa0f998fa0fd00b91b0c56"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-57",
+        "finding": "F6",
+        "production_file": "synapse/runtime/actor_runtime.py",
+        "original": "                raise ReplayIntegrityError(\n                    f\"REPLAY_INTEGRITY_ERROR: the record holds no message for {receiver}.{method} at this send\")",
+        "mutation": "                return {**detached(message), \"replayed\": True}",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "fb02d0d87e99d0432c2dccf86c8216c53c4dc159243544c2aa26b67a2bb65b03"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-58",
+        "finding": "F6",
+        "production_file": "synapse/runtime/governance_engine.py",
+        "original": "            if self.get_runtime_mode() == self.replay_mode:\n                # Backward-compatible replay",
+        "mutation": "            if True:\n                # Backward-compatible replay",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "f02b5d773a0b517a996ca889aaa606fa70451f07e8105f524022fc59793c58e8"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED",
+        "first_round_status": "SURVIVED",
+        "closure": "killed in the follow-up campaign (R1B5-FU-01) by a verdict past the end of the record inside one statement"
+      },
+      {
+        "mutant_id": "R1B5-MUT-59",
+        "finding": "F6",
+        "production_file": "synapse/runtime/replay_engine.py",
+        "original": "            self.recorded(lambda item: item.get(\"type\") == event.get(\"type\"), lambda item: True)",
+        "mutation": "            pass",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "236df3f9a1735fa95a8d293b1ff94b47d74db51d73751b997ca3cc23214ca886"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-60",
+        "finding": "K1",
+        "production_file": "synapse/interpreter.py",
+        "original": "        if self.integrate_depth > 0:\n            # A value drawn inside a transaction",
+        "mutation": "        if False:\n            # A value drawn inside a transaction",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "8450851bca0090d2ea94c6610da70415a729bb82187e536ad94a16fa9fc3f0a3"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-61",
+        "finding": "LOCK",
+        "production_file": "synapse/durable_cognitive.py",
+        "original": "        write_lock_owner(claim)\n        os.rename(claim, lock_path)",
+        "mutation": "        os.rename(claim, lock_path)\n        write_lock_owner(lock_path)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "cfb63932e9c14e200c44a63c94e9d53a0a83ef9b20f18f36db1ac4b2a85d693f"
+        },
+        "killer_files": [
+          "acceptance/memory/test_run_lock_acceptance.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-62",
+        "finding": "LOCK",
+        "production_file": "synapse/application.py",
+        "original": "    try:\n        guard.acquire()\n    except Timeout as exc:\n        raise FileExistsError(str(lock_path)) from exc\n",
+        "mutation": "",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "55173dcaa4b9d9ea916d1304c4bc850694bf18e5b372b6a6d5c38db896dec4b4"
+        },
+        "killer_files": [
+          "acceptance/memory/test_run_lock_acceptance.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-63",
+        "finding": "LOCK",
+        "production_file": "synapse/durable_cognitive.py",
+        "original": "    for leftover in lock_path.parent.glob(f\".{lock_path.name}.*.claim\"):\n        _app._remove_lock_directory(leftover)\n",
+        "mutation": "",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "55e748166054f595fb9fff7e5b7a62d1b48eefd2c8bdfad59d7ca01cfbb1fa63"
+        },
+        "killer_files": [
+          "acceptance/memory/test_run_lock_acceptance.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-MUT-64",
+        "finding": "LOCK",
+        "production_file": "synapse/application.py",
+        "original": "            named = _artifact_profile(artifact_path) == DURABLE_COGNITIVE_PROFILE",
+        "mutation": "            named = False",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "99f8781a17a7ff270dff697464ecd266a579bb6659e6e9f480bc4311c5280096"
+        },
+        "killer_files": [
+          "acceptance/memory/test_run_lock_acceptance.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-01",
+        "finding": "F6",
+        "production_file": "synapse/runtime/governance_engine.py",
+        "original": "            if self.get_runtime_mode() == self.replay_mode:\n                # Backward-compatible replay",
+        "mutation": "            if True:\n                # Backward-compatible replay",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "f02b5d773a0b517a996ca889aaa606fa70451f07e8105f524022fc59793c58e8"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-02",
+        "finding": "F3",
+        "production_file": "synapse/interpreter.py",
+        "original": "                return self._call_host_callable(BUILTINS[fn_name], args, env)",
+        "mutation": "                return BUILTINS[fn_name](*args)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "f3acba6146b68b21d1e5957f4a58058be6b76343e10bb2e86f221d2fceef2155"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_integrate_transaction_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-03",
+        "finding": "F6R",
+        "production_file": "synapse/runtime/replay_engine.py",
+        "original": "        if self.get_runtime_mode() == self.replay_mode:\n            recorded = self.next_history_event(event.get(\"type\"))\n            if recorded is not None:\n                return recorded\n",
+        "mutation": "",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "61d41f2e010852e43ecef10685a94db886a610a17aab9ac3fcf1ca2bdc10d325"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-04",
+        "finding": "F6R",
+        "production_file": "synapse/runtime/replay_engine.py",
+        "original": "            unreplayed = not verified and event.get(\"type\") in self.UNREPLAYED_TYPES",
+        "mutation": "            unreplayed = False",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "e8b2506b300d59b2615f7cdb8c957924642b44759ca99078c11923b508ca3ea7"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-05",
+        "finding": "F6R",
+        "production_file": "synapse/runtime/replay_engine.py",
+        "original": "        unreplayed = frozenset() if self.get_verified_replay() else self.UNREPLAYED_TYPES",
+        "mutation": "        unreplayed = frozenset()",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "57c2b9b12b8b18b34a9a33a3ae912f62ae189bb1279ac2e705967e267cf3fc6f"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-06",
+        "finding": "F6R",
+        "production_file": "synapse/runtime/replay_engine.py",
+        "original": "        if self.get_runtime_mode() == self.replay_mode:\n            return self.get_replay_cursor()\n        return len(self.get_history())",
+        "mutation": "        if self.get_runtime_mode() == self.replay_mode and self.get_verified_replay():\n            return self.get_replay_cursor()\n        return len(self.get_history())",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "45a25768d4f131a9c701f2bb77dbafd3d8cfa693ea01e5eb0df1df25a8dda14c"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-07",
+        "finding": "F6R",
+        "production_file": "synapse/runtime/replay_engine.py",
+        "original": "        \"affective_threshold_triggered\",\n",
+        "mutation": "",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "038c30de7061652ae9281667c405c412bb08c2afe4f9a84037da063b90ad7b3f"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-08",
+        "finding": "F6R",
+        "production_file": "synapse/runtime/replay_engine.py",
+        "original": "        \"resonance_profile_computed\",\n",
+        "mutation": "",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "7fa8a9004a499ad770e9df90d17d3735b69b85366a59c8465670ebe6ea187445"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-09",
+        "finding": "F6R",
+        "production_file": "synapse/interpreter.py",
+        "original": "        if self.runtime.replay.audit(event):\n                        self.soulprint_audit.append(event)",
+        "mutation": "        if self.runtime_mode == RuntimeMode.LIVE:\n                        self.execution_history.append(event)\n                        self.soulprint_audit.append(event)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "5b96fc8563cf702b33d1df488c60e2318cb71994d120bc69158c60c6140f76a1"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-10",
+        "finding": "F6R",
+        "production_file": "synapse/interpreter.py",
+        "original": "\"affective_expires_at_event\": self.runtime.replay.recorded_length() + int(events)",
+        "mutation": "\"affective_expires_at_event\": len(self.execution_history) + int(events)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "588db242e245e5713c0ccaaab070ae43fc72b272b7f5cc7a926938aa19e21f66"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-11",
+        "finding": "F6R",
+        "production_file": "synapse/interpreter.py",
+        "original": "current_event_index=self.runtime.replay.recorded_length())\n        # An expiry",
+        "mutation": "current_event_index=len(self.execution_history))\n        # An expiry",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "c61ea27be2510d121cea1a9760b6c2a7e8d329ee71719ad748112679b1b12290"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED",
+        "first_round_status": "SURVIVED",
+        "closure": "a recall made before its tag expires: at the end of the record it would see the tag expired"
+      },
+      {
+        "mutant_id": "R1B5-FU-12",
+        "finding": "F6R",
+        "production_file": "synapse/interpreter.py",
+        "original": "e.get(\"imprint_id\") == m.get(\"id\") for e in self.memory_audit):",
+        "mutation": "e.get(\"imprint_id\") == m.get(\"id\") for e in self.execution_history):",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "20322c6ca5045b8ac600fa7af09fb2e9227684df5543d175b7134764dafdeb2e"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED",
+        "first_round_status": "SURVIVED",
+        "closure": "the expiry check read the record, whose imprint ids are another palace's (a replay's palace draws its own): a second recall reported the expiry again; it now reads this execution's memory audit (three recalls)"
+      },
+      {
+        "mutant_id": "R1B5-FU-13",
+        "finding": "F6R",
+        "production_file": "synapse/interpreter.py",
+        "original": "                    self.record_history_event(expiry_event)",
+        "mutation": "                    self.execution_history.append(expiry_event)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "561cd491920b6229d0feb78be5829d0e90ed193663c7d2cfbb09058f3c93e513"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-14",
+        "finding": "F6R",
+        "production_file": "synapse/interpreter.py",
+        "original": "            self.memory_audit.append(event)\n            self.record_history_event(event)\n            self.emit_runtime_event(event, env)\n            return removed",
+        "mutation": "            self.memory_audit.append(event)\n            self.execution_history.append(event)\n            self.emit_runtime_event(event, env)\n            return removed",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "46d52d84abc911049e95316ab50c9bf957902a9aaa54fe72126eb73665ab4b9d"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-15",
+        "finding": "F6R",
+        "production_file": "synapse/interpreter.py",
+        "original": "            self.memory_audit.append(event)\n            self.record_history_event(event)\n            self.emit_runtime_event(event, env)\n            return removed",
+        "mutation": "            self.memory_audit.append(event)\n            self.execution_history.append(event)\n            self.emit_runtime_event(event, env)\n            return removed",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "613341bfcb2226057c6c391f9f731d186b34c157bbe77c8225ed340e94b9b8aa"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-16",
+        "finding": "F6R",
+        "production_file": "synapse/interpreter.py",
+        "original": "        self.record_history_event(event)\n        self.memory_audit.append(event)\n        if node.binding:\n            env.define(node.binding, imprint_id)",
+        "mutation": "        self.execution_history.append(event)\n        self.memory_audit.append(event)\n        if node.binding:\n            env.define(node.binding, imprint_id)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "f7edc31dbc1c3f7d1c90529745deeda4362f575d08bea8af6643b959426d22f1"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-17",
+        "finding": "F6R",
+        "production_file": "synapse/interpreter.py",
+        "original": "        self.record_history_event(event)\n        env.define(node.binding, memories)",
+        "mutation": "        self.execution_history.append(event)\n        env.define(node.binding, memories)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "0f30dde463dd130be20b54c1e39d3e1325f56d810c87a786a7a2429480002df2"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-18",
+        "finding": "F6R",
+        "production_file": "synapse/interpreter.py",
+        "original": "        self.record_history_event(event)\n        env.define(node.binding, cascade)",
+        "mutation": "        self.execution_history.append(event)\n        env.define(node.binding, cascade)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "471b09ad4d91f5ffbbccd68c43acb200d529a0855e963276548d899cb7b4db55"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-19",
+        "finding": "F6R",
+        "production_file": "synapse/interpreter.py",
+        "original": "\"trace_id\": result[\"trace_id\"]}\n        self.record_history_event(event)",
+        "mutation": "\"trace_id\": result[\"trace_id\"]}\n        self.execution_history.append(event)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "404095567d902e15e6714e0bf22c1587604e91416b8abeb9c4df23e1daeb85d3"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-20",
+        "finding": "F6R",
+        "production_file": "synapse/interpreter.py",
+        "original": "        event[\"signature\"] = self._event_signature(event)\n        self.record_history_event(event)\n        self.collective_sessions[session_id] = result",
+        "mutation": "        event[\"signature\"] = self._event_signature(event)\n        self.execution_history.append(event)\n        self.collective_sessions[session_id] = result",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "8831722efff1fd72346cd21b1e275a3d7445543dad789efa3034b92fedc0ada1"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-21",
+        "finding": "F6R",
+        "production_file": "synapse/interpreter.py",
+        "original": "**trace})\n        self.record_history_event(event)",
+        "mutation": "**trace})\n        self.execution_history.append(event)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "da512a32beff32998c5966123054c6636388799eeb6bf4834694184038a3be61"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-22",
+        "finding": "F6R",
+        "production_file": "synapse/interpreter.py",
+        "original": "        self.record_history_event(initiated)",
+        "mutation": "        self.execution_history.append(initiated)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "5b5e17dcdd976f17704e4c3d72e75696a79958500e44d280719935c2eb8397c8"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-23",
+        "finding": "F6R",
+        "production_file": "synapse/interpreter.py",
+        "original": "            self.record_history_event(submitted)",
+        "mutation": "            self.execution_history.append(submitted)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "6ccae9db25ee0bf4f5be60d69bb8e6a35b6f930434ee35a830ff35ee7ef3e12e"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-24",
+        "finding": "F6R",
+        "production_file": "synapse/interpreter.py",
+        "original": "        self.record_history_event({\"type\": \"swarm_fracture_initiated\"",
+        "mutation": "        self.execution_history.append({\"type\": \"swarm_fracture_initiated\"",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "00f3dc7cae906d6898977ecf46dff4ba64cd0ce4ee17e5b0c9cc1124751c2311"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-25",
+        "finding": "F6R",
+        "production_file": "synapse/interpreter.py",
+        "original": "        self.intent_audit.append(event)\n        self.record_history_event(event)",
+        "mutation": "        self.intent_audit.append(event)\n        self.execution_history.append(event)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "56e3f4eb31a7ce06d909c416cf529e0a15357f82d3a8372c460649b3ed3fbd27"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-26",
+        "finding": "F6R",
+        "production_file": "synapse/interpreter.py",
+        "original": "        event = {\"type\": \"somatic_marker_evaluated\", \"name\": node.name, \"marker\": marker, \"trace_id\": self.current_trace_id()}\n        self.record_history_event(event)",
+        "mutation": "        event = {\"type\": \"somatic_marker_evaluated\", \"name\": node.name, \"marker\": marker, \"trace_id\": self.current_trace_id()}\n        self.execution_history.append(event)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "e52f14f3d8ec9755e08efe2f3b1720efa332862e41e56b3ef5d0153ba555d960"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-27",
+        "finding": "F6R",
+        "production_file": "synapse/runtime/affective_runtime.py",
+        "original": "        h.threshold_audit.append(event)\n        h.record_history_event(event)",
+        "mutation": "        h.threshold_audit.append(event)\n        h.execution_history.append(event)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "235972a6d37943a13e5447198ddcf3dbba9496a1ffd075e1d5f32b88e1b37464"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-28",
+        "finding": "F6R",
+        "production_file": "synapse/runtime/affective_runtime.py",
+        "original": "\"state\": state.to_dict(), \"trace_id\": h.current_trace_id()}\n        h.record_history_event(event)",
+        "mutation": "\"state\": state.to_dict(), \"trace_id\": h.current_trace_id()}\n        h.execution_history.append(event)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "f86d2a30b4edc07835d479cfd686a836c91a993a35325976124d99cda9b7b33b"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-29",
+        "finding": "F6R",
+        "production_file": "synapse/runtime/affective_runtime.py",
+        "original": "\"tag\": tag, \"trace_id\": tag.get(\"trace_id\")}\n        h.record_history_event(event)",
+        "mutation": "\"tag\": tag, \"trace_id\": tag.get(\"trace_id\")}\n        h.execution_history.append(event)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "0d70e0a78bad03817f0e2dcf428a6069294a82bd8073fdab7514298b1c00bb26"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-30",
+        "finding": "F6R",
+        "production_file": "synapse/runtime/affective_runtime.py",
+        "original": "\"profile\": profile, \"trace_id\": h.current_trace_id()}\n        h.record_history_event(event)",
+        "mutation": "\"profile\": profile, \"trace_id\": h.current_trace_id()}\n        h.execution_history.append(event)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "60a307330ec3c6f2b9b0a2fb59e89ed17c1a45863d786ac42de4a8f758cb20cc"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-31",
+        "finding": "F6R",
+        "production_file": "synapse/runtime/vm_bridge.py",
+        "original": "\"trace_id\": h.current_trace_id()}\n        h.record_history_event(event)\n        return data",
+        "mutation": "\"trace_id\": h.current_trace_id()}\n        h.execution_history.append(event)\n        return data",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "4928c1d7c0e8f0570808ed275087b7fe6a70d7cc596640b3bb6eb16db9abd7bb"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-32",
+        "finding": "F6R",
+        "production_file": "synapse/runtime/vm_bridge.py",
+        "original": "            event[\"trigger\"] = trigger\n        h.record_history_event(event)",
+        "mutation": "            event[\"trigger\"] = trigger\n        h.execution_history.append(event)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "d912877bef58e3efb03b607b91c85d0690987607be869cad2c10510aa61bc039"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-33",
+        "finding": "F6R",
+        "production_file": "synapse/runtime/vm_bridge.py",
+        "original": "        if trigger is not None:\n            event[\"trigger\"] = trigger\n",
+        "mutation": "",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "a8b014c39760ffda77f1ee7392f502b17b4d0b014a6e83027c0de6240c77e3fb"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED",
+        "first_round_status": "SURVIVED",
+        "closure": "a VM checkpoint's record names the trigger that saved it, in the run and in its replay"
+      },
+      {
+        "mutant_id": "R1B5-FU-34",
+        "finding": "F6R",
+        "production_file": "synapse/runtime/vm_bridge.py",
+        "original": "        h.record_history_event({\"type\": \"vm_resumed\"",
+        "mutation": "        h.execution_history.append({\"type\": \"vm_resumed\"",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "0d18b2970ed4fe6b02cbbb3040ebaa09ef37dba6e46da261482c398bb3c91c04"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-35",
+        "finding": "F6R",
+        "production_file": "synapse/runtime/vm_bridge.py",
+        "original": "            event[\"checkpoint_label\"] = node.checkpoint_label\n        h.record_history_event(event)",
+        "mutation": "            event[\"checkpoint_label\"] = node.checkpoint_label\n        h.execution_history.append(event)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "0de234641610e57a5c268435e20a8d467ed21d31f6bb0fe8930afad33d3bd6ff"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-36",
+        "finding": "F6R",
+        "production_file": "synapse/runtime/vm_bridge.py",
+        "original": "    def _emit_context_event(self, h: Any, event: Dict[str, Any]) -> None:\n        h.record_history_event(event)",
+        "mutation": "    def _emit_context_event(self, h: Any, event: Dict[str, Any]) -> None:\n        h.execution_history.append(event)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "90b2b619fb20330d7121e76c93cdc0c391710f0e18490e8c81e3ec3983b686c8"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      },
+      {
+        "mutant_id": "R1B5-FU-37",
+        "finding": "F6R",
+        "production_file": "synapse/runtime/vm_bridge.py",
+        "original": "                    h.current_context = tracker.current\n                h.record_history_event(event)",
+        "mutation": "                    h.current_context = tracker.current\n                h.execution_history.append(event)",
+        "mutation_identity": {
+          "algorithm": "sha256",
+          "value": "0d4404590dddc08b671044b210c6d955a038a5e764934296aa058859f889d2e0"
+        },
+        "killer_files": [
+          "acceptance/runtime/test_replay_continuation_contract.py"
+        ],
+        "status": "KILLED"
+      }
+    ]
   }
 }

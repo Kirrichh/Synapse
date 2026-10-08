@@ -3,13 +3,16 @@
 A model call in the middle or at the end of a VM program is answered and the
 program continues; the prompt the provider receives is the program's prompt;
 ``time``/``random``/``uuid`` are recorded and replayed; a free-tier provider is
-reached only for content the operator declared. The provider is a synthetic
-Gemini transport: the product's gateway, privacy policy and parser are real.
+reached only for content the operator declared; inside a transaction the VM's
+model call is refused before the provider is reached, and the VM's open scopes
+close. The provider is a synthetic Gemini transport: the product's gateway,
+privacy policy and parser are real.
 """
 import pytest
 
 from synapse import Interpreter, compile_to_ast
 from synapse.builtins import LLMBackend
+from synapse.interpreter import IntegrateIsolationViolation
 from synapse.llm.gateway import LLMGateway, config_from_env
 from synapse.llm.gemini import GeminiProvider
 
@@ -131,3 +134,24 @@ def test_a_program_changing_its_model_answer_rewrites_neither_the_record_nor_the
     assert [event["result"]["text"] for event in replay.execution_history
             if event["type"] == "LLM_RESPONSE_CACHED"][:1] == ["four"]
     assert replay.global_env.get("second") == "four"
+
+
+@pytest.mark.parametrize("overlay", [False, True])
+def test_a_vm_run_inside_a_transaction_cannot_reach_the_model_and_closes_its_scopes(overlay):
+    prompts = []
+    interp = Interpreter()
+    interp.integrate_i2_skeleton_enabled = overlay
+    interp.llm_backend = gemini({**FREE_TIER, **DECLARED_PUBLIC}, prompts)
+    interp.global_env.define("src", 'context "work" {\n    let a = llm "question"\n}\n')
+    interp.global_env.define("pure", "let answer = 4\n")
+    interp.interpret(compile_to_ast("compile vm { source src bind code }\ncompile vm { source pure bind arithmetic }\n"))
+    context = interp.current_context
+    with pytest.raises(IntegrateIsolationViolation, match="llm is forbidden inside integrate transaction"):
+        interp.interpret(compile_to_ast("let x = 1\nintegrate x {\n    x = 2\n    run vm { source code }\n} on fail rollback\n"))
+    assert prompts == [] and interp.global_env.get("x") == 1
+    assert interp.current_context == context
+    # A VM program with no model call runs inside the transaction; outside it the model is reached once.
+    interp.interpret(compile_to_ast("let y = 1\nintegrate y {\n    run vm { source arithmetic }\n    y = 2\n} on fail rollback\n"))
+    assert interp.global_env.get("y") == 2
+    interp.interpret(compile_to_ast("run vm { source code }\n"))
+    assert prompts == ["question"]

@@ -64,7 +64,7 @@ class AffectiveRuntime:
             "priority": rec.priority,
         }
         h.threshold_audit.append(event)
-        h.execution_history.append(event)
+        h.record_history_event(event)
         env.define(node.name, {"type": "threshold", "name": node.name})
         return event
 
@@ -208,7 +208,7 @@ class AffectiveRuntime:
         env.define(node.binding, state.to_dict())
         env.define(node.name, state.to_dict())
         event = {"type": "affective_state_initialized", "name": node.name, "state": state.to_dict(), "trace_id": h.current_trace_id()}
-        h.execution_history.append(event)
+        h.record_history_event(event)
         return state.to_dict()
 
     def _current_affective_state(self, env: Any) -> AffectiveState:
@@ -233,7 +233,7 @@ class AffectiveRuntime:
         env.define(node.binding, bound)
         env.define(state.name, state.to_dict())
         event = {"type": "affective_event_tagged", "name": node.name, "tag": tag, "trace_id": tag.get("trace_id")}
-        h.execution_history.append(event)
+        h.record_history_event(event)
         h.process_habits_on_event(event)
         # Affective tags are memory metadata candidates.
         h.memory_audit.append(event)
@@ -255,7 +255,7 @@ class AffectiveRuntime:
         bound = copy.deepcopy(profile)
         env.define(node.binding, bound)
         event = {"type": "affective_modulation_applied", "profile": profile, "trace_id": h.current_trace_id()}
-        h.execution_history.append(event)
+        h.record_history_event(event)
         return bound
 
     def _lookup_resonance_profile_for_target(self, target: str, env: Any) -> _ResolvedResonanceProfile:

@@ -55,6 +55,9 @@ jobs:
           acceptance/runtime/test_vm_host_calls_contract.py
           acceptance/runtime/test_integrate_transaction_contract.py
           acceptance/runtime/test_runtime_state_contract.py
+          acceptance/runtime/test_replay_continuation_contract.py
+          acceptance/runtime/test_snapshot_restore_contract.py
+          acceptance/runtime/test_ownership_boundaries_contract.py
 
   gold-fast:
     name: gold-fast
@@ -1019,6 +1022,18 @@ jobs:
             file: acceptance/memory/test_held_out_domain_acceptance.py
           - shard: held-out-knowledge
             file: acceptance/memory/test_held_out_knowledge_acceptance.py
+          - shard: causal-order-contract
+            file: acceptance/memory/test_causal_order_contract.py
+          - shard: hypothesis-order
+            file: acceptance/memory/test_hypothesis_order_acceptance.py
+          - shard: knowledge-window
+            file: acceptance/memory/test_knowledge_window_acceptance.py
+          - shard: admission-record
+            file: acceptance/memory/test_admission_record_acceptance.py
+          - shard: relied-revocation
+            file: acceptance/memory/test_relied_revocation_acceptance.py
+          - shard: run-lock
+            file: acceptance/memory/test_run_lock_acceptance.py
           - shard: dependency-direction
             file: tests/test_memory_dependency_direction.py
     steps:

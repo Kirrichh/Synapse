@@ -80,6 +80,49 @@ Exploratory lineage is a non-canonical debug branch. It may contain synthetic
 events, new guard paths, or live exploratory results. It must never mutate a
 golden artifact or canonical parent history.
 
+### 2.6 Replay end and ownership of records (PR108 resilience review)
+
+An operation that has a record consumes it during replay and does not act
+again: a send, a governance verdict, the audit records of `integrate`, soulprint
+evolution and debate. Once the recorded history is consumed, the next operation
+acts live, exactly once — also inside the statement that consumed the last
+record, where a new send is judged by its policy again. Verified replay returns
+to LIVE at the last consumption. Ordinary replay (`load_snapshot`) returns at
+the end of the top-level statement that consumed the last record, or after
+`main()`, so the rest of that statement is replayed the way it was recorded. An
+operation that finds another record first fails with `REPLAY_INTEGRITY_ERROR`;
+it is never dropped silently.
+
+A record the replayed program produces again takes the place the run recorded
+for it (`ReplayEngine.record_event`): a segment entered and left, a VM compiled,
+run, checkpointed, resumed or unwound, an affective state, event, modulation or
+threshold declared, a somatic marker, a palace imprint, recall or expiry, an
+intention cascade and plan weave, a collective dream or swarm fracture, an
+intent declared, a governed forget, a deferred evolution. Verified replay
+requires it byte for byte; ordinary replay finds it by its type, as other
+lookups do. Positions derived from the history (an affective expiry, a recall's
+event index, an event id, a trace id) are read at the replay's position, not at
+the end of the record. Ordinary replay does not run reactions again (the energy
+pool, habits, affective thresholds); their records, and live-only records (a
+model answer's cache hit, a resonance profile), are passed over by the next
+operation (`UNREPLAYED_TYPES`), and the replay does not end on them: a reaction
+recorded last may follow a statement still to come.
+
+Limitations of ordinary replay: until the first operation after a replayed
+program, statements run in replay mode and their reactions do not fire;
+operation records left by an observer or a habit body are not distinguished by
+their author; the verified replay of the cognitive profile re-runs and checks
+every reaction.
+
+A record is never shared with the program going on. A delivered message, its
+send and receive records, a policy verdict, an event handed to an observer, a
+VM execution record, what a memory keeps and what reading it returns, a
+snapshot and a mobility envelope are each their own copy; a later change on one
+side changes nothing on the other. Snapshot `1.1.0` records which positions
+hold one object (`aliases`) and restores that sharing; a snapshot whose alias
+positions hold different values is refused (`SNAPSHOT_INTEGRITY`). A `1.0.0`
+snapshot is restored without sharing.
+
 ---
 
 ## 3. Determinism categories
@@ -326,6 +369,17 @@ Current behavior, verified in `interpreter.py:1609-1780` (LIVE) and
 LLM calls remain explicitly forbidden inside `integrate` transactions by design
 (`IntegrateIsolationViolation`, verified at `interpreter.py:952`).
 
+*Later change (PR108 resilience review, K1):* the `time`, `random` and `uuid`
+builtins are refused inside every `integrate` transaction, the Alpha3g path and
+the legacy path without the i2 skeleton alike (`execute_side_effect`). A value
+drawn inside a transaction that rolls back would leave the record with the
+rollback, and a replay would hand its place to a later draw. A model call made
+through a callback (`map`, `filter`) or by a compiled-VM `llm` request inside a
+transaction is refused by the same barrier (`forbid_model_call`), and the VM's
+open scopes are unwound when the refusal ends its run. Legacy `integrate`
+remains Category C for its other effects; the refusal is not a strict Layer 1
+grant.
+
 Therefore:
 
 > As of Alpha3g, `integrate` is **Category B (replay-safe recorded
@@ -416,7 +470,7 @@ is **not** permitted — it would create forensic blind spots (see §10).
 | `evolution_ticket_created` | `evo-*` UUID | not strict-golden-safe |
 | `habit_registered` / `habit_formed` | generated `habit-*` / `Habit-*` IDs | not strict-golden-safe unless IDs are stable |
 | deferred consensus | generated `consensus-*` ticket ID | not strict-golden-safe in deferred path |
-| `time`, `random`, `uuid` builtins | live host sources | unsafe if values enter canonical history |
+| `time`, `random`, `uuid` builtins | live host sources | unsafe if values enter canonical history; refused inside `integrate` (§6.3) |
 | storage backends | generated UUID/time values | requires separate persistence determinism audit |
 
 ---

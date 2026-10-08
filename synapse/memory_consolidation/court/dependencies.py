@@ -32,6 +32,14 @@ stands), a learned habit whose retained basis no longer
 suffices is archived (TR), and a habit whose basis admitted a withdrawn
 version goes to probation (TC), as for a correction. The stage reads state
 only, so a window that could not act (an emergency) is caught up by the next.
+
+"Before the forget" is the gateway's order (review M6): a forget records the
+gateway's head when the operator recorded it (``after``), and a status decided
+by an answer at or before that head was decided on what is now forgotten — even
+when its window was consolidated later. A forget recorded before it named the
+head, or a status no recorded event placed, is ordered by the windows instead.
+The same rule decides, before an effect, whether an action's requirement rests
+on forgotten results (``forgotten_since``).
 """
 from __future__ import annotations
 
@@ -118,14 +126,45 @@ def dependents(projection: Mapping[str, Any], changed: Iterable[str]) -> dict[st
     return grouped
 
 
-def forgotten_dependents(state: Mapping[str, Any]) -> list[tuple[str, dict[str, Any], dict[str, list[str]]]]:
-    """Per tombstone, in the order they were applied: the case, its tombstone and what depended on it."""
-    projection = graph(state)
+def decided_before(at: int | None, window: int | None, tombstone: Mapping[str, Any]) -> bool:
+    """Whether a decision placed at gateway position ``at`` (decided in ``window``) came before a forget: by the
+    gateway's order when both are placed, otherwise by the windows (a decision of no window — an unconsolidated
+    one — cannot be shown to follow the forget)."""
+    if at is not None and tombstone.get("after") is not None:
+        return at <= tombstone["after"]
+    return window is None or window <= tombstone["window"]
+
+
+def forgotten_since(state: Mapping[str, Any], observations, at: int | None, window: int | None) -> list[str]:
+    """The tombstones of every forget of one of ``observations`` that came after a decision placed at ``at``
+    (decided in ``window``): what an action's requirement can no longer rest on."""
+    wanted = {ref for ref in observations if ref is not None}
+    return sorted(tombstone["tombstone"] for tombstone in state["retention"]["tombstones"].values()
+                  if wanted & set(tombstone.get("refs", [])) and decided_before(at, window, tombstone))
+
+
+def revoke_forgotten(state: Mapping[str, Any], hypotheses: dict[str, dict], window: int,
+                     projection=None) -> list[tuple[str, dict[str, Any], dict[str, list[str]], list[str]]]:
+    """Return to ``provisional`` every status decided before a forget of what it rests on; ``hypotheses`` holds
+    the statuses decided since ``state`` and receives the revoked ones. Per tombstone, in the order they were
+    applied: the case, its tombstone, what depended on it and the statuses revoked."""
+    held = {**state["hypotheses"], **hypotheses}
+    projection = projection or graph({**state, "hypotheses": held})
     found = []
     for qid, tombstone in sorted(state["retention"]["tombstones"].items(),
                                  key=lambda item: (item[1]["window"], item[0])):
         changed = [f"case:{qid}", *(f"observation:{ref}" for ref in tombstone.get("refs", []))]
-        found.append((qid, tombstone, dependents(projection, changed)))
+        depending = dependents(projection, changed)
+        # A status decided after the forget was checked afresh and stands.
+        revoked = [hypothesis_id for hypothesis_id in depending.get("hypothesis", [])
+                   if held[hypothesis_id]["status"] != "provisional"
+                   and decided_before(held[hypothesis_id].get("at"), held[hypothesis_id]["window"], tombstone)]
+        for hypothesis_id in revoked:
+            held[hypothesis_id] = hypotheses[hypothesis_id] = {
+                **copy.deepcopy(held[hypothesis_id]), "status": "provisional",
+                "reason": f"basis_forgotten:{tombstone['tombstone']}", "window": window,
+                "at": tombstone.get("after")}
+        found.append((qid, tombstone, depending, revoked))
     return found
 
 
@@ -136,21 +175,20 @@ def _retained_basis(state, parameters, habit_id) -> tuple[int, int]:
     return retained, min(parameters["birth_episodes"], len(episodes))
 
 
-def forgotten_stage(context, habits, forced, knowledge) -> None:
+def forgotten_stage(context, habits, forced, knowledge, hypotheses) -> None:
     """Withdraw from search and revoke what depended on forgotten results; ``knowledge`` is this window's
-    knowledge decision, extended in place."""
+    knowledge decision and ``hypotheses`` the statuses this window decided, both extended in place."""
     state = context.state
     tombstones = state["retention"]["tombstones"]
     if not tombstones:
         return
-    projection = graph(state)
+    projection = graph({**state, "hypotheses": {**state["hypotheses"], **hypotheses}})
     supports: dict[str, set[str]] = {}
     for source, relation, target in projection["edges"]:
         if source.startswith("habit:") and relation in SUPPORT:
             supports.setdefault(source.partition(":")[2], set()).add(target)
     versions = {**(state.get("knowledge") or {"versions": {}})["versions"], **knowledge["versions"]}
-    hypotheses = {**state["hypotheses"], **knowledge["hypotheses"]}
-    for qid, tombstone, found in forgotten_dependents(state):
+    for qid, tombstone, found, revoked in revoke_forgotten(state, hypotheses, context.window, projection):
         mark = {"tombstone": tombstone["tombstone"], "window": context.window}
         # A version observed again after the forget is a new observation and stays in the index.
         withdrawn = [statement_id for statement_id in found.get("statement", [])
@@ -159,14 +197,6 @@ def forgotten_stage(context, habits, forced, knowledge) -> None:
         for statement_id in withdrawn:
             versions[statement_id] = knowledge["versions"][statement_id] = {
                 **copy.deepcopy(versions[statement_id]), "withdrawn": mark}
-        # A status decided after the forget was checked afresh and stands.
-        revoked = [hypothesis_id for hypothesis_id in found.get("hypothesis", [])
-                   if hypotheses[hypothesis_id]["status"] != "provisional"
-                   and hypotheses[hypothesis_id]["window"] <= tombstone["window"]]
-        for hypothesis_id in revoked:
-            hypotheses[hypothesis_id] = knowledge["hypotheses"][hypothesis_id] = {
-                **copy.deepcopy(hypotheses[hypothesis_id]), "status": "provisional",
-                "reason": f"basis_forgotten:{tombstone['tombstone']}", "window": context.window}
         archived, probation, kept = [], [], []
         for habit_id in found.get("habit", []):
             metadata = habits.get(habit_id)

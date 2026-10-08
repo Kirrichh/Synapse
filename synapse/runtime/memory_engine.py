@@ -190,10 +190,13 @@ class MemoryEngine:
                 self.established([item])  # Consults the pinned snapshot once, if this run has not decided it.
                 entry = self._hypothesis(item)
                 decision = entry["decision"] or {}
-                # What was read, and from where: the version a court record was decided at is checked before
-                # the effect (``MemorySession``); a check of this run is fresh.
+                # What was read, from where, and the observations it was decided on — the claim's source and the
+                # very check, at its place on the gateway's sequence: the session reads memory again against them
+                # before the effect (``MemorySession``), a check of this run as much as a court record (review M6).
                 requires.append({"hypothesis": entry["record"]["id"], "status": entry["status"],
-                                 "read": {"method": decision.get("method"), "window": decision.get("window")}})
+                                 "read": {"method": decision.get("method"), "window": decision.get("window"),
+                                          "observations": {"source": entry["record"]["source"]["ref"],
+                                                           "check": copy.deepcopy(decision.get("observation"))}}})
         frame = self.frames[-1] if self.frames else None
         action = self.recorded_action(args[0], copy.deepcopy(args[1]), retry_of, frame, requires=requires)
         view = action["outcome"]["view"]

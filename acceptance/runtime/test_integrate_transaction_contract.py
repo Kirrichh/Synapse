@@ -4,7 +4,9 @@ Two transaction paths run DSL programs: the default one (snapshot and rollback
 of the runtime's state) and the opt-in Alpha3g path (a state overlay whose
 write-set is the transaction's record, replayed without rerunning the body).
 Nondeterministic and external calls are refused inside either, whatever name
-they are reached under.
+or form they are reached under — a callback included. A rollback puts the
+runtime's objects back in place, so a reference taken before sees the state
+restored.
 """
 import copy
 
@@ -220,3 +222,71 @@ def test_a_model_call_is_refused_inside_the_default_transaction_too():
                         'integrate dream_result {\n    x = Oracle.think("value")\n} on fail rollback\n')
     assert str(error) == "think is forbidden inside integrate transaction"
     assert interp.global_env.get("x") == 1
+
+
+@pytest.mark.parametrize("change, abort, seen", [
+    ('memory.write("new") { reason "exercise" }', True, ["old"]),
+    ('memory.write("new") { reason "exercise" }', False, ["old", "new"]),
+    ("memory.clear()", True, ["old"]),
+    ("memory.clear()", False, []),
+    ("memory.forget()", True, ["old"]),
+])
+def test_an_agents_memory_after_the_transaction_is_one_state_for_every_holder(change, abort, seen):
+    interp, error = run('agent Guide { model "mock" }\nlet self = Guide\nlet ref = Guide.memory\n'
+                        'memory.write("old") { reason "setup" }\nlet x = 1\n'
+                        f'integrate x {{\n    {change}\n'
+                        + ('    assert false, "abort"\n' if abort else '') +
+                        '} on fail rollback\nlet seen_ref = ref.read()\nlet seen_owner = Guide.memory.read()\n')
+    assert error is None
+    written = [entry["value"] for entry in interp.global_env.get("seen_owner")]
+    assert written == seen
+    assert interp.global_env.get("seen_ref") == interp.global_env.get("seen_owner")
+    assert interp.global_env.get("ref") is interp.global_env.get("Guide").memory
+
+
+@pytest.mark.parametrize("prelude, call, operation", [
+    ("", "let drawn = uuid()", "uuid"),
+    ("", "let drawn = time()", "time"),
+    ("let r = random\n", "let drawn = r()", "random"),
+])
+def test_a_nondeterministic_call_is_refused_inside_the_default_transaction(prelude, call, operation):
+    # A drawn value would leave the record with a rollback, and a replay would serve it a later draw (K1).
+    interp, error = run(prelude + f'let x = 1\nintegrate x {{\n    x = 2\n    {call}\n}} on fail rollback\n')
+    assert str(error) == f"{operation} is forbidden inside integrate transaction"
+    assert interp.global_env.get("x") == 1
+    assert not [event for event in interp.execution_history if event["type"] == "side_effect"]
+
+
+@pytest.mark.parametrize("abort", [True, False])
+def test_control_a_default_transaction_and_a_later_draw_replay_alike(abort):
+    source = ('let x = 1\nintegrate x {\n    x = 2\n' + ('    assert false, "abort"\n' if abort else '')
+              + '} on fail rollback\nlet final_value = uuid()\n')
+    live, error = run(source)
+    assert error is None
+    again = Interpreter()
+    again.load_snapshot(copy.deepcopy(live.snapshot()))
+    again.interpret(compile_to_ast(source))
+    assert again.global_env.get("final_value") == live.global_env.get("final_value")
+    assert [event["type"] for event in again.execution_history] == [event["type"] for event in live.execution_history]
+    assert again.global_env.get("x") == live.global_env.get("x") == (1 if abort else 2)
+
+
+@pytest.mark.parametrize("overlay", [False, True])
+@pytest.mark.parametrize("kind, shadow", [("map", ""), ("filter", ""), ("map", "let map = 0\n")],
+                         ids=["map", "filter", "map-name-bound-to-data"])
+def test_a_callback_reaching_a_model_is_refused_like_a_direct_call(kind, shadow, overlay):
+    # A builtin name bound to data still calls the builtin: the barrier holds on that route too.
+    interp, error = run('agent Oracle { model "mock" }\nlet ask = Oracle.think\n' + shadow
+                        + f'let x = 1\nintegrate x {{\n    x = {kind}(ask, ["value"])\n}} on fail rollback\n', overlay=overlay)
+    assert str(error) == "think is forbidden inside integrate transaction"
+    assert interp.global_env.get("x") == 1
+    assert interp.global_env.get("Oracle").memory.short_term == []
+
+
+@pytest.mark.parametrize("overlay", [False, True])
+def test_control_pure_callbacks_and_program_functions_work_inside_a_transaction(overlay):
+    live, error = run('fn double(v) { return v * 2 }\nlet x = 1\nlet y = 1\nlet z = 1\nintegrate x {\n'
+                      '    x = map(abs, [-2, 0, 3])\n    y = filter(abs, [-2, 0, 3])\n    z = map(double, [1, 2])\n'
+                      '} on fail rollback\n', overlay=overlay)
+    assert error is None
+    assert [live.global_env.get(name) for name in ("x", "y", "z")] == [[2, 0, 3], [-2, 3], [2, 4]]

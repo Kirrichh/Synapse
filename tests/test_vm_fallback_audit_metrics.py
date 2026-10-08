@@ -22,6 +22,10 @@ class FakeHost:
         self.execution_history = []
         self.current_program_hash = "sha256:test-program"
 
+    def record_history_event(self, event):
+        self.execution_history.append(event)
+        return event
+
     def current_trace_id(self):
         return "trace-fallback"
 

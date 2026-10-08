@@ -26,10 +26,17 @@ version its transaction time — the window it became known in:
 
 A correction revises what depended on the corrected answer, as a truth
 maintenance system withdraws beliefs with their premises (Doyle 1979), without
-deleting anything: hypotheses read from that answer, or checked against the
-corrected source, return to ``provisional`` with the reason; learned habits
-whose basis episodes admitted the corrected version go to probation (TC).
-The runs that admitted each version are recorded as its uses.
+deleting anything: learned habits whose basis episodes admitted the corrected
+version go to probation (TC); the hypotheses read from that answer, or checked
+against the corrected source, are revised by the hypothesis stage in the
+gateway's order together with the window's checks (``hypotheses.py``), so a
+status decided before the correction returns to ``provisional`` and one
+checked after it stands, whichever window either was consolidated in (review
+M4). The runs that admitted each version are recorded as its uses.
+
+A window is consolidated when it declares or admits a statement too
+(``changes_knowledge``): a statement read after a consolidation is folded like
+any other (review M3).
 """
 from __future__ import annotations
 
@@ -37,10 +44,21 @@ import copy
 from typing import Any, Mapping
 
 from ..knowledge.statements import slot, source_identity
-from ..records import canonical, digest, verify
+from ..records import KINDS, canonical, verify
 from .habit_state import EFFECTIVE
 
 EVENTS = ("knowledge_declared", "memory_admission")
+
+
+def records_use(event: Mapping[str, Any]) -> bool:
+    """Whether a history event records a use of a statement of memory: an admission that admitted one."""
+    return (event.get("type") == "memory_admission" and event.get("decision") == "admitted"
+            and str(event.get("fact") or "").startswith(KINDS["statement"][1]))
+
+
+def changes_knowledge(event: Mapping[str, Any]) -> bool:
+    """Whether a history event changes memory's knowledge or the record of its uses."""
+    return event.get("type") == "knowledge_declared" or records_use(event)
 
 
 def knowledge_events(found: Mapping[str, list], run_id: str, observed: Mapping[int, int]) -> dict[str, list]:
@@ -52,30 +70,12 @@ def knowledge_events(found: Mapping[str, list], run_id: str, observed: Mapping[i
                  "observed": observed[position]}
                 for position, event in found.get("knowledge_declared", []) if position in observed]
     uses = [{"run_id": run_id, "statement": event["fact"]} for _, event in found.get("memory_admission", [])
-            if event.get("decision") == "admitted" and str(event.get("fact") or "").startswith("stm_")]
+            if records_use(event)]
     return {"declared": declared, "uses": uses}
 
 
 def _content(record) -> str:
     return canonical({"value": record["value"], "polarity": record["polarity"], "valid": record["valid"]})
-
-
-def _revise_hypotheses(state, corrected, window, revised) -> list[str]:
-    """Hypotheses read from the corrected answer, or checked against its source, return to provisional."""
-    source = source_identity(corrected["record"])
-    found = []
-    for hypothesis_id, entry in sorted({**state["hypotheses"], **revised}.items()):
-        record = entry["record"]
-        from_answer = (digest({"tool": record["source"]["tool"], "args": record["source"]["args"]}) == source
-                       and entry["source_ref"] == corrected["record"]["source"]["ref"])
-        checked_by = digest({"tool": record["check"]["tool"], "args": record["check"]["args"]}) == source
-        if entry["status"] == "provisional" or not (from_answer or checked_by):
-            continue
-        reason = "source_corrected" if from_answer else "check_source_corrected"
-        revised[hypothesis_id] = {**copy.deepcopy(entry), "status": "provisional",
-                                  "reason": f"{reason}:{corrected['record']['id']}", "window": window}
-        found.append(hypothesis_id)
-    return found
 
 
 def _habit_runs(state, habit_id) -> set[str]:
@@ -126,13 +126,15 @@ def known_of(state: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def knowledge_stage(context, habits, forced, configuration) -> dict[str, Any]:
-    """Versions, uses and hypothesis revisions of one window; the report's ``knowledge`` section."""
+    """Versions, uses and corrections of one window; the report's ``knowledge`` section. Each correction carries
+    the observation that made it (its place on the gateway's sequence) and its revision entry, whose hypotheses
+    the hypothesis stage names."""
     state, window = {**context.state, "knowledge": known_of(context.state)}, context.window
     section = {"declared": [], "copies": [], "corrections": [], "conflicts": [], "revisions": [], "reindexed": []}
     context.report["knowledge"] = section
     versions: dict[str, dict] = {}
     uses: dict[str, list] = {}
-    revised: dict[str, dict] = {}
+    corrections: list[dict] = []
     knowledge = context.draft.get("knowledge") or {"declared": [], "uses": []}
     for item in knowledge["uses"]:
         uses.setdefault(item["statement"], sorted(set(state["knowledge"]["uses"].get(item["statement"], []))))
@@ -178,12 +180,13 @@ def knowledge_stage(context, habits, forced, configuration) -> dict[str, Any]:
                 uses.get(old["record"]["id"], []))
             section["corrections"].append({"statement": old["record"]["id"], "corrected_by": record["id"],
                                            "slot": own_slot})
-            section["revisions"].append({
-                "statement": old["record"]["id"], "hypotheses": _revise_hypotheses(state, old, window, revised),
-                "habits": _revise_habits(state, habits, runs, old["record"]["id"], forced)})
+            revision = {"statement": old["record"]["id"], "hypotheses": [],
+                        "habits": _revise_habits(state, habits, runs, old["record"]["id"], forced)}
+            section["revisions"].append(revision)
+            corrections.append({"old": old, "by": record["id"], "at": item["observed"], "revision": revision})
         others = [entry for entry in current if entry["source_identity"] != source
                   and _content(entry["record"]) != _content(record)]
         if others:
             section["conflicts"].append({"statement": record["id"], "slot": own_slot,
                                          "with": sorted(entry["record"]["id"] for entry in others)})
-    return {"versions": versions, "uses": uses, "hypotheses": revised}
+    return {"versions": versions, "uses": uses, "corrections": corrections}

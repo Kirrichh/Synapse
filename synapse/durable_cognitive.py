@@ -7,8 +7,8 @@ The same verified re-execution, stopped at the end of a recorded history,
 is the court's replay check of a session (stage 1b). A reproduction runs the
 program again from its replay data with a session that answers only from the
 recorded results: it is how retention proves a raw trace reconstructible
-before removing it (И9). The lock of a crashed cognitive run names its owner
-process, so it is provably stale.
+before removing it (И9). The lock of a cognitive run is created with its
+owner process named in it, so a lock a crashed run leaves is provably stale.
 
 The durable artifact format, validation and the public results stay with
 ``synapse.application``; this module owns only the cognitive profile's flow.
@@ -17,6 +17,9 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import shutil
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -42,14 +45,37 @@ def is_cognitive_program(ast: _app.synapse_ast.Node) -> bool:
     return False
 
 
-def write_lock_owner(lock_path: Path) -> None:
+def write_lock_owner(directory: Path) -> None:
     """Name the owning process, so the lock a crashed run leaves is provably stale."""
     import psutil
     import socket
 
     process = psutil.Process()
     record = {"pid": process.pid, "create_time": process.create_time(), "host": socket.gethostname()}
-    (lock_path / _LOCK_OWNER).write_bytes(_app._strict_canonical_bytes(record))
+    with open(directory / _LOCK_OWNER, "wb") as stream:
+        stream.write(_app._strict_canonical_bytes(record))
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def create_named_lock(lock_path: Path) -> None:
+    """Create a cognitive run's lock with its owner already named in it (review LOCK).
+
+    The owner is written into a prepared directory, which is then renamed into place: the lock never exists
+    without its owner, so a process killed while taking it leaves no lock — only its prepared directory, which
+    the next taker removes. Called under the state directory's guard (``application._take_run_lock``), so no
+    prepared directory of this lock belongs to a live process.
+    """
+    for leftover in lock_path.parent.glob(f".{lock_path.name}.*.claim"):
+        _app._remove_lock_directory(leftover)
+    claim = lock_path.with_name(f".{lock_path.name}.{uuid.uuid4().hex}.claim")
+    claim.mkdir()
+    try:
+        write_lock_owner(claim)
+        os.rename(claim, lock_path)
+    except BaseException:
+        shutil.rmtree(claim, ignore_errors=True)
+        raise
 
 
 def clear_stale_cognitive_lock(lock_path: Path) -> bool:

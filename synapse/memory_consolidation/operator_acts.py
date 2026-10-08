@@ -7,7 +7,11 @@ body in store D changes, under the owner session:
   the raw trace and the recorded results of the case — and of every other case
   that carries the same recorded results — are removed, and a tombstone naming
   the identity, reason and authority takes their place. Chains that passed
-  through them end at that tombstone, never at a dangling reference.
+  through them end at that tombstone, never at a dangling reference. The act
+  names the gateway's head when it was recorded (``after``): what was decided on
+  an answer at or before it rests on what is now forgotten, while an answer the
+  gateway recorded later — the same content read again included — is a new
+  observation (review M6).
 * ``restore`` returns a compacted case to processing: its session is reproduced
   from the replay data and the recorded results, and only an exact
   reproduction is written back to the address the case names. The case keeps
@@ -39,12 +43,14 @@ def forget(owner, ports, guard, qid: str, *, reason: str, operator: str) -> list
                       if item["retention_state"] != "forgotten" and (other == qid or carried & set(item["evidence_refs"])))
     tombstone = "tmb_" + records.digest({"qids": affected, "reason": reason, "authority": AUTHORITY,
                                          "operator": operator, "window": state["window"]})
+    journal = ports.gateway.records()
+    after = journal[-1]["seq"] if journal else -1
     acts = []
     for member in affected:
         item = state["quanta"][member]
         refs = sorted({*item["evidence_refs"], *([item["raw_ref"]] if item.get("raw_ref") else [])})
         acts.append({"act": "forgotten", "qid": member, "tombstone": tombstone, "reason": reason,
-                     "authority": AUTHORITY, "operator": operator, "refs": refs})
+                     "authority": AUTHORITY, "operator": operator, "refs": refs, "after": after})
     _record(owner, ports, guard, state, acts)
     complete(ports, acts)
     return acts

@@ -15,6 +15,7 @@ import pytest
 from synapse.memory_consolidation.configuration import parse_memory_configuration
 from synapse.memory_consolidation.court.births import make_birth
 from synapse.memory_consolidation.court.decide import decide
+from synapse.memory_consolidation.court.evaluate import empty_draft
 from synapse.memory_consolidation.court.projection import empty_state
 from synapse.memory_consolidation.learning.applicability import explanation_of
 
@@ -72,9 +73,8 @@ def _fire(habit_id, trigger_id, index, *, signal=1.0, task="task"):
 
 
 def _draft(fires=(), advice=None):
-    return {"consolidation_id": "con_table", "mode": "full", "fires": list(fires), "declared_fires": [],
-            "reactions": [], "near_misses": [], "misses": [], "requests": [], "cases": [], "replay": {},
-            "conflict_advice": advice or {}, "arbitration": {}, "suppressed": []}
+    return {**empty_draft("con_table", "full", {"ok": True, "problems": []}), "fires": list(fires),
+            "conflict_advice": advice or {}, "arbitration": {}}
 
 
 def _decide(configuration, state, fires=(), advice=None):

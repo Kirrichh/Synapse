@@ -108,7 +108,50 @@ Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:
 No Linux full suite was run for Patch 2. A recorded baseline is evidence of an
 observed run, not a command to rerun the full suite before each patch.
 
-The latest observed Linux verification is the review of PR #108 at `59e6ab3`
+The latest observed Linux verification is the resilience review of PR #108 at
+`1b58d18` (M1 a check after a consolidation names the hypothesis its session
+declared; M2 checks decide in the gateway's order; M3 a window stating
+knowledge is consolidated; M4 a correction revises what was decided before it,
+also in one window; M5 the admission is a recorded event; M6 an action's basis
+is read again before its effect; F1 a guard puts program data back on every
+exit; F2 a rollback restores memory in place; F3 one model-call barrier for
+callbacks and the VM; F4 records own their copies; F5 snapshot `1.1.0`
+restores aliases; F6 replay ends with its record and an ordinary replay's own
+records take their places; K1 `time`/`random`/`uuid` are refused inside
+`integrate`; LOCK a cognitive run lock appears with its owner). Python 3.11,
+every file in its own process, three files in parallel, on the uncommitted
+working tree; the whole `tests/` directory ran because the interpreter's replay
+path changed:
+
+```text
+tests/:              208 files, 5224 passed, 12 skipped
+acceptance/memory:   94 files, 502 passed
+acceptance/runtime:  9 files, 138 passed
+stage16 memory/CVM:  8 files, 16 passed
+```
+
+The palace expiry check changed while that run went on (an expiry is reported
+once by this execution's memory audit); `acceptance/runtime` and the palace,
+affective memory, golden replay and integrate files that reach it were run
+again on the final tree and passed.
+
+The reviewer's batteries on `1b58d18` and after: the fault matrix and repeated
+recovery 24 passed before and after; active sessions, storage and lock 2 failed
+(M6), 11 passed before, 12 passed after, the one failure being the reviewer's
+test that pinned the lock limitation now removed (its adapted copy passes);
+canonical memory 7 failed, 8 passed before, 15 passed after; the earlier runtime
+battery 21 failed, 43 passed before, 59 passed after, the five failures being
+the two K1 tests that draw `uuid()` inside `integrate`, now refused by decision,
+and three that read the court's earlier internal decision shape (their adapted
+copies pass, 6/6). Mutation campaigns of 64 mutants over the package and 37 over
+the replay records killed 99 of 101; the other two name code that was removed
+or replaced (`reports/memory_second_review_mutation_evidence_v1.json`,
+`resilience_1b58d18`). The first rounds left three survivors each, closed by
+removing a redundant traversal, routing a shadowed builtin name through the one
+dispatcher, and contract cases (a verdict past the end of the record, a recall
+before expiry, an expiry reported once, a checkpoint record naming its trigger).
+
+The previous observed Linux verification is the review of PR #108 at `59e6ab3`
 (F1 a rolled-back `integrate` puts back every scope it could write, in place;
 F2 a policy guard that changed program data, a closure's state or the guarded
 arguments is refused and the change put back; F3 every call form is the
@@ -130,7 +173,7 @@ regressions) passes 28/28. A mutation campaign over the four fixes killed all
 `review_59e6ab3`); its first round left four survivors, closed by contract
 cases (nested containers, a same-length list change, a rebinding alone).
 
-The previous observed Linux verification is the recheck package of PR #108 on
+An earlier observed Linux verification is the recheck package of PR #108 on
 `c4999a4`: the nine recheck findings (R1-R3, DEEP-1..6) and every earlier
 review family (C-R) still reproducible on that tree (failures inside `main()`,
 VM host calls and prompts, free-tier privacy declaration, integrate rollback,

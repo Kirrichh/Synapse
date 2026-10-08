@@ -21,6 +21,8 @@ from ..records import canonical
 from ..tools.episodes import EvidenceUnavailable, derive_scope, group_scopes
 from ..tools.gateway import Gateway
 from ..tools.journal import GatewayIntegrityError
+from .hypotheses import declarations
+from .knowledge import changes_knowledge
 
 BOUND_KINDS = ("external_error", "habit_activated", "habit_near_miss", "habit_miss", "slow_path_used",
                "habit_suppressed")
@@ -43,6 +45,8 @@ class SessionFacts:
     evidence_problems: list[str] = field(default_factory=list)
     #: The gateway sequence of the observation each statement declaration was read from, by history position.
     observed: dict[int, int] = field(default_factory=dict)
+    #: The hypotheses the session declared up to the window's end — earlier windows included (review M1).
+    declared: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def run(self) -> str:
@@ -158,7 +162,8 @@ def read_session(session, configuration: MemoryConfiguration, gateway: Gateway, 
     scopes = _scopes(run, referenced, gateway, gateway_records, configuration, evidence_problems)
     markers = {marker["id"]: (marker, plan) for plan in plans.values() for marker in plan["markers"]}
     observed = _observed(session["history"], found, run, problems)
-    return SessionFacts(session, found, plans, markers, scopes, problems, evidence_problems, observed)
+    return SessionFacts(session, found, plans, markers, scopes, problems, evidence_problems, observed,
+                        declarations(session["history"], session["to"]))
 
 
 def _observed(history, found, run, problems) -> dict[int, int]:
@@ -190,14 +195,15 @@ def learning_requests(facts: SessionFacts) -> list[dict[str, Any]]:
             for _, event in facts.found.get("habit_learning_requested", [])]
 
 
-#: Events a window must contain to be consolidated; others (bookkeeping) never open a window.
+#: Events a window must contain to be consolidated; others (bookkeeping) never open a window. A statement read or
+#: admitted changes memory's knowledge too (``changes_knowledge``, review M3).
 SIGNIFICANT = frozenset({"external_action", "task_plan_declared", "habit_learning_requested", "hypothesis_declared",
                          "hypothesis_probed", "hypothesis_reused", "composition_planned", "composition_executed",
                          *BOUND_KINDS})
 
 
 def significant(session: Mapping[str, Any]) -> bool:
-    return any(isinstance(event, Mapping) and event.get("type") in SIGNIFICANT
+    return any(isinstance(event, Mapping) and (event.get("type") in SIGNIFICANT or changes_knowledge(event))
                for event in session["history"][session["from"]:session["to"]])
 
 

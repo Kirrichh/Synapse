@@ -775,8 +775,8 @@ def _remove_lock_directory(lock_path: Path) -> None:
     shutil.rmtree(lock_path)
 
 
-#: Run locks of one state directory are taken under this operating-system lock, which the kernel releases when
-#: its holder dies: no two processes decide about a run's lock at once.
+#: Owner-named (cognitive) run locks of one state directory are decided under this operating-system lock, which
+#: the kernel releases when its holder dies: no two processes decide about such a lock at once.
 _LOCK_GUARD = ".synapse-run-locks.guard"
 _LOCK_GUARD_WAIT_SECONDS = 10.0
 
@@ -784,11 +784,15 @@ _LOCK_GUARD_WAIT_SECONDS = 10.0
 def _take_run_lock(lock_path: Path, *, named: bool, clearable: bool) -> None:
     """Take a run's lock, or raise ``FileExistsError`` while another process holds it.
 
-    Deciding happens under the state directory's guard: an existing lock is cleared only when ``clearable`` and
-    the cognitive profile proves it stale, and a new one is created. A ``named`` (cognitive) lock appears with its
-    owner already in it, so a process killed at any point leaves either no lock or a lock whose owner proves it
-    stale (review LOCK); a P2a lock names no owner and is never cleared.
+    A P2a lock names no owner and is never cleared: creating its directory is the whole decision, and the file
+    system makes it atomic. A ``named`` (cognitive) lock is decided under the state directory's guard: an existing
+    lock is cleared only when ``clearable`` and the cognitive profile proves it stale, and the new one appears with
+    its owner already in it, so a process killed at any point leaves either no lock or a lock whose owner proves it
+    stale (review LOCK).
     """
+    if not named:
+        lock_path.mkdir()
+        return
     from filelock import FileLock, Timeout
 
     guard = FileLock(str(lock_path.parent / _LOCK_GUARD), timeout=_LOCK_GUARD_WAIT_SECONDS)
@@ -800,10 +804,7 @@ def _take_run_lock(lock_path: Path, *, named: bool, clearable: bool) -> None:
         if lock_path.exists():
             if not (clearable and _cognitive.clear_stale_cognitive_lock(lock_path)):
                 raise FileExistsError(str(lock_path))
-        if named:
-            _cognitive.create_named_lock(lock_path)
-        else:
-            lock_path.mkdir()
+        _cognitive.create_named_lock(lock_path)
     finally:
         guard.release()
 

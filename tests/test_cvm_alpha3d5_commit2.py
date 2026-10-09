@@ -23,6 +23,10 @@ class FakeHost:
         self.current_agent_id = "default_agent"
         self._event_id = 0
 
+    def record_history_event(self, event):
+        self.execution_history.append(event)
+        return event
+
     def next_event_id(self):
         self._event_id += 1
         return f"evt-{self._event_id:04d}"

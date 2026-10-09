@@ -115,10 +115,13 @@ class Parser:
             return self.agent_def()
         if self.check(TokenType.CONTEXT):
             return self.context_block()
-        if self.check(TokenType.ENERGY_POOL):
+        if self.check(TokenType.ENERGY_POOL) and self.current + 1 < len(self.tokens) \
+                and self.tokens[self.current + 1].type == TokenType.LBRACE:
             return self.energy_pool_decl()
         if self.check(TokenType.FLOW):
             return self.flow_def()
+        if self.check(TokenType.PARALLEL):
+            return self.parallel_stmt()
         if self.check(TokenType.POLICY):
             return self.policy_def()
         if self.check(TokenType.AFFECTIVE):
@@ -328,16 +331,17 @@ class Parser:
         self.skip_newlines()
         self.consume(TokenType.CATCH, "Expected 'catch' after try block")
         self.consume(TokenType.LPAREN, "Expected '(' after catch")
-        # GUARD_VIOLATION is currently lexed as an identifier.  Keep this
-        # deliberately narrow: Track B.1 supports only local guard recovery.
-        err_tok = self.consume(TokenType.IDENTIFIER, "Expected GUARD_VIOLATION in catch")
+        # Error kinds are lexed as identifiers and deliberately narrow: local
+        # guard recovery (Track B.1, compiled CVM) and the durable slow path of
+        # an unrecovered external action (ACTION_FAILED, tree-walker only).
+        err_tok = self.consume(TokenType.IDENTIFIER, "Expected GUARD_VIOLATION or ACTION_FAILED in catch")
         catch_error = str(err_tok.value)
         catch_binding = None
         if self.match(TokenType.AS):
             catch_binding = self.consume_name("Expected catch binding name").value
         self.consume(TokenType.RPAREN, "Expected ')' after catch")
-        if catch_error != "GUARD_VIOLATION":
-            self.error("Only catch(GUARD_VIOLATION) is supported in alpha3e Track B.1")
+        if catch_error not in {"GUARD_VIOLATION", "ACTION_FAILED"}:
+            self.error("Only catch(GUARD_VIOLATION) or catch(ACTION_FAILED) is supported")
         catch_body = self.block()
         return TryCatchStmt(try_body=try_body, catch_error=catch_error, catch_binding=catch_binding,
                             catch_body=catch_body, line=token.line, column=token.column)
@@ -360,6 +364,52 @@ class Parser:
         name = self.consume(TokenType.IDENTIFIER, "Expected flow name").value
         body = self.block()
         return FlowDef(name=name, body=body, line=token.line, column=token.column)
+
+    def _contextual(self, word: str) -> bool:
+        return self.check(TokenType.IDENTIFIER) and self.peek().value == word
+
+    def parallel_stmt(self) -> ParallelStmt:
+        """``parallel NAME [limit N] { node X [on "e"] = expr … signal "e" when expr … commit X [=> expr] }``."""
+        token = self.advance()  # parallel
+        name = self.consume(TokenType.IDENTIFIER, "Expected parallel graph name").value
+        limit = None
+        if self.match(TokenType.LIMIT):
+            limit = self.consume(TokenType.NUMBER, "Expected a number after 'limit'").value
+        self.consume(TokenType.LBRACE, "Expected '{' after parallel graph name")
+        nodes, signals, commit, effect = [], [], None, None
+        self.skip_newlines()
+        while not self.check(TokenType.RBRACE) and not self.is_at_end():
+            start = self.peek()
+            if self._contextual("node"):
+                self.advance()
+                node_name = self.consume(TokenType.IDENTIFIER, "Expected node name").value
+                event = None
+                if self.match(TokenType.ON):
+                    event = self.consume(TokenType.STRING, "Expected event name after 'on'").value
+                self.consume(TokenType.ASSIGN, "Expected '=' after node name")
+                nodes.append(ParallelNode(name=node_name, event=event, expr=self.expression(), line=start.line,
+                                          column=start.column))
+            elif self._contextual("signal"):
+                self.advance()
+                event = self.consume(TokenType.STRING, "Expected event name after 'signal'").value
+                self.consume(TokenType.WHEN, "Expected 'when' after signalled event")
+                signals.append(ParallelSignal(event=event, condition=self.expression(), line=start.line,
+                                              column=start.column))
+            elif self._contextual("commit"):
+                if commit is not None:
+                    raise ParseError(f"A parallel graph commits once at line {start.line}")
+                self.advance()
+                commit = self.consume(TokenType.IDENTIFIER, "Expected the committed node").value
+                if self.match(TokenType.FATARROW):
+                    effect = self.expression()
+            else:
+                raise ParseError(f"Expected node, signal or commit in parallel graph at line {start.line}")
+            self.skip_newlines()
+        self.consume(TokenType.RBRACE, "Expected '}' after parallel graph")
+        if commit is None:
+            raise ParseError(f"A parallel graph names the node it commits at line {token.line}")
+        return ParallelStmt(name=name, limit=None if limit is None else int(limit), nodes=nodes, signals=signals,
+                            commit=commit, effect=effect, line=token.line, column=token.column)
 
     def policy_def(self) -> PolicyDef:
         token = self.advance()  # policy
@@ -932,6 +982,8 @@ class Parser:
                                    TokenType.ACTION, TokenType.CONTENT, TokenType.SOURCE, TokenType.STATE,
                                    TokenType.BODY, TokenType.CONTEXT, TokenType.MAX, TokenType.PATTERN,
                                    TokenType.MEMORY, TokenType.PROMOTE, TokenType.KEEP, TokenType.TAG,
+                                   # Fields of a parallel graph's result:
+                                   TokenType.STEPS, TokenType.VERSION, TokenType.LIMIT,
                                    }
                 if member_token.type not in allowed_members:
                     self.error("Expected property name after '.'")
@@ -1010,6 +1062,8 @@ class Parser:
             return Variable(name="resonance_drift", line=self.previous().line, column=self.previous().column)
         if self.match(TokenType.PALACE):
             return Variable(name="palace", line=self.previous().line, column=self.previous().column)
+        if self.match(TokenType.ENERGY_POOL):
+            return Variable(name="energy_pool", line=self.previous().line, column=self.previous().column)
         if self.match(TokenType.SOURCE):
             return Variable(name="source", line=self.previous().line, column=self.previous().column)
         if self.match(TokenType.CONTENT):
@@ -1840,10 +1894,27 @@ class Parser:
         token = self.consume(TokenType.LBRACE, "Expected '{' for inline habit condition")
         pad_conditions = []
         context = None
+        event_types = []
+        field_conditions = []
         self.skip_newlines()
         while not self.check(TokenType.RBRACE) and not self.is_at_end():
             if self.match(TokenType.CONTEXT):
                 context = self.consume(TokenType.STRING, "Expected context label string").value
+            elif self.match(TokenType.EVENT):
+                event_types.append(self.consume(TokenType.STRING, "Expected event type string").value)
+            elif self.check(TokenType.IDENTIFIER) and self.peek().value not in {
+                    "mood", "valence", "arousal", "dominance", "pleasure", "energy", "control"}:
+                # Typed trigger condition on one event field: ``http_status == 429``.
+                name = str(self.advance().value)
+                if self.match(TokenType.IN):
+                    op = "in"
+                elif self.match(TokenType.LT, TokenType.GT, TokenType.LTE, TokenType.GTE, TokenType.EQ, TokenType.NEQ):
+                    op = str(self.previous().value or self.previous().type.name.lower())
+                else:
+                    self.error("Expected comparison operator in typed habit condition")
+                value_node = self.expression()
+                field_conditions.append((name, {"eq": "==", "neq": "!=", "lt": "<", "gt": ">", "lte": "<=",
+                                               "gte": ">="}.get(op, op), value_node))
             else:
                 if self.match(TokenType.IDENTIFIER) and self.previous().value == "mood":
                     self.consume(TokenType.DOT, "Expected '.' after mood")
@@ -1856,7 +1927,10 @@ class Parser:
                 pad_conditions.append((key, op, self.literal_number_value(value_node)))
             self.skip_newlines()
         self.consume(TokenType.RBRACE, "Expected '}' after inline habit condition")
-        return InlineHabitCond(pad_conditions=pad_conditions, context=context, line=token.line, column=token.column)
+        if field_conditions and not event_types:
+            self.error("Typed habit conditions require an event type")
+        return InlineHabitCond(pad_conditions=pad_conditions, context=context, event_types=event_types,
+                               field_conditions=field_conditions, line=token.line, column=token.column)
 
     def parse_fatigue_def(self) -> FatigueDef:
         token = self.previous()

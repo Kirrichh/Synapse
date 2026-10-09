@@ -32,6 +32,10 @@ class FakeHost:
         self.output_buffer = []
         self.history_chain_seed = "test-seed"
 
+    def record_history_event(self, event):
+        self.execution_history.append(event)
+        return event
+
     def next_event_id(self):
         return f"evt-{len(self.execution_history):08d}"
 

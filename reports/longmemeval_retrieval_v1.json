@@ -1,0 +1,87 @@
+{
+  "channel": "lexical (palace-lexical/v2)",
+  "commit": "a951dd9d732f9784af116a757385f37f8f1955fc",
+  "dataset": {
+    "file": "longmemeval_s_cleaned.json",
+    "name": "xiaowu0162/longmemeval-cleaned",
+    "revision": "98d7416c24c778c2fee6e6f3006e7a073259d48f",
+    "sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442"
+  },
+  "dirty": false,
+  "excluded": "abstention questions (_abs)",
+  "granularity": "session",
+  "not_measured": [
+    "QA accuracy (no reader or judge model available)",
+    "semantic channel (no external embedding model available)"
+  ],
+  "python": "3.11.15",
+  "query": "question",
+  "result": {
+    "by_type": {
+      "knowledge-update": {
+        "ndcg_any@10": 0.894,
+        "ndcg_any@5": 0.8739,
+        "questions": 72,
+        "recall_all@10": 0.9167,
+        "recall_all@5": 0.8333,
+        "recall_any@10": 0.9861,
+        "recall_any@5": 0.9722
+      },
+      "multi-session": {
+        "ndcg_any@10": 0.76,
+        "ndcg_any@5": 0.7097,
+        "questions": 121,
+        "recall_all@10": 0.6942,
+        "recall_all@5": 0.5289,
+        "recall_any@10": 0.9835,
+        "recall_any@5": 0.9504
+      },
+      "single-session-assistant": {
+        "ndcg_any@10": 0.7426,
+        "ndcg_any@5": 0.7016,
+        "questions": 56,
+        "recall_all@10": 0.9286,
+        "recall_all@5": 0.8036,
+        "recall_any@10": 0.9286,
+        "recall_any@5": 0.8036
+      },
+      "single-session-preference": {
+        "ndcg_any@10": 0.3216,
+        "ndcg_any@5": 0.2589,
+        "questions": 30,
+        "recall_all@10": 0.6333,
+        "recall_all@5": 0.4333,
+        "recall_any@10": 0.6333,
+        "recall_any@5": 0.4333
+      },
+      "single-session-user": {
+        "ndcg_any@10": 0.8326,
+        "ndcg_any@5": 0.8176,
+        "questions": 64,
+        "recall_all@10": 0.9688,
+        "recall_all@5": 0.9219,
+        "recall_any@10": 0.9688,
+        "recall_any@5": 0.9219
+      },
+      "temporal-reasoning": {
+        "ndcg_any@10": 0.7769,
+        "ndcg_any@5": 0.7292,
+        "questions": 127,
+        "recall_all@10": 0.8031,
+        "recall_all@5": 0.622,
+        "recall_any@10": 0.9449,
+        "recall_any@5": 0.9134
+      }
+    },
+    "overall": {
+      "ndcg_any@10": 0.7649,
+      "ndcg_any@5": 0.7251,
+      "questions": 470,
+      "recall_all@10": 0.8191,
+      "recall_all@5": 0.6809,
+      "recall_any@10": 0.9426,
+      "recall_any@5": 0.8894
+    }
+  },
+  "schema_version": "synapse.memory.longmemeval-retrieval/v1"
+}

@@ -12,13 +12,14 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, TYPE_CHECKING
 
 from synapse.lexer import Lexer
 from synapse.parser import Parser
 from synapse.interpreter import Interpreter, RuntimeMode
 from synapse.builtins import LLMBackend
-from synapse.llm import LLMProviderStatus, LLMResult, LLMTokenStatus, LLMUsage
+if TYPE_CHECKING:
+    from synapse.llm import LLMResult
 from synapse.runtime.host_abi import HOST_ABI_VERSION
 from synapse.version import LANGUAGE_VERSION, RUNTIME_VERSION, SPEC_VERSION
 
@@ -161,6 +162,8 @@ class CacheOnlyLLMBackend(LLMBackend):
         max_tokens: int = 100,
         privacy_context: Any = None,
     ) -> LLMResult:
+        from synapse.llm import LLMProviderStatus, LLMResult, LLMTokenStatus, LLMUsage
+
         model_name, cached_result = self._cached_entry(prompt, model)
         result = LLMResult(
             status=LLMProviderStatus.COMPLETED,

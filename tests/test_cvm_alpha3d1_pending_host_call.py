@@ -31,6 +31,10 @@ class FakeHost:
         self.history_chain_seed = "seed"
         self._event_counter = 0
 
+    def record_history_event(self, event):
+        self.execution_history.append(event)
+        return event
+
     def current_trace_id(self):
         return "trace-test"
 

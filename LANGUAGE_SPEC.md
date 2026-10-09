@@ -1205,6 +1205,14 @@ The v2.0 VM supports:
 
 This is the first step toward future O(1)-style VM snapshots and middle-of-program resume.
 
+The current application `run vm` invocation is bounded to 10,000 VM instructions.
+Reaching that ceiling before halt returns `halted: false`,
+`error: "STEP_LIMIT_REACHED"`, the executed `steps`, and a snapshot. It is a
+failure outcome, distinct from `OUT_OF_ENERGY`; remaining gas does not make it
+a completed result. The lower-level `CognitiveVM.run(max_steps=...)` API remains
+resumable in explicitly bounded chunks. Consumers must inspect the VM result,
+not infer successful completion from the CLI process exit code alone.
+
 
 ## Synapse v2.1.0 — Affective Memory Layer
 

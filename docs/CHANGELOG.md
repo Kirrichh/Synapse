@@ -1,5 +1,860 @@
 # Synapse Changelog
 
+## Recheck of PR108 at 556624d — the world's order holds across windows; forget, learning, reassessment and recovery (R1–R12) — 2026-10-09
+
+Memory keeps the order its sources stated things in across consolidation
+windows (court policy v6, `synapse.memory.reassessment/v4`,
+`synapse.memory.state-projection/v2`): memory decided under v5 is reassessed
+before use, and a state snapshot of projection v1 is not used — the state is
+folded again from the journal. P1-1 and P1-2 are findings R1 and R2 of the
+review package; R3–R12 follow them.
+
+- P1-2: for each source, slot and start memory keeps the place on the
+  gateway's sequence of every statement it folded, copies included
+  (`knowledge.stated`). What the source stated last holds the slot, whatever
+  window a session finished in: a statement the source made before the one
+  memory holds, folded later, is history with its provenance — closed in the
+  window it became known (`known_from = known_until`), `corrected_by` what
+  memory holds, reported `late` — and every earlier window answers as it did.
+  A restatement keeps what memory holds current against a delayed
+  intermediate reading; a source that really returned to an earlier answer
+  holds it again.
+- Corrections are read from that order: a statement whose content differs
+  from the one before it corrects every answer of the run of equal statements
+  it ends, at its own place. A window's corrections are the ones its
+  statements add to the order.
+- P1-1: a hypothesis status keeps what its latest check decided (`checked`)
+  and is that verdict revised by every correction that reaches it. A check
+  made before a correction another session consolidated first stays
+  `provisional` at the place of the last correction, whether memory held no
+  status for the hypothesis, a confirmation or a provisional status; a
+  correction moves a provisional status to its place too; a check after the
+  corrections stands. When a window's statements change a source's order,
+  every status resting on that source is decided again — moved to an earlier
+  place, or its check's again (`hypotheses.restored`); a correction memory
+  already held that reaches a late check is reported in
+  `hypotheses.corrected`. A forget's revocation is never undone. A check older
+  than the check memory holds is superseded.
+- Admission reads the basis itself: before an effect, a correction the order
+  makes of the answer a claim was read from, or of the source it was checked
+  against, after the decision the action relies on refuses the action,
+  whether or not memory holds a status for the hypothesis. The fold, the
+  admission and the reassessment decide by one rule (`reaches`). An action
+  already sent is never undone, and a recovered session consumes it from its
+  record.
+- Reassessment v4 restores the order from the consolidated declarations of
+  every session whose record verifies (`reassessment.knowledge.order`), holds
+  each slot by what its source stated last — a version folded late under v5 is
+  corrected from the reassessment's window by the version stated last, held
+  again, every earlier window answering as it did — and folds the statuses
+  with the corrections of that order; a correction the timeline records that
+  the restored order cannot place reaches every status it can.
+- A report carries only the statements its window adds to each order
+  (`apply.knowledge.stated`); the projection joins them by the court's rule
+  (`placed_in`), so an order read in every window is never written whole
+  again.
+- R3: a forget removes the recorded results observed up to the gateway head
+  it names (`after`). Store D addresses a result by its content, so the same
+  answer observed again after the forget is a new observation: a later
+  retention pass that completes the forget again keeps its body, and the
+  forgotten case stays forgotten.
+- R4: the forget policy is explicit. The operator forgets the named case and
+  every case carrying its recorded results; a result that a retained case
+  also carries stays in store D, and that case keeps reproducing exactly.
+- R5: a forgotten basis case names no run any more (`dependencies.basis_runs`):
+  a forget and a correction of knowledge consolidate in one window.
+- R6: a forgotten example leaves its candidate, in the pool and in a
+  composition (`pool.retained`). It takes no part in the criteria or in the
+  evidence Gold verifies. Fresh examples learn; an answer observed again
+  after the forget is an example of its own.
+- R7: demand never wakes a habit whose retained basis no longer suffices for
+  a birth (`cold_checks`, `refused: basis_not_retained`). Its candidate
+  accumulates again from fresh examples only, and the procedure is born as a
+  habit of its own (typed check `archived_unfounded`). The archived habit
+  keeps the basis it was born from and never wakes. A habit archived for
+  disuse still wakes on demand.
+- R8: a wake consumes the events it matched by run and event id; the report
+  names each match by both. An event id is unique within its run only.
+- R9: an unavailable basis episode carries no evidence. A republication
+  carries the evidence of the episodes the reassessment verified, and Gold's
+  refusal is recorded with its reason.
+- R10: a reassessment reads every basis episode from the owner's custody in
+  store D. The session is re-executed from its replay data and recorded
+  results and must carry the case's exact events at their positions; a run
+  artifact kept elsewhere is not needed. Replay data store D no longer holds,
+  or a re-execution that does not reproduce the case, supports nothing.
+- R11: an emergency before a crashed session continues applies nothing: no
+  cursor, case, signal, birth or boundary. Its report names the tail it saw
+  in `window.deferred`, and `window.sessions` stays empty. The session's next
+  window judges that tail once, with its re-execution: a segment completed
+  before the crash still teaches, and a fire before it counts once. An
+  emergency for a window whose integrity check failed stays fail-closed, and
+  its cursors move past it.
+- R12: a step-1 decision (trust gap) clears the pair's earlier resolution
+  (`yields_to`, `resolved_by`). The report, the boundary and the runtime name
+  one winner.
+- One rule decides a status: the window's checks are folded in the gateway's
+  order (`hypotheses.fold`), and the latest check's verdict is revised by
+  every correction that reaches it (`hypotheses.decided`). The fold, the
+  admission and the reassessment all use it. Each correction a window adds
+  names in its revision (`knowledge.revisions`) the statuses it revised.
+- Migration: memory decided under court policy v5 is refused until
+  `synapse memory reassess` decides it again under v6; snapshots of state
+  projection v1 are ignored and the state is folded again from the chain of
+  reports. Reports of earlier windows carry no order: a held version no folded
+  statement places is ordered by arrival until a reassessment restores its
+  place from the record. The report of an emergency before a crashed session
+  continues names its tail in `window.deferred` and consolidates no session;
+  a pair resolved in step 2 and decided again by a trust gap no longer keeps
+  its earlier `yields_to`.
+- K1 compatibility (since 1b58d18; recorded here because it is not backward
+  compatible): `time()`, `random()` and `uuid()` are refused inside every
+  `integrate` transaction, the legacy transaction mode included. It is a
+  deliberate restriction for rollback and replay, not a compatible
+  replacement: outside a transaction they stay available, and randomness
+  inside a computation that can roll back would need its own contract that
+  records the drawn value as an effect. Snapshot `1.1.0` (F5) records shared
+  positions; `1.0.0` is still restored, without sharing.
+- Limitations: the order keeps one entry per reading (about 160 bytes of
+  state), and a window's cost grows with the orders of the sources it reads and
+  the statuses resting on them (`docs/MEMORY_PERFORMANCE.md`); a statement
+  whose observation was forgotten keeps its place — a forget withdraws what was
+  read, never the fact that the source said something else later, so it never
+  undoes the correction it made, a reading made before it stays history and a
+  reassessment never holds it again; of two readings stating the same thing in
+  different answers, the one folded first stays the version memory holds and
+  the other is a copy, whichever was read first (the same value; an admission
+  naming the copy's answer is refused as another version); the causal order is
+  the project gateway's journal. A reassessment re-executes once the session of
+  every basis case of a live habit, from store D; a habit archived because a
+  forget left its basis short of a birth never wakes again, and its procedure
+  is learned again only from fresh examples.
+- Acceptance: `acceptance/memory/test_causal_schedule_contract.py` (any
+  schedule of the same observations — one window or several, sessions
+  finishing in any order, statements and checks published late — gives what
+  an independent reading of the world's order gives, through the projection
+  of the reports), `test_delayed_check_acceptance.py`,
+  `test_delayed_statement_acceptance.py` and
+  `test_earlier_order_reassessment_acceptance.py` (canonical runs);
+  `test_forget_scope_acceptance.py` (R3, R4),
+  `test_forget_correction_window_acceptance.py` (R5),
+  `test_forget_learning_acceptance.py` and
+  `test_forget_composition_acceptance.py` (R6, R7),
+  `test_cold_event_identity_acceptance.py` (R8),
+  `test_reassessment_custody_acceptance.py` (R9, R10; with a contract case
+  in `test_reassessment_rules_contract.py`),
+  `test_crash_closed_segment_acceptance.py` (R11, beside the updated
+  `test_crash_recovery_acceptance.py`) and
+  `test_conflict_decision_execution_acceptance.py` (R12), each with a
+  positive control and its CI shard.
+
+## Resilience review of PR108 at 1b58d18 — gateway order, relied bases, ownership, replay end, run locks — 2026-10-08
+
+Memory decides in the gateway's order and reads an action's basis again before
+its effect (court policy v5, `synapse.memory.reassessment/v3`,
+`synapse.memory.retention-pass/v2`: memory decided under v4 is reassessed
+before use); a record is never shared with the program going on; ordinary
+replay ends where its record does; a cognitive run lock carries its owner from
+the moment it exists.
+
+- M1: a check made after a consolidation names a hypothesis declared earlier in
+  the same session; a window applies only its own checks.
+- M2: the latest check by the place of its answer on the gateway's sequence
+  decides, whatever the run names or the consolidation order; an older check
+  consolidated later is reported as `superseded`; a check without a recorded
+  answer never displaces one.
+- M3: a window in which a session declared knowledge is consolidated even when
+  nothing else happened in it.
+- M4: a source correction returns to `provisional` what was decided before it,
+  also when both sessions fold in one window; a check at or after it stands; a
+  correction without a known place reaches every status.
+- M5: an `admit` decision is a recorded event; session replay verification and
+  crash recovery consume it in its place and compare it byte for byte.
+- M6: an action's `requires` carries how its decision was read (own check or
+  the court's record, the source observation, the check's answer); admission
+  compares it with memory now, pending operator acts included: a later
+  refutation, a correction of what the decision rests on or a forget of its
+  observations refuses the action before any effect. An exam reads its fixed
+  snapshot. The report section `relied` says whether a status was revoked
+  before or after the action's admission; a forget records the gateway's head
+  (`after`).
+- F1: a policy guard puts back program data on every exit (a reject, an error
+  raised after a change, a refused call); an agent's memory is program data.
+- F2: a rolled-back `integrate` puts back an agent's memory in place: a
+  reference the program kept sees the restored contents.
+- F3: a model call through a callback (`map`, `filter`) or a compiled VM `llm`
+  request is refused inside a transaction or a guard by one barrier, also when a
+  data value shadows the builtin's name; the VM unwinds its open scopes. Pure
+  callbacks and pure VM programs run as before.
+- F4: a delivered message, its send and receive records, a policy verdict, an
+  observer's event, a VM execution record, what a memory keeps and returns, a
+  snapshot and a mobility envelope are each their own copy.
+- F5: snapshot `1.1.0` records the positions holding one object and restores
+  that sharing; inconsistent positions are refused (`SNAPSHOT_INTEGRITY`); the
+  input snapshot is never changed; `1.0.0` restores without sharing.
+- F6: ordinary replay returns to LIVE at the end of the top-level statement that
+  consumed the last record; a send after the consumed history is delivered once
+  and judged by its policy, also inside that statement; a send that meets
+  another record raises `REPLAY_INTEGRITY_ERROR`. A record the replayed program
+  produces again (segments, VM runs and checkpoints, affective declarations,
+  palace imprints and recalls, intentions, collective records, intents, forgets,
+  deferred evolutions) takes its recorded place instead of a second one, so a
+  draw or a send after a `context` block or a `run vm` replays; positions derived
+  from the history are read at the replay's position. Records of reactions an
+  ordinary replay does not re-run are passed over by the next operation.
+- K1: `time`, `random` and `uuid` are refused inside every `integrate`.
+- LOCK: a cognitive run lock appears with its owner record (a prepared directory
+  renamed into place), decided under a kernel-released lock of the state
+  directory; a process killed while taking it leaves none. An ownerless lock
+  (P2a, or written before this protocol) is still cleared only by an operator.
+
+## Review of PR108 at 59e6ab3 — state, guards, call forms, model evidence — 2026-10-07
+
+Program data is one state for transactions and guards
+(`synapse.program_state.ProgramState`); a host value is classified by the
+operation it is, under any call form; the record of a model answer owns its
+copy.
+
+- F1: a rolled-back `integrate` puts back every scope it could write (the
+  enclosing chain, closures of reachable functions, nested containers) in
+  place: shared references survive and enclosing scopes are restored.
+- F2: a policy guard that changed program data, a closure's state or the
+  guarded arguments is refused and the change put back; a reading guard runs
+  as before, live and on replay alike.
+- F3: `f.__call__`, aliases and bound methods are the operation they call: a
+  nondeterministic builtin is recorded (refused in the overlay transaction), a
+  model call is `think` wherever reached, a host object's method is refused in
+  the overlay transaction before it runs; deterministic builtins under another
+  name stay available.
+- F4: the cached and recorded model answer is the bridge's own copy; a program
+  changing its answer rewrites neither the history, the cache, a cache hit nor
+  a replay.
+
+## Earlier review families (C–R) rechecked on the current tree — 2026-10-07
+
+Every family of the earlier PR108 reviews was reproduced again on `c4999a4`;
+those still reproducible are fixed here. Behaviour changes: errors raised
+inside `main()` are reported; `run vm` takes only compiled bytecode; the policy
+guard refuses state changes; out-of-range or non-finite PAD values are refused;
+`energy_pool` is a live read-only value; the gateway takes the operator's
+privacy declaration (`SYNAPSE_LLM_DATA_CLASSIFICATION`,
+`SYNAPSE_LLM_REPOSITORY_VISIBILITY`, `SYNAPSE_LLM_CONTAINS_SECRETS`,
+`SYNAPSE_LLM_CONTAINS_PERSONAL_DATA`); prompt envelopes carry their template;
+interpreter snapshots carry palace records.
+
+- Failures: an assertion or an undefined name inside `main()` or inside a
+  called function is reported as itself, no longer swallowed or renamed
+  "undefined function"; `run vm` on anything but compiled bytecode is refused.
+- VM: a model call in the middle or at the end of a VM program is performed by
+  the bridge (one owner of `llm.request`) and the program continues; the
+  provider receives the program's prompt, inline or templated
+  (`synapse.prompt_template`, one template language for the interpreter and
+  the VM); a call naming no model uses the configured one; replay is the
+  host's mode, not a truthy constant; a computed callee is called with its
+  arguments; `time`/`random`/`uuid` are recorded and replayed in the VM as in
+  the interpreter.
+- Free tier: a program's model call carries the operator's privacy
+  declaration; without it the call is refused before any provider request.
+- Transactions: a failing `integrate` body rolls back whatever its on_fail
+  policy; a rollback restores mood, affective tags, somatic markers, habits,
+  energy, policies and palace records (and drops a palace created inside); in
+  the overlay transaction a function declared outside reads and writes through
+  the overlay, a closure over other state or a shadowed scope is refused, and
+  `think`, host functions and `time`/`random`/`uuid`/`print` under any name
+  are refused by the barrier.
+- State: a program binding, a history event and live state never share one
+  object (affective state and tags, checkpoints, palace rooms); a checkpoint
+  keeps its moment; PAD values are checked; the energy pool is read live and
+  changed only by the runtime; a snapshot restores palace records.
+- Governance: a policy guard reads only; a statement that would change state
+  (palace, affect, somatic, energy, habit, intent and others) or `print` is
+  refused before its effect, and a change to program data or to the guarded
+  arguments refuses the guarded call.
+- Golden suite: `inline_guard_pass` and `inline_guard_fail_recovery` left the
+  interpreter strict suite — they are compiled-CVM programs whose recorded
+  artifacts recorded the swallowed refusal; their guard semantics are accepted
+  on the CVM.
+
+## Recheck of PR108 at c4999a4 — history, parallel results, order, admission, index — 2026-10-07
+
+Knowledge search candidates carry the period memory held them in at the asked
+window; `knowledge_declared` events carry `embedded_by`; knowledge versions
+gain `embedded_by`; the report's knowledge section gains `reindexed`;
+`palace_admission.admit` takes `recorded`; admission reasons gain
+`statement_not_recorded` and `candidate_not_as_recorded`.
+
+- R2: a forget ends the period it applied in and every period before it; a
+  later reading holds only from its own window.
+- R3: a historical candidate and its attestation carry the period selected for
+  the asked window (`timeline.held_period`, the one owner of both).
+- R1: the durable profile reads a name where the graph runs: a parameter of
+  another function binds nothing there.
+- DEEP-1: a call node's answer is a source for statements and hypotheses only
+  once the graph integrates it; a stale or cancelled answer is never one.
+- DEEP-2: the program receives its own copy of a graph's result; changing it
+  rewrites no recorded step, commit or answer.
+- DEEP-3: one consolidation folds statements in the order their sources were
+  observed (gateway sequence), never by run names; a statement read from no
+  recorded observation is an integrity problem of its session.
+- DEEP-4: a statement of memory is admitted as recorded: validity, currency and
+  held period are resolved again from the record and the operator's currency
+  rule; a copy that alters what the statement states is refused.
+- DEEP-5: a reading of a known statement adds no confidence but restores a
+  missing vector of the index.
+- DEEP-6: vectors name their embedder (tool, declared version, contract); the
+  semantic channel compares only vectors of the embedder in force, and a
+  reading under it indexes a statement again.
+
+## Independent audit of PR108 (AUD-1…AUD-5) — 2026-10-07
+
+Knowledge versions held again gain `earlier_known`; knowledge declarations held
+again are reported with `held_again`; removal markers of store D only
+strengthen.
+
+- AUD-1: purity of a `parallel` graph belongs to the function called, not to
+  its name. A call in a pure node, a signal condition or a call node's
+  arguments must name a pure builtin that its name still resolves to where the
+  graph runs; a builtin's name bound to a user function (`fn len`,
+  `let len = change`) or to a graph node is refused before anything runs, by
+  the executor and by the durable profile.
+- AUD-2: an event is admitted at its moment only. Admission and the knowledge
+  timeline place a time with one rule (`palace_admission.holds_at`): a claim
+  about another moment is `outside_validity` however the candidate was found,
+  and a claim without a time is `freshness_unknown`.
+- AUD-3: a correction back to an answer memory held before (20 → 25 → 20) holds
+  it again: it corrects the current version, and the periods it was held
+  before stay in `earlier_known`, so every earlier window answers as it did and
+  the dependency projection names both revisions.
+- AUD-4: an explicit consolidation applies retention acts not applied yet (a
+  recorded forget or restore) without a new business session; with nothing to
+  apply it stays a no-op.
+- AUD-5: a forget of a compacted body replaces `compacted` with `forgotten` and
+  its tombstone; a compaction never lowers `forgotten`; a forgotten body keeps
+  the tombstone of the forget it left with; a marker with an unknown reason is
+  an integrity error.
+
+## Memory review of PR108, third pass — check basis, standing trial resolutions — 2026-10-07
+
+Hypothesis probe events, the court's hypothesis records and the snapshot
+boundary carry `check_basis`; learned habit metadata gains `resolved_by`; the
+reassessment section replaces `trial_resolutions` with `resolutions`.
+
+- N2: a hypothesis status is decided on a check basis — the checking tool's
+  contract, the provenance relation between the claim's source and the checker,
+  and the identity rules. A session reuses a recorded status only on the basis
+  of the configuration in force (`check_basis_changed` otherwise), and a
+  reassessment decides every recorded status again from its recorded check
+  under the adopted configuration, whatever rule decided it; an unchanged
+  configuration keeps a valid confirmation.
+- N1: a competitor resolution remembers what found it (`resolved_by`: compared
+  outcomes or stand trials). One found in trials stands only while the trials
+  recorded so far still name the same winner: a later contradicting trial takes
+  it away in an ordinary consolidation (step 3, the trigger slow-only again);
+  the same result tried again keeps it; a resolution whose basis is not known
+  does not stand. A reassessment gives recorded resolutions their basis from
+  the report record, and the ladder judges them like any other.
+
+## Memory review of PR108, second pass — check relevance, stand scope, contradicting trials, confirmed experience — 2026-10-06
+
+New tool contract field `verifies`; hypothesis check rule
+`synapse.memory.hypothesis-check/v2`; hypothesis probe events and the court's
+hypothesis records carry `rule`; stand trial comparisons report
+`mixed_situations`; learned habit metadata gains `counted_since_birth` and
+`counted_tasks_since_birth`; new automaton rule TU.
+
+- F1: a check decides a hypothesis only when the checking tool's contract
+  binds its request and answer to the claim's subject, scope and conditions; a
+  check about another object neither confirms nor refutes. Statuses decided
+  under the v1 rule are never reused.
+- F2: a stand trial speaks for a trigger only when everything the trigger
+  admits lies inside the stand's tested scope; a trigger open on a field the
+  stand bounded keeps its slow-only ban.
+- F3: repeated trials of one situation with different results contradict each
+  other and name no winner, whatever their order.
+- F4: promotion (T1, T4, and T1 under SPRT) reads confirmed experience only;
+  undecided fires count as use, neither as experience nor as errors.
+- Court policy v4: memory decided under v3 is reassessed before use. The
+  reassessment (schema `synapse.memory.reassessment/v2`) decides again, from
+  the record and without calling anything, every hypothesis status of the
+  earlier check rule, every promotion of the earlier policy (an unverified one
+  returns the habit to probation, rule TU) and every competitor resolution
+  found in stand trials; confirmed experience since birth is recounted from
+  the recorded fires.
+- Acceptance harness: the crash driver's `boundary` point dies only when the
+  court writes a decision's boundary (a session opening that rebuilds a
+  lagging boundary of an earlier crash lives through it), and the scripted
+  servers' world is read under the lock it is written under.
+
+## Memory review of PR108, completed — attestations, dependencies, trials, measurements — 2026-10-06
+
+New operator command `synapse memory trial`, new run option `--exam-trial`,
+new decision rule `confidence_sequence` (parameters `cs`), new project-journal
+event kinds `MEMORY_STATE` and `MEMORY_TRIAL`. Report sections gain
+`contract_violations` and `dependencies`; births gain `generalization` and
+`verified_under`; reassessment habits gain `contracts` and `contracts_changed`;
+admission decisions and `memory_admission` events gain `attestation`; the
+session opening gains `trial` and `unverified`; gateway refusals record
+`breach`.
+
+- R6: a body that attempts what its contracts forbid archives a learned habit
+  at once (TV) and is reported for a declared one.
+- R3: every admission basis is an attestation of the very statement (what,
+  which version, verified how, from where, outcome, dependencies); a record
+  naming another source than the one the hypothesis read is refused.
+- §8.2: the court's dependency projection (W3C PROV vocabulary) answers which
+  authorities depended on a basis; `forget` withdraws derived versions from
+  search and revokes dependent statuses and habits, each reported apart; a
+  basis read from the court is read again before an effect.
+- §8.1: births explain their generalization and record the contract versions
+  they were verified under; a changed contract keeps a habit unloaded until a
+  reassessment re-verifies it.
+- R5 §4–5: stand trials of two competitors in independent copies of one
+  initial state, recorded with their transfer scope, decide step 2 inside it.
+- §8.3: verified state snapshots with tail replay, reports read from the
+  verified journal scan, the newest boundary found from the chain's head,
+  validated journal bytes not re-validated, an exact semantic ranking;
+  paired measurements in `docs/MEMORY_PERFORMANCE.md`.
+- Acceptance: generated lifecycles through the canonical launch with injected
+  crashes against an independent model, separate A/B/C measures, a held-out
+  domain, group-consistent data splits, training order and outage varied
+  separately, LongMemEval retrieval through the candidate channel.
+- Mutation campaign over the new memory paths: 55 mutants, all killed by
+  acceptance (`reports/memory_review_mutation_evidence_v1.json`).
+- `tests/test_swebench_measurement_output_boundary.py` keeps only checks of
+  the product's behavior: the scope tripwires over fixed historical commits
+  and the working tree, and the checks of words in the production source, are
+  removed.
+
+## Memory review of PR108 — identity, attestations, repeats, conflicts, automaton, reassessment — 2026-09-27
+
+Court policy `synapse.memory.court-policy/v3`, tool configuration
+`synapse.memory.tool-configuration/v2` (v1 is refused with the migration path),
+owner binding `synapse.memory.owner-binding/v2`, hypothesis record v2 (with
+`conditions`), memory configuration v2 key `identity`. New operator command
+`synapse memory reassess`; new consolidation mode `reassess` (also admitted by
+Gold's court chain). Report sections gain `reassessment`; transitions gain
+`cause` and `at`; snapshot boundary habit entries gain `yields_to`; the
+opening's learned entries gain `yields_to` and `unresolved_with`; events
+`habit_suppressed` may carry `competitor` with reasons `yields_to_rival` and
+`unresolved_conflict`.
+
+- Exact entity identity (`synapse/entity_identity.py`): namespace, type,
+  typed id and incarnation; case folding only where the operator declares it;
+  aliases are confirmed `entity` hypotheses, never similarity.
+- Palace admission reads its basis from the hypothesis journal and requires it
+  to cover the whole statement (entity, property, value, conditions, scope,
+  version); a record's own status is never read.
+- State checks bind to the checked operation (`binds`, `attests`,
+  `operation_field`); a state observed before the operation, a foreign object
+  or another operation keeps the uncertainty; requirement kind `reach_state`.
+- An undescribed refusal code leaves the effect unknown; the gateway issues one
+  idempotency key per operation, refuses agent-chosen keys and admits a repeat
+  of an unknown effect only while the provider's key is alive; crash recovery
+  repeats only keyed operations.
+- Conflicts: the verified comparison of recorded outcomes in one situation
+  decides step 2 (`court/comparison.py`); a model's answer is a proposal; a
+  competitor born at equal trust closes the shared trigger at birth; rivals
+  applicable to one event without a verified resolution are held back before
+  any effect, also when their triggers overlap only partly.
+- Automaton: causes kept apart (sufficient experience, confirmed errors on the
+  last `t3_fires` signals, disuse, changed basis, cold match); under
+  `threshold` fires are read one by one and a transition happens at the fire
+  that reaches it, with the trust reached by then; trust updates in fixed
+  batches of `min_evidence`; an event delivered twice counts once.
+- Reassessment: re-judges live habits' bases from recorded material under the
+  current contracts without calling tools or models, archives what no longer
+  holds (TR), republishes kept habits to Gold under the new tool binding,
+  completes missing metadata neutrally, re-judges competitors, publishes the
+  delta and only then adopts the configuration; memory decided under another
+  court policy is reassessed before it is opened or consolidated.
+- Acceptance: contracts on plain data, Hypothesis sequences of the gateway and
+  of the automaton against independent reference models, heavy CLI scenarios
+  (identity, effect uncertainty, idempotency after a crash, conflict at birth,
+  partial overlap, verified comparison against the advisor, rare fires,
+  reassessment, paired A/B/C exam). `hypothesis` joins the dev dependencies.
+
+## Memory stage 6 and language stage 7 — semantic knowledge and event-driven graphs — 2026-09-27
+
+Memory configuration schema v2 adds `knowledge` (embedder, per-property
+freshness, search budget); v1 configurations stay valid. New record kind
+`statement` (`synapse.memory.statement-record/v1`), durable builtins
+`know(statement)` and `search_knowledge(query[, options])`, recorded events
+`knowledge_declared` and `knowledge_searched`, report section `knowledge`,
+snapshot boundary v3 with the knowledge versions. New language statement
+`parallel NAME [limit N] { node … signal … commit … }` with recorded events
+`dataflow_started`, `dataflow_step`, `dataflow_signal` and `dataflow_commit`;
+tool contracts may declare `observation`.
+
+- Statements with two times (refinement §15): valid time from the statement,
+  transaction time from the court (`known_from`, `known_until`,
+  `corrected_by`); a correction closes a version without deleting it, so
+  "what was true at T" and "what memory knew at window K" are both
+  answerable. Copies and repetitions add neither knowledge nor confidence; the
+  same source with other content for the same start is a correction; another
+  source is a conflict with both versions current.
+- Freshness per property kind, declared by the operator: `state` (inertia
+  until the next start or its own end), `bounded` (unknown currency after its
+  days, never false), `event` (its moment only); an undeclared property is of
+  unknown currency. A late report of the past takes its place by its start.
+- A correction returns the hypotheses read from or checked by the corrected
+  version to provisional and sends live habits whose basis admitted it to
+  probation, with the revisions in the report.
+- Hybrid candidate search: the lexical channel and a semantic channel (the
+  declared embedder, a `reason` tool through the gateway, recorded and
+  replayed) fused by reciprocal rank fusion (k = 60) under one budget; each
+  search publishes the semantic channel's cost. Admission reads the
+  statement's structure (entity, polarity, conditions, currency, validity,
+  the statement its confirming hypothesis is about), never its wording.
+- Event-driven graphs (refinement §16, `synapse/runtime/dataflow.py`): call
+  nodes observe concurrently through the gateway (a non-observation call is
+  refused before any effect), pure nodes run on the interpreter thread, a node
+  runs only when every input it reads is settled, a computation whose inputs
+  moved is superseded at once and recorded stale, a signal is raised once per
+  version of its inputs, the commit waits only for what can still move it,
+  the effect acts once on the committed value, and what is still in flight is
+  drained and recorded cancelled. Answers are integrated in the gateway
+  journal's order, so the court's replay and retention's reproduction follow
+  the same schedule; a crash mid-graph resumes from the record and asks lost
+  observations again under their own identities.
+- The MCP tool transport sends each call as its own request on the server's
+  session, so concurrent callers overlap; evidence temporary files are named
+  per thread.
+- Acceptance: 8 new files in `acceptance/memory/` (knowledge contract, search,
+  timeline, correction; dataflow contract, overlap, revision, crash), each its
+  own CI shard; scripted answers may carry a delay and the tool server answers
+  scripted embeddings by concepts.
+
+## Memory stage 5b — composition of learned procedures — 2026-09-26
+
+Learned habits use record schema 1.2 for a composite (`composition`: base and
+joins, each join its step, failure class and ordered alternatives with their
+nested joins); ordinary habits keep `composition: null`. New durable builtin
+`recover(failure)` in a slow path; new recorded events `composition_planned`
+and `composition_executed`.
+
+- Hierarchical composition (refinement §14): at an impasse of a base
+  procedure a verified part joins the failed step when its trigger applies to
+  that failure, its inputs bind, it terminates by repeating the failed
+  operation and no effect of one side is compensated by the other; the base
+  resumes on the part's successful repeat. Each part's typed interface
+  (applicability, inputs, guarantee, effects) is read from its frozen records
+  and tool contracts.
+- Alternatives: a part that does not recover its step yields to the next
+  admissible one, checked against the step's current failure and every effect
+  already applied; each part is tried once per impasse and nothing is tried
+  over an unknown effect (`component_uncertain`). Nesting: a part's own
+  impasses are joined the same way, never with itself or a procedure it is
+  part of (`component_cycle`). Sequence: a procedure whose repeat is refused
+  anew ends in that failure, and the part that recovers it joins at the
+  repeat, so procedures with different goals chain through typed failure
+  events.
+- A composed part's calls declare the failed operation they serve
+  (`serves`, gateway-validated before any effect, never available to a
+  program); a refusal of such a call that changed nothing is settled once the
+  served operation succeeds (`served_operation_settled`), as an aborted
+  alternative of a flexible transaction. Re-reading evidence produced earlier
+  in the same episode no longer marks the episode a copy.
+- The slow planner continues a stopped fast path from its recorded answers
+  and the parts it already tried (no call repeated), ranks parts by trust,
+  trigger specificity and identity, and records every hypothesis with its
+  place in the nesting and the parts it considered. The court derives a
+  composition's identity from its own re-execution of the recorded attempts. The court re-derives each composed recovery with the executor
+  over the recorded answers, judges the goal as a whole, reports partial
+  successes separately, and births a composite — superseding the live
+  procedure of its base — only under the ordinary birth criteria while every
+  part is live. Gold verifies a composite as its own birth.
+- A composite whose part is no longer live (archived, superseded, not
+  admitted) is reviewed to probation (`composition_reviews`) and never calls
+  that part. With automation off (exam C) parts stay slow-planning material.
+- Acceptance: 8 new files in `acceptance/memory/` (plain-data contract, the
+  composed procedure and its composite, incompatible conditions with partial
+  success and a spelled chain, effect conflict, review with exam C and a
+  withdrawn part, alternatives, a part nested in a part with a withdrawn
+  nested part, a sequence of two procedures); the scripted tool server
+  refuses transitions by state, reports state flags, stores objects by an
+  argument and requires other objects before consuming one.
+
+## Memory stage 5a — learned applicability (D1) and result references (D2) — 2026-09-26
+
+Learned habit triggers use record schema 1.2 (`applicability` explanation in
+their identity; 1.1 records stay verifiable). The typed trigger vocabulary adds
+`is` (a present field of one JSON kind).
+
+- Applicability from contrasting episodes (refinement §12): a verified failure
+  of the same procedure is a contrast; its one discriminating field is
+  essential, a contrast inside the positives' generalization gets a boundary
+  drawn from their values (range side or value set), a field the binding reads
+  must be present with its kind, and a contradiction the boundary cannot
+  explain still blocks the birth. Completion is judged inside the learned
+  scope. Widening extends a condition by the values its recovered near misses
+  failed at, never removes it, and refuses to cross a recorded contrast
+  (`boundary_refusals`). `habit_activated` records every checked condition with
+  its actual value (`matched`).
+- Result references (refinement §13): a binding argument may read a field of
+  an earlier successful answer of the same body. It is derived only from
+  values that first appeared in that answer and vary between basis episodes;
+  a value known in advance (program literal, input, event, earlier argument or
+  answer) is an echo and never a dependency. Execution binds everything else
+  before the first effect and stops before a dependent call on a failed or
+  uncertain producer, a missing, empty or differently typed field
+  (`habit_activated.detail`); the court re-derives the fast path's outcome with
+  the same executor over the recorded answers.
+- Acceptance: 7 new files in `acceptance/memory/` (two plain-data contracts,
+  contrast boundary and the admissible/near/unknown triple, widening, result
+  dependency with a similar foreign job and replay, dependency refusals, driver
+  literal); the scripted tool server keeps stateful objects.
+
+## Memory stage 4 — retained experience, hypotheses and palace admission — 2026-09-25
+
+Court policy `synapse.memory.court-policy/v2` (declared `raw_capacity`,
+`hypothesis_fresh_windows`); snapshot boundary `synapse.memory.snapshot-boundary/v2`
+(adds `window`, hypothesis statuses and claims).
+
+- Retention by significance (refinement §9, logic of the research engine's
+  `retention.py` v43): the owner takes each case's raw trace and its session's
+  replay data into custody in store D at substage 7a; a retention pass after
+  every applied consolidation compacts a due case only when its session,
+  re-executed from replay data and recorded gateway results alone
+  (`reproduce_cognitive_session`), reproduces the case's exact events; tail
+  form and rollup for low cases; a live habit's basis is never removed;
+  `raw_capacity` publishes the detail it costs. Acts are recorded
+  (`MEMORY_RETENTION`) before any body leaves store D and applied by the next
+  report. Operator acts `synapse memory restore|forget` (restore without a new
+  vote; forget behind a tombstone that the gateway reports as an explicit end).
+- Hypotheses (refinement §10): `hypothesis`, `probe`, `established`, tool option
+  `requires` and contract flag `requires_established`; three statuses decided
+  only by the declared check through the gateway from a source independent of
+  the claim's; consequential actions refused before any effect while a
+  hypothesis is not established; statuses recorded by the court and reused only
+  for the same source version while fresh.
+- Palace (refinement §11): `recall` ranks candidates by lexical overlap of
+  content fields only (`palace-lexical/v2` — a behavior version change;
+  confidence and insertion time no longer score); `admit(candidates, claim)`
+  admits a fact only on entity, attribute, kind, scope, validity, provenance,
+  confirmed status (live hypothesis status when named), two distinct key tokens
+  and the threshold; disagreements are conflicts; copies count once. The delta
+  against the previous rule and the sensitivity lattice are in
+  `GOLD_KNOWLEDGE_INGESTION.md`.
+- Segment requirements may bind the required operation to a resource produced
+  by an earlier result of its scope (refinement §8).
+- Acceptance: 14 new files in `acceptance/memory/` (decision-table contract at
+  every threshold, conflict steps 1 and 2, operation identity and fast-path
+  outcome rules, retention compaction/crash/substitution/capacity, forget,
+  hypothesis protocol and reuse, palace admission).
+
+Known limits are listed in
+[GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md#этап-4-хранение-опыта-гипотезы-и-допуск-дворца).
+Stages 5–7 of the refinement (D1, D2, composition, semantic search, event-driven
+execution) are not part of this package. AS2 production readiness stays locked.
+
+## Memory — learned habits through one court: sessions, births, Gold admission and exams — 2026-09-25
+
+Durable runs gain the cognitive profile `synapse.durable.cognitive/v1`
+(artifact `1.1.0`, `RFC-ASYNC-EXECUTION-AMENDMENT-03.md`, DRAFT): `tool`,
+`task_plan`, `context` segments and the slow path
+`catch (ACTION_FAILED as name)` run under `run --durable --project-state
+--memory-config`, with a RUNNING crash point after every recorded effect and
+recovery through `resume`. The core offers only `synapse/memory_points.py`;
+the composition root alone builds `synapse/memory_consolidation`.
+
+- One court for Synapse sessions and Gold project runs. Gold keeps the JUDGED
+  chain (`court-decision/v2` carries the consolidation), the exact-patch rule
+  and the append primitive; `consolidate_court` is removed and project runs
+  reach the court through the `ProjectMemoryCourt` port passed by the CLI.
+- Gateway of admitted MCP tools: every call recorded before use, effect classes
+  by tool contract, lost answers unknown, repeats only when admissible,
+  idempotent calls recovered after a crash; an observation is request plus
+  answer, so only a repeat of both is a copy.
+- Court: dream (verdicts, 1b verified re-execution, signals, reactions) and
+  integrate (trust, conflict ladder, pool, births, boundaries, automaton,
+  quanta). Windows of live sessions end before a segment still executing.
+  Witnesses count only when they attest the failed operation's own effect
+  (its repeat or a state check); independence is three-valued over the
+  declared provenance graph and is reported in every pool update.
+- Births pass Gold's INGESTION and PUBLICATION gates as
+  `learned-habit-request/v1` (new `learned_habit_profile.py`,
+  `learned_habit_lifecycle.py`); successors SUPERSEDE, the operator may
+  WITHDRAW. Sessions load only admitted habits of the pinned complete
+  snapshot boundary.
+- Exams A/B/C are run parameters (`--exam-mode`, `--exam-snapshot`) on the
+  same memory; C loads the same habits slow-only. Exams never consolidate.
+- Acceptance: `acceptance/memory/` (11 scenarios through the canonical CLI and
+  real MCP stdio servers); tripwire `tests/test_memory_dependency_direction.py`.
+
+Known limits are listed in
+[GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md#выученные-привычки-сессии-суд-консолидации-рождение-и-загрузка).
+This is not evidence of a live Baseline/Gold experiment; AS2 production
+readiness stays locked.
+
+## Gold — Mini removed; coding agents are admitted profiles with a Synapse model broker — 2026-09-24
+
+The built-in Mini executor is removed completely: `synapse/worker/mini_*`,
+`provider_transport`, `provider_policy`, `provider_messages`, `worker/smoke.py`,
+`synapse/agents/mini_adapter.py` (factory `mini`),
+`synapse/experiments/swebench/mini_config.py`, the `gold-worker` extra
+(mini-swe-agent, LiteLLM, OpenAI SDK), their unit tests and fixtures. A coding
+agent is only an operator-admitted registry profile; Gold and the Baseline arm
+both execute it through `AgentExecutionPort`.
+
+- `synapse/agents/model_broker.py` (new owner): per-invocation loopback model
+  broker for `LOCAL_BROKER` profiles. It keeps the provider credential, gives
+  the agent only `SYNAPSE_MODEL_ENDPOINT`/`SYNAPSE_MODEL_CAPABILITY`/
+  `SYNAPSE_MODEL_NAME`, registers and retains every physical call before
+  delivery, lets an agent retry an unsuccessful logical request by naming it,
+  and, while local information is delivered, forwards only the protocol's
+  public conversation (`local_edits.public_messages`, observed replies and
+  `LOCAL_EDIT_CORRECTION`). Its accounting profile is
+  `synapse.agent.model-broker/v1`.
+- STDIO profiles may be admitted as `TRUSTED_PROCESS`, declare a Synapse
+  local-edit protocol (`native.protocol`) and model access
+  (`native.model_access`); the adapter owns the broker lifecycle and closes the
+  capture with the agent's response inventory. Local information with model
+  access and no protocol is refused before dispatch.
+- Gold: new runs accept only experiment input v4 (`agents`). Agent selection is
+  independent of target resolution, so v4 carries explicit `target_records` or an
+  automatic task; frozen input v7 carries target resolution, planning and a memory
+  snapshot only when selected, and `resource_profile` for model-access profiles.
+  Runs frozen with the retired `worker` declaration stay readable and are refused
+  for execution or resume. `WorkerAccounting` is now the model-accounting port
+  (`open_capture`); the capture closes through `finish_invocation`.
+- Reconciliation reads only the neutral response inventory; old captures without
+  one stay unverifiable. The local-edit instructions are transport-neutral.
+- Baseline (`run_baseline_task(..., agent=AgentExecutionPort)`) runs the same
+  admitted profile as Gold, without Synapse context or local information.
+- Acceptance: `acceptance/agents/coding_agents.py` provides an acceptance-only
+  process agent and model agent. Heavy files keep one scenario each; Mini-named
+  files were renamed to `*_agent_*`, Mini-internal scenarios were replaced by
+  `test_public_conversation_acceptance.py`, and the duplicate
+  `test_agent_profile_gold_acceptance.py` was removed. CI installs no agent SDK.
+
+## Gold — provider accounting reconciles a neutral agent inventory — 2026-09-23
+
+Stage 15 reconciliation no longer parses an agent's private trajectory. At its
+terminal boundary an agent now reports `synapse.agent.response-inventory/v1`
+(`synapse/llm/capture.py`): its accounting profile, declared call count and,
+per response, the capture logical id and usage. The capture store retains it as
+`inventory_ref` beside the raw trajectory, and reconciliation compares it with
+Synapse's own HTTP capture (profile, call count, missing, foreign and duplicate
+responses, usage equality). The Mini adapter derives the inventory from its own
+trajectory (`mini_response_inventory`). Captures retained before this contract
+are read through that historical reader only; without it they stay
+unverifiable. The provider transport itself still carries Mini-specific
+request policy and runtime checks.
+
+## Gold — Synapse forms every local-edit candidate; neutral protocol v6 — 2026-09-23
+
+The pluggable agent now returns only its model's typed proposal text
+(`local_edit_proposal`). `stage10/local_candidate.py`, a new Synapse owner,
+interprets it over the exact task and information bytes Synapse delivered,
+with the frozen protocol profile, for every profile v1-v6, and also owns the
+admitted exact-memory route. An agent that reports an interpreted result is
+refused; an absent, effectful or malformed proposal becomes an explicit
+refusal. Mini no longer runs the interpreter or validates results.
+
+Run decisions (full positive feedback, checked partial patch, automatic
+memory) come from `PROTOCOL_CAPABILITIES` declared by Synapse's local-edit
+protocol instead of Mini profile names in the run composition. A
+registry-selected adapter declares its protocol through its frozen
+configuration (`local_edit_protocol`); one returning ready patches declares
+none. The new neutral
+profile `synapse.worker.local-edit-proposals/v6` keeps v5 semantics; v1-v5 keep
+their historical names for existing runs. Remaining Mini coupling: provider
+call accounting still parses the Mini trajectory.
+
+## Gold memory — episode outcomes, memory court and Synapse-owned exact reuse — 2026-09-23
+
+Every completed run now reaches project memory through `project_court.py`.
+For each unjudged OUTCOME_RECORDED the court reopens the physical run and
+retains CONSOLIDATED learning and an OBSERVED `episode-outcome/v1`: per-attempt
+facts, recovery by a later independent attempt and fulfilment of the declared
+requirement, projected only from the sealed Stage 12 outcome. FULFILLED is the
+only success basis. INFRA_ERROR (UNCERTAIN) and INVALID_CONTRACT (UNVERIFIABLE)
+are deferred: neither success nor failure, never element defects.
+
+Each judgement is one immutable JUDGED `court-decision/v1` whose journal key
+is derived from its predecessor, so concurrent task streams extend one chain
+and the same inputs return the same decision. Established outcomes credit each
+publication origin once to its exact patch subject under the declared
+`court-policy/v1` (ADMITTED, OBSERVED, REFUTED, SLOW_ONLY). A run whose records
+are unavailable or inconsistent stays PENDING; while any is pending the court
+records credits and restrictions but grants no new automatic authority.
+
+New element-owner jobs use lifecycle v3: they pin the court decision they read,
+frames re-derive that chain instead of reopening every earlier run, show the
+latest 128 judged episodes with an explicit omitted count, and exact
+`procedural_memory` lists only court-admitted patches. Operator selection
+narrows candidates but no longer changes automation authority.
+
+The exact-memory route moved out of the pluggable agent. Before dispatch,
+`Stage10WorkerContextAdapter` interprets the same task and information bytes;
+a single court-admitted, exactly applicable patch becomes the candidate with
+delivery status `SYNAPSE_EXACT_MEMORY` (`synapse.exact-memory/v1`, zero
+tokens) and no agent process. Delivery verification refuses either side
+claiming the other's status, and run accounting reconciles such attempts
+without agent capture. Mini no longer contains a memory route; the Mini-only
+memory acceptance shard is removed. C1 and the independent oracle still verify
+every candidate.
+
+Known limits: publication reads still need their producer run records, so a
+lost run directory that published anything keeps project knowledge unreadable;
+Gold's library, lifecycle, provenance and taint stores take their writer lock
+without waiting, so a second simultaneous run of one project can end in
+LOCK_BUSY. The memory journal itself queues concurrent writers. Lifecycle v1/v2
+jobs keep their original interpretation; the canonical `python -m synapse
+project run/approve/resume` path is unchanged. See
+[GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md#суд-памяти).
+
+## CVM — byte-exact encoding reuse and execution-limit outcomes — 2026-09-20
+
+Transition hashing reuses bounded, per-VM immutable JSON fragments while retaining
+the existing step/resume bytes, per-instruction SHA-256 and gas. Mutable values,
+mailboxes and stack representations are never reused as stale cached evidence.
+Loop compilation uses deterministic hygienic temporary names and fresh buffers
+on each invocation; previously serialized bytecode is not rewritten.
+
+Application `run vm` now reports `STEP_LIMIT_REACHED` when its instruction ceiling
+is exhausted, unwinding scopes as a failure. Component-level bounded execution
+remains resumable. The canonical CLI path, Gold owners and memory gates are
+unchanged. See [CVM_PERFORMANCE.md](CVM_PERFORMANCE.md) for compatibility, paired
+measurement and explicit technical debt for the later VM architecture.
+
+## Gold — procedural planning and durable element memory — 2026-09-12
+
+New automatically resolved tasks retain a typed source-coverage computation and
+a bounded method decision in frozen-input v6 / operation-plan v2. Actual CVM
+observations determine applicable methods, path partitions and operation inputs.
+Plan authority and resume both compare the graph with those physical observations;
+approval v4 grants the declared partition rule within the original task permissions.
+Historical schemas keep their existing interpretation.
+
+Project element owners now retain maintenance requests, starts, completed frames
+and verified run outcomes through the existing immutable snapshot primitive.
+Frames contain the eight memory views, current/target/delta state and stable
+element identities. Interrupted work resumes its original history cut. Completed
+outcomes stay bound to the exact frozen run; prior success does not mark a fresh
+base revision as repaired. Explicit ALL / SUCCESS_ONLY / FAILURE_ONLY / NONE
+selection changes candidate eligibility while preserving the complete archive.
+
+The installed Mini extension uses separate task and information inputs, a
+proposal Environment and an exact public request policy matching the pinned SDK.
+Wire serialization permits omission only of null fields already present in
+the recorded public response. Memory frames are projected into neutral worker data. Local proposals still
+pass through the existing C1 executor, oracle, publication and lineage owners.
+
+Repeated delivery evidence now reuses only the pure behavior/manifest computation
+keyed by exact immutable proof and content-reference bytes. The bounded process
+cache returns fresh references and never retains physical-store, freshness or
+admission decisions. This addresses repeated compilation observed in the CI
+positive-memory timeout without extending the command deadline. The ownership map
+now distinguishes shared procedure/planning contracts from their physical adapter.
+
+Heavy source, owner, multi-target and complete memory-cycle acceptance cases are
+separate files and CI shards. Protocol refusal checks use pure contracts; actual
+Mini scenarios send ordinary typed proposals. See
+[GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md) for supported profiles,
+primary-source design references and observed validation. Live-model effectiveness,
+cross-revision generalization and AS2 production readiness are separate claims.
+
 ## Fix — a §22 refusal no longer closes the coordinator for good — 2026-08-24
 
 `admit_for_use_now` evaluated the Consumption Gate inside the mutation interval

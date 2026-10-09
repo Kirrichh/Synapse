@@ -245,6 +245,13 @@ def dynamic_bypasses(path: pathlib.Path) -> set[str]:
                 if alias.name.split(".")[0] in DYNAMIC_IMPORT_NAMES:
                     found.add(alias.name)
         elif isinstance(node, ast.ImportFrom) and node.module:
+            # The source verifier measures installed distribution metadata.
+            # This exact read API loads no plugin, factory or entry point;
+            # import_module/__import__ and the importlib module remain banned.
+            if (path == GOLD_PACKAGE / "source_verification.py"
+                    and node.module == "importlib.metadata"
+                    and all(alias.name == "distributions" and alias.asname is None for alias in node.names)):
+                continue
             if node.module.split(".")[0] in DYNAMIC_IMPORT_NAMES:
                 found.add(node.module)
         elif isinstance(node, ast.Name) and node.id in DYNAMIC_IMPORT_NAMES:

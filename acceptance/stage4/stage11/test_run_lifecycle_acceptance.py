@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 from pathlib import Path
+import base64
+import json
+
+import pytest
 
 from synapse.experiments.gold.replay import replay_result_ref
 from synapse.experiments.gold.retrieval import retrieval_causal_record_ref
 from synapse.experiments.gold.runner.state_machine import load_run_state
 from synapse.experiments.gold.runner.run_progress import AttemptProgressPhase, load_attempt_progress, require_progress_payload
-from synapse.experiments.gold.runner.completed_delivery_codec import restore_completed_worker_delivery
+from synapse.experiments.gold.runner.completed_delivery_codec import (
+    restore_completed_worker_delivery, completed_worker_delivery_bytes, COMPLETED_WORKER_DELIVERY_SCHEMA_V2,
+)
+from synapse.experiments.gold.stage10.context_codec import decode_worker_delivery_envelope
 from synapse.experiments.gold.runner.vocabulary import (
     AttemptOutcome,
     FallbackPolicy,
@@ -72,8 +79,23 @@ def test_two_attempts_keep_real_retrieval_replay_context_and_result_authority(
     progress = load_attempt_progress(world.composition.record_store, manifest=world.manifest, context=second.context)
     raw, ref = require_progress_payload(progress.get(AttemptProgressPhase.WORKER_COMPLETED))
     delivered = restore_completed_worker_delivery(raw, expected_ref=ref)
-    assert state.attempts[0].result.verified_patch_sha256 in delivered.invocation.payload_text
-    assert state.attempts[0].result.result_sha256 in delivered.invocation.payload_text
+    assert ref.schema_id == COMPLETED_WORKER_DELIVERY_SCHEMA_V2
+    assert completed_worker_delivery_bytes(delivered) == raw
+    information = json.loads(delivered.invocation.information_text)
+    observations = [json.loads(base64.urlsafe_b64decode(item["content_base64url"] + "=" * (-len(item["content_base64url"]) % 4)))
+                    for item in information["items"] if item["role"] == "EXECUTION_OBSERVATION"]
+    assert observations == [{"evaluated_patch_sha256": state.attempts[0].result.verified_patch_sha256,
+                             "oracle_resolved": False}]
+    assert state.attempts[0].result.verified_patch_sha256 not in delivered.invocation.payload_text
+    assert state.attempts[0].result.result_sha256 not in delivered.invocation.payload_text
+    _, retained = world.stage10_composition.record_store.read_worker_context(
+        context_id=delivered.worker_context_id, audit_sha256=delivered.worker_context_audit_sha256)
+    envelope = decode_worker_delivery_envelope(retained.payload)
+    assert state.attempts[0].result.result_sha256 in envelope.body_bytes.decode()
+    assert envelope.information_text == delivered.invocation.information_text
+    object.__setattr__(delivered.invocation, "information_text", "{}")
+    with pytest.raises(ValueError):
+        completed_worker_delivery_bytes(delivered)
     assert state.attempts[0].context.phase_refs.plan_semantic_sha256 == second.context.phase_refs.plan_semantic_sha256
     assert result.telemetry_completeness is TelemetryCompleteness.UNAVAILABLE
     assert result.telemetry_refs == ()

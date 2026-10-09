@@ -31,6 +31,8 @@ behaviour is correct.
 
 from __future__ import annotations
 
+from .behavior import inspect_behavior_invocation
+
 from .replay import (
     ReplayFailureCode,
     ReplayMachineExecutionContext,
@@ -51,6 +53,7 @@ def build_reference_machines(
     machine_factory: ReplayMachineFactoryPort,
     execution_context: ReplayMachineExecutionContext,
     gas_budget: int,
+    bindings: tuple[ReplayProgramBinding, ...] | None = None,
 ) -> tuple[ReplayMachinePort, ...]:
     """The machines a fresh reference run starts from, built from admitted code.
 
@@ -61,14 +64,20 @@ def build_reference_machines(
     returned the second time, which nothing admitted.
     """
 
+    if bindings is not None and len(bindings) != len(programs):
+        raise _fail(ReplayFailureCode.MACHINE_COUNT_MISMATCH, "each program needs its admitted invocation binding")
+    options = [({"initial_values": inspect_behavior_invocation(item.invocation_bytes,
+                    unit=item.invoked_unit)["bound_values"]} if item.invocation_bytes is not None else {})
+               for item in bindings] if bindings is not None else [{} for _ in programs]
     return tuple(
         machine_factory.build(
             program,
             gas_budget=gas_budget,
             execution_context=execution_context,
             expected_structural_history=None,
+            **values,
         )
-        for program in programs
+        for program, values in zip(programs, options)
     )
 
 
@@ -112,6 +121,7 @@ def drive_reference_execution(
     channel: object,
     gas_budget: int,
     step_limit: int,
+    prior_transition_ids: tuple[tuple[str, ...], ...] | None = None,
 ) -> tuple[object, ...]:
     """Drive the admitted set once and report what each behaviour did.
 
@@ -139,7 +149,10 @@ def drive_reference_execution(
             "a reference execution needs one machine per admitted behavior",
         )
     runs: list[object] = []
-    for program_binding, machine in zip(bindings, machines):
+    prefixes = tuple(() for _ in bindings) if prior_transition_ids is None else prior_transition_ids
+    if len(prefixes) != len(bindings):
+        raise _fail(ReplayFailureCode.MACHINE_COUNT_MISMATCH, "each continuation needs its actual transition prefix")
+    for program_binding, machine, prefix in zip(bindings, machines, prefixes):
         incompatible = _check_execution_contract(program_binding, machine)
         if incompatible is not None:
             # Only now, once the execution contract holds, may a machine see the
@@ -154,6 +167,7 @@ def drive_reference_execution(
             channel=channel,
             gas_budget=gas_budget,
             step_limit=step_limit,
+            prior_transition_ids=prefix,
         )
         runs.append(run)
         if run.failure_reason is not None:

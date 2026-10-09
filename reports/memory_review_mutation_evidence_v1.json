@@ -1,0 +1,880 @@
+{
+  "schema_version": "synapse.memory.review-mutation-evidence/v1",
+  "source_sha": "11eb53a0bd2ac466a54f10515afa9059fedd733f",
+  "package_commit_sha": "38ad80a920997bd27b32bd38920b193663e6cb2e",
+  "target_branch": "codex/stage4-stage16-acceptance",
+  "method": "one mutation at a time in a fresh copy of the package tree; its killer file run alone; the file restored byte for byte before the next mutation",
+  "first_round": {
+    "mutants": 55,
+    "killed": 46
+  },
+  "campaign_result": "KILLED",
+  "mutants": [
+    {
+      "mutant_id": "MEM-MUT-01",
+      "production_file": "synapse/memory_consolidation/court/decide.py",
+      "original": "forced[fire[\"habit_id\"]] = (\"TV\", basis)",
+      "mutation": "pass",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "7e0f952744ac0c1409ae9471b17ded71f66f6e1694ee8d962ccbfc6103a20703"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_automaton_experience_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-02",
+      "production_file": "synapse/memory_consolidation/court/automaton.py",
+      "original": "if rule == \"TV\" and step.metadata[\"state\"] in EFFECTIVE:",
+      "mutation": "if False:",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "39eda1d3e60cf369ca780e6511c0e9563aa10500851bbc6d5b4991f8a1cdae95"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_automaton_experience_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-03",
+      "production_file": "synapse/palace_admission.py",
+      "original": "if not _same_source(record.get(\"source\"), hypothesis.get(\"source\") or {}):",
+      "mutation": "if False:",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "c96433c179759c4d3fa9166fb03674288607914cfffaffcb0863b87a805c80e3"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_admission_basis_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-04",
+      "production_file": "synapse/palace_admission.py",
+      "original": "if gaps or status not in {\"confirmed\", \"refuted\"}:",
+      "mutation": "if status not in {\"confirmed\", \"refuted\"}:",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "931bd47bcfdca5d34a6cf964b15070bd407c7071cce0bf9d0d242a16485fbe50"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_admission_basis_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-05",
+      "production_file": "synapse/palace_admission.py",
+      "original": "attested[statement][\"provenance\"][\"copies\"].append(record.get(\"id\"))",
+      "mutation": "pass",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "aca479812680f136c4a0d40e8613a1aadf53be6c3acd398046f3a31991254cdc"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_admission_basis_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-06",
+      "production_file": "synapse/memory_consolidation/court/dependencies.py",
+      "original": "and hypotheses[hypothesis_id][\"window\"] <= tombstone[\"window\"]]",
+      "mutation": "]",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "59be3cdbeeea8ec5019b6312c95a5e41364d5c2d749b3ad844e98a978df582ce"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_dependency_graph_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-07",
+      "production_file": "synapse/memory_consolidation/court/dependencies.py",
+      "original": "and versions[statement_id][\"known_from\"] <= tombstone[\"window\"]]",
+      "mutation": "]",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "f7fde0c02a3758945d0816fae8e1ab84ff626c6a31ad10a5ddc7e59ad9746119"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_dependency_graph_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-08",
+      "production_file": "synapse/memory_consolidation/court/dependencies.py",
+      "original": "SUPPORT = (\"hadMember\", \"wasDerivedFrom\", \"wasGeneratedBy\", \"used\")",
+      "mutation": "SUPPORT = (\"hadMember\", \"wasDerivedFrom\", \"wasGeneratedBy\", \"used\", \"wasRevisionOf\")",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "e81ab372fc03da8683358c18c0bd4150dc2545b9cc8add1fd7e03d1ea5cdb32c"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_dependency_graph_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-09",
+      "production_file": "synapse/memory_consolidation/court/dependencies.py",
+      "original": "if f\"case:{qid}\" in support and retained < required:",
+      "mutation": "if f\"case:{qid}\" in support:",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "0e6cc9d208a8455a0650d284b1e356fe492fee78b80a5a79af389f8c32b4c4ae"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_dependency_graph_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-10",
+      "production_file": "synapse/memory_consolidation/knowledge/search.py",
+      "original": "versions = {identity: entry for identity, entry in versions.items() if entry.get(\"withdrawn\") is None}",
+      "mutation": "pass",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "1b289c50ed4187da74e9b35d1e9339cc166fc3470fcb8a2a7fcd15ee14a7ad21"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_forget_knowledge_acceptance.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-11",
+      "production_file": "synapse/memory_consolidation/session.py",
+      "original": "if entry is not None and entry[\"window\"] > window and entry[\"status\"] != \"confirmed\"]",
+      "mutation": "if False]",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "58b462436d44e5a299bccc6543f18df5db577471691af9a9312f51c9d87eb8f5"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_basis_version_acceptance.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-12",
+      "production_file": "synapse/memory_consolidation/session.py",
+      "original": "if hypothesis_id in recorded and recorded[hypothesis_id] <= tombstone[\"window\"])",
+      "mutation": "if False)",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "225a4639e5e275d13590f2e270d4e7bf832793b98287608a116ad4fcf8362887"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_forget_dependencies_acceptance.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-13",
+      "production_file": "synapse/memory_consolidation/session.py",
+      "original": "if habit_id not in unverified and self.factory.admitted_now(habit_id, item))",
+      "mutation": "if self.factory.admitted_now(habit_id, item))",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "c896a5787bba7b2c843fefa27fac610fa4b796bb1a56c4a4553c1e6b42436c9c"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_reassessment_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-14",
+      "production_file": "synapse/memory_consolidation/court/decide.py",
+      "original": "habits[item[\"habit_id\"]][\"verified_under\"] = {\"contracts\": dict(item[\"contracts\"])}",
+      "mutation": "pass",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "d5b2e11d3db795c598ec7b2e2e69a1914d252b93315f27204e89ed26d54e5472"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_reassessment_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-15",
+      "production_file": "synapse/memory_consolidation/court/comparison.py",
+      "original": "if values is None or admitted is None or not",
+      "mutation": "if False and not",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "b2d30b82f68cedacd2ef02dbe042ad2b53826e23925c81d64d9e2aea896442f5"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_stand_trial_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-16",
+      "production_file": "synapse/memory_consolidation/court/comparison.py",
+      "original": "situations.setdefault(f\"{item['stand']}|{item['situation']}\",",
+      "mutation": "situations.setdefault(item[\"id\"],",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "8de34b64a723ceb46cadc89b1afeb8b86a7af7f7a0ebd5a551b9d828589ba255"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_stand_trial_contract.py",
+        "status": "SURVIVED"
+      },
+      "second_round": {
+        "killer_file": "acceptance/memory/test_stand_trial_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-17",
+      "production_file": "synapse/memory_consolidation/court/conflicts.py",
+      "original": "comparison = advice[\"trial\"]  #",
+      "mutation": "pass  #",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "ea13d0e3a757e37af9bc858a9fe2756b73b4f61f346bd6bb015e5b1335b15a47"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_stand_trial_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-18",
+      "production_file": "synapse/memory_consolidation/court/trials.py",
+      "original": "same_start = left[\"observed\"] == right[\"observed\"]",
+      "mutation": "same_start = True",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "76585fb0d11ff8d45fa7451ef08d39d6ef937409ee90c1444ace4a980533ce3b"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_stand_trial_acceptance.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-19",
+      "production_file": "synapse/memory_consolidation/policy.py",
+      "original": "/ (cs[\"alpha\"] / 2.0))) / count",
+      "mutation": "/ cs[\"alpha\"])) / count",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "6d858568e9eec8116dcfde193879586fa10f014c8d9680d049f06878adbc4d95"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_automaton_confidence_sequence_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-20",
+      "production_file": "synapse/memory_consolidation/court/automaton.py",
+      "original": "if task not in metadata.get(\"cs_tasks\", []):",
+      "mutation": "if True:",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "9929daada2497f9a6e65b666f3622dfef07014028d5cbfaae1a934cd1df4bb22"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_automaton_confidence_sequence_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-21",
+      "production_file": "synapse/memory_consolidation/owner.py",
+      "original": "or chain[index][0][\"consolidation\"][\"report\"] != cut[\"report\"]",
+      "mutation": "or False",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "3031198a4adb8b667319b1e60312e4e21d211ce18bdc37d6c1a12d8f749cdf56"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_state_snapshot_acceptance.py",
+        "status": "SURVIVED"
+      },
+      "second_round": {
+        "killer_file": "acceptance/memory/test_state_snapshot_acceptance.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-22",
+      "production_file": "synapse/experiments/gold/project_memory_store.py",
+      "original": "event = deepcopy(known[1])",
+      "mutation": "event = known[1]",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "91e599f5ca1b0ce9b411af6467fde9b9cc28554b902f929b206765c8819f59f3"
+      },
+      "first_round": {
+        "killer_file": "acceptance/stage4/stage16/test_project_memory_store_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-23",
+      "production_file": "synapse/memory_consolidation/knowledge/search.py",
+      "original": "return [identity for _, identity in heapq.nsmallest(budget, scored)]",
+      "mutation": "return [identity for _, identity in heapq.nsmallest(budget, scored, key=lambda item: item[0])]",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "1d66b456749cf802206de2cb7e7cacf58d9f0f65b4518bf6383cf5c554fd648a"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_knowledge_contract.py",
+        "status": "SURVIVED"
+      },
+      "second_round": {
+        "killer_file": "acceptance/memory/test_knowledge_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-24",
+      "production_file": "synapse/memory_consolidation/tools/gateway.py",
+      "original": "\"breach\": True, \"final\": True})",
+      "mutation": "\"breach\": False, \"final\": True})",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "b169ccbe07cf801d40d31574712a46d50945a29fecd30f1bc314a06438e04599"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_contract_violation_acceptance.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-25",
+      "production_file": "synapse/memory_consolidation/learning/behavior.py",
+      "original": "distinct = len({canonical(value) for value in values})",
+      "mutation": "distinct = len(values)",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "338d07c5f1fdd97a3def8de5c6e31b8970bf45b76494cc625f00e0dd43e0da9f"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_generalization_explanation_acceptance.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-26",
+      "production_file": "synapse/memory_consolidation/court/reactions.py",
+      "original": "if item[\"episode\"] == f\"{error['event_id']}|habit\" and item[\"breach\"]],",
+      "mutation": "if item[\"episode\"] == f\"{error['event_id']}|habit\"],",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "e91941cf9c11d2b1d7f6ffc7e56d22c5a51d1b6695e3a2c82c231aeba114d0aa"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_contract_violation_acceptance.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-27",
+      "production_file": "synapse/memory_consolidation/tools/gateway.py",
+      "original": "                               breach=True)",
+      "mutation": "                               breach=False)",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "edfb36bfc49a636dfde59a24d3e64a2c3150845c454dd605ed45644213fbb089"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_contract_violation_acceptance.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-28",
+      "production_file": "synapse/memory_consolidation/court/signals.py",
+      "original": "\"refusals\": list(reaction.get(\"habit_refusals\", []))}",
+      "mutation": "\"refusals\": []}",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "a7b5f8a0aed78cadd556e1583d238f4e7058010136c7eba8647ff224eb552b66"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_contract_violation_acceptance.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-29",
+      "production_file": "synapse/palace_admission.py",
+      "original": "return stated.get(\"tool\") == read.get(\"tool\") or (",
+      "mutation": "return True or (",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "4d0c70a644048692afb56e11c1349369a30a060a600d9a96d217f6e0f7fb0cae"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_admission_basis_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-30",
+      "production_file": "synapse/palace_admission.py",
+      "original": "dependencies.append({\"kind\": \"identity_link\", \"ref\": alias})",
+      "mutation": "pass",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "2f50235161570facb8272b67eccb1cd839075b61dd7c63ce59b859479aa6ee7a"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_admission_basis_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-31",
+      "production_file": "synapse/palace_admission.py",
+      "original": "decision.update(decision=\"admitted\", fact=dict(passing[statement]), attestation=attested[statement])",
+      "mutation": "decision.update(decision=\"admitted\", fact=dict(passing[statement]))",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "00cbbd4dec0b0faa691ecde1021d834284ae9ff152ceacecf30ef5df5374612b"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_admission_basis_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-32",
+      "production_file": "synapse/memory_consolidation/hypotheses.py",
+      "original": "\"record\": {\"window\": known[\"window\"], \"run_id\": known.get(\"run_id\"),",
+      "mutation": "\"record\": {\"window\": known[\"window\"], \"run_id\": None,",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "6dd072862e2c284dbbbe92e2c72da67f3dfbdad7a12c037a73e9be99e752fbd2"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_hypothesis_reuse_acceptance.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-33",
+      "production_file": "synapse/memory_consolidation/court/dependencies.py",
+      "original": "edges.add((node, \"wasDerivedFrom\", f\"observation:{check}\"))",
+      "mutation": "pass",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "77cf7f6a664ab6c6601cfee4fdba726cbf60feba405c5ef8f04b7e96790b2e15"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_dependency_graph_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-34",
+      "production_file": "synapse/memory_consolidation/court/dependencies.py",
+      "original": "edges.add((node, \"used\", f\"statement:{statement_id}\"))",
+      "mutation": "pass",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "bb1e090037a09a6339c3b021361dd7e14030b02ee46393456aa8199bdd971ab8"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_dependency_graph_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-35",
+      "production_file": "synapse/memory_consolidation/court/dependencies.py",
+      "original": "unknown.add((node, \"check_observation\"))",
+      "mutation": "pass",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "a18aeefd6f05e3230f52b5cfec178a026a8a51a6707102f4d2871e4d95236cb8"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_dependency_graph_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-36",
+      "production_file": "synapse/memory_consolidation/court/retention.py",
+      "original": "\"refs\": list(act[\"refs\"])}",
+      "mutation": "\"refs\": []}",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "27ef0b18f52a9e2e071c9d4c3028dec51768cdc0fce7ddb023be4847bc1d11b6"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_forget_dependencies_acceptance.py",
+        "status": "SURVIVED"
+      },
+      "second_round": {
+        "killer_file": "acceptance/memory/test_forget_knowledge_acceptance.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-37",
+      "production_file": "synapse/memory_consolidation/court/knowledge.py",
+      "original": "if record[\"id\"] in known and known[record[\"id\"]].get(\"withdrawn\") is None:",
+      "mutation": "if record[\"id\"] in known:",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "cd3952c888d18ec68a285f496477ef13ccffa4e0ab2374e88d6ca03d4e7e672b"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_forget_knowledge_acceptance.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-38",
+      "production_file": "synapse/memory_consolidation/court/decide.py",
+      "original": "    forgotten_stage(context, habits, forced, knowledge)\n",
+      "mutation": "",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "9485c744c892f11db17ccb4deb457dd27ba878e277bae8e5e992e88bec255a9d"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_dependency_graph_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-39",
+      "production_file": "synapse/memory_consolidation/session.py",
+      "original": "if self.exam is not None or not recorded:",
+      "mutation": "if True:",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "2d37aab581211b3d6a4f5237031a5951e7fc47ff7f8fe81b20ea096e03b6ab48"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_basis_version_acceptance.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-40",
+      "production_file": "synapse/memory_consolidation/session.py",
+      "original": "if name not in tools or tools[name].contract_ref != ref)",
+      "mutation": "if name not in tools)",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "709562613c91b733492331baab78a31214e02f3a189ffa862a916aec171457e3"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_reassessment_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-41",
+      "production_file": "synapse/memory_consolidation/session.py",
+      "original": "            return [\"*\"]",
+      "mutation": "            return []",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "0decafbc5ece2f2a3b8c9e1465faff10c54a1153108add7311b4f32808dc23cd"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_reassessment_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-42",
+      "production_file": "synapse/memory_consolidation/court/reassessment.py",
+      "original": "name for name in current if recorded_contracts.get(name) != current[name]),",
+      "mutation": "name for name in current if False),",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "785baa291c5c52f57ff2f724256668cfc2a1f70a19adb28735a8ea417f0b3bab"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_generalization_explanation_acceptance.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-43",
+      "production_file": "synapse/memory_consolidation/learning/behavior.py",
+      "original": "if step.get(\"step\") == \"call\" and step.get(\"tool\") not in (None, SAME)})",
+      "mutation": "if step.get(\"step\") == \"call\" and step.get(\"tool\") not in (None, SAME, \"release_state\")})",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "00c1a83175f369a883034e1888181a499cfd5aa8a3c53d541ef3741bc911395d"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_generalization_explanation_acceptance.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-44",
+      "production_file": "synapse/memory_consolidation/court/comparison.py",
+      "original": "if item[\"decided\"]:",
+      "mutation": "if True:",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "68476cf3c6c392d53a01aabfba92fc50d9bc58ade8e7397a79395fcb2aa767c9"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_stand_trial_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-45",
+      "production_file": "synapse/memory_consolidation/court/comparison.py",
+      "original": "elif better[left] >= minimum:\n            winner, reason = left, \"better_in_stand_trials\"",
+      "mutation": "elif better[left] >= 1:\n            winner, reason = left, \"better_in_stand_trials\"",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "01971402a940bcf3cc4298d2acea11dd08d43ade27a73f820813dfbf60fdd77d"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_stand_trial_contract.py",
+        "status": "SURVIVED"
+      },
+      "second_round": {
+        "killer_file": "acceptance/memory/test_stand_trial_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-46",
+      "production_file": "synapse/memory_consolidation/court/trials.py",
+      "original": "inside = within(scope, fields)",
+      "mutation": "inside = True",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "ef1b2cafb39458df5906f0cef75457f68b62f038d5975b3e30a83bd134ef2653"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_stand_trial_acceptance.py",
+        "status": "SURVIVED"
+      },
+      "second_round": {
+        "killer_file": "acceptance/memory/test_stand_trial_acceptance.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-47",
+      "production_file": "synapse/memory_consolidation/court/trials.py",
+      "original": "if fire[\"refusals\"]:",
+      "mutation": "if False:",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "fe068961d957a796ea2597245c8f960ec3c23c0198eb9bed3624f043db06c5ef"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_stand_trial_acceptance.py",
+        "status": "SURVIVED"
+      },
+      "second_round": {
+        "killer_file": "acceptance/memory/test_stand_trial_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-48",
+      "production_file": "synapse/memory_consolidation/session.py",
+      "original": "self._habits = {item[\"habit_id\"]: item for item in ([trial] if trial is not None else habits)}",
+      "mutation": "self._habits = {item[\"habit_id\"]: item for item in habits}",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "4beeb0bff8a716444b086b1ea78867bac46772d7cff9a53a66a6905bb0367e0a"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_stand_trial_acceptance.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-49",
+      "production_file": "synapse/memory_consolidation/court/automaton.py",
+      "original": "if mean_signal + radius < parameters[\"cs\"][\"demote\"]:",
+      "mutation": "if mean_signal < parameters[\"cs\"][\"demote\"]:",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "637eb27cd88535f40d9f843335db72b60487b65ad92f8860d52dcc0bc288ac18"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_automaton_confidence_sequence_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-50",
+      "production_file": "synapse/memory_consolidation/court/automaton.py",
+      "original": "if metadata[\"state\"] in _ON_PROMOTION and mean_signal - radius >= parameters[\"cs\"][\"promote\"]:",
+      "mutation": "if metadata[\"state\"] in _ON_PROMOTION and mean_signal >= parameters[\"cs\"][\"promote\"]:",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "4fad1360c66127620e8a1db0c2df48263159ae5189cd28c47f2349e399d9fa1b"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_automaton_confidence_sequence_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-51",
+      "production_file": "synapse/memory_consolidation/court/habit_state.py",
+      "original": "sprt_llr=0.0, key_hold_until=None, cs_tasks=[], cs_sum=0.0)",
+      "mutation": "sprt_llr=0.0, key_hold_until=None)",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "41064a4f685baee9b786b526ac34e3342eb0910a1f2d5d489d8dddb67a5e3d80"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_automaton_confidence_sequence_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-52",
+      "production_file": "synapse/memory_consolidation/owner.py",
+      "original": "if not reports or len(reports) % SNAPSHOT_EVERY or reports[-1] != len(chain) - 1:",
+      "mutation": "if not reports or reports[-1] != len(chain) - 1:",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "a041a5c1d90b1332e6127f8569e912f1f7ece019182601ccae49b7622bc65e67"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_state_snapshot_acceptance.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-53",
+      "production_file": "synapse/memory_consolidation/factory.py",
+      "original": "for position in range(len(applied) - 1, -1, -1):",
+      "mutation": "for position in range(len(applied)):",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "7700bb7bbd35e3bf1f7e7d0c28e0350b02c29aae8c62be4f3df2b15c573bcc6e"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_hypothesis_reuse_acceptance.py",
+        "status": "SURVIVED"
+      },
+      "second_round": {
+        "killer_file": "acceptance/memory/test_contract_violation_acceptance.py",
+        "status": "SURVIVED"
+      },
+      "third_round": {
+        "killer_file": "acceptance/memory/test_forget_dependencies_acceptance.py",
+        "status": "KILLED"
+      },
+      "note": "a session pinned to the oldest boundary reuses a hypothesis the forget revoked (hypothesis_reused instead of hypothesis_probed); acceptance/memory/test_hypothesis_expiry_acceptance.py kills it too",
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-54",
+      "production_file": "synapse/memory_consolidation/knowledge/search.py",
+      "original": "similarity = 0.0 if norm == 0 else sum(map(operator.mul, query_vector, vector)) / norm",
+      "mutation": "similarity = 0.0 if norm == 0 else round(sum(map(operator.mul, query_vector, vector)) / norm, 3)",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "26bc255181c505ae9852f49b04b73ecf748e70dce57339c1710efdd943b6ad68"
+      },
+      "first_round": {
+        "killer_file": "acceptance/memory/test_knowledge_contract.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    },
+    {
+      "mutant_id": "MEM-MUT-55",
+      "production_file": "synapse/memory_consolidation/owner.py",
+      "original": "if found is None or found[1] != consolidation[\"report\"]:",
+      "mutation": "if found is None:",
+      "mutation_identity": {
+        "algorithm": "sha256",
+        "value": "edba71700eed65ab4e160cd51544f614535eace8775942db1eb9127ce88d92b9"
+      },
+      "first_round": {
+        "killer_file": "acceptance/stage4/stage16/test_project_court_contract.py",
+        "status": "SURVIVED"
+      },
+      "second_round": {
+        "killer_file": "acceptance/memory/test_state_snapshot_acceptance.py",
+        "status": "KILLED"
+      },
+      "status": "KILLED"
+    }
+  ]
+}

@@ -196,7 +196,11 @@ Gemini and reads `SYNAPSE_LLM_PROVIDER=gemini`, `SYNAPSE_LLM_MODEL`, and
 `GEMINI_API_KEY` from the environment. Do not place the key in source or a
 tracked `.env` file. Multi-step `thought` blocks use 200 output tokens per step
 by default; set a positive `SYNAPSE_LLM_THOUGHT_MAX_TOKENS` value when a live
-task needs a larger bounded response. The
+task needs a larger bounded response. In free-tier mode a call is sent only for
+content declared safe: a program's `llm` calls carry the operator's declaration
+`SYNAPSE_LLM_DATA_CLASSIFICATION`, `SYNAPSE_LLM_REPOSITORY_VISIBILITY`,
+`SYNAPSE_LLM_CONTAINS_SECRETS` and `SYNAPSE_LLM_CONTAINS_PERSONAL_DATA`; without
+it the call is refused before any provider request. The
 [live Gemini team trial](docs/tutorials/LIVE_GEMINI_TEAM_TRIAL.md) provides a
 local example and a manually triggered GitHub Actions path suitable for a
 repository secret. A live call does not become deterministic merely by using a

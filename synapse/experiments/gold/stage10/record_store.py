@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 import hashlib
@@ -40,7 +40,7 @@ from .intent_transport import decode_intent_candidate
 from .plan_transport import inspect_recorded_accepted_plan
 from .plan_authority import AcceptedOperationPlan, validate_accepted_operation_plan
 from .delivery_verification import DeliveryReceipt, validate_delivery_receipt
-from .influence import InfluenceAssessment, validate_influence_assessment
+from .influence import InfluenceAssessment, LocalContextInfluence, assess_context_influence, validate_influence_assessment
 
 ADAPTER_PRIVATE_SEAM = {
     "synapse.experiments.gold.stage10.context": frozenset(
@@ -131,6 +131,12 @@ def _plan_bundle_records(intent: IntentCandidate, accepted_plan: AcceptedOperati
         (Stage10RecordKind.PLAN_DECISION, accepted_plan.decision.decision_id.record_id.digest_sha256, encode_canonical(accepted_plan.decision.to_dict())),
         (Stage10RecordKind.ACCEPTED_PLAN, accepted_plan.accepted_plan_id.record_id.digest_sha256, encode_canonical(accepted_plan.to_dict())),
     )
+
+
+def _influence_record_payload(assessment):
+    validate_influence_assessment(assessment)
+    return encode_canonical({"assessment_sha256": assessment.assessment_sha256,
+                             "payload": decode_canonical(assessment.canonical_bytes())})
 
 
 def plan_preparation_references(*, intent: IntentCandidate, accepted_plan: AcceptedOperationPlan) -> tuple[HashBoundRef, ...]:
@@ -452,13 +458,7 @@ class FileStage10RecordStore:
         *,
         ticket: StoreMutationTicket,
     ) -> HashBoundRef:
-        validate_influence_assessment(assessment)
-        payload = encode_canonical(
-            {
-                "assessment_sha256": assessment.assessment_sha256,
-                "payload": decode_canonical(assessment.canonical_bytes()),
-            }
-        )
+        payload = _influence_record_payload(assessment)
         ref = self.put(
             kind=Stage10RecordKind.INFLUENCE_EVIDENCE,
             record_key=assessment.assessment_sha256,
@@ -468,6 +468,57 @@ class FileStage10RecordStore:
         if self.get(kind=Stage10RecordKind.INFLUENCE_EVIDENCE, ref=ref).payload != payload:
             raise _fail(RecordStoreFailureCode.RECORD_CORRUPT, "influence assessment read-back differs")
         return ref
+
+    def persist_local_context_influence(self, *, receipt, observation, ticket):
+        """Persist the independent observation and its assessment in one interval."""
+        require_ticket_of_coordinator(ticket, coordinator_id=self._coordinator_id)
+        return self._local_context_influence_records(receipt, observation, ticket=ticket)
+
+    def require_local_context_influence(self, *, receipt, observation, allow_absent=False):
+        """Reopen exact independently reconstructed proof without writing it."""
+        if type(allow_absent) is not bool:
+            raise _fail(RecordStoreFailureCode.TYPE_MISMATCH, "influence absence policy must be explicit")
+        return self._local_context_influence_records(receipt, observation, ticket=None, allow_absent=allow_absent)
+
+    def _local_context_influence_records(self, receipt, observation, *, ticket, allow_absent=False):
+        validate_delivery_receipt(receipt)
+        records = []
+
+        def record(key, payload):
+            raw = encode_canonical(payload)
+            wrapper = encode_canonical(_stored_payload(kind=Stage10RecordKind.INFLUENCE_EVIDENCE,
+                                                       record_key=key, payload=raw))
+            digest = hashlib.sha256(wrapper).hexdigest()
+            ref = HashBoundRef(RefKind.ARTIFACT, digest, STAGE10_STORE_SCHEMA_V1,
+                              digest, len(wrapper), "application/json")
+            records.append((key, raw, ref))
+            return ref
+
+        output_ref = evidence_ref = None
+        if observation is None:
+            assessment = assess_context_influence(receipt=receipt)
+        else:
+            if type(observation) is not LocalContextInfluence:
+                raise _fail(RecordStoreFailureCode.TYPE_MISMATCH, "influence storage needs an observed local interpretation")
+            value = observation.payload(receipt)
+            output_ref = record("local-output-" + receipt.receipt_sha256, value["output"])
+            evidence_ref = record("local-proof-" + receipt.receipt_sha256, {**value, "output_ref": output_ref.to_dict()})
+            assessment = observation.assessment(receipt=receipt, output_ref=output_ref,
+                evidence_ref=replace(evidence_ref, kind=RefKind.SOURCE_EVIDENCE))
+        result_ref = record(assessment.assessment_sha256, decode_canonical(_influence_record_payload(assessment)))
+        if ticket is None and allow_absent and self.get(kind=Stage10RecordKind.INFLUENCE_EVIDENCE,
+                                                       ref=result_ref, allow_absent=True) is None:
+            return None
+        for key, raw, expected_ref in records:
+            if ticket is not None:
+                actual_ref = self.put(kind=Stage10RecordKind.INFLUENCE_EVIDENCE, record_key=key,
+                                      canonical_payload=raw, ticket=ticket)
+                if actual_ref != expected_ref:
+                    raise _fail(RecordStoreFailureCode.RECORD_CORRUPT, "stored influence reference differs")
+            restored = self.get(kind=Stage10RecordKind.INFLUENCE_EVIDENCE, ref=expected_ref)
+            if restored.record_key != key or restored.payload != raw:
+                raise _fail(RecordStoreFailureCode.RECORD_CORRUPT, "local influence proof differs from its delivery")
+        return {"assessment_ref": result_ref, "output_ref": output_ref, "observation_ref": evidence_ref}
 
     def _read_path(self, path: Path, *, expected_kind: Stage10RecordKind) -> StoredStage10Record:
         raw = read_regular_bytes(path, maximum_bytes=_MAX_RECORD_BYTES * 2)

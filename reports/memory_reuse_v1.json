@@ -1,0 +1,117 @@
+{
+  "baseline": {
+    "commit": "11eb53a0bd2ac466a54f10515afa9059fedd733f",
+    "result": {
+      "applied": {
+        "journal_reads": 1206,
+        "median_s": 0.285108,
+        "samples": 5
+      },
+      "build": {
+        "first_session_s": 3.799,
+        "last_session_s": 6.772,
+        "total_s": 215.287,
+        "windows": 40
+      },
+      "latest_boundary": {
+        "journal_reads": 39846,
+        "median_s": 6.384525,
+        "samples": 5
+      },
+      "next_session_s": 7.364,
+      "semantic_ranking": {
+        "budget": 25,
+        "dimensions": 384,
+        "median_s": 0.173988,
+        "output_sha256": "1896225e561a5d919669e7d44f09c4e89210649966fda4a21193a63125225543",
+        "samples": 5,
+        "vectors": 5000
+      },
+      "state": {
+        "journal_reads": 1206,
+        "median_s": 0.348309,
+        "samples": 5
+      },
+      "state_equals_full_fold": true,
+      "state_sha256": "b114f7107346a3f9da82e3320bf287b9233701bcd99e14338365b76756a3fe5e"
+    }
+  },
+  "comparison": {
+    "journal_reads": {
+      "applied": [
+        1206,
+        996
+      ],
+      "latest_boundary": [
+        39846,
+        1992
+      ],
+      "state": [
+        1206,
+        996
+      ]
+    },
+    "next_session_s": [
+      7.364,
+      4.892
+    ],
+    "same_ranking": true,
+    "speedup": {
+      "applied": 2.44,
+      "latest_boundary": 36.61,
+      "semantic_ranking": 2.48,
+      "state": 4.68
+    },
+    "state_equals_full_fold": [
+      true,
+      true
+    ]
+  },
+  "current": {
+    "commit": "a951dd9d732f9784af116a757385f37f8f1955fc",
+    "dirty": false,
+    "result": {
+      "applied": {
+        "journal_reads": 996,
+        "median_s": 0.116662,
+        "samples": 5
+      },
+      "build": {
+        "first_session_s": 3.14,
+        "last_session_s": 5.212,
+        "total_s": 161.157,
+        "windows": 40
+      },
+      "latest_boundary": {
+        "journal_reads": 1992,
+        "median_s": 0.174409,
+        "samples": 5
+      },
+      "next_session_s": 4.892,
+      "semantic_ranking": {
+        "budget": 25,
+        "dimensions": 384,
+        "median_s": 0.070198,
+        "output_sha256": "1896225e561a5d919669e7d44f09c4e89210649966fda4a21193a63125225543",
+        "samples": 5,
+        "vectors": 5000
+      },
+      "state": {
+        "journal_reads": 996,
+        "median_s": 0.074483,
+        "samples": 5
+      },
+      "state_equals_full_fold": true,
+      "state_sha256": "29c34b59c175b3cfb96d91584b8e84f24b189c17c9cfd621024d68c18d69c525"
+    }
+  },
+  "parameters": {
+    "repeat": 5,
+    "seed": 20261006,
+    "vectors": 5000,
+    "windows": 40
+  },
+  "platform": "Linux-6.18.44-fc-v70-x86_64-with-glibc2.39",
+  "python": "3.11.15",
+  "schema_version": "synapse.memory.reuse-measurement/v1"
+}

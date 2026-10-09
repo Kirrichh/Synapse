@@ -19,6 +19,8 @@ from ..stage10.record_store import FileStage10RecordStore
 from ..runner.attempt_authority import require_c1_receipt_authority, require_completed_delivery_authority
 from ..runner.attempt_delivery_failure import restore_attempt_delivery_failure
 from ..runner.attempt_plan import GoldAttemptPlanProfile, validate_recorded_attempt_plan
+from ..runner.attempt_knowledge import basis_from_payload
+from ..runner.attempt_knowledge_store import basis_record_key
 from ..runner.c1_boundary import (
     C1AttemptBoundary, read_c1_verification_evidence, restore_c1_authority_receipt,
 )
@@ -54,8 +56,9 @@ def _resolved_bindings(profile, intent, accepted):
     return [ref.to_dict() for ref in sorted(actual, key=lambda item: item.ref_id)]
 
 
-def _verification_obligations(profile, accepted, c1):
+def _verification_obligations(profile, accepted, c1_evidence):
     task = profile.task_contract
+    c1 = c1_evidence.payload()
     condition = HashBoundRef.from_dict(c1["command_policy_ref"])
     changes = c1["changed_paths"]
     effect_codes = {EffectKind.PATH_CREATED: "A", EffectKind.PATH_MODIFIED: "M", EffectKind.PATH_DELETED: "D"}
@@ -71,17 +74,39 @@ def _verification_obligations(profile, accepted, c1):
             effects_complete = False
     if any(not task.allowed_scope.covers(path) for path in changes):
         raise ValueError("verified change exceeds governing task scope")
+    command_criteria = tuple(item for item in task.acceptance
+                             if item.kind is AcceptanceKind.VERIFICATION_COMMAND)
+    commands = c1_evidence.verification_commands() if command_criteria else ()
+    if command_criteria and tuple(item.argv for item in command_criteria) != tuple(item[1] for item in commands):
+        raise ValueError("plan command requirements differ from the physically retained C1 policy")
+    command_results = {item.criterion_id: observed for item, observed in zip(command_criteria, commands)}
+    criteria = {item.criterion_id: item for item in task.acceptance}
     obligations = []
-    for operation in accepted.candidate.operations:
+    discharged_operations = {}
+    by_id = {item.operation_id: item for item in accepted.candidate.operations}
+    for operation_id in accepted.candidate.execution_order:
+        operation = by_id[operation_id]
         obligation = operation.verification
+        bound = tuple(criteria[key] for key in operation.acceptance_criterion_ids)
         discharged = (
             operation.kind is OperationKind.EDIT_CONTROLLED_CHANGE
             and obligation is not None and obligation.kind is VerificationKind.CONTRACT_CONDITION
             and obligation.condition_ref == condition and c1["commands_complete"] is True
             and effects_complete
             and all(item.kind is AcceptanceKind.CONTRACT_CONDITION and item.condition_ref == condition
-                    for item in task.acceptance)
+                    for item in bound)
         )
+        if operation.kind is OperationKind.RUN_VERIFICATION_COMMAND:
+            observed = command_results.get(bound[0].criterion_id) if len(bound) == 1 else None
+            discharged = (
+                obligation is not None and obligation.kind is VerificationKind.COMMAND_RESULT
+                and obligation.condition_ref == condition and observed is not None
+                and bound[0].kind is AcceptanceKind.VERIFICATION_COMMAND
+                and bound[0].condition_ref == condition and bound[0].argv == operation.argv == observed[1]
+                and observed[2] is True
+            )
+        discharged = discharged and all(discharged_operations.get(key) is True for key in operation.depends_on)
+        discharged_operations[operation.operation_id] = discharged
         obligations.append({
             "operation_id": operation.operation_id,
             "condition_ref": None if obligation is None else obligation.condition_ref.to_dict(),
@@ -156,7 +181,34 @@ def verify_attempt(
                 intent_ref=context.phase_refs.intent_ref, accepted_plan_ref=context.phase_refs.plan_ref,
                 bundle_sha256=completed.plan_bundle_sha256,
             )
-            validate_recorded_attempt_plan(profile=profile, intent=intent, accepted=accepted)
+            stored_basis = run_store.get(kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS,
+                                         key=basis_record_key(context.attempt_index))
+            if stored_basis is None or stored_basis.sha256 != context.phase_refs.knowledge_basis_sha256:
+                raise ValueError("plan has no retained knowledge selection basis")
+            basis = basis_from_payload(stored_basis.payload)
+            if (basis.run_id != manifest.run_id.value or basis.attempt_id != context.attempt_id.value
+                    or basis.attempt_index != context.attempt_index):
+                raise ValueError("plan knowledge selection belongs to another attempt")
+            lineage_sources = None
+            if profile.procedural_planning_required:
+                source_record = run_store.get(kind=RecordKind.LINEAGE_SOURCES, key=str(context.attempt_index))
+                if source_record is None or source_record.sha256 != context.phase_refs.lineage_sources_sha256:
+                    raise ValueError("plan has no retained method-observation sources")
+                lineage_sources = source_record.payload
+            validate_recorded_attempt_plan(profile=profile, intent=intent, accepted=accepted,
+                lineage_sources=lineage_sources,
+                selected_behavior_refs=basis.admitted_subject_refs,
+                expected_semantic_sha256=context.phase_refs.plan_semantic_sha256)
+            from ..stage10.task_contract import TASK_CONTRACT_SCHEMA_V3
+            if profile.task_contract.schema_version == TASK_CONTRACT_SCHEMA_V3:
+                from ..stage13.reuse import verify_execution_feedback
+                verify_execution_feedback(intent=intent, publisher=publication_store,
+                    stage10_store=record_store, run_store=run_store, run_root=run_root,
+                    manifest=manifest, context=context, completed=completed, profile=profile, boundary=boundary)
+                from ..stage10.influence import observe_local_context_influence
+                influence = observe_local_context_influence(receipt=completed.delivery_receipt,
+                    invocation=completed.invocation, worker_result=completed.worker_result)
+                record_store.require_local_context_influence(receipt=completed.delivery_receipt, observation=influence)
             if intent.knowledge_snapshot_ref != context.phase_refs.knowledge_snapshot_ref:
                 raise ValueError("plan refers to another snapshot")
             payload["plan"] = {
@@ -181,7 +233,7 @@ def verify_attempt(
                 c1 = c1_evidence.payload()
                 payload["c1"] = c1
                 if payload["plan"] is not None:
-                    payload["obligations"] = _verification_obligations(profile, accepted, c1)
+                    payload["obligations"] = _verification_obligations(profile, accepted, c1_evidence)
                 if not receipt.write_ok:
                     payload["failure_codes"].append("C1_WRITER_REJECTED")
             except (ValueError, TypeError, KeyError, OSError, PersistenceViolation, GoldRunViolation):

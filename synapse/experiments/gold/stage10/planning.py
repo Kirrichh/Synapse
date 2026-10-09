@@ -33,6 +33,8 @@ from .repository_scope import (
 
 
 OPERATION_PLAN_SCHEMA_V1 = "synapse.stage4.gold.stage10.operation-plan-candidate/v1"
+OPERATION_PLAN_SCHEMA_V2 = "synapse.stage4.gold.stage10.operation-plan-candidate/v2"
+PLAN_SEMANTICS_SCHEMA_V2 = "synapse.stage4.gold.operation-plan-semantics/v2"
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _MAX_TOKEN = 512
 _MAX_ARGV_BYTES = 8192
@@ -305,6 +307,7 @@ class OperationPlanCandidate:
     capability_profile: tuple[str, ...]
     operations: tuple[OperationRecord, ...]
     execution_order: tuple[str, ...]
+    planning_basis: bytes | None = None
 
     def canonical_bytes(self) -> bytes:
         validate_operation_plan_candidate(self)
@@ -315,7 +318,7 @@ class OperationPlanCandidate:
 
 
 def _plan_payload(value: OperationPlanCandidate) -> dict[str, object]:
-    return {
+    payload = {
         "schema_version": value.schema_version,
         "intent_proposal_id": value.intent_proposal_id.to_dict(),
         "intent_sha256": value.intent_sha256,
@@ -328,6 +331,10 @@ def _plan_payload(value: OperationPlanCandidate) -> dict[str, object]:
         "operations": [item.to_dict() for item in value.operations],
         "execution_order": list(value.execution_order),
     }
+    if value.schema_version == OPERATION_PLAN_SCHEMA_V2:
+        from .planning_basis import read_planning_basis
+        payload["planning_basis"] = read_planning_basis(value.planning_basis)
+    return payload
 
 
 def topological_operation_order(operations: tuple[OperationRecord, ...]) -> tuple[str, ...]:
@@ -367,10 +374,12 @@ def propose_operation_plan(
     allowed_scope: RepositoryScope,
     capability_profile: tuple[str, ...],
     operations: tuple[OperationRecord, ...],
+    planning_basis: bytes | None = None,
 ) -> OperationPlanCandidate:
     validate_intent_candidate(intent)
     fields = dict(
-        schema_version=OPERATION_PLAN_SCHEMA_V1,
+        schema_version=OPERATION_PLAN_SCHEMA_V1 if planning_basis is None else OPERATION_PLAN_SCHEMA_V2,
+        planning_basis=planning_basis,
         intent_proposal_id=intent.proposal_id,
         intent_sha256=intent_payload_sha256(intent),
         proposer=proposer,
@@ -392,8 +401,13 @@ def propose_operation_plan(
 def validate_operation_plan_candidate(value: OperationPlanCandidate) -> None:
     if type(value) is not OperationPlanCandidate:
         raise _fail(PlanFailureCode.TYPE_MISMATCH, "plan must be an exact OperationPlanCandidate")
-    if value.schema_version != OPERATION_PLAN_SCHEMA_V1:
+    if value.schema_version not in {OPERATION_PLAN_SCHEMA_V1, OPERATION_PLAN_SCHEMA_V2}:
         raise _fail(PlanFailureCode.UNKNOWN_SCHEMA, "operation plan schema is unknown")
+    if value.schema_version == OPERATION_PLAN_SCHEMA_V1 and value.planning_basis is not None:
+        raise _fail(PlanFailureCode.UNKNOWN_SCHEMA, "historical plans cannot acquire method-selection semantics")
+    if value.schema_version == OPERATION_PLAN_SCHEMA_V2:
+        from .planning_basis import read_planning_basis
+        read_planning_basis(value.planning_basis)
     if type(value.proposer) is not ActorIdentity:
         raise _fail(PlanFailureCode.TYPE_MISMATCH, "plan proposer must be exact")
     if type(value.source_actors) is not tuple or not value.source_actors or any(type(item) is not ActorIdentity for item in value.source_actors):
@@ -607,3 +621,34 @@ def plan_verification_obligations(
 def plan_payload_sha256(value: OperationPlanCandidate) -> str:
     validate_operation_plan_candidate(value)
     return hashlib.sha256(value.canonical_bytes()).hexdigest()
+
+
+def plan_semantic_sha256(value: OperationPlanCandidate, *, intent: IntentCandidate,
+                         policy_version: str) -> str:
+    """Bind executable operations and edges without attempt-local provenance.
+
+    Input identities, command parameters, scope and verification obligations
+    affect execution. Proposal IDs, snapshot IDs and actor identities describe
+    provenance. Operation names are replaced by their execution positions, so
+    relabeling the same ordered graph cannot claim a new method.
+    """
+    validate_operation_plan_against_intent(value, intent=intent)
+    if type(policy_version) is not str or not policy_version:
+        raise _fail(PlanFailureCode.TYPE_MISMATCH, "plan semantics require a policy version")
+    positions = {operation_id: index for index, operation_id in enumerate(value.execution_order)}
+    by_id = {operation.operation_id: operation for operation in value.operations}
+    operations = []
+    for operation_id in value.execution_order:
+        record = by_id[operation_id].to_dict()
+        record["operation_id"] = positions[operation_id]
+        record["depends_on"] = sorted(positions[item] for item in record["depends_on"])
+        operations.append(record)
+    payload = {
+        "schema_version": PLAN_SEMANTICS_SCHEMA_V2,
+        "task_contract_ref": intent.task_contract_ref.to_dict(),
+        "repository_revision_sha256": value.repository_revision_sha256,
+        "allowed_scope": value.allowed_scope.to_dict(),
+        "capability_profile": list(value.capability_profile),
+        "policy_version": policy_version, "operations": operations,
+    }
+    return hashlib.sha256(_canonical(payload)).hexdigest()

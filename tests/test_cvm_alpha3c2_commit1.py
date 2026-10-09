@@ -104,6 +104,10 @@ class _FakeHost:
         self.current_env = None
         self._next = 0
 
+    def record_history_event(self, event):
+        self.execution_history.append(event)
+        return event
+
     def next_event_id(self):
         self._next += 1
         return f"evt-{self._next}"

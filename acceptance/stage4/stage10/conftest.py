@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import subprocess
-import sys
 
 import pytest
 
@@ -35,10 +34,10 @@ from synapse.experiments.gold.stage10.retrieval_adapter import (
     context_knowledge_selection,
 )
 from synapse.experiments.gold.stage10.worker_context_adapter import WorkerDispatchResult
-from synapse.worker.mini_adapter import MiniAdapterConfig
 from tests.gold_store_fence import fence_for
 from tests.test_stage4_gold_consumption_evidence import production_point_of_use_case
 
+from acceptance.agents.coding_agents import create_process_agent
 from acceptance.stage4.stage10._builders import plan_world
 
 
@@ -53,7 +52,6 @@ class DeliveredStage10World:
     store_fence: StoreMutationFencePort
     store: FileStage10RecordStore
     dispatch: WorkerDispatchResult
-    transport_proof_path: Path
     worker_worktree: Path
 
 
@@ -86,24 +84,12 @@ def stage10_delivery_world(tmp_path_factory: pytest.TempPathFactory) -> Delivere
     stage10_root = root / "stage10-store"
     stage10_root.mkdir()
     store_fence = fence_for(stage10_root)
-    transport_proof_path = root / "transport-proof.txt"
-    worker_probe = root / "worker-probe.py"
-    worker_probe.write_text(
-        "import hashlib, pathlib, sys\n"
-        "task = sys.argv[sys.argv.index('-t') + 1]\n"
-        "pathlib.Path(sys.argv[1]).write_text("
-        "hashlib.sha256(task.encode('utf-8')).hexdigest(), encoding='utf-8')\n",
-        encoding="utf-8",
-    )
+    # Any admitted coding agent: this one proposes nothing and makes no model call.
+    agent = create_process_agent(root / "agent", outcomes=("NO_PATCH",), patch_source="")
     composition = create_stage10_production_composition(
         record_root=stage10_root / "records",
         mutation_fence=store_fence,
-        mini_config=MiniAdapterConfig(
-            command=(sys.executable, str(worker_probe), str(transport_proof_path)),
-            timeout_seconds=30,
-            max_steps=1,
-            cost_limit=0,
-        ),
+        agent_registry=agent.registry(model="acceptance-model"),
     )
     store = composition.record_store
     with store_transaction(store_fence) as ticket:
@@ -193,6 +179,5 @@ def stage10_delivery_world(tmp_path_factory: pytest.TempPathFactory) -> Delivere
         store_fence=store_fence,
         store=store,
         dispatch=dispatch,
-        transport_proof_path=transport_proof_path,
         worker_worktree=worker_worktree,
     )

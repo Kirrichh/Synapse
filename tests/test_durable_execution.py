@@ -2369,7 +2369,7 @@ def test_lock_release_failure_reports_stale_lock_and_blocks_next_run(tmp_path: P
 
 def test_ast_inventory_is_complete_and_explicitly_classified():
     rows = app.durable_ast_inventory()
-    assert len(rows) == 93
+    assert len(rows) == 96
     assert not [row for row in rows if row["classification"] == "UNCLASSIFIED"]
     supported = {row["class_name"] for row in rows if str(row["classification"]).startswith("SUPPORTED")}
     assert {

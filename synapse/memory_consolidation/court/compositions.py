@@ -10,10 +10,11 @@ the goal failed is a partial success, reported separately and never support.
 
 A composition is born only as a whole, under the same criteria as any birth
 (repeated, several tasks, all verified, all inside succeeded, independent
-witnesses) and only while every part is live. The composite is the base
-procedure with its joins; it supersedes the live procedure of that base (the
-base itself or an earlier composite of it), and Gold admits it like any
-learned behavior.
+witnesses), from the episodes memory still holds (a forgotten one leaves the
+candidate, as in the pool) and only while every part is live. The composite is
+the base procedure with its joins; it supersedes the live procedure of that
+base (the base itself or an earlier composite of it), and Gold admits it like
+any learned behavior.
 
 Every live composite is reviewed each window: a part that is no longer live
 — archived, superseded or not admitted by Gold — anywhere in it (an
@@ -31,7 +32,7 @@ from ..learning.composition import COMPOSITION_V1, composition_key, parts_of
 from ..learning.triggers import condition_key
 from .births import energy_cost, make_birth
 from .habit_state import EFFECTIVE
-from .pool import distinct_episodes, independence_of
+from .pool import distinct_episodes, independence_of, retained
 
 
 def _support(reaction) -> str | None:
@@ -188,6 +189,7 @@ def composition_stage(context, habits, births, forced, refused, legitimacy) -> d
         entry = {**entry, "episodes": [*entry["episodes"], _episode(reaction, kind, window)], "last_seen": window}
         updates[key] = entry
     for key, entry in sorted(updates.items()):
+        entry = {**entry, "episodes": retained(state, entry["episodes"])}
         reasons, criteria, success, independence = _assess(entry, context, legitimacy)
         birth = None if reasons else _birth(context, entry, success, criteria, independence)
         if birth is not None and birth["habit"]["id"] in refused:

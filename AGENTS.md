@@ -108,7 +108,61 @@ Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:
 No Linux full suite was run for Patch 2. A recorded baseline is evidence of an
 observed run, not a command to rerun the full suite before each patch.
 
-The latest observed Linux verification is the resilience review of PR #108 at
+The latest observed Linux verification is the recheck package of PR #108 on
+`556624d`, findings R1–R12 (R1/P1-1 a check made before a correction another
+session consolidated first never establishes the claim, and an action's
+admission reads the basis itself; R2/P1-2 a reading made before the source said
+something else is history, whatever session finished last, and a report adds
+to the order of statements memory keeps; R3 a forget completed again keeps an
+answer observed after it; R4 a forget removes nothing a retained case carries;
+R5 a forget and a correction consolidate in one window; R6 a forgotten example
+leaves its candidate, in the pool and in a composition; R7 demand never wakes a
+habit whose basis a forget left short, and its procedure is learned again from
+fresh examples; R8 a wake consumes its events by run and id; R9 a reassessment
+after a partial forget republishes only what it verified; R10 a reassessment
+reads the basis from the owner's custody in store D; R11 an emergency before a
+crashed session continues applies nothing and the session's next window judges
+its tail once; R12 a step-1 decision clears the pair's earlier resolution;
+court policy v6, `synapse.memory.reassessment/v4`,
+`synapse.memory.state-projection/v2`). Python 3.11, every file in its own
+process, four files in parallel, on the uncommitted working tree; the whole
+`acceptance/memory` directory ran because the court's decision stages changed,
+and elsewhere only the files the change reaches:
+
+```text
+acceptance/memory:   106 files, 613 passed
+acceptance/runtime:  9 files, 138 passed
+stage16 memory:      6 files (court, episode outcome, project court contract,
+                     project memory lifecycle, session inventory, store),
+                     30 passed
+tests/:              5 architecture and memory direction files, 614 passed
+```
+
+The reviewer's reproductions on the final tree, every file in its own process
+(component driver of the packages): R1/R2 delayed probe 4 passed, delayed
+knowledge 2 passed, delayed correction 3 passed and the earlier reassessment 3
+passed — the last two in copies adapted to the court's current entries (the
+window's checks folded, then `decided` with every correction memory's order
+makes; the reproduction port of R10); R3/R4 5 passed; R5 3, R6 2, R7 3, R8 3,
+R9 2, R10 2, R11 3 and R12 2 passed. Through the packages' canonical CLI
+adapter (`MemoryWorld`) R3/R4, R6, R7, R8, R9, R10, R11 and R12 passed alike;
+the R5 file drives component entries only, and
+`test_forget_correction_window_acceptance.py` runs its scenario canonically.
+The earlier memory batteries 21 and 30 passed; the earlier runtime battery 59
+passed, its five documented incompatible expectations failing as recorded (two
+draw `uuid()` inside `integrate`, three read the court's earlier decision
+shape; the adapted copies pass, 6/6). On `556624d` the new acceptance files
+fail in exactly their defect cases (13) and pass every control (14). Mutation
+campaigns on the final tree killed all 63 mutants of R1–R2 (their two earlier
+rounds, of 61 and 63 mutants, had closed their survivors) and all 29 of R3–R12;
+two of these survived their first run and were closed by contract cases (an
+archived habit whose trigger covers the candidate; a re-execution that declares
+the same plan and does not reproduce its case)
+(`reports/memory_second_review_mutation_evidence_v1.json`, `recheck_556624d`).
+The cost of the order of statements is measured in
+`docs/MEMORY_PERFORMANCE.md`.
+
+The previous observed Linux verification is the resilience review of PR #108 at
 `1b58d18` (M1 a check after a consolidation names the hypothesis its session
 declared; M2 checks decide in the gateway's order; M3 a window stating
 knowledge is consolidated; M4 a correction revises what was decided before it,
@@ -151,7 +205,7 @@ removing a redundant traversal, routing a shadowed builtin name through the one
 dispatcher, and contract cases (a verdict past the end of the record, a recall
 before expiry, an expiry reported once, a checkpoint record naming its trigger).
 
-The previous observed Linux verification is the review of PR #108 at `59e6ab3`
+An earlier observed Linux verification is the review of PR #108 at `59e6ab3`
 (F1 a rolled-back `integrate` puts back every scope it could write, in place;
 F2 a policy guard that changed program data, a closure's state or the guarded
 arguments is refused and the change put back; F3 every call form is the

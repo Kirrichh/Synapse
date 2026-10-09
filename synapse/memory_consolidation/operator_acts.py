@@ -4,14 +4,17 @@ Two acts, each recorded as a retention pass in the project journal before any
 body in store D changes, under the owner session:
 
 * ``forget`` is a legally significant removal, stronger than retention periods:
-  the raw trace and the recorded results of the case — and of every other case
-  that carries the same recorded results — are removed, and a tombstone naming
-  the identity, reason and authority takes their place. Chains that passed
-  through them end at that tombstone, never at a dangling reference. The act
-  names the gateway's head when it was recorded (``after``): what was decided on
-  an answer at or before it rests on what is now forgotten, while an answer the
-  gateway recorded later — the same content read again included — is a new
-  observation (review M6).
+  the case and every other case that carries the same recorded results are
+  forgotten — their raw traces and recorded results are removed, except a
+  result a retained case still carries: what the forgotten case recorded is
+  carried by no retained case, and forgetting it never takes what a case it
+  does not touch rests on (review R4). A tombstone naming the identity, reason
+  and authority takes their place. Chains that passed through them end at that
+  tombstone, never at a dangling reference. The act names the gateway's head
+  when it was recorded (``after``): what was decided on an answer at or before
+  it rests on what is now forgotten, while an answer the gateway recorded
+  later — the same content read again included — is a new observation (review
+  M6) whose result completing the forget never removes (review R3).
 * ``restore`` returns a compacted case to processing: its session is reproduced
   from the replay data and the recorded results, and only an exact
   reproduction is written back to the address the case names. The case keeps
@@ -45,10 +48,13 @@ def forget(owner, ports, guard, qid: str, *, reason: str, operator: str) -> list
                                          "operator": operator, "window": state["window"]})
     journal = ports.gateway.records()
     after = journal[-1]["seq"] if journal else -1
+    # What a retained case still carries stays: none of it is what the forgotten case recorded.
+    retained = {ref for other, item in state["quanta"].items()
+                if other not in affected and item["retention_state"] != "forgotten" for ref in item["evidence_refs"]}
     acts = []
     for member in affected:
         item = state["quanta"][member]
-        refs = sorted({*item["evidence_refs"], *([item["raw_ref"]] if item.get("raw_ref") else [])})
+        refs = sorted({*item["evidence_refs"], *([item["raw_ref"]] if item.get("raw_ref") else [])} - retained)
         acts.append({"act": "forgotten", "qid": member, "tombstone": tombstone, "reason": reason,
                      "authority": AUTHORITY, "operator": operator, "refs": refs, "after": after})
     _record(owner, ports, guard, state, acts)

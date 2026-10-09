@@ -13,6 +13,7 @@ import copy
 from typing import Any, Iterable, Mapping
 
 from .. import records
+from .knowledge import placed_in
 
 EMPTY_STATE: dict[str, Any] = {
     "window": 0,
@@ -28,8 +29,9 @@ EMPTY_STATE: dict[str, Any] = {
     # applied retention passes, rollup aggregates of tail quanta and tombstones of forgotten ones
     "retention": {"cursor": 0, "rollups": [], "tombstones": {}},
     "hypotheses": {},      # hypothesis id -> the status its latest recorded check gave it
-    # statement id -> its version (record, embedding, transaction time); statement id -> runs that admitted it
-    "knowledge": {"versions": {}, "uses": {}},
+    # statement id -> its version (record, embedding, transaction time); statement id -> runs that admitted it;
+    # one source's statements about one slot and start -> the world's order they were stated in
+    "knowledge": {"versions": {}, "uses": {}, "stated": {}},
     "consolidations": [],  # applied consolidation ids, in order
 }
 APPLY_FIELDS = frozenset({"habits", "frozen", "declared", "slow_only", "pool", "quanta", "parts", "cursors",
@@ -39,8 +41,9 @@ _APPLY_FIELDS_BEFORE_KNOWLEDGE = APPLY_FIELDS - {"knowledge"}
 
 
 #: The fold's own version: a state snapshot records it, and a snapshot of another version is never used.
-#: Any change to how ``apply_report`` folds a report changes this version.
-PROJECTION_V1 = "synapse.memory.state-projection/v1"
+#: Any change to how ``apply_report`` folds a report changes this version. v2 (recheck of 556624d): the
+#: knowledge section folds the world's order of statements (``stated``) too, each report adding to it.
+PROJECTION_V2 = "synapse.memory.state-projection/v2"
 
 
 def empty_state() -> dict[str, Any]:
@@ -94,6 +97,12 @@ def apply_report(state: Mapping[str, Any], report: Mapping[str, Any]) -> dict[st
         result["knowledge"]["versions"][statement_id] = copy.deepcopy(entry)
     for statement_id, runs in knowledge["uses"].items():
         result["knowledge"]["uses"][statement_id] = sorted(runs)
+    # A report applied before the order of statements was kept carries none, a state folded then holds none.
+    # A report carries what its decision added to each order, joined as the court joined it.
+    stated = result["knowledge"].setdefault("stated", {})
+    for key, group in knowledge.get("stated", {}).items():
+        stated[key] = {"source": copy.deepcopy(group["source"]),
+                       "statements": placed_in(stated.get(key) or {"statements": []}, group["statements"])}
     result["window"] += 1
     result["consolidations"].append(report["consolidation_id"])
     return result

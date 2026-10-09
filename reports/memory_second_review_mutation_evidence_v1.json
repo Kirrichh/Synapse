@@ -4740,5 +4740,1562 @@
         "status": "KILLED"
       }
     ]
+  },
+  "recheck_556624d": {
+    "scope": "recheck of 556624d, findings R1-R12. R1 (P1-1): a status is its latest check revised by every correction that reaches it, and an action's admission reads the basis itself. R2 (P1-2): a reading made before the source said something else is history (the world's order of statements kept across windows), the corrections that order makes, the statements a report adds to it, the reassessment restoring the order. R3 a forget completed again keeps an answer observed after it. R4 a forget removes nothing a retained case carries. R5 a forgotten basis case names no run. R6 a forgotten example leaves its candidate, in the pool and in a composition. R7 demand never wakes a habit whose retained basis no longer suffices, and its candidate learns again from fresh examples. R8 a wake consumes its events by run and id. R9 an unavailable episode carries no evidence. R10 the basis is read from the owner's custody in store D, an exact re-execution only. R11 an emergency before a crashed session continues applies nothing. R12 a step-1 decision clears the pair's earlier resolution.",
+    "method": "one mutation at a time in a fresh copy of the final working tree, three copies in parallel; its killer files run alone in order until one fails, the contracts first; the file restored byte for byte before the next mutation",
+    "first_rounds": "R1-R2 were mutated twice before the final tree. Round 1 (61 mutants listed, 58 run, 51 killed): the survivors were closed by removing what they showed redundant (the report's own copy of the order in the boundary state; one rule for statuses, fold and decided, in place of two) and by contract cases (a report names a status only when the window changed it; a correction the timeline records but no order places; a status whose check record no longer resolves). Round 2 (63 mutants, 62 killed): the survivor was closed by a contract case. Both rounds' mutants were run again on the final tree below.",
+    "p1_final_tree": {
+      "mutants": 63,
+      "killed": 63,
+      "items": [
+        {
+          "mutant_id": "RC556-P1-01",
+          "finding": "P1-2",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "    return max(places) if places else None",
+          "mutation": "    return min(places) if places else None",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "d80c013cfb308eb26cfc1ed843f14d2244854113837a67a251e5ac07c497ba85"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_delayed_statement_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-02",
+          "finding": "P1-2",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "if statement[3] == content and statement[0] is not None]",
+          "mutation": "if statement[1] == record[\"id\"] and statement[0] is not None]",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "2ab7bd4991ff6293319e6407b141902ce96256cd7dad55d2f371b41c5d547004"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_delayed_statement_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-03",
+          "finding": "P1-2",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "for stated in [_last_stated(group, entry[\"record\"])] if stated is not None and stated > item[\"observed\"]]",
+          "mutation": "for stated in [_last_stated(group, entry[\"record\"])] if stated is not None and stated < item[\"observed\"]]",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "025de3c2b776f335e67f51071afcbedc5984da0afdbf7c1af3294884f1da2a02"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_delayed_statement_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-04",
+          "finding": "P1-2",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "             and _content(entry[\"record\"]) != _content(record)\n",
+          "mutation": "",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "fac58846dff3e485a7cde2036e8d8cee1fdb86f16348a2bbad8c813a9bdef64d"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-05",
+          "finding": "P1-2",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "    later = [(stated, entry) for entry in known.values() if entry[\"slot\"] == own_slot\n             and entry[\"source_identity\"] == source and entry[\"record\"][\"valid\"][\"from\"] == record[\"valid\"][\"from\"]\n             and _content(entry[\"record\"]) != _content(record)\n             for stated in [_last_stated(group, entry[\"record\"])] if stated is not None and stated > item[\"observed\"]]",
+          "mutation": "    later = [(stated, entry) for entry in same for stated in [_last_stated(group, entry[\"record\"])]\n             if stated is not None and stated > item[\"observed\"]]",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "29c81f7ac4c9f5808d55c9ed0baac1280c840e3ca78052b3e642c1ec13b8eede"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-06",
+          "finding": "P1-2",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "_, held = max(later, key=lambda value: (value[0], value[1][\"record\"][\"id\"]))",
+          "mutation": "_, held = min(later, key=lambda value: (value[0], value[1][\"record\"][\"id\"]))",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "7865632318278e1dc5e314f92e289bd135751522dd25a128641287c0cb97cfd2"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-07",
+          "finding": "P1-2",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "versions[record[\"id\"]] = {**entry, \"known_until\": window, \"corrected_by\": held[\"record\"][\"id\"]}",
+          "mutation": "versions[record[\"id\"]] = entry",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "e255f3bcafe01412c14edffd396fafab8cfb6d57f8d3fc629e5835e484d6aa1a"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_delayed_statement_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-08",
+          "finding": "P1-2",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "    if later and earlier is not None:",
+          "mutation": "    if False and later and earlier is not None:",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "a93f5fa2159bbde0bcbcfb0d0dc605ca06dd96948f8679485ab9ddc8698a74b4"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-09",
+          "finding": "P1-2",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "        section[\"corrections\"].append({\"statement\": record[\"id\"], \"corrected_by\": held[\"record\"][\"id\"],\n                                       \"slot\": own_slot, \"late\": True})",
+          "mutation": "",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "a6f2ce792c8a5180a9b0a03782304d126c0caa01b0c5f9f74bec463ad73bfeea"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_delayed_statement_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-10",
+          "finding": "ORDER",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "            for _, corrected, corrected_ref, _ in run:",
+          "mutation": "            for _, corrected, corrected_ref, _ in run[-1:]:",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "21a492e5236c3d22aba713e110ccf689d262c9cb584b4636c4127e5db01c03d6"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-11",
+          "finding": "ORDER",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "            run = []\n        run.append(",
+          "mutation": "        run.append(",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "a88347b3af0c96de3787f4074efb7706761bf73a5572813cb7982c5505162b42"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-12",
+          "finding": "ORDER",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "        if sources is None or source_identity({\"source\": group[\"source\"]}) in sources:",
+          "mutation": "        if True:",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "16789ef5ee4a70f69a35c8d24a8cc1692817b9b4a5f89bf0f736beb2f88622ae"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-13",
+          "finding": "ORDER",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "            if found in made_before:\n                continue\n",
+          "mutation": "",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "f29c7893a37ea65ac28012ff5a31c4913305548446e1bba64ecde085a4da8113"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_knowledge_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-14",
+          "finding": "ORDER",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "        if (identity not in placed and version[\"known_until\"] is None and version.get(\"withdrawn\") is None",
+          "mutation": "        if (False and identity not in placed and version[\"known_until\"] is None",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "168415ada67b13f9e0f244be13bda73b599369c498c3aebafada55b11c15bb9a"
+          },
+          "killer_files": [
+            "acceptance/memory/test_knowledge_contract.py",
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_knowledge_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-15",
+          "finding": "ORDER",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "              if statement[0] is not None or statement[1] not in placed}",
+          "mutation": "              }",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "0057e4b1c0f0e7fd2f5f17e60d9dd71bed64be35df67626c9285368f1f08e17d"
+          },
+          "killer_files": [
+            "acceptance/memory/test_knowledge_contract.py",
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_knowledge_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-16",
+          "finding": "ORDER",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "    return sorted((list(statement) for statement in joined), key=_ordered)",
+          "mutation": "    return sorted((list(statement) for statement in [*joined, *map(tuple, statements)]), key=_ordered)",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "01c7e247bbb97d915474d0f43755f4aaf17013c3b83fb13c52ae8fd825ad26d3"
+          },
+          "killer_files": [
+            "acceptance/memory/test_knowledge_contract.py",
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_knowledge_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-17",
+          "finding": "ORDER",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "        new = [copy.deepcopy(statement) for statement in group[\"statements\"] if tuple(statement) not in kept]",
+          "mutation": "        new = copy.deepcopy(group[\"statements\"])",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "9df85fe3c11dcba01fa09380c2f7e703e1fcf03919fa560a034b1bc7e5e4265e"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-18",
+          "finding": "ORDER",
+          "production_file": "synapse/memory_consolidation/court/projection.py",
+          "original": "\"statements\": placed_in(stated.get(key) or {\"statements\": []}, group[\"statements\"])}",
+          "mutation": "\"statements\": [*(stated.get(key) or {\"statements\": []})[\"statements\"], *group[\"statements\"]]}",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "52d20eccf162bf9346dccf2e93bad8e86ad8936790d07eb1784b17e7ff7179db"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-19",
+          "finding": "ORDER",
+          "production_file": "synapse/memory_consolidation/court/apply.py",
+          "original": "\"stated\": additions(held[\"stated\"], knowledge[\"stated\"])},",
+          "mutation": "\"stated\": copy.deepcopy(knowledge[\"stated\"])},",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "3a5d4646a426347458a0bc79d1b14098856cf4ae2e894e03a97c5654c65b10f3"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_delayed_statement_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_delayed_statement_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-P1-20",
+          "finding": "P1-1",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "                       and entry[\"at\"] >= correction[\"at\"]):",
+          "mutation": "                       and entry[\"at\"] > correction[\"at\"]):",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "1e4004b3b74d9411d4aee8ae15c82ff92f9a76dd05a6429eae1d13b89fb1fc46"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_causal_order_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-21",
+          "finding": "P1-1",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "    if why is None or (correction[\"at\"] is not None and entry.get(\"at\") is not None",
+          "mutation": "    if why is None or (False and correction[\"at\"] is not None and entry.get(\"at\") is not None",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "8bbbb6139e5d374ab5cf1d4e93ce47f3649e0cb9b6cf4267900b57aaaec2add3"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-22",
+          "finding": "P1-1",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "\"window\": correction.get(\"window\", window), \"at\": correction[\"at\"]}",
+          "mutation": "\"window\": correction.get(\"window\", window), \"at\": entry.get(\"at\")}",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "4d640b0275d99ec5a3c654df0390e31861d766463fa26c193cf914dfcb2b78c1"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-23",
+          "finding": "P1-1",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "    latest = None if current is None else (current[\"checked\"] if \"checked\" in current else current).get(\"at\")",
+          "mutation": "    latest = None if current is None else current.get(\"at\")",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "93d092c9e28a01cf4259bd0ac7bd93579e8a5662dc0978ec71d6b6b12a76cc53"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-24",
+          "finding": "P1-1",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "\"checked\": {\"status\": item[\"status\"], \"reason\": item[\"reason\"], \"at\": at,",
+          "mutation": "\"checked\": {\"status\": \"confirmed\", \"reason\": item[\"reason\"], \"at\": at,",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "e322b9ed36bc321bd7805cec25c6f97b8c96a6caf7a56b257a44bf3148d90df0"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-25",
+          "finding": "P1-1",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "    status = {**copy.deepcopy(entry), **{key: entry[\"checked\"][key] for key in (\"status\", \"reason\", \"at\", \"window\")}}",
+          "mutation": "    status = copy.deepcopy(entry)",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "7bf6e8be484cf1a2b8d8745829d65623a5f2d527b54725e63d54d40798db5e0f"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-26",
+          "finding": "P1-1",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "    if touched:  # Statements folded in this window",
+          "mutation": "    if False:  # Statements folded in this window",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "77c1062f51ff8d0c1f5436cc5b9e51884db6072c654650cf171822be83851fc0"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-27",
+          "finding": "P1-1",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "        if entry is None or \"checked\" not in entry or entry[\"reason\"].startswith(\"basis_forgotten:\"):",
+          "mutation": "        if entry is None or \"checked\" not in entry:",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "0a54ca417b1bde052a1bdf2ad0d8e5926f2147b0aa9d79d447ac3f8cd4f0d3c0"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-28",
+          "finding": "P1-1",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "        if (again[\"status\"], again[\"reason\"], again[\"at\"]) == (entry[\"status\"], entry[\"reason\"], entry.get(\"at\")):",
+          "mutation": "        if False:",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "0e953741776948991219421ada069ea6a7e8bef44938e2934b5149534b1b95cf"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-29",
+          "finding": "P1-1",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "            section[\"restored\"].append({\"hypothesis\": hypothesis, \"status\": again[\"status\"], \"at\": again[\"at\"]})",
+          "mutation": "            pass",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "2bfd1a26bc4d9761310d84080a612463db2b0156e9e93eba75bedd274389493b"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-30",
+          "finding": "P1-1",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "            section[\"corrected\"].append({\"hypothesis\": hypothesis, \"statement\": last[\"old\"][\"record\"][\"id\"],\n                                         \"corrected_by\": last[\"by\"], \"at\": last[\"at\"]})",
+          "mutation": "            pass",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "1cc829da5a42081896e9491cae4cb66c91df7c5902d49af23ff2fae2d89110d2"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-31",
+          "finding": "P1-1",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "    affected = {item[\"hypothesis\"] for item in checks}",
+          "mutation": "    affected = set()",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "80dcb95f45dd64a52c7e74d369d4000dc81b111e7acb16ba156bd4a754e0b822"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_delayed_check_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-32",
+          "finding": "P1-1",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "                                      for record in records for part in (\"source\", \"check\")})",
+          "mutation": "                                      for record in records for part in (\"source\",)})",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "6f302219ebf07221448c18f66709699c9d2c4b7e7ba332d641897f17aa0288f2"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_delayed_check_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-33",
+          "finding": "P1-1",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "    return any(digest({\"tool\": record[part][\"tool\"], \"args\": record[part][\"args\"]}) in sources\n               for part in (\"source\", \"check\"))",
+          "mutation": "    return any(digest({\"tool\": record[part][\"tool\"], \"args\": record[part][\"args\"]}) in sources\n               for part in (\"source\",))",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "2c9d6fe8c872dfadeea3ead63576f9d250460e9945212958ad11f8caf0e9bc8c"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-34",
+          "finding": "P1-1",
+          "production_file": "synapse/memory_consolidation/court/decide.py",
+          "original": "    hypotheses = hypothesis_stage(context, knowledge.pop(\"corrections\"), knowledge[\"stated\"])",
+          "mutation": "    hypotheses = hypothesis_stage(context, knowledge.pop(\"corrections\"), {})",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "11c21ff6f581325a829e0089c38d91f81adcb3d8e63d5a756eec71b4ebca4ba0"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_delayed_statement_acceptance.py",
+            "acceptance/memory/test_delayed_check_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_delayed_statement_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-P1-35",
+          "finding": "ADMIT",
+          "production_file": "synapse/memory_consolidation/session.py",
+          "original": "            if record is None:\n                changed.append(f\"{hypothesis_id} was not declared by this run\")\n                continue",
+          "mutation": "            if record is None:\n                continue",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "562dac367d604c5afa91eb49639dc58e5f30c074cfa4ce4d2de6068b88875346"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-36",
+          "finding": "ADMIT",
+          "production_file": "synapse/memory_consolidation/session.py",
+          "original": "                           if reaches(decision, correction))",
+          "mutation": "                           if False)",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "778d45f5b22ef6fd830a62486a74f515bda8aaad728c9d41051cb2a741c60a22"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_delayed_check_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-37",
+          "finding": "ADMIT",
+          "production_file": "synapse/memory_consolidation/session.py",
+          "original": "decision = {\"record\": record, \"source_ref\": record[\"source\"][\"ref\"], \"at\": check.get(\"gw_seq\")}",
+          "mutation": "decision = {\"record\": record, \"source_ref\": record[\"source\"][\"ref\"], \"at\": None}",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "dc1942b8a7b8654b70038f25d8847a4d2d420379d1101845d269e08ae3ad1f56"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_delayed_check_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-38",
+          "finding": "ADMIT",
+          "production_file": "synapse/memory_consolidation/session.py",
+          "original": "held_corrections(known_of(state), [record])",
+          "mutation": "held_corrections(known_of(state), [])",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "2adc24a9a61177bac2b126c4c0aef56ea425f05b51c80fe6bb2ab10e0d164f72"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_delayed_check_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-39",
+          "finding": "ADMIT",
+          "production_file": "synapse/memory_consolidation/session.py",
+          "original": "        self._declared[record[\"id\"]] = record",
+          "mutation": "        pass",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "fedbf573a8c77672e3c198a5755437b227820d81cc183e02f7f876a946bf6fe5"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_delayed_check_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-40",
+          "finding": "REASSESS",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "            if position >= cursor[\"to\"] or position not in facts.observed:",
+          "mutation": "            if position not in facts.observed:",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "fbbf2d7abca48703768d684915b66d4280445a473227e63c36733938c9666adb"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-41",
+          "finding": "REASSESS",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "        if facts is None or facts.problems:\n            continue  # A record that does not verify places nothing.",
+          "mutation": "        if facts is None:\n            continue  # A record that does not verify places nothing.",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "949ce48c73c8658d2030d11f5facb9dd08625f005bff56da69f02a621d66dc8d"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-42",
+          "finding": "REASSESS",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "            if statement not in group[\"statements\"]:  # Declared again from the same answer: the same place.\n                group[\"statements\"].append(statement)",
+          "mutation": "            group[\"statements\"].append(statement)",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "3baf7edece2f6e4422cd35c5318d4c3b1502e1bcd10eb6a1b2d9eac6a203e652"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-43",
+          "finding": "REASSESS",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "        winner = max(stated_last, key=lambda identity:",
+          "mutation": "        winner = min(stated_last, key=lambda identity:",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "500bb299d46cee9079a71934a309ed9b40d3555a654f42ab20de19178bf0ba82"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-44",
+          "finding": "REASSESS",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "        if _holds(versions[winner]):\n            continue\n",
+          "mutation": "",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "d4930276402be78ab92c7aef0bf6102f7e38b562d94bc5cbfddeda14eefb6026"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_delayed_statement_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-45",
+          "finding": "REASSESS",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "            if last is not None:\n                stated_last[version[\"record\"][\"id\"]] = last",
+          "mutation": "            if version.get(\"withdrawn\") is None and last is not None:\n                stated_last[version[\"record\"][\"id\"]] = last",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "0f3e062764106c6e5de01b2fa1b027ac6698f87c273f85709e1ab8af89e86ff6"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-46",
+          "finding": "REASSESS",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "        if versions[winner].get(\"withdrawn\") is None:  # A forgotten version corrects; it is never held again.\n            updated[winner] = _held_again(versions[winner], window)",
+          "mutation": "        updated[winner] = _held_again(versions[winner], window)",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "ebd7f61bef108c459cb1cdded6eebee177fd159c84b8fc2b3e5863baece25902"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-47",
+          "finding": "REASSESS",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "        if not stated_last or any(version[\"record\"][\"id\"] not in stated_last for version in held):",
+          "mutation": "        if not stated_last:",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "c22eb0a651cf2003e6fc1bc9c1ba6a8e6b6a0d07cf647cd649ae3132e4124af6"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-48",
+          "finding": "REASSESS",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "    return version[\"known_until\"] is None and version.get(\"withdrawn\") is None",
+          "mutation": "    return version[\"known_until\"] is None",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "2604c90954bac39acc234157b4ef889a66b99fc12232e5884b5890a4e32ae599"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-49",
+          "finding": "REASSESS",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "        for period in [*version.get(\"earlier_known\", []), {\"corrected_by\": version.get(\"corrected_by\")}]:",
+          "mutation": "        for period in [{\"corrected_by\": version.get(\"corrected_by\")}]:",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "b4975320ad46f5078cb6ff70e4ece1222be2111db322d0d058b72aae9468ac43"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-50",
+          "finding": "REASSESS",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "        section[\"corrections\"].append(dict(row))\n",
+          "mutation": "",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "3647c1a25bb85989b849afb4b36c45a84716f61f5ce946066f496175069c92af"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-51",
+          "finding": "REASSESS",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "\"habits\": _revise_habits(context.state, habits, runs, row[\"statement\"], forced)})",
+          "mutation": "\"habits\": []})",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "41dc4f32202b73bf1b5c99517db3ecdf15b86af93bdcfbe8443462179d9a6cd1"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-52",
+          "finding": "REASSESS",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "        group[\"statements\"] = placed_in(group, (recorded.get(key) or {\"statements\": []})[\"statements\"])",
+          "mutation": "        group[\"statements\"] = placed_in(group, [])",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "4accebc02b584aa84d1186a671ab39a947d4f254c3b2ae060ba552d2d835b545"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-53",
+          "finding": "REASSESS",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "    corrections = corrections_of(knowledge) + unplaced_corrections(knowledge)",
+          "mutation": "    corrections = corrections_of(knowledge)",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "73ce3d117c8acf4dab49cdaae1e78253b2ec603cc5dcbc74e6fdbe2f90911665"
+          },
+          "killer_files": [
+            "acceptance/memory/test_reassessment_rules_contract.py",
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_earlier_order_reassessment_acceptance.py",
+            "acceptance/memory/test_memory_reassessment_acceptance.py",
+            "acceptance/memory/test_earlier_policy_reassessment_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_reassessment_rules_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-54",
+          "finding": "REASSESS",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "\"checked\": {\"status\": \"provisional\", \"reason\": \"check_record_unavailable\", \"at\": None,",
+          "mutation": "\"checked\": {\"status\": \"confirmed\", \"reason\": \"check_record_unavailable\", \"at\": None,",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "0ad101c16f987ca75e5998afeaed96a33f7e930f7712f689a87c9bcded59a3b8"
+          },
+          "killer_files": [
+            "acceptance/memory/test_reassessment_rules_contract.py",
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_earlier_order_reassessment_acceptance.py",
+            "acceptance/memory/test_memory_reassessment_acceptance.py",
+            "acceptance/memory/test_earlier_policy_reassessment_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_reassessment_rules_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-55",
+          "finding": "REASSESS",
+          "production_file": "synapse/memory_consolidation/court/reassessment.py",
+          "original": "                \"stated\": {**knowledge[\"stated\"], **stated}}),",
+          "mutation": "                \"stated\": knowledge[\"stated\"]}),",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "da0f606372335426d8a4bd9acd38f3b33ba3335a114afccc556300f587da4470"
+          },
+          "killer_files": [
+            "acceptance/memory/test_reassessment_rules_contract.py",
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_earlier_order_reassessment_acceptance.py",
+            "acceptance/memory/test_delayed_statement_acceptance.py",
+            "acceptance/memory/test_delayed_check_acceptance.py",
+            "acceptance/memory/test_memory_reassessment_acceptance.py",
+            "acceptance/memory/test_earlier_policy_reassessment_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_earlier_order_reassessment_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-P1-56",
+          "finding": "REASSESS",
+          "production_file": "synapse/memory_consolidation/court/reassessment.py",
+          "original": "    stated, versions, corrections = retimed(knowledge, recorded, state[\"window\"] + 1)",
+          "mutation": "    stated, versions, corrections = retimed(knowledge, {}, state[\"window\"] + 1)",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "377572d23c7938962ed3fd46eff7b89aefe149a14061e03e4360aaf74c990315"
+          },
+          "killer_files": [
+            "acceptance/memory/test_reassessment_rules_contract.py",
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_earlier_order_reassessment_acceptance.py",
+            "acceptance/memory/test_delayed_statement_acceptance.py",
+            "acceptance/memory/test_delayed_check_acceptance.py",
+            "acceptance/memory/test_memory_reassessment_acceptance.py",
+            "acceptance/memory/test_earlier_policy_reassessment_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_earlier_order_reassessment_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-P1-57",
+          "finding": "REASSESS",
+          "production_file": "synapse/memory_consolidation/court/decide.py",
+          "original": "    knowledge = reassessed_knowledge(context, habits, forced, draft[\"reassessment\"][\"knowledge\"][\"order\"])",
+          "mutation": "    knowledge = {\"versions\": {}, \"stated\": {}}",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "0880179f8528bc8b491f5377c488679bcb03cc2bb4a81e4d6c41cc19637b7b58"
+          },
+          "killer_files": [
+            "acceptance/memory/test_reassessment_rules_contract.py",
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_earlier_order_reassessment_acceptance.py",
+            "acceptance/memory/test_delayed_statement_acceptance.py",
+            "acceptance/memory/test_delayed_check_acceptance.py",
+            "acceptance/memory/test_memory_reassessment_acceptance.py",
+            "acceptance/memory/test_earlier_policy_reassessment_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_earlier_order_reassessment_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-P1-58",
+          "finding": "REASSESS",
+          "production_file": "synapse/memory_consolidation/court/knowledge.py",
+          "original": "            if period.get(\"corrected_by\") is not None and period[\"corrected_by\"] not in placed:",
+          "mutation": "            if period.get(\"corrected_by\") is not None:",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "51e5544764f9c22cfe3054ffc0a4cc9ea3ce7488435ba11ceee4e4a421848195"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_earlier_order_reassessment_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-59",
+          "finding": "P1-1",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "            -1 if _at(checks[index][\"check_ref\"]) is None else _at(checks[index][\"check_ref\"]),",
+          "mutation": "            0,",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "eb3ec29adc8b66b3b8ca2b0cc9193d39f2291fbc31ec166fa11fcf3e8097421b"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_order_contract.py",
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_order_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-60",
+          "finding": "P1-1",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "        for correction in revised:",
+          "mutation": "        for correction in revised[-1:]:",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "d9c081796fd822c65514aafada7ac367d1d08f82b34f88bbad0d2bb67d0b4e38"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_knowledge_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-61",
+          "finding": "P1-1",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "        if (last[\"at\"], last[\"old\"][\"record\"][\"id\"]) not in new:  # A correction memory held already.",
+          "mutation": "        if True:",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "fc0038dfe67f1b92c6026627b20dc47544ca35c0e5d99a3fbe3cb2cf08da2f87"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-62",
+          "finding": "P1-1",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "            revised.append(correction)",
+          "mutation": "            pass",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "52c6f9acc8ad9d8a1411222324bac1cb974ffc5276bf94ebc16be06e80f7b996"
+          },
+          "killer_files": [
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_causal_order_contract.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_causal_schedule_contract.py"
+        },
+        {
+          "mutant_id": "RC556-P1-63",
+          "finding": "REASSESS",
+          "production_file": "synapse/memory_consolidation/court/hypotheses.py",
+          "original": "    found = {hypothesis: decided(entry, corrections, state[\"window\"])[0] for hypothesis, entry in found.items()}\n",
+          "mutation": "",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "83743dc056fb28d99d791dd12ea5ce869e26c660d664f96f66ecd193c265721c"
+          },
+          "killer_files": [
+            "acceptance/memory/test_reassessment_rules_contract.py",
+            "acceptance/memory/test_causal_schedule_contract.py",
+            "acceptance/memory/test_earlier_order_reassessment_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_reassessment_rules_contract.py"
+        }
+      ]
+    },
+    "r3_r12": {
+      "mutants": 29,
+      "killed": 29,
+      "first_run_survivors": [
+        "RC556-R-15",
+        "RC556-R-24"
+      ],
+      "items": [
+        {
+          "mutant_id": "RC556-R-01",
+          "finding": "R3",
+          "production_file": "synapse/memory_consolidation/court/retention.py",
+          "original": "if act.get(\"after\") is not None and observed.get(ref, -1) > act[\"after\"]:",
+          "mutation": "if False:",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "04b5d4305524bbc66c91c9ff5c7f896c31260f4f623b819f0b0c8a4b737f3744"
+          },
+          "killer_files": [
+            "acceptance/memory/test_forget_scope_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_forget_scope_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-02",
+          "finding": "R3",
+          "production_file": "synapse/memory_consolidation/court/retention.py",
+          "original": "last[ref] = max(last.get(ref, -1), record[\"seq\"])",
+          "mutation": "last[ref] = min(last.get(ref, -1), record[\"seq\"])",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "2d6c31f050916e736e324587208206d6ca6fd9d913ba6e86729472304a9fa4b1"
+          },
+          "killer_files": [
+            "acceptance/memory/test_forget_scope_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_forget_scope_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-03",
+          "finding": "R3",
+          "production_file": "synapse/memory_consolidation/court/retention.py",
+          "original": "observed.get(ref, -1) > act[\"after\"]",
+          "mutation": "observed.get(ref, -1) >= act[\"after\"]",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "ce4563101c44d64d633f919c27829dd06d2fa02dcc843696be80aa4ddba2ca68"
+          },
+          "killer_files": [
+            "acceptance/memory/test_forget_scope_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_forget_scope_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-04",
+          "finding": "R3",
+          "production_file": "synapse/memory_consolidation/operator_acts.py",
+          "original": "after = journal[-1][\"seq\"] if journal else -1",
+          "mutation": "after = None",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "98bda3e3320325fa2f690e06bb86b95d4177813dd1d85272002ab377d749295f"
+          },
+          "killer_files": [
+            "acceptance/memory/test_forget_scope_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_forget_scope_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-05",
+          "finding": "R4",
+          "production_file": "synapse/memory_consolidation/operator_acts.py",
+          "original": "    retained = {ref for other, item in state[\"quanta\"].items()\n                if other not in affected and item[\"retention_state\"] != \"forgotten\" for ref in item[\"evidence_refs\"]}",
+          "mutation": "    retained = set()",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "e2acd07d5e38719960255ce43727dc4cec426073959da5de3f5b684765fbdcf3"
+          },
+          "killer_files": [
+            "acceptance/memory/test_forget_scope_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_forget_scope_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-06",
+          "finding": "R4",
+          "production_file": "synapse/memory_consolidation/operator_acts.py",
+          "original": "if other not in affected and item[\"retention_state\"] != \"forgotten\" for ref in item[\"evidence_refs\"]}",
+          "mutation": "if item[\"retention_state\"] != \"forgotten\" for ref in item[\"evidence_refs\"]}",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "0d8207659990f12291b44c4c2d035311dc7e17ca677dfcc4c0b44ed060d2ff48"
+          },
+          "killer_files": [
+            "acceptance/memory/test_forget_scope_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_forget_scope_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-07",
+          "finding": "R4",
+          "production_file": "synapse/memory_consolidation/operator_acts.py",
+          "original": "(other == qid or carried & set(item[\"evidence_refs\"]))",
+          "mutation": "other == qid",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "cc01589534c5fe8575b5957bbd3ec7ae9c044a8fe45e01a400c74a47b7d68069"
+          },
+          "killer_files": [
+            "acceptance/memory/test_forget_scope_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_forget_scope_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-08",
+          "finding": "R5",
+          "production_file": "synapse/memory_consolidation/court/dependencies.py",
+          "original": "if quantum is not None and quantum.get(\"replay_ref\") is not None:",
+          "mutation": "if quantum is not None:",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "7dc2142ed8b1e37a52fbdba4f127bc93e53d8f0d6a6d493901eb27e812772db9"
+          },
+          "killer_files": [
+            "acceptance/memory/test_forget_correction_window_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_forget_correction_window_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-09",
+          "finding": "R6",
+          "production_file": "synapse/memory_consolidation/court/pool.py",
+          "original": "    for key in touched:\n        pool[key][\"episodes\"] = retained(state, pool[key][\"episodes\"])\n",
+          "mutation": "",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "7fa890136ed4fcbb7028ee1f784f0f676f26393a02af5d35da9ab5c4a89c7630"
+          },
+          "killer_files": [
+            "acceptance/memory/test_forget_learning_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_forget_learning_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-10",
+          "finding": "R6",
+          "production_file": "synapse/memory_consolidation/court/pool.py",
+          "original": ".get(\"retention_state\") != \"forgotten\"]",
+          "mutation": ".get(\"retention_state\") == \"forgotten\"]",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "6a7827f9b99113b804b975903026f1c80a7481b98a6cd2994231c232c2bf715f"
+          },
+          "killer_files": [
+            "acceptance/memory/test_forget_learning_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_forget_learning_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-11",
+          "finding": "R6",
+          "production_file": "synapse/memory_consolidation/court/compositions.py",
+          "original": "        entry = {**entry, \"episodes\": retained(state, entry[\"episodes\"])}\n",
+          "mutation": "",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "3a78857b1f6d322e97c2cbe8ed5c0761086db0880fd75637ddde0c19ffca60b2"
+          },
+          "killer_files": [
+            "acceptance/memory/test_forget_composition_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_forget_composition_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-12",
+          "finding": "R7",
+          "production_file": "synapse/memory_consolidation/court/cold.py",
+          "original": "            if retained < required:\n                entry[\"refused\"] = \"basis_not_retained\"\n            elif current == \"dormant\":",
+          "mutation": "            if current == \"dormant\":",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "faffe00f42c0a74b75c438d41b6ef235dfbcb8bf333086e21e5bc1b2b7a274f4"
+          },
+          "killer_files": [
+            "acceptance/memory/test_forget_learning_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_forget_learning_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-13",
+          "finding": "R7",
+          "production_file": "synapse/memory_consolidation/court/cold.py",
+          "original": "            if retained < required:",
+          "mutation": "            if retained <= required:",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "636653bf6c1252ea13110b0af31e5da924848c67f0516b6810bedf10e4c8759b"
+          },
+          "killer_files": [
+            "acceptance/memory/test_forget_learning_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_forget_learning_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-14",
+          "finding": "R7",
+          "production_file": "synapse/memory_consolidation/court/births.py",
+          "original": "relation = \"archived_unfounded\" if retained < required else relation",
+          "mutation": "relation = relation",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "3f88b8d5e75b6c62b55b48ab27129d448d2fd1c58c16060b7742dbe55d84c038"
+          },
+          "killer_files": [
+            "acceptance/memory/test_forget_learning_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_forget_learning_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-15",
+          "finding": "R7",
+          "production_file": "synapse/memory_consolidation/court/births.py",
+          "original": "if relation in {\"archived_duplicate\", \"archived_absorbed\"}:",
+          "mutation": "if relation == \"archived_duplicate\":",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "e6ee8a5a8dfa7e732a8b207f0e8b04c6427fdf373962c731e627d3a3dc41e287"
+          },
+          "killer_files": [
+            "acceptance/memory/test_court_decision_table_contract.py",
+            "acceptance/memory/test_forget_learning_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_court_decision_table_contract.py",
+          "first_run": "SURVIVED",
+          "closed_by": "a contract case added to acceptance/memory/test_court_decision_table_contract.py"
+        },
+        {
+          "mutant_id": "RC556-R-16",
+          "finding": "R7",
+          "production_file": "synapse/memory_consolidation/court/births.py",
+          "original": "relation = next((item for item in relations if item[\"relation\"] == \"archived_unfounded\"), None)",
+          "mutation": "relation = None",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "53edd652c706df02800c4ede31fba5d87bc0470390b0f423a83ba4d21a084d26"
+          },
+          "killer_files": [
+            "acceptance/memory/test_forget_learning_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_forget_learning_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-17",
+          "finding": "R7",
+          "production_file": "synapse/memory_consolidation/court/pool.py",
+          "original": "if state[\"habits\"][habit_id][\"state\"] not in ARCHIVED or retained >= required:",
+          "mutation": "if True:",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "06e5cb1abb0a778399a4e3a2fd2d53b34b49d078cda68873adbb42ee771f73f7"
+          },
+          "killer_files": [
+            "acceptance/memory/test_forget_learning_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_forget_learning_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-18",
+          "finding": "R7",
+          "production_file": "synapse/memory_consolidation/court/pool.py",
+          "original": "or retained >= required:",
+          "mutation": "or retained > required:",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "86a48b088912706300880ed81cc5ddcd74decc7c53013fafbfcb617a25d76af2"
+          },
+          "killer_files": [
+            "acceptance/memory/test_forget_learning_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_forget_learning_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-19",
+          "finding": "R7",
+          "production_file": "synapse/memory_consolidation/court/pool.py",
+          "original": "entry.update(status=\"accumulating\", reasons=[], first_seen=window, episodes=[], born_habit=None)",
+          "mutation": "entry.update(status=\"accumulating\", reasons=[], first_seen=window, born_habit=None)",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "851314d6c29193a58aea6d19cc43c028406791a83a9291b7d0b68a862918434f"
+          },
+          "killer_files": [
+            "acceptance/memory/test_forget_learning_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_forget_learning_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-20",
+          "finding": "R8",
+          "production_file": "synapse/memory_consolidation/court/births.py",
+          "original": "if (item[\"run_id\"], item[\"event_id\"]) not in consumed]",
+          "mutation": "if item[\"event_id\"] not in {event for _, event in consumed}]",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "ec62b41e89adc8940a225e375a160a9c529baa7d2ce2405b4ac75187f7a3e1e5"
+          },
+          "killer_files": [
+            "acceptance/memory/test_cold_event_identity_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_cold_event_identity_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-21",
+          "finding": "R8",
+          "production_file": "synapse/memory_consolidation/court/cold.py",
+          "original": "\"matches\": [{\"run_id\": run_id, \"event_id\": event_id} for run_id, event_id in matched]}",
+          "mutation": "\"matches\": [event_id for _, event_id in matched]}",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "95035fe3a1a956f425d02defc4c9306d21a55a3976f404cdd82d4754052e7d6a"
+          },
+          "killer_files": [
+            "acceptance/memory/test_forget_learning_acceptance.py",
+            "acceptance/memory/test_cold_event_identity_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_forget_learning_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-22",
+          "finding": "R9",
+          "production_file": "synapse/memory_consolidation/court/reassessment.py",
+          "original": "\"reason\": None,\n            \"evidence\": []}",
+          "mutation": "\"reason\": None}",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "0e0b3eb88b2208b4fd52cbe4790957a595214f164bcc1e488f1e3ee733224b07"
+          },
+          "killer_files": [
+            "acceptance/memory/test_reassessment_custody_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_reassessment_custody_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-23",
+          "finding": "R10",
+          "production_file": "synapse/memory_consolidation/court/reassessment.py",
+          "original": "    facts = sessions.owned(quantum)",
+          "mutation": "    facts = sessions.facts(run_id)",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "f52b9e1ae70e810cdf4497c82a1fd9a91bb17f468799a8d7bef0a45ba17b6d67"
+          },
+          "killer_files": [
+            "acceptance/memory/test_reassessment_rules_contract.py",
+            "acceptance/memory/test_reassessment_custody_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_reassessment_rules_contract.py"
+        },
+        {
+          "mutant_id": "RC556-R-24",
+          "finding": "R10",
+          "production_file": "synapse/memory_consolidation/court/reassessment.py",
+          "original": "        if result[\"status\"] != \"reproduced\" or not reproduces(result[\"history\"], replay[\"positions\"],\n                                                                quantum[\"canonical\"][\"trace_ref\"]):",
+          "mutation": "        if result[\"status\"] != \"reproduced\":",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "61e2b7663a1dfa584acef7f850737bfb343b46f9166ccbc72547809e468d6a6a"
+          },
+          "killer_files": [
+            "acceptance/memory/test_reassessment_rules_contract.py",
+            "acceptance/memory/test_reassessment_custody_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_reassessment_rules_contract.py",
+          "first_run": "SURVIVED",
+          "closed_by": "a contract case added to acceptance/memory/test_reassessment_rules_contract.py"
+        },
+        {
+          "mutant_id": "RC556-R-25",
+          "finding": "R11",
+          "production_file": "synapse/memory_consolidation/court/decide.py",
+          "original": "deferred = draft[\"mode\"] == \"emergency\" and draft[\"integrity\"][\"ok\"]",
+          "mutation": "deferred = False",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "b0ca357051d303fe4fa3b5246c1559b72b6785e6d933edaea7fed3f94419f078"
+          },
+          "killer_files": [
+            "acceptance/memory/test_crash_recovery_acceptance.py",
+            "acceptance/memory/test_crash_closed_segment_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_crash_recovery_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-26",
+          "finding": "R11",
+          "production_file": "synapse/memory_consolidation/court/decide.py",
+          "original": "    habits, declared = ((copy.deepcopy(state[\"habits\"]), copy.deepcopy(state[\"declared\"])) if deferred else\n                        trust_stage(configuration.parameters, state, draft, draft[\"mode\"], context.report))",
+          "mutation": "    habits, declared = trust_stage(configuration.parameters, state, draft, draft[\"mode\"], context.report)",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "d314960a3422d513fac8417d2b50670fa8167781cb30a07f839109fd294dd7d2"
+          },
+          "killer_files": [
+            "acceptance/memory/test_crash_closed_segment_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_crash_closed_segment_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-27",
+          "finding": "R11",
+          "production_file": "synapse/memory_consolidation/court/apply.py",
+          "original": "    consolidated = [] if deferred else window_sessions",
+          "mutation": "    consolidated = window_sessions",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "76ed5fd1c2022ca8e8623ff165187c4c4571839aafbbddaea0d8bb0ff14cffa8"
+          },
+          "killer_files": [
+            "acceptance/memory/test_crash_recovery_acceptance.py",
+            "acceptance/memory/test_crash_closed_segment_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_crash_recovery_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-28",
+          "finding": "R11",
+          "production_file": "synapse/memory_consolidation/court/apply.py",
+          "original": "quantize(state, {**draft, \"cases\": []} if deferred else draft,",
+          "mutation": "quantize(state, draft,",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "be9f602d29fd723764c95c09543d00bc49835a7add52f6ab1cf34745c96ce6ef"
+          },
+          "killer_files": [
+            "acceptance/memory/test_crash_recovery_acceptance.py",
+            "acceptance/memory/test_crash_closed_segment_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_crash_closed_segment_acceptance.py"
+        },
+        {
+          "mutant_id": "RC556-R-29",
+          "finding": "R12",
+          "production_file": "synapse/memory_consolidation/court/conflicts.py",
+          "original": "            _unyield(habits, (left, right))\n            report[\"conflicts\"].append({**entry, \"step\": 1, \"resolution\": \"A_selected_by_trust_gap\"})",
+          "mutation": "            report[\"conflicts\"].append({**entry, \"step\": 1, \"resolution\": \"A_selected_by_trust_gap\"})",
+          "mutation_identity": {
+            "algorithm": "sha256",
+            "value": "80bc7a18f3d1acc68f66980d04afb718a6713fdb1c698c1e9691e239ba51ed2a"
+          },
+          "killer_files": [
+            "acceptance/memory/test_court_decision_table_contract.py",
+            "acceptance/memory/test_conflict_decision_execution_acceptance.py"
+          ],
+          "status": "KILLED",
+          "killed_by": "acceptance/memory/test_conflict_decision_execution_acceptance.py"
+        }
+      ]
+    }
   }
 }

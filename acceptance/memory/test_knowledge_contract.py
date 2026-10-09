@@ -5,9 +5,11 @@ timeline's resolution at a valid time as known at a window (inertia, a late
 report, a declared end, bounded and event currency, an undeclared property,
 disagreeing versions), reciprocal rank fusion, the exactness of the semantic
 ranking against one cosine per pair (equal scores included), the court's fold of
-declarations (copy, repetition, correction with the revision of dependent
-hypotheses and habits, conflict, a correction back to an answer memory held
-before, which is held again while every earlier window keeps its answer) and
+declarations (copy and repetition, which add nothing but their place in the
+world's order of statements, correction with the revision of dependent hypotheses
+and habits at the place of the correcting answer, conflict, a correction back to
+an answer memory held before, which is held again while every earlier window
+keeps its answer) and
 admission's structured checks (an event is admitted at its moment only, however
 the candidate was found — the timeline places events by the same rule).
 """
@@ -22,7 +24,7 @@ import pytest
 from synapse.memory_consolidation.court.dependencies import graph
 from synapse.memory_consolidation.configuration import parse_memory_configuration
 from synapse.memory_consolidation.court.hypotheses import hypothesis_stage
-from synapse.memory_consolidation.court.knowledge import knowledge_stage
+from synapse.memory_consolidation.court.knowledge import corrections_of, knowledge_stage
 from synapse.memory_consolidation.court.window import read_session
 from synapse.memory_consolidation.knowledge.search import recorded as recorded_statement
 from synapse.memory_consolidation.session import MemorySession
@@ -133,7 +135,7 @@ def _court(state, declared, uses=(), habits=None):
     forced = {}
     result = knowledge_stage(context, habits or {}, forced, configuration)
     # The decision's next stage revises what the window's corrections reached, in the gateway's order.
-    result["hypotheses"] = hypothesis_stage(context, result.pop("corrections"))["updates"]
+    result["hypotheses"] = hypothesis_stage(context, result.pop("corrections"), result["stated"])["updates"]
     return result, context.report["knowledge"], forced
 
 
@@ -145,10 +147,11 @@ def _declared(record, position=1, run_id="run-b", observed=None):
 
 def test_the_court_folds_copies_corrections_and_conflicts_and_revises_what_depended_on_a_correction():
     old = _statement(20, "2026-01-01", ref="ev-1")
+    decision = {"status": "confirmed", "reason": "check_agrees", "window": 1, "at": None}
     hypothesis = {"record": {"source": SOURCE, "check": {"tool": "billing_quote", "args": {"plan": "basic"}}},
-                  "source_ref": "ev-1", "status": "confirmed", "reason": "check_agrees", "window": 1}
+                  "source_ref": "ev-1", **decision, "checked": dict(decision)}
     checked = {"record": {"source": {"tool": "notes", "args": {}}, "check": SOURCE}, "source_ref": "ev-0",
-               "status": "confirmed", "reason": "check_agrees", "window": 1}
+               **decision, "checked": dict(decision)}
     state = {"window": 1, "knowledge": {"versions": {old["id"]: _entry(old)}, "uses": {old["id"]: ["run-a"]}},
              "hypotheses": {"hyp_read": hypothesis, "hyp_checked": checked},
              "frozen": {"hab_a": {"habit": {"born_from": {"episodes": ["q1"]}}},
@@ -158,8 +161,13 @@ def test_the_court_folds_copies_corrections_and_conflicts_and_revises_what_depen
 
     # The very same statement, and the same source read again saying the same: copies.
     same = _statement(20, "2026-01-01", ref="ev-5")
-    result, report, forced = _court(state, [_declared(old), _declared(same, 2)], habits=habits)
-    assert result["versions"] == {} and [item["of"] for item in report["copies"]] == [old["id"], old["id"]]
+    result, report, forced = _court(state, [_declared(old), _declared(same, 2), _declared(old, 3, observed=1)],
+                                    habits=habits)
+    assert result["versions"] == {} and [item["of"] for item in report["copies"]] == [old["id"]] * 3
+    # No confidence is added, but the order keeps where the source stated it: the held version takes its place;
+    # declared again from the same answer, it is the same statement at the same place.
+    order, = result["stated"].values()
+    assert [statement[:3] for statement in order["statements"]] == [[1, old["id"], "ev-1"], [2, same["id"], "ev-5"]]
 
     # The same source saying something else for the same start: a correction.
     new = _statement(22, "2026-01-01", ref="ev-6")
@@ -222,10 +230,11 @@ def test_a_correction_can_return_to_an_answer_memory_held_before():
     twenty, twenty_five = _statement(20, "2026-01-01", ref="ev-20"), _statement(25, "2026-01-01", ref="ev-25")
     state = {"window": 0, "knowledge": {"versions": {}, "uses": {}}, "hypotheses": {}, "frozen": {}, "quanta": {}}
     history = []
-    for record in (twenty, twenty_five, twenty, twenty_five, twenty, twenty):
-        result, report, _ = _court(state, [_declared(record)])
+    for observed, record in enumerate((twenty, twenty_five, twenty, twenty_five, twenty, twenty), start=1):
+        result, report, _ = _court(state, [_declared(record, observed=observed)])
         state = {**state, "window": state["window"] + 1,
-                 "knowledge": {"versions": {**state["knowledge"]["versions"], **result["versions"]}, "uses": {}}}
+                 "knowledge": {"versions": {**state["knowledge"]["versions"], **result["versions"]}, "uses": {},
+                               "stated": {**state["knowledge"].get("stated", {}), **result["stated"]}}}
         history.append(report)
     assert [len(item["corrections"]) for item in history] == [0, 1, 1, 1, 1, 0]
     assert history[2]["corrections"] == [{"statement": twenty_five["id"], "corrected_by": twenty["id"],
@@ -237,6 +246,12 @@ def test_a_correction_can_return_to_an_answer_memory_held_before():
         {"from": 3, "until": 4, "corrected_by": twenty_five["id"], "withdrawn": None}]
     assert versions[twenty_five["id"]]["earlier_known"] == [
         {"from": 2, "until": 3, "corrected_by": twenty["id"], "withdrawn": None}]
+    # The order keeps every statement at its place; each change corrects the answer before it, there.
+    order, = state["knowledge"]["stated"].values()
+    assert [statement[1] for statement in order["statements"]] == [
+        twenty["id"], twenty_five["id"], twenty["id"], twenty_five["id"], twenty["id"], twenty["id"]]
+    assert [(item["at"], item["old"]["record"]["id"]) for item in corrections_of(state["knowledge"])] == [
+        (2, twenty["id"]), (3, twenty_five["id"]), (4, twenty["id"]), (5, twenty_five["id"])]
     # Every window answers as memory knew it then; now, the returned answer holds.
     for window, value in ((1, 20), (2, 25), (3, 20), (4, 25), (5, 20), (6, 20), (None, 20)):
         held = [entry for entry in versions.values() if held_period(entry, window) is not None]

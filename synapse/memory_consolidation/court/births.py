@@ -3,12 +3,14 @@
 A candidate that meets every criterion is checked against every known habit,
 live and archived: a duplicate or an absorbing trigger with the same action is
 a vote for the existing habit and no birth (an archived duplicate is woken by
-its cold anchor instead); a competitor is born and meets the conflict ladder;
-an action in the gray band or a close template needs the recorded arbitration
-(variation is a vote, different is a birth, anything else keeps waiting). A
-birth creates the trigger and the frozen habit together; its behavior still
-has to pass Gold's gates, and a refused birth leaves its candidate waiting
-with the refusal as its reason.
+its cold anchor instead, unless its retained basis no longer suffices for a
+birth: such a habit never wakes again, and fresh examples learn its procedure
+as a habit of their own — review R7); a competitor is born and meets the
+conflict ladder; an action in the gray band or a close template needs the
+recorded arbitration (variation is a vote, different is a birth, anything else
+keeps waiting). A birth creates the trigger and the frozen habit together; its
+behavior still has to pass Gold's gates, and a refused birth leaves its
+candidate waiting with the refusal as its reason.
 """
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ from ..learning.behavior import SAME, check_binding, step_similarity
 from ..learning.triggers import condition_key, context_template, covers, make_trigger
 from ..quanta import weight
 from ..records import canonical
+from .dependencies import retained_basis
 from .habit_state import EFFECTIVE, mean, new_metadata
 from .pool import assess, merge_pool
 
@@ -46,6 +49,9 @@ def typed_check(candidate_steps, condition, state, parameters) -> list[dict[str,
         similarity = step_similarity(candidate_steps, frozen["habit"]["action_pattern"])
         relation = _relation(canonical(existing) == canonical(condition), covers(existing, condition), similarity,
                              archived, parameters)
+        if relation in {"archived_duplicate", "archived_absorbed"}:
+            retained, required = retained_basis(state, parameters, habit_id)
+            relation = "archived_unfounded" if retained < required else relation
         relations.append({"habit_id": habit_id, "relation": relation, "action_similarity": similarity,
                           "archived": archived, "template": frozen["trigger"]["context_template"]})
     return relations
@@ -69,7 +75,7 @@ def typed_relation(key, candidate, assessment, state, parameters, arbitration, r
             report["votes"].append({"candidate_key": key, "habit_id": decisive["habit_id"],
                                     "relation": decisive["relation"]})
         return decisive, [f"typed_{decisive['relation']}"]
-    relation = None
+    relation = next((item for item in relations if item["relation"] == "archived_unfounded"), None)
     for item in relations:
         answer = arbitration.get(f"{key}|{item['habit_id']}")
         if not _needs_arbitration(item, answer, parameters):
@@ -170,7 +176,8 @@ def pool_stage(context, births, consumed, refused) -> dict[str, Any]:
     born_conditions = {canonical(condition_key(item["trigger"])) for item in births}
     for key in touched:
         entry = pool[key]
-        entry["episodes"] = [item for item in entry["episodes"] if item["event_id"] not in consumed]
+        # An event id is unique within its run only: a wake consumes that run's event (review R8).
+        entry["episodes"] = [item for item in entry["episodes"] if (item["run_id"], item["event_id"]) not in consumed]
         assessment = assess(entry, parameters, context.configuration, draft["requests"])
         reasons, relation = list(assessment["reasons"]), None
         if not reasons:

@@ -5,7 +5,11 @@ their event type and typed action sequence. An episode supports a candidate
 only when its slow path succeeded, the failed operation was settled by the
 journal and the segment did not fail; a failure is kept as an explicit
 contradiction and an uncertain effect never counts as support. Copies of one
-recorded evidence count once.
+recorded evidence count once. A forgotten example leaves its candidate: its
+recorded results left with its tombstone, and an answer observed again later
+is an example of its own (review R6). A candidate whose habit lost its basis
+— archived, its retained basis short of a birth — accumulates again from fresh
+examples only (review R7).
 
 A verified contradiction is a contrast: it shows where the same procedure
 does not work. The applicability learned from the positives and contrasts
@@ -33,6 +37,8 @@ from ..learning.dependencies import check_types
 from ..learning.provenance import independent_witnesses
 from ..learning.triggers import covers
 from ..records import digest
+from .dependencies import retained_basis
+from .habit_state import ARCHIVED
 
 GENERALIZATION_V1 = "synapse.memory.generalization/v1"
 
@@ -68,12 +74,18 @@ def _episode(reaction, kind, window) -> dict[str, Any]:
             "seconds": slow.get("seconds"), "tokens": slow.get("tokens", 0), "reaction": reaction["reaction"]}
 
 
-def _candidate(pool, key, reaction, window) -> dict[str, Any] | None:
+def _candidate(state, parameters, pool, key, reaction, window) -> dict[str, Any] | None:
     entry = pool.setdefault(key, {"candidate_key": key, "event_type": reaction["context"]["event_type"],
                                   "steps": reaction["slow"]["steps"], "episodes": [], "first_seen": window,
                                   "last_seen": window, "status": "accumulating", "reasons": [], "born_habit": None})
     if entry["status"] == "born":
-        return None
+        habit_id = entry["born_habit"]
+        retained, required = retained_basis(state, parameters, habit_id)
+        if state["habits"][habit_id]["state"] not in ARCHIVED or retained >= required:
+            return None
+        # Its habit lost its basis and never wakes again (review R7): the procedure is learned anew, from fresh
+        # examples only — the basis it was born from gave an authority memory revoked.
+        entry.update(status="accumulating", reasons=[], first_seen=window, episodes=[], born_habit=None)
     if entry["status"] == "expired":
         entry.update(status="accumulating", reasons=[], first_seen=window)
     return entry
@@ -88,14 +100,21 @@ def merge_pool(state, draft, parameters, window) -> tuple[dict, list]:
         if kind is None or reaction["composition"] is not None:
             continue  # A composed recovery is material of its composition, never a procedure of its own.
         key = candidate_key(reaction["context"]["event_type"], reaction["slow"]["steps"])
-        entry = _candidate(pool, key, reaction, window)
+        entry = _candidate(state, parameters, pool, key, reaction, window)
         if entry is None or any(item["run_id"] == reaction["run_id"] and item["event_id"] == reaction["event_id"]
                                 for item in entry["episodes"]):
             continue
         entry["episodes"].append(_episode(reaction, kind, window))
         entry["last_seen"] = window
         touched.add(key)
+    for key in touched:
+        pool[key]["episodes"] = retained(state, pool[key]["episodes"])
     return pool, sorted(touched)
+
+
+def retained(state, episodes) -> list[dict[str, Any]]:
+    """The episodes of a candidate memory still holds: a forgotten example takes no part in a birth."""
+    return [item for item in episodes if state["quanta"].get(item["qid"], {}).get("retention_state") != "forgotten"]
 
 
 def _request_for(requests, condition) -> dict | None:

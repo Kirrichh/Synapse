@@ -62,7 +62,7 @@ def test_a_corrected_contract_archives_a_habit_its_basis_no_longer_supports(tmp_
     assert code == 0 and result["status"] == "RECORDED", (code, result, stderr)
     reassessment = result["consolidation"]["reassessment"]
     assert reassessment["configuration"] == {"from": before, "to": _sha(corrected)}
-    assert reassessment["policy"]["to"] == "synapse.memory.court-policy/v5"
+    assert reassessment["policy"]["to"] == "synapse.memory.court-policy/v6"
     habit, = reassessment["habits"]
     assert habit["habit_id"] == birth["habit_id"] and habit["verdict"] == "basis_no_longer_verified"
     assert (habit["verified"], habit["required"]) == (0, 3)

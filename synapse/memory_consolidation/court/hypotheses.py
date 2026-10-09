@@ -11,11 +11,24 @@ that sets a status has its place on the gateway's sequence, and the status
 records it (``at``): a check is its recorded answer, a correction the
 observation of the corrected source, a forget the gateway's head when the
 operator recorded it (``dependencies.py``). The latest check decides; a check
-older than the status memory holds is superseded and reported, never applied;
-a check without a recorded answer (an absent source) never displaces one with
-a recorded answer. A correction returns to ``provisional`` the statuses read
+older than the check memory holds (``checked``; for a status recorded without
+it, older than the status) is superseded and reported, never applied; a check
+without a recorded answer (an absent source) never displaces one with a
+recorded answer. A correction returns to ``provisional`` the statuses read
 from the corrected answer or checked against the corrected source that were
-decided before it — a check made after it stands. A check after a
+decided before it — a check made after it stands — and moves a status already
+``provisional`` to its place too, so a check made before it can never establish
+the claim later (recheck of 556624d). The corrections memory's order of
+statements already makes reach a window's checks as well: a check published late
+— made before a correction another session consolidated first — is decided with
+them in the same order, as in one window. A status keeps what its latest check
+decided (``checked``): when a window's statements change a source's order — a
+late statement moves a correction earlier, or leaves a later one a restatement —
+every status resting on that source is decided again from its check against
+the corrections the order now makes, and one no correction reaches any more is
+its check's again (``restored``). One rule (``reaches``, applied by
+``decided``) decides whether a correction reaches a decision, for a window's
+statuses, the admission of an action and the reassessment alike. A check after a
 consolidation names a hypothesis an earlier window of the same session
 declared: the declaration is resolved from the session's verified history, and
 only the window's own checks are applied, so a consolidation repeated decides
@@ -29,12 +42,13 @@ session reuses a status only for the very same source version under the
 current rule and tells a changed source apart from an unknown claim. An
 emergency window changes nothing.
 
-A reassessment (court policy v5) decides every status again from the record:
+A reassessment (court policy v6) decides every status again from the record:
 the consolidated checks of every session, each decided under the configuration
 adopted now from the answer the gateway recorded — a configuration may change
 the check's contract, the provenance graph or the identity rules, which the
 check rule's version says nothing about (review N2) — and the corrections the
-knowledge timeline holds, folded in the same causal order. No tool is called.
+world's order of statements makes, in the order the record restores
+(``knowledge.py``), folded in the same causal order. No tool is called.
 A status whose check no readable session shows any more is decided again from
 the answer the gateway recorded for that check, in its place. A check whose
 recorded answer no longer resolves decides nothing: the status is
@@ -52,9 +66,10 @@ from ..hypotheses import CHECK_RULE, check_basis, claim_key, resolve
 from ..knowledge.statements import source_identity
 from ..records import digest
 from ..tools.journal import GatewayIntegrityError
+from .knowledge import corrections_of, known_of, unplaced_corrections
 
 EVENTS = ("hypothesis_declared", "hypothesis_probed", "hypothesis_reused")
-SECTION = ("probed", "superseded", "reused", "unknown_record", "relied")
+SECTION = ("probed", "superseded", "reused", "unknown_record", "relied", "corrected", "restored")
 
 
 def empty_section() -> dict[str, list]:
@@ -121,11 +136,20 @@ def depends_on(entry: Mapping[str, Any], corrected: Mapping[str, Any]) -> str | 
     return None
 
 
+def held_corrections(knowledge: Mapping[str, Any], records) -> list[dict[str, Any]]:
+    """The corrections the world's order memory keeps makes of what these claims rest on — the sources they were
+    read from or checked against — each at its place."""
+    return corrections_of(knowledge, {digest({"tool": record[part]["tool"], "args": record[part]["args"]})
+                                      for record in records for part in ("source", "check")})
+
+
 def _apply_check(item, held, updates, section, holding, window) -> None:
     hypothesis, at = item["hypothesis"], _at(item["check_ref"])
     current = updates.get(hypothesis, held.get(hypothesis))
-    if current is not None and (at is None or (current.get("at") is not None and at < current["at"])):
-        # Older than the status memory holds, or no recorded answer at all: it decides nothing (review M2).
+    # The latest check decides: one older than the check memory holds — or than its status, where the check it
+    # was decided by is not kept — or without a recorded answer at all decides nothing (review M2).
+    latest = None if current is None else (current["checked"] if "checked" in current else current).get("at")
+    if current is not None and (at is None or (latest is not None and at < latest)):
         section["superseded"].append({"run_id": item["run_id"], "hypothesis": hypothesis, "status": item["status"],
                                       "at": at, "held_at": current.get("at")})
         return
@@ -135,52 +159,114 @@ def _apply_check(item, held, updates, section, holding, window) -> None:
              "window": item.get("window", window), "run_id": item["run_id"], "check_ref": check,
              "basis": None if check is None else holding.get((item["run_id"], check["evidence"])),
              # The rule and basis the status was decided under: another rule or basis is never reused.
-             "rule": item["rule"], "check_basis": item["check_basis"], "at": at}
+             "rule": item["rule"], "check_basis": item["check_basis"], "at": at,
+             # What the check itself decided: a correction revises the status, never this.
+             "checked": {"status": item["status"], "reason": item["reason"], "at": at,
+                         "window": item.get("window", window)}}
     updates[hypothesis] = entry
     section["probed"].append({key: entry[key] for key in ("run_id", "status", "reason", "basis", "at")}
                              | {"hypothesis": hypothesis})
 
 
-def _apply_correction(correction, held, updates, window) -> None:
-    at = correction["at"]
-    for hypothesis, entry in sorted({**held, **updates}.items()):
-        why = None if entry["status"] == "provisional" else depends_on(entry, correction["old"])
-        if why is None or (at is not None and entry.get("at") is not None and entry["at"] >= at):
-            continue  # Not reached, or checked again after the correction: the later check stands.
-        updates[hypothesis] = {**copy.deepcopy(entry), "status": "provisional",
-                               "reason": f"{why}:{correction['old']['record']['id']}",
-                               "window": correction.get("window", window), "at": at}
-        correction["revision"]["hypotheses"].append(hypothesis)
+def reaches(entry: Mapping[str, Any], correction: Mapping[str, Any]) -> str | None:
+    """Why ``correction`` reaches a decision (``entry``: the claim's record, the answer it was read from and the
+    decision's place ``at``), or ``None``: the decision rests on the corrected answer or was checked against the
+    corrected source, and came before the correction — one at or after it reflects the corrected world; an
+    unplaced correction or decision cannot be shown to come later. A window's statuses (``decided``), the
+    admission of an action and the reassessment decide by this one rule."""
+    why = depends_on(entry, correction["old"])
+    if why is None or (correction["at"] is not None and entry.get("at") is not None
+                       and entry["at"] >= correction["at"]):
+        return None
+    return why
 
 
-def fold(held: Mapping[str, Mapping[str, Any]], checks, corrections, holding, window: int) -> tuple[dict, dict]:
-    """The statuses ``checks`` and ``corrections`` give over ``held``, in the gateway's order (pure).
+def _corrected(entry, correction, why, window) -> dict[str, Any]:
+    return {**copy.deepcopy(entry), "status": "provisional", "reason": f"{why}:{correction['old']['record']['id']}",
+            "window": correction.get("window", window), "at": correction["at"]}
 
-    A check's place is its recorded answer (an absent source: before everything); a correction's, the
-    observation of the corrected source (unknown: after everything). At one place a correction comes first —
-    a check that read the very observation that corrected a source reflects the corrected world."""
+
+def fold(held: Mapping[str, Mapping[str, Any]], checks, holding, window: int) -> tuple[dict, dict]:
+    """The checks over ``held``, in the gateway's order (pure): the latest check of each claim decides it — a
+    check's place is its recorded answer, an absent source's before everything. What corrections make of a
+    check's verdict is ``decided``."""
     updates: dict[str, dict[str, Any]] = {}
     section = empty_section()
-    events = [((-1 if _at(item["check_ref"]) is None else _at(item["check_ref"])), 1, item["run_id"],
-               item["position"], index, "check") for index, item in enumerate(checks)]
-    events += [((math.inf if item["at"] is None else item["at"]), 0, "", index, index, "correction")
-               for index, item in enumerate(corrections)]
-    for *_, index, kind in sorted(events):
-        if kind == "check":
-            _apply_check(checks[index], held, updates, section, holding, window)
-        else:
-            _apply_correction(corrections[index], held, updates, window)
+    for index in sorted(range(len(checks)), key=lambda index: (
+            -1 if _at(checks[index]["check_ref"]) is None else _at(checks[index]["check_ref"]),
+            checks[index]["run_id"], checks[index]["position"], index)):
+        _apply_check(checks[index], held, updates, section, holding, window)
     return updates, section
 
 
-def hypothesis_stage(context, corrections) -> dict[str, Any]:
-    """The window's statuses: its checks and its knowledge corrections in causal order; reuses reported."""
+def _in_order(corrections) -> list:
+    return sorted(corrections, key=lambda item: (math.inf if item["at"] is None else item["at"],
+                                                 item["old"]["record"]["source"]["ref"]))
+
+
+def decided(entry: Mapping[str, Any], corrections, window: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """A status as its latest check decided it (``checked``), revised by every correction of ``corrections``
+    that reaches it, in their order (a correction's place is the observation of the corrected source; unknown:
+    after everything) — the last names the status's place, so a provisional status moves to it too and nothing
+    checked before it establishes the claim. The window, the admission's reading and the reassessment decide by
+    this one rule, whatever windows the check and the corrections were consolidated in. Returns the status and
+    the corrections that revised it, in order (none: its check decides)."""
+    status = {**copy.deepcopy(entry), **{key: entry["checked"][key] for key in ("status", "reason", "at", "window")}}
+    revised = []
+    for correction in _in_order(corrections):
+        why = reaches(status, correction)
+        if why is not None:
+            status = _corrected(status, correction, why, window)
+            revised.append(correction)
+    return status, revised
+
+
+def _depends(record, sources) -> bool:
+    return any(digest({"tool": record[part]["tool"], "args": record[part]["args"]}) in sources
+               for part in ("source", "check"))
+
+
+def hypothesis_stage(context, corrections, stated) -> dict[str, Any]:
+    """The window's statuses: its checks decide in the gateway's order (``fold``); reuses reported. Then every
+    status a check of this window decided, or resting on a source whose order of statements this window changed
+    (``stated``), is decided from its latest check against every correction the order now makes (``decided``):
+    a check published late meets the corrections memory already holds, and a status a correction no longer
+    reaches — a late statement showed the source changed before the check — is its check's again (recheck of
+    556624d). Each correction this window adds names in its revision the statuses it revised. A status a forget
+    revoked stays revoked; one kept from before checks were kept (``checked``, provisional) stays as it is."""
     draft = context.draft
     holding = {(case["run_id"], ref): case["quantum"]["id"] for case in draft["cases"]
                for ref in case["recorded_results"]}
     probed = [item for item in draft["hypotheses"] if item["kind"] == "hypothesis_probed"]
-    updates, section = fold(context.state["hypotheses"], [item for item in probed if item["record"] is not None],
-                            corrections, holding, context.window)
+    checks = [item for item in probed if item["record"] is not None]
+    held_before = context.state["hypotheses"]
+    updates, section = fold(held_before, checks, holding, context.window)
+    knowledge = known_of(context.state)
+    after = {**knowledge, "stated": {**knowledge["stated"], **stated}}
+    touched = {source_identity({"source": group["source"]}) for group in stated.values()}
+    new = {(item["at"], item["old"]["record"]["id"]): item for item in corrections}
+    affected = {item["hypothesis"] for item in checks}
+    if touched:  # Statements folded in this window: what rests on their sources may be decided otherwise now.
+        affected |= {hypothesis for hypothesis, entry in held_before.items() if _depends(entry["record"], touched)}
+    for hypothesis in sorted(affected):
+        entry = updates.get(hypothesis, held_before.get(hypothesis))
+        if entry is None or "checked" not in entry or entry["reason"].startswith("basis_forgotten:"):
+            continue
+        again, revised = decided(entry, held_corrections(after, [entry["record"]]), context.window)
+        if (again["status"], again["reason"], again["at"]) == (entry["status"], entry["reason"], entry.get("at")):
+            continue
+        updates[hypothesis] = again
+        if not revised:
+            section["restored"].append({"hypothesis": hypothesis, "status": again["status"], "at": again["at"]})
+            continue
+        for correction in revised:
+            found = new.get((correction["at"], correction["old"]["record"]["id"]))
+            if found is not None:
+                found["revision"]["hypotheses"] = sorted({*found["revision"]["hypotheses"], hypothesis})
+        last = revised[-1]
+        if (last["at"], last["old"]["record"]["id"]) not in new:  # A correction memory held already.
+            section["corrected"].append({"hypothesis": hypothesis, "statement": last["old"]["record"]["id"],
+                                         "corrected_by": last["by"], "at": last["at"]})
     section["reused"] = [{key: item[key] for key in ("run_id", "hypothesis", "status", "reason")}
                          for item in draft["hypotheses"] if item["kind"] == "hypothesis_reused"]
     section["unknown_record"] = [{"run_id": item["run_id"], "hypothesis": item["hypothesis"]}
@@ -243,23 +329,13 @@ def _decided_again(item, configuration: MemoryConfiguration, gateway, records) -
                 "check_basis": check_basis(item["record"], configuration)}
 
 
-def _correction_at(statement_id: str, versions, sessions) -> int | None:
-    """Where on the gateway's sequence the version ``statement_id`` was observed (``None``: it cannot be placed)."""
-    version = versions.get(statement_id)
-    facts = None if version is None else sessions.facts(version["run_id"])
-    if facts is None:
-        return None
-    for position, event in facts.found.get("knowledge_declared", []):
-        if event["statement"]["id"] == statement_id and position in facts.observed:
-            return facts.observed[position]
-    return None
-
-
 def reassess_hypotheses(state: Mapping[str, Any], configuration: MemoryConfiguration, gateway, records,
-                        sessions, reports) -> list[dict[str, Any]]:
+                        sessions, reports, knowledge) -> list[dict[str, Any]]:
     """Every status decided again from the record under the configuration adopted now (``sessions`` reads each
-    session's whole history once): the consolidated checks of every session and the corrections of the
-    knowledge timeline, in causal order; each changed or newly found status is listed with what it was."""
+    session's whole history once): the consolidated checks of every session and the corrections the world's
+    order of statements ``knowledge`` makes (with the places the record restores; one recorded at no place
+    reaches every status it can), in causal order; each changed or newly found status is listed with what it
+    was."""
     checks = []
     for run_id, cursor in sorted(state["cursors"].items()):
         facts = sessions.facts(run_id)
@@ -279,18 +355,11 @@ def reassess_hypotheses(state: Mapping[str, Any], configuration: MemoryConfigura
         item = {"kind": "hypothesis_probed", "position": 0, "run_id": entry.get("run_id") or "",
                 "hypothesis": hypothesis_id, "record": entry["record"], "check_ref": check}
         checks.append({**item, **_decided_again(item, configuration, gateway, records), "window": entry["window"]})
-    versions = (state.get("knowledge") or {"versions": {}})["versions"]
-    corrections = []
-    for statement_id, version in sorted(versions.items()):
-        for period in [*version.get("earlier_known", []), version]:
-            if period.get("corrected_by") is not None:
-                corrections.append({"old": version, "by": period["corrected_by"],
-                                    "at": _correction_at(period["corrected_by"], versions, sessions),
-                                    "window": versions.get(period["corrected_by"], {}).get("known_from"),
-                                    "revision": {"statement": statement_id, "hypotheses": []}})
+    corrections = corrections_of(knowledge) + unplaced_corrections(knowledge)
     holding = {(quantum["replay_ref"]["run_id"], ref): qid for qid, quantum in state["quanta"].items()
                if quantum.get("replay_ref") is not None for ref in quantum.get("evidence_refs") or []}
-    found, _ = fold({}, checks, corrections, holding, state["window"])
+    found, _ = fold({}, checks, holding, state["window"])
+    found = {hypothesis: decided(entry, corrections, state["window"])[0] for hypothesis, entry in found.items()}
     section = []
     for hypothesis_id in sorted(set(state["hypotheses"]) | set(found)):
         before = state["hypotheses"].get(hypothesis_id)
@@ -300,7 +369,9 @@ def reassess_hypotheses(state: Mapping[str, Any], configuration: MemoryConfigura
                 continue
             # Decided by no check that still resolves: nothing confirms it now.
             after = {**copy.deepcopy(before), "status": "provisional", "reason": "check_record_unavailable",
-                     "rule": CHECK_RULE, "check_basis": check_basis(before["record"], configuration), "at": None}
+                     "rule": CHECK_RULE, "check_basis": check_basis(before["record"], configuration), "at": None,
+                     "checked": {"status": "provisional", "reason": "check_record_unavailable", "at": None,
+                                 "window": state["window"]}}
         section.append({"hypothesis": hypothesis_id,
                         "from": None if before is None else {key: before.get(key) for key in (
                             "status", "reason", "rule", "check_basis", "at")},

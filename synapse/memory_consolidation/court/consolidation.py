@@ -6,8 +6,12 @@ project journal, so every task stream reaches one writer:
 * ``full`` — at the end of a session whose palace consolidates during dream;
 * ``summary`` — ``consolidate palace`` in a maintenance program, all sessions;
 * ``emergency`` — before a crashed session continues, over its tail only:
-  stages 1–2 and 7a, provisional, no trust, births or boundary (fail-closed).
-  An integrity failure of an existing source also runs the court in emergency;
+  stages 1–2 are recorded and nothing is applied — no cursor, case, signal,
+  birth or boundary; the session's next window judges that tail once, with its
+  re-execution, so a segment completed before the crash still teaches (review
+  R11). An integrity failure of an existing source also runs the court in
+  emergency, fail-closed: stages 1–2 and 7a, provisional, no trust, births or
+  boundary, and the window's cursors move past it;
 * ``reassess`` — ``synapse memory reassess``: no session window; the recorded
   memory is judged again under the configuration and policy now declared
   (``reassessment.py``) and the owner then adopts that configuration. Memory
@@ -272,7 +276,7 @@ def reassess(owner: MemoryOwner, configuration: MemoryConfiguration, ports: Cour
     head = gateway_records[-1]["hash"] if gateway_records else None
     consolidation_id = _identity(owner, tail, "reassess", [], configuration, head, len(passes))
     reassessment = reassess_bases(state, configuration, ports.gateway, gateway_records, owner.sessions(guard=guard),
-                                  ports.read_session, reports)
+                                  ports.read_session, ports.reproduce, reports)
     reassessment["configuration"] = {"from": previous, "to": configuration.configuration_sha256}
     reassessment["policy"] = {"from": reports[-1]["policy"]["policy"] if reports else None,
                               "to": configuration.policy["policy"]}

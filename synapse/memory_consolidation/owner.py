@@ -25,7 +25,7 @@ from synapse.experiments.gold.project_memory_store import ProjectMemoryStore
 
 from . import records
 from .configuration import MemoryConfiguration, parse_memory_configuration
-from .court.projection import PROJECTION_V1, apply_report, empty_state
+from .court.projection import PROJECTION_V2, apply_report, empty_state
 
 OWNER_BINDING_V1 = "synapse.memory.owner-binding/v1"
 #: A later binding names the configuration it supersedes, the reassessment that had adopted that one (none for
@@ -203,7 +203,7 @@ class MemoryOwner:
                            key=lambda item: item["through"]["index"], reverse=True)
         for snapshot in snapshots:
             index, cut = snapshot["through"]["index"], snapshot["through"]
-            if (snapshot["schema_version"] != STATE_SNAPSHOT_V1 or snapshot["projection"] != PROJECTION_V1
+            if (snapshot["schema_version"] != STATE_SNAPSHOT_V1 or snapshot["projection"] != PROJECTION_V2
                     or not 0 <= index < len(chain) or chain[index][0].get("consolidation") is None
                     or chain[index][0]["consolidation"]["consolidation_id"] != cut["consolidation_id"]
                     or chain[index][0]["consolidation"]["report"] != cut["report"]
@@ -224,7 +224,7 @@ class MemoryOwner:
         return self.store.put(kind="MEMORY_STATE", guard=guard,
                               job_key=_key("synapse.memory.state", self.identity, head["consolidation_id"]),
                               payload={"schema_version": STATE_SNAPSHOT_V1, "project_identity": self.identity,
-                                       "projection": PROJECTION_V1,
+                                       "projection": PROJECTION_V2,
                                        "through": {"index": len(chain) - 1, "consolidation_id": head["consolidation_id"],
                                                    "report": head["report"]},
                                        "state_sha256": records.digest(state), "state": state})

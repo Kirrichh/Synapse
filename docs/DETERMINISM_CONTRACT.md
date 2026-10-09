@@ -378,7 +378,12 @@ through a callback (`map`, `filter`) or by a compiled-VM `llm` request inside a
 transaction is refused by the same barrier (`forbid_model_call`), and the VM's
 open scopes are unwound when the refusal ends its run. Legacy `integrate`
 remains Category C for its other effects; the refusal is not a strict Layer 1
-grant.
+grant. It is a deliberate compatibility change, not a compatible replacement:
+a program that drew a time, a random number or a UUID inside a transaction,
+the legacy transaction mode included, now fails there; outside a transaction
+the builtins stay available. Randomness inside a computation that can roll
+back would need its own contract, one that records the drawn value as an
+effect; the refusal is not lifted to keep earlier expectations green.
 
 Therefore:
 

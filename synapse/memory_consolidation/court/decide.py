@@ -3,12 +3,18 @@
 No model is asked here (И6): advice and similarity were recorded by the
 evaluation. Given the previous state, the draft, the declared parameters and
 the legitimacy Gold reports for existing behaviors, the result is determined;
-ties are broken by identity. An emergency consolidation stops after stage 3:
-verdicts and signals are kept as pending evidence and nothing else changes
-(fail-closed). A reassessment observes no window: it completes recorded
+ties are broken by identity. An emergency consolidation before a crashed
+session continues applies nothing: what its tail holds is judged once, by the
+session's next window with its re-execution, so a completed segment is never
+passed over and nothing is counted twice (review R11). An emergency for a
+window that failed its integrity check stops after stage 3: verdicts and
+signals are kept as pending evidence and nothing else changes (fail-closed).
+A reassessment observes no window: it completes recorded
 metadata with neutral values, archives habits whose basis the reassessment no
 longer verifies (TR), returns to probation habits whose recorded promotion it
-does not find resting on confirmed experience (TU), records the hypothesis
+does not find resting on confirmed experience (TU), orders the knowledge
+timeline by the order of statements the record restores (a habit whose basis
+admitted a version it corrects goes to probation, TC), records the hypothesis
 statuses it decided again from the record (with the forgets of what they rest
 on) and judges every competitor pair again.
 """
@@ -28,7 +34,7 @@ from .compositions import composition_stage
 from .conflicts import birth_conflicts, conflict_stage, recorded_bases
 from .habit_state import complete_metadata
 from .hypotheses import empty_section, hypothesis_stage, reassessed
-from .knowledge import knowledge_stage
+from .knowledge import knowledge_stage, reassessed_knowledge
 from .reassessment import lost_bases
 from .trust import trust_stage
 
@@ -118,12 +124,14 @@ def _reassess(context, state, draft) -> dict[str, Any]:
     recorded_bases(habits, draft["reassessment"].get("resolutions", []))
     forced = {**unverified, **lost_bases(draft["reassessment"])}  # A lost basis archives over a probation.
     slow_only = conflict_stage(context.parameters, state, habits, draft, context.report, forced)
+    # The timeline as this policy orders it, from the order of statements the record restores.
+    knowledge = reassessed_knowledge(context, habits, forced, draft["reassessment"]["knowledge"]["order"])
     forced_transitions(context, habits, forced)
     # Every status decided again from the record, then the forgets of what it rests on applied to it.
     hypotheses = reassessed(draft["reassessment"].get("hypotheses", []))
     revoke_forgotten({**state, "hypotheses": {}}, hypotheses, context.window)
     return {"sections": context.report, "habits": habits, "declared": copy.deepcopy(state["declared"]), "births": [],
-            "pool": {}, "slow_only": slow_only, "knowledge": {"versions": {}, "uses": {}},
+            "pool": {}, "slow_only": slow_only, "knowledge": {**knowledge, "uses": {}},
             "hypotheses": {"updates": hypotheses, "section": empty_section()},
             "reassessment": {**draft["reassessment"], "fields_completed": completed,
                              "slow_only_added": [item for item in slow_only if item not in state["slow_only"]]}}
@@ -142,16 +150,18 @@ def decide(state, draft, configuration, legitimacy, refused: Mapping[str, str] |
     context = DecisionContext(state, draft, configuration, state["window"] + 1, report)
     if draft["mode"] == "reassess":
         return _reassess(context, state, draft)
-    habits, declared = trust_stage(configuration.parameters, state, draft, draft["mode"], context.report)
+    deferred = draft["mode"] == "emergency" and draft["integrity"]["ok"]
+    habits, declared = ((copy.deepcopy(state["habits"]), copy.deepcopy(state["declared"])) if deferred else
+                        trust_stage(configuration.parameters, state, draft, draft["mode"], context.report))
     if draft["mode"] == "emergency":
         return {"sections": context.report, "habits": habits, "declared": declared, "births": [], "pool": {},
-                "slow_only": copy.deepcopy(state["slow_only"]), "knowledge": {"versions": {}, "uses": {}},
-                "hypotheses": {"updates": {}, "section": empty_section()}}
+                "slow_only": copy.deepcopy(state["slow_only"]), "knowledge": {"versions": {}, "uses": {}, "stated": {}},
+                "hypotheses": {"updates": {}, "section": empty_section()}, "deferred": deferred}
     forced: dict[str, tuple[str, str]] = {}
     slow_only = conflict_stage(configuration.parameters, state, habits, draft, context.report, forced)
     knowledge = knowledge_stage(context, habits, forced, configuration)
     # The window's checks and corrections in the gateway's order, then the forgets of what they rest on.
-    hypotheses = hypothesis_stage(context, knowledge.pop("corrections"))
+    hypotheses = hypothesis_stage(context, knowledge.pop("corrections"), knowledge["stated"])
     forgotten_stage(context, habits, forced, knowledge, hypotheses["updates"])
     wakes, consumed = cold_stage(context, legitimacy)
     births: list[dict[str, Any]] = []

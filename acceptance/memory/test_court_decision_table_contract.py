@@ -12,8 +12,9 @@ import copy
 
 import pytest
 
+from acceptance.memory import _court_data as data
 from synapse.memory_consolidation.configuration import parse_memory_configuration
-from synapse.memory_consolidation.court.births import make_birth
+from synapse.memory_consolidation.court.births import make_birth, typed_check
 from synapse.memory_consolidation.court.decide import decide
 from synapse.memory_consolidation.court.evaluate import empty_draft
 from synapse.memory_consolidation.court.projection import empty_state
@@ -255,3 +256,18 @@ def test_equal_trust_and_permuted_records_give_one_answer():
     conflict, = first["sections"]["conflicts"]
     # Equal trust: identity order names the senior, and no step selects a winner by it.
     assert conflict["habits"]["A"] == min(ids.values()) and conflict["step"] == 3
+
+
+@pytest.mark.parametrize("retention, founded", [("forgotten", False), ("full", True)])
+@pytest.mark.parametrize("wider", [False, True], ids=["same-trigger", "covering-trigger"])
+def test_an_archived_habit_anchors_a_duplicate_only_on_the_basis_a_birth_needs(retention, founded, wider):
+    """An archived habit with the candidate's action and a trigger equal to its condition, or covering it, is woken
+    by its cold anchor instead of a birth while it retains the basis a birth needs. One whose basis a forget left
+    short anchors nothing: it never wakes again, and the candidate is born as a habit of its own (review R7)."""
+    condition = {**data.CONDITION, "when": []} if wider else data.CONDITION
+    configuration, state, ids = data.world(conditions={"q": condition}, state_name="dormant")
+    (qid,) = state["frozen"][ids["q"]]["habit"]["born_from"]["episodes"]
+    state["quanta"][qid] = {"retention_state": retention}
+    relation, = typed_check(data.QUOTA, data.CONDITION, state, configuration.parameters)
+    anchored = "archived_absorbed" if wider else "archived_duplicate"
+    assert (relation["habit_id"], relation["relation"]) == (ids["q"], anchored if founded else "archived_unfounded")

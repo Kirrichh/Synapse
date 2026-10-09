@@ -179,20 +179,38 @@ class _Pass:
             self.handled.update(qids)
 
 
+def _last_observed(records) -> dict[str, int]:
+    """The last place on the gateway's sequence each recorded result was observed at."""
+    last: dict[str, int] = {}
+    for record in records:
+        ref = record["body"].get("evidence_ref") if record["kind"] == "RESULT" else None
+        if ref is not None:
+            last[ref] = max(last.get(ref, -1), record["seq"])
+    return last
+
+
 def complete(ports, acts: list[Mapping[str, Any]]) -> None:
     """Carry out the physical changes recorded acts decided (idempotent).
 
     Only the last recorded pass can be incomplete: every pass completes the one
     before it is recorded, so an interrupted pass is completed here, from its
-    record, and never decided again.
+    record, and never decided again. A forget removes the results observed up to
+    the gateway's head it names (``after``): store D addresses a result by its
+    content, so the same answer observed again later is a new observation whose
+    body completing the forget again never removes; the forgotten case gains
+    nothing by it.
     """
     evidence = ports.gateway.evidence
+    observed = None
     for act in acts:
         reason = _REMOVING.get(act["act"])
         if reason is not None:
             evidence.discard(act["raw_ref"], reason)
         elif act["act"] == "forgotten":
+            observed = _last_observed(ports.gateway.records()) if observed is None else observed
             for ref in act["refs"]:
+                if act.get("after") is not None and observed.get(ref, -1) > act["after"]:
+                    continue  # Observed again after the forget: the new observation's result.
                 evidence.discard(ref, "forgotten", tombstone=act["tombstone"])
         elif act["act"] == "restored" and evidence.get(act["raw_ref"]) is None:
             restored = reproduce_session(ports.reproduce, evidence, act["data_ref"])

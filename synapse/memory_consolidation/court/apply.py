@@ -18,7 +18,7 @@ from typing import Any, Mapping
 from .. import records
 from .boundary import boundary_record
 from .digest import digest_record
-from .knowledge import known_of
+from .knowledge import additions, known_of
 from .quantization import quantize
 
 REPORT_V1 = "synapse.memory.consolidation-report/v1"
@@ -81,7 +81,13 @@ def assemble(*, state, draft, decision, configuration, inputs_hash, window_sessi
     admitted = _admitted(decision, gates)
     habits, frozen, legitimacy_after, births_view = _births(decision, admitted, legitimacy)
     window = state["window"] + 1
-    quantized = quantize(state, draft, decision, configuration, admitted, window, custody)
+    # A deferred window (a crashed session's tail, before it continues) consolidates nothing: it applies no case
+    # and moves no cursor, and names what it saw as deferred; the session's next window judges that tail once
+    # (review R11).
+    deferred = decision.get("deferred", False)
+    consolidated = [] if deferred else window_sessions
+    quantized = quantize(state, {**draft, "cases": []} if deferred else draft, decision, configuration, admitted,
+                         window, custody)
     # The window's checks, the corrections and forgets of what they rest on, in the gateway's order (decide).
     hypotheses, hypotheses_section = decision["hypotheses"]["updates"], decision["hypotheses"]["section"]
     knowledge = decision["knowledge"]
@@ -96,7 +102,8 @@ def assemble(*, state, draft, decision, configuration, inputs_hash, window_sessi
         digest = digest_record(draft, boundary["id"], decision["slow_only"], draft["consolidation_id"])
     report = {
         "schema_version": REPORT_V1, "consolidation_id": draft["consolidation_id"], "mode": draft["mode"],
-        "window": {"index": window, "sessions": window_sessions}, "inputs_hash": inputs_hash,
+        "window": {"index": window, "sessions": consolidated, **({"deferred": window_sessions} if deferred else {})},
+        "inputs_hash": inputs_hash,
         "policy": configuration.policy, "components": configuration.components,
         "configuration_sha256": configuration.configuration_sha256, "integrity": draft["integrity"],
         "evidence_problems": draft["evidence_problems"], "replay": draft["replay"],
@@ -114,8 +121,10 @@ def assemble(*, state, draft, decision, configuration, inputs_hash, window_sessi
                   "quanta": {**copy.deepcopy(retention["quanta"]), **quantized["quanta"]},
                   "parts": quantized["parts"], "retention": copy.deepcopy(state["retention"]),
                   "hypotheses": hypotheses,
+                  # Of the order of statements, only what this decision adds to it.
                   "knowledge": {"versions": copy.deepcopy(knowledge["versions"]),
-                                "uses": copy.deepcopy(knowledge["uses"])},
-                  "cursors": {item["run_id"]: {"to": item["to"], "head": item["head"]} for item in window_sessions},
+                                "uses": copy.deepcopy(knowledge["uses"]),
+                                "stated": additions(held["stated"], knowledge["stated"])},
+                  "cursors": {item["run_id"]: {"to": item["to"], "head": item["head"]} for item in consolidated},
                   "digest": digest}}
     return {"report": records.make("consolidation_report", report=report), "boundary": boundary, "digest": digest}

@@ -1034,6 +1034,30 @@ jobs:
             file: acceptance/memory/test_relied_revocation_acceptance.py
           - shard: run-lock
             file: acceptance/memory/test_run_lock_acceptance.py
+          - shard: causal-schedule-contract
+            file: acceptance/memory/test_causal_schedule_contract.py
+          - shard: delayed-check
+            file: acceptance/memory/test_delayed_check_acceptance.py
+          - shard: delayed-statement
+            file: acceptance/memory/test_delayed_statement_acceptance.py
+          - shard: earlier-order-reassessment
+            file: acceptance/memory/test_earlier_order_reassessment_acceptance.py
+          - shard: forget-scope
+            file: acceptance/memory/test_forget_scope_acceptance.py
+          - shard: forget-correction-window
+            file: acceptance/memory/test_forget_correction_window_acceptance.py
+          - shard: forget-learning
+            file: acceptance/memory/test_forget_learning_acceptance.py
+          - shard: forget-composition
+            file: acceptance/memory/test_forget_composition_acceptance.py
+          - shard: cold-event-identity
+            file: acceptance/memory/test_cold_event_identity_acceptance.py
+          - shard: reassessment-custody
+            file: acceptance/memory/test_reassessment_custody_acceptance.py
+          - shard: crash-closed-segment
+            file: acceptance/memory/test_crash_closed_segment_acceptance.py
+          - shard: conflict-decision-execution
+            file: acceptance/memory/test_conflict_decision_execution_acceptance.py
           - shard: dependency-direction
             file: tests/test_memory_dependency_direction.py
     steps:

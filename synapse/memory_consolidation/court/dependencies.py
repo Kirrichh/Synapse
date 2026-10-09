@@ -55,9 +55,12 @@ _UNRETAINED = {"forgotten", "rolled_up"}
 _ARCHIVING = {"TS", "TR", "TV"}
 
 
-def _basis_runs(state, habit_id) -> set[str]:
+def basis_runs(state, habit_id) -> set[str]:
+    """The runs a learned habit's basis episodes came from: a forgotten episode names none any more (its trace
+    left with its tombstone), and a declared habit has no learned basis."""
+    frozen = state["frozen"].get(habit_id)
     runs = set()
-    for qid in state["frozen"][habit_id]["habit"]["born_from"]["episodes"]:
+    for qid in [] if frozen is None else frozen["habit"]["born_from"]["episodes"]:
         quantum = state["quanta"].get(qid)
         if quantum is not None and quantum.get("replay_ref") is not None:
             runs.add(quantum["replay_ref"]["run_id"])
@@ -95,7 +98,7 @@ def graph(state: Mapping[str, Any]) -> dict[str, Any]:
             edges.add((node, "wasDerivedFrom", f"case:{qid}"))
             if qid not in state["quanta"]:
                 unknown.add((node, f"basis_case:{qid}"))
-        runs = _basis_runs(state, habit_id)
+        runs = basis_runs(state, habit_id)
         for statement_id, used_by in knowledge["uses"].items():
             if runs & set(used_by):
                 edges.add((node, "used", f"statement:{statement_id}"))
@@ -168,7 +171,8 @@ def revoke_forgotten(state: Mapping[str, Any], hypotheses: dict[str, dict], wind
     return found
 
 
-def _retained_basis(state, parameters, habit_id) -> tuple[int, int]:
+def retained_basis(state, parameters, habit_id) -> tuple[int, int]:
+    """How many of a learned habit's basis episodes memory still retains, and how many a birth requires."""
     episodes = state["frozen"][habit_id]["habit"]["born_from"]["episodes"]
     retained = sum(1 for qid in episodes
                    if qid in state["quanta"] and state["quanta"][qid]["retention_state"] not in _UNRETAINED)
@@ -203,7 +207,7 @@ def forgotten_stage(context, habits, forced, knowledge, hypotheses) -> None:
             if metadata is None or metadata["state"] not in EFFECTIVE or forced.get(habit_id, ("",))[0] in _ARCHIVING:
                 continue
             support = supports.get(habit_id, set())
-            retained, required = _retained_basis(state, context.parameters, habit_id)
+            retained, required = retained_basis(state, context.parameters, habit_id)
             if f"case:{qid}" in support and retained < required:
                 forced[habit_id] = ("TR", f"{retained} of {required} basis cases retained after forgetting")
                 archived.append(habit_id)

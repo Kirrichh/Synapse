@@ -6,7 +6,9 @@ the runtime found both applicable to one event and held both back
 (``met_at_runtime``: triggers whose conditions overlap only partly).
 
 Step 1: an established trust gap selects the senior habit; the fact is
-reported. Step 2: the verified comparison of their recorded outcomes
+reported, and an earlier resolution of the pair no longer stands — the report,
+the boundary and the runtime name the one winner the gap selects (review R12).
+Step 2: the verified comparison of their recorded outcomes
 (``comparison.py``) finds one better in comparable situations: it stays and the
 other yields to it (``yields_to``, which the snapshot boundary carries to the
 runtime); on one shared applicability the other also goes on probation (TC). A
@@ -183,6 +185,9 @@ def conflict_stage(parameters, state, habits, draft, report, forced) -> list[dic
             _keep_compared(parameters, habits[habit_id], (advice.get("attributed") or {}).get(habit_id, []))
         blocked = entry["trigger"] is not None and entry["trigger"] in slow_only
         if entry["gap"] >= parameters["conflict_gap"] and not blocked:
+            # The trust gap decides the pair now: an earlier resolution of it no longer stands, so the boundary
+            # names the one winner the report does (review R12).
+            _unyield(habits, (left, right))
             report["conflicts"].append({**entry, "step": 1, "resolution": "A_selected_by_trust_gap"})
             continue
         comparison = advice.get("comparison") or {}

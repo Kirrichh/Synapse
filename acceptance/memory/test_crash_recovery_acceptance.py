@@ -2,9 +2,10 @@
 
 The process running a durable session is killed while its slow path waits for
 an answer. Nothing of the unfinished session reaches memory. Resuming the same
-run first consolidates its recorded tail in emergency mode — provisional, with
-no births and no trust — then the gateway recovers the interrupted idempotent
-call and the session completes; its full consolidation counts its episode once.
+run first records its tail in emergency mode and applies nothing — no births,
+no trust, no cursor (review R11) — then the gateway recovers the interrupted
+idempotent call and the session completes; its full consolidation judges the
+whole session once and counts its episode once.
 """
 from __future__ import annotations
 
@@ -45,6 +46,10 @@ def test_killed_session_is_recovered_without_partial_credit(tmp_path):
     emergency, full = after
     assert emergency["births"] == [] and emergency["trust_decisions"] == []
     assert emergency["snapshot_boundary_after"] is None and emergency["pool_updates"] == []
+    # It saw the tail and deferred it: no cursor moved, no case was applied.
+    assert emergency["window"]["sessions"] == [] and emergency["apply"]["cursors"] == {}
+    assert [(item["run_id"], item["from"]) for item in emergency["window"]["deferred"]] == [("crashed", 0)]
+    assert emergency["apply"]["quanta"] == {}
     assert emergency["marker_verdicts"] == []  # The interrupted segment was still executing: no verdict yet.
     # The interrupted idempotent read was answered again; the search was never repeated blindly.
     assert world.calls("quota_status").count({"route": "RIX"}) == 2
@@ -53,8 +58,9 @@ def test_killed_session_is_recovered_without_partial_credit(tmp_path):
     birth, = full["births"]
     assert birth["criteria"]["episodes"] == 3 and birth["criteria"]["tasks"] == 3
     assert sorted(item["run_id"] for item in birth["episodes"]) == ["crashed", "learn-0", "learn-1"]
-    sessions = [entry["run_id"] for report in world.reports() for entry in report["window"]["sessions"]]
-    assert sessions.count("crashed") == 2  # Its tail (emergency), then the rest of it (full).
+    crashed, = [entry for report in world.reports() for entry in report["window"]["sessions"]
+                if entry["run_id"] == "crashed"]
+    assert crashed["from"] == 0  # The full window judged the whole session, its tail included, once.
 
     # Re-entering the completed run applies nothing again.
     journal = world.journal()

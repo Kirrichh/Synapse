@@ -1,5 +1,153 @@
 # Synapse Changelog
 
+## Recheck of PR108 at 556624d — the world's order holds across windows; forget, learning, reassessment and recovery (R1–R12) — 2026-10-09
+
+Memory keeps the order its sources stated things in across consolidation
+windows (court policy v6, `synapse.memory.reassessment/v4`,
+`synapse.memory.state-projection/v2`): memory decided under v5 is reassessed
+before use, and a state snapshot of projection v1 is not used — the state is
+folded again from the journal. P1-1 and P1-2 are findings R1 and R2 of the
+review package; R3–R12 follow them.
+
+- P1-2: for each source, slot and start memory keeps the place on the
+  gateway's sequence of every statement it folded, copies included
+  (`knowledge.stated`). What the source stated last holds the slot, whatever
+  window a session finished in: a statement the source made before the one
+  memory holds, folded later, is history with its provenance — closed in the
+  window it became known (`known_from = known_until`), `corrected_by` what
+  memory holds, reported `late` — and every earlier window answers as it did.
+  A restatement keeps what memory holds current against a delayed
+  intermediate reading; a source that really returned to an earlier answer
+  holds it again.
+- Corrections are read from that order: a statement whose content differs
+  from the one before it corrects every answer of the run of equal statements
+  it ends, at its own place. A window's corrections are the ones its
+  statements add to the order.
+- P1-1: a hypothesis status keeps what its latest check decided (`checked`)
+  and is that verdict revised by every correction that reaches it. A check
+  made before a correction another session consolidated first stays
+  `provisional` at the place of the last correction, whether memory held no
+  status for the hypothesis, a confirmation or a provisional status; a
+  correction moves a provisional status to its place too; a check after the
+  corrections stands. When a window's statements change a source's order,
+  every status resting on that source is decided again — moved to an earlier
+  place, or its check's again (`hypotheses.restored`); a correction memory
+  already held that reaches a late check is reported in
+  `hypotheses.corrected`. A forget's revocation is never undone. A check older
+  than the check memory holds is superseded.
+- Admission reads the basis itself: before an effect, a correction the order
+  makes of the answer a claim was read from, or of the source it was checked
+  against, after the decision the action relies on refuses the action,
+  whether or not memory holds a status for the hypothesis. The fold, the
+  admission and the reassessment decide by one rule (`reaches`). An action
+  already sent is never undone, and a recovered session consumes it from its
+  record.
+- Reassessment v4 restores the order from the consolidated declarations of
+  every session whose record verifies (`reassessment.knowledge.order`), holds
+  each slot by what its source stated last — a version folded late under v5 is
+  corrected from the reassessment's window by the version stated last, held
+  again, every earlier window answering as it did — and folds the statuses
+  with the corrections of that order; a correction the timeline records that
+  the restored order cannot place reaches every status it can.
+- A report carries only the statements its window adds to each order
+  (`apply.knowledge.stated`); the projection joins them by the court's rule
+  (`placed_in`), so an order read in every window is never written whole
+  again.
+- R3: a forget removes the recorded results observed up to the gateway head
+  it names (`after`). Store D addresses a result by its content, so the same
+  answer observed again after the forget is a new observation: a later
+  retention pass that completes the forget again keeps its body, and the
+  forgotten case stays forgotten.
+- R4: the forget policy is explicit. The operator forgets the named case and
+  every case carrying its recorded results; a result that a retained case
+  also carries stays in store D, and that case keeps reproducing exactly.
+- R5: a forgotten basis case names no run any more (`dependencies.basis_runs`):
+  a forget and a correction of knowledge consolidate in one window.
+- R6: a forgotten example leaves its candidate, in the pool and in a
+  composition (`pool.retained`). It takes no part in the criteria or in the
+  evidence Gold verifies. Fresh examples learn; an answer observed again
+  after the forget is an example of its own.
+- R7: demand never wakes a habit whose retained basis no longer suffices for
+  a birth (`cold_checks`, `refused: basis_not_retained`). Its candidate
+  accumulates again from fresh examples only, and the procedure is born as a
+  habit of its own (typed check `archived_unfounded`). The archived habit
+  keeps the basis it was born from and never wakes. A habit archived for
+  disuse still wakes on demand.
+- R8: a wake consumes the events it matched by run and event id; the report
+  names each match by both. An event id is unique within its run only.
+- R9: an unavailable basis episode carries no evidence. A republication
+  carries the evidence of the episodes the reassessment verified, and Gold's
+  refusal is recorded with its reason.
+- R10: a reassessment reads every basis episode from the owner's custody in
+  store D. The session is re-executed from its replay data and recorded
+  results and must carry the case's exact events at their positions; a run
+  artifact kept elsewhere is not needed. Replay data store D no longer holds,
+  or a re-execution that does not reproduce the case, supports nothing.
+- R11: an emergency before a crashed session continues applies nothing: no
+  cursor, case, signal, birth or boundary. Its report names the tail it saw
+  in `window.deferred`, and `window.sessions` stays empty. The session's next
+  window judges that tail once, with its re-execution: a segment completed
+  before the crash still teaches, and a fire before it counts once. An
+  emergency for a window whose integrity check failed stays fail-closed, and
+  its cursors move past it.
+- R12: a step-1 decision (trust gap) clears the pair's earlier resolution
+  (`yields_to`, `resolved_by`). The report, the boundary and the runtime name
+  one winner.
+- One rule decides a status: the window's checks are folded in the gateway's
+  order (`hypotheses.fold`), and the latest check's verdict is revised by
+  every correction that reaches it (`hypotheses.decided`). The fold, the
+  admission and the reassessment all use it. Each correction a window adds
+  names in its revision (`knowledge.revisions`) the statuses it revised.
+- Migration: memory decided under court policy v5 is refused until
+  `synapse memory reassess` decides it again under v6; snapshots of state
+  projection v1 are ignored and the state is folded again from the chain of
+  reports. Reports of earlier windows carry no order: a held version no folded
+  statement places is ordered by arrival until a reassessment restores its
+  place from the record. The report of an emergency before a crashed session
+  continues names its tail in `window.deferred` and consolidates no session;
+  a pair resolved in step 2 and decided again by a trust gap no longer keeps
+  its earlier `yields_to`.
+- K1 compatibility (since 1b58d18; recorded here because it is not backward
+  compatible): `time()`, `random()` and `uuid()` are refused inside every
+  `integrate` transaction, the legacy transaction mode included. It is a
+  deliberate restriction for rollback and replay, not a compatible
+  replacement: outside a transaction they stay available, and randomness
+  inside a computation that can roll back would need its own contract that
+  records the drawn value as an effect. Snapshot `1.1.0` (F5) records shared
+  positions; `1.0.0` is still restored, without sharing.
+- Limitations: the order keeps one entry per reading (about 160 bytes of
+  state), and a window's cost grows with the orders of the sources it reads and
+  the statuses resting on them (`docs/MEMORY_PERFORMANCE.md`); a statement
+  whose observation was forgotten keeps its place — a forget withdraws what was
+  read, never the fact that the source said something else later, so it never
+  undoes the correction it made, a reading made before it stays history and a
+  reassessment never holds it again; of two readings stating the same thing in
+  different answers, the one folded first stays the version memory holds and
+  the other is a copy, whichever was read first (the same value; an admission
+  naming the copy's answer is refused as another version); the causal order is
+  the project gateway's journal. A reassessment re-executes once the session of
+  every basis case of a live habit, from store D; a habit archived because a
+  forget left its basis short of a birth never wakes again, and its procedure
+  is learned again only from fresh examples.
+- Acceptance: `acceptance/memory/test_causal_schedule_contract.py` (any
+  schedule of the same observations — one window or several, sessions
+  finishing in any order, statements and checks published late — gives what
+  an independent reading of the world's order gives, through the projection
+  of the reports), `test_delayed_check_acceptance.py`,
+  `test_delayed_statement_acceptance.py` and
+  `test_earlier_order_reassessment_acceptance.py` (canonical runs);
+  `test_forget_scope_acceptance.py` (R3, R4),
+  `test_forget_correction_window_acceptance.py` (R5),
+  `test_forget_learning_acceptance.py` and
+  `test_forget_composition_acceptance.py` (R6, R7),
+  `test_cold_event_identity_acceptance.py` (R8),
+  `test_reassessment_custody_acceptance.py` (R9, R10; with a contract case
+  in `test_reassessment_rules_contract.py`),
+  `test_crash_closed_segment_acceptance.py` (R11, beside the updated
+  `test_crash_recovery_acceptance.py`) and
+  `test_conflict_decision_execution_acceptance.py` (R12), each with a
+  positive control and its CI shard.
+
 ## Resilience review of PR108 at 1b58d18 — gateway order, relied bases, ownership, replay end, run locks — 2026-10-08
 
 Memory decides in the gateway's order and reads an action's basis again before

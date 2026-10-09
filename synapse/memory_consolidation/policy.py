@@ -24,7 +24,11 @@ from .records import digest
 #: v5 (review M1–M6): hypothesis statuses follow the gateway's order of checks, corrections and forgets (never
 #: run names or windows), a check after a consolidation names the hypothesis its session declared earlier, and a
 #: statement read or admitted opens a window. Memory decided under v4 is reassessed before it is used.
-POLICY_V5 = "synapse.memory.court-policy/v5"
+#: v6 (recheck of 556624d): the order holds across windows — a version of knowledge keeps its place on the
+#: gateway's sequence, a statement its source made before what memory holds is history, a correction moves a
+#: provisional status to its place, and the corrections memory holds reach a check published late. Memory
+#: decided under v5 is reassessed before it is used.
+POLICY_V6 = "synapse.memory.court-policy/v6"
 DECISION_RULES = ("threshold", "sprt", "confidence_sequence")
 
 PARAMETERS: dict[str, Any] = {
@@ -107,7 +111,7 @@ def resolve_parameters(overrides: Mapping[str, Any] | None) -> dict[str, Any]:
 def policy_identity(parameters: Mapping[str, Any], decision_rule: str) -> dict[str, Any]:
     if decision_rule not in DECISION_RULES:
         raise PolicyViolation("decision rule is threshold, sprt or confidence_sequence")
-    return {"policy": POLICY_V5, "decision_rule": decision_rule, "parameters": dict(parameters),
+    return {"policy": POLICY_V6, "decision_rule": decision_rule, "parameters": dict(parameters),
             "parameters_ref": digest({"rule": decision_rule, "parameters": dict(parameters)})}
 
 

@@ -24,7 +24,8 @@ from typing import Any, Mapping
 from synapse.memory_points import ActionPorts, LearnedHabitEntry, ReplayHorizon, TypedCondition
 
 from .court.dependencies import forgotten_since
-from .court.hypotheses import changed_since
+from .court.hypotheses import changed_since, held_corrections, reaches
+from .court.knowledge import known_of
 from .formation import bind_event, plan_task
 from .hypotheses import check_basis, declare, resolve, reuse, verification
 from .knowledge import search as knowledge_search
@@ -113,6 +114,9 @@ class MemorySession:
         self._loaded: set[str] = set()
         # Learned habits not loaded because a contract they were verified under changed.
         self.unverified: list[dict[str, Any]] = []
+        # The hypotheses this run declared, by identity: what an action's requirement rests on (a resumed run
+        # declares them again as it replays its history).
+        self._declared: dict[str, dict[str, Any]] = {}
 
     # -- formation and events ------------------------------------------------
     def declare_task(self, contract: Mapping[str, Any]) -> dict[str, Any]:
@@ -263,8 +267,12 @@ class MemorySession:
         relies on (review §8.2 and M6, after Kubernetes resourceVersion) — a check this run made as much as a
         status read from the court's record: a later check, a correction of what it rests on, or a forget of the
         observations it was decided on (one the operator recorded acts before the next consolidation applies it)
-        refuses the effect. A decision made after such a change stands. An exam reads its fixed snapshot: nothing
-        recorded later changes what it relies on."""
+        refuses the effect. The basis itself is read again, not only the court's entry for the hypothesis: a
+        correction the world's order of statements memory keeps makes of the answer the claim was read from, or of
+        the source it was checked against, after the decision refuses it whether or not memory holds a status for
+        the hypothesis yet (recheck of 556624d), by the rule the court decides with (``reaches``). A decision made
+        after such a change stands. An exam reads its fixed snapshot: nothing recorded later changes what it relies
+        on."""
         if self.exam is not None:
             return None
         state = self.factory.memory_now()
@@ -278,12 +286,22 @@ class MemorySession:
             check = observations.get("check") or {}
             changed.extend(f"{hypothesis_id} rests on forgotten results ({tombstone})" for tombstone in forgotten_since(
                 state, (observations.get("source"), check.get("evidence")), check.get("gw_seq"), read.get("window")))
+            record = self._declared.get(hypothesis_id)
+            if record is None:
+                changed.append(f"{hypothesis_id} was not declared by this run")
+                continue
+            decision = {"record": record, "source_ref": record["source"]["ref"], "at": check.get("gw_seq")}
+            changed.extend(f"{hypothesis_id} rests on {correction['old']['record']['id']}, corrected by "
+                           f"{correction['by']}" for correction in held_corrections(known_of(state), [record])
+                           if reaches(decision, correction))
         changed = sorted(set(changed))
         return "a required basis changed since it was read: " + "; ".join(changed) if changed else None
 
     # -- hypotheses (refinement §10) ---------------------------------------------
     def declare_hypothesis(self, claim, source_ref) -> dict[str, Any]:
-        return declare(claim, self.factory.configuration, source_ref)
+        record = declare(claim, self.factory.configuration, source_ref)
+        self._declared[record["id"]] = record
+        return record
 
     def resolve_hypothesis(self, record, view) -> dict[str, Any]:
         return resolve(record, view, self.factory.configuration)

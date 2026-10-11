@@ -2777,7 +2777,7 @@ def execute_file(request: FileExecutionRequest) -> RuntimeExecutionResult:
 def run_repl(request: ReplRequest, *, stdin: TextIO, stdout: TextIO, stderr: TextIO) -> ReplResult:
     if request.banner:
         stdout.write("╔══════════════════════════════════════╗\n")
-        stdout.write("║  Synapse v0.7.0 - Язык для ИИ        ║\n")
+        stdout.write(f"║  Synapse v{RUNTIME_VERSION} - Язык для ИИ        ║\n")
         stdout.write("║  Type 'exit' to quit                 ║\n")
         stdout.write("╚══════════════════════════════════════╝\n")
     interpreter = Interpreter()

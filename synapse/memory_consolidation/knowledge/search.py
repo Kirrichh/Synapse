@@ -98,6 +98,17 @@ def candidate(resolved: Mapping[str, Any], rank: int, channels: Mapping[str, lis
             "found_by": sorted(name for name, ranking in channels.items() if record["id"] in ranking)}
 
 
+def _slot_members(versions: Mapping[str, Mapping[str, Any]], slots: Sequence[str]) -> dict[str, list]:
+    """Group every version of the selected slots for this query."""
+    groups: dict[str, list] = {found: [] for found in slots}
+    if groups:
+        for entry in versions.values():
+            found = slot(entry["record"])
+            if found in groups:
+                groups[found].append(entry)
+    return groups
+
+
 def search(query: str, versions: Mapping[str, Mapping[str, Any]], policy, *, valid_at: str | None,
            known_as_of: int | None, embed: Callable[[str], tuple[list[float] | None, float | None]] | None,
            channels: Sequence[str] = ("lexical", "semantic"), embedded_by: str | None = None) -> dict[str, Any]:
@@ -129,9 +140,10 @@ def search(query: str, versions: Mapping[str, Mapping[str, Any]], policy, *, val
         found = slot(by_id[identity]["record"])
         if found not in slots:
             slots.append(found)
+    groups = _slot_members(versions, slots)
     candidates = []
     for rank, found in enumerate(slots, 1):
-        members = [entry for entry in versions.values() if slot(entry["record"]) == found]
+        members = groups[found]
         rule = freshness_of(policy, members[0]["record"]["property"])
         for resolved in resolve(members, rule, valid_at=valid_at, known_as_of=known_as_of):
             candidates.append(candidate(resolved, rank, rankings))

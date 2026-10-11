@@ -926,6 +926,12 @@ jobs:
             file: acceptance/memory/test_knowledge_contract.py
           - shard: knowledge-search
             file: acceptance/memory/test_knowledge_search_acceptance.py
+          - shard: search-grouping
+            file: acceptance/memory/test_search_grouping_acceptance.py
+          - shard: search-grouping-scale
+            file: acceptance/memory/test_search_grouping_scale_acceptance.py
+          - shard: storage-evacuation
+            file: acceptance/memory/test_storage_evacuation_acceptance.py
           - shard: knowledge-timeline
             file: acceptance/memory/test_knowledge_timeline_acceptance.py
           - shard: knowledge-correction

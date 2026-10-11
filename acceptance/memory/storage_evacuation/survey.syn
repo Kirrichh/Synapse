@@ -1,0 +1,17 @@
+memory palace "StorageEngineering" {
+ rooms { semantic }
+ consolidate during dream
+ backend sqlite
+ bind palace
+}
+let args = {}
+let observed = tool("topology_read", args)
+for node in observed.payload.nodes {
+ let freefact = know({"subject": {"namespace": "storage", "type": "node", "id": node.id}, "property": "free", "value": node.free, "valid": {"from": "DATE"}, "text": "storage engineering node capacity availability", "source": {"tool": "topology_read", "args": args}})
+ let alivefact = know({"subject": {"namespace": "storage", "type": "node", "id": node.id}, "property": "alive", "value": node.alive, "valid": {"from": "DATE"}, "text": "storage engineering node capacity availability", "source": {"tool": "topology_read", "args": args}})
+}
+for shard in observed.payload.shards {
+ let placementfact = know({"subject": {"namespace": "replicastore", "type": "partition", "id": shard.id}, "property": "placement", "value": str(shard.replicas), "valid": {"from": "DATE"}, "text": "replica layout segment ownership", "source": {"tool": "topology_read", "args": args}})
+}
+
+print({"survey_epoch": observed.payload.epoch, "node_facts": 48})

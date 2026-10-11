@@ -1,0 +1,69 @@
+memory palace "StorageEngineering" {
+ rooms { semantic }
+ consolidate during dream
+ backend sqlite
+ bind palace
+}
+fn find_node(nodes, wanted) {
+ for node in nodes { if node.id == wanted { return node } }
+ return null
+}
+let recalled = search_knowledge("storage engineering node capacity availability", {"valid_at": "DATE", "channels": ["lexical"]})
+let observed = tool("topology_read", {})
+let topology = observed.payload
+// The recalled values actually supply the planner's free-space and health inputs.
+for fact in recalled.candidates {
+ let node = find_node(topology.nodes, fact.entity.id)
+ if fact.attribute == "free" { node.free = fact.value }
+ if fact.attribute == "alive" { node.alive = fact.value }
+}
+let moves = []
+for shard in topology.shards {
+ let previous = shard.replicas
+ for original_id in previous {
+  let origin = find_node(topology.nodes, original_id)
+  if origin.drain or not origin.alive {
+   let chosen = -1
+   let largest = -1
+   for destination in topology.nodes {
+    let eligible = destination.alive and not destination.drain and destination.free >= shard.size
+    for existing in shard.replicas {
+     let existingnode = find_node(topology.nodes, existing)
+     if existing != original_id and existingnode.rack == destination.rack { eligible = false }
+     if existing == destination.id { eligible = false }
+    }
+    if eligible and destination.free > largest {
+     chosen = destination.id
+     largest = destination.free
+    }
+   }
+   assert chosen >= 0, "No feasible destination"
+   let targetnode = find_node(topology.nodes, chosen)
+   targetnode.free = targetnode.free - shard.size
+   origin.free = origin.free + shard.size
+   let staying = []
+   for existing in shard.replicas { if existing != original_id { staying = staying + [existing] } }
+   shard.replicas = staying + [chosen]
+   moves = moves + [{"shard": shard.id, "source": original_id, "target": chosen}]
+  }
+ }
+}
+let review = tool("plan_review", {"epoch": topology.epoch, "moves": moves})
+let completed = 0
+let halted = false
+let batch = []
+let cursor = 0
+for move in moves {
+ cursor = cursor + 1
+ batch = batch + [move]
+ if not halted and (len(batch) == 24 or cursor == len(moves)) {
+  try {
+   let applied = tool("migrate_batch", {"epoch": topology.epoch, "moves": batch})
+   completed = completed + applied.payload.applied
+  } catch (ACTION_FAILED as caught_error) {
+   halted = true
+  }
+  batch = []
+ }
+}
+print({"planned": len(moves), "completed": completed, "stale_plan_stopped": halted, "memory_candidates": len(recalled.candidates)})

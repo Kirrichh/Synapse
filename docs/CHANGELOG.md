@@ -1,5 +1,28 @@
 # Synapse Changelog
 
+## Query-local knowledge grouping — 2026-10-11
+
+- Knowledge search groups versions of selected slots in one pass per query.
+  Resolving each selected slot no longer scans the whole knowledge mapping.
+  Grouping follows candidate fusion and embedding, preserving member order,
+  unranked conflicting versions, both timelines, ranking, budgets and the
+  complete result shape. No persistent index or cache is introduced.
+- Groups retain references to existing versions only for the query lifetime;
+  records and vectors are not copied. Storage, court decisions, admission,
+  replay formats and worker access remain under their existing owners.
+- The previous search body is frozen only in acceptance. Separate CI shards
+  cover result equivalence, linear traversal of a larger corpus and a durable
+  storage evacuation with failure, replanning, consolidation and effect-free
+  replay. Timing observations are reported in `docs/MEMORY_PERFORMANCE.md`.
+- Targeted verification: 101 passed (59 new cases and 42 existing cases).
+  On `fc5509e`, the 58 search cases give 56 passes and two expected failures
+  for repeated traversal. All four baseline program prefixes replay on the
+  patched runtime without transport calls. The pre-commit corpus gate passes.
+  In three paired storage runs, median execution including consolidation is
+  68.720 → 62.200 seconds (9.49% less); full search events, migration ledgers
+  and final cluster states match. No reduction in process RSS is claimed.
+  This is targeted verification, not a full repository suite.
+
 ## Explicit CVM send admission — 2026-10-11
 
 - `SYS_MSG_SEND` uses the canonical actor owner. A missing owner refuses the

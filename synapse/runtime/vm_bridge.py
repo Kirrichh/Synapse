@@ -40,6 +40,7 @@ from synapse.runtime.vm_routing import (
 )
 from synapse.runtime.migration import validate_vm_state_program_hashes, iter_function_objects
 from synapse.runtime.host_abi import HOST_ABI_VERSION
+from synapse.runtime.vm_messaging import bind_sender, send_from_vm
 
 
 @dataclass
@@ -860,7 +861,7 @@ class VMBridge:
         h.record_history_event(event)
         return snapshot
 
-    def restore_vm_from_checkpoint(self, label: str, gas: Optional[int] = None, cognitive_budget: Optional[int] = None) -> CognitiveVM:
+    def restore_vm_from_checkpoint(self, label: str, gas: Optional[int] = None, cognitive_budget: Optional[int] = None, *, env=None) -> CognitiveVM:
         h = self.get_host()
         if label not in h.vm_checkpoints:
             raise VMSnapshotFormatError(f"Unknown VM checkpoint: {label}")
@@ -886,7 +887,7 @@ class VMBridge:
         program_dict = raw.get("program") or {"type": "bytecode_program", "version": "2.1", "constants": [], "instructions": [{"op": "HALT"}]}
         program = BytecodeProgram.from_dict(program_dict)
         vm = restore_vm_from_snapshot(raw, program, gas=gas, cognitive_budget=cognitive_budget, host=None)
-        vm.host = self.get_cvm_callback_adapter(vm)
+        vm.host = self.get_cvm_callback_adapter(vm, env=env, restoring=True)
         self._validate_pending_against_host(vm.state.pending_host_call or {}, vm)
         self.sync_context_tracker_from_vm_state(vm)
         self.sync_actor_runtime_from_vm_state(vm)
@@ -939,7 +940,7 @@ class VMBridge:
         return result
 
 
-    def _get_host_call_context(self, vm: Any) -> HostCallContext:
+    def _get_host_call_context(self, vm: Any, *, capture_identity=True) -> HostCallContext:
         """Build the capability context for a CVM CALL_HOST dispatch.
 
         VM snapshot agent_id is fail-closed when it conflicts with the current
@@ -961,7 +962,7 @@ class VMBridge:
         else:
             agent_id = snapshot_agent_id or host_agent_id
 
-        if state is not None and getattr(state, "agent_id", None) is None:
+        if capture_identity and state is not None and getattr(state, "agent_id", None) is None:
             state.agent_id = agent_id
 
         trace_fn = getattr(h, "current_trace_id", None)
@@ -1358,7 +1359,7 @@ class VMBridge:
                 symbol=symbol,
             )
 
-    def dispatch_host_call(self, vm: Any, symbol: str, args: list) -> Any:
+    def dispatch_host_call(self, vm: Any, symbol: str, args: list, *, sender=None) -> Any:
         """Dispatch Alpha.3 CALL_HOST calls without intercepting legacy HOST_ABI opcodes."""
         if self._nested_host_call_depth > 0:
             raise VMHostError(
@@ -1390,7 +1391,7 @@ class VMBridge:
             if symbol in RECORDED_SIDE_EFFECT_HOST_SYMBOLS:
                 return self.get_host().execute_side_effect(symbol, list(args))
             if symbol in VM_STRUCTURAL_RUNTIME:
-                return self._execute_structural_runtime(vm, symbol, args)
+                return self._execute_structural_runtime(vm, symbol, args, sender=sender)
             if symbol in BRIDGE_DISPATCHED:
                 ctx = self._get_host_call_context(vm)
                 self._check_capability(symbol, ctx)
@@ -1415,9 +1416,16 @@ class VMBridge:
         if callable(emit):
             emit(event, getattr(h, "current_env", None))
 
-    def _execute_structural_runtime(self, vm: Any, symbol: str, args: list) -> Any:
+    def _execute_structural_runtime(self, vm: Any, symbol: str, args: list, *, sender=None) -> Any:
         """Execute non-capability-gated structural runtime host calls."""
         h = self.get_host()
+        if symbol == "SYS_MSG_SEND":
+            # Isolation failures retain their domain type (dream/integrate/fracture).
+            # The message adapter translates policy rejection, never delivery.
+            # A legacy envelope already names its sender. Validate the trust
+            # gate without changing that identity after the VM built it.
+            self._get_host_call_context(vm, capture_identity=False)
+            return send_from_vm(h, vm, args, self._actor_runtime(), sender=sender)
         label = str(args[0]) if args else ""
         reason = str(args[1]) if len(args) > 1 else None
 
@@ -1448,7 +1456,7 @@ class VMBridge:
                 return None
 
             if symbol in {"SYS_ACTOR_ENTER", "SYS_ACTOR_EXIT"}:
-                actor_runtime = getattr(h, "actor_runtime", None)
+                actor_runtime = self._actor_runtime()
                 if actor_runtime is None:
                     raise VMHostError(
                         code="ACTOR_RUNTIME_MISSING",
@@ -1566,33 +1574,7 @@ class VMBridge:
 
 
 
-            if symbol in {"SYS_MSG_SEND", "SYS_MSG_CONSUME", "SYS_MSG_RECEIVE"}:
-                if symbol == "SYS_MSG_SEND":
-                    message = copy.deepcopy(args[0]) if args and isinstance(args[0], dict) else {}
-                    sender = str(message.get("sender_id") or message.get("sender") or "")
-                    receiver = str(message.get("target_id") or message.get("receiver") or "")
-                    msg_type = str(message.get("msg_type") or message.get("method") or "")
-                    payload = message.get("payload")
-                    actor_runtime = getattr(h, "actor_runtime", None)
-                    if actor_runtime is not None and hasattr(actor_runtime, "send_message"):
-                        # actor_runtime is the canonical mailbox authority and
-                        # already records message_sent history. Avoid double logging.
-                        return actor_runtime.send_message(sender, receiver, msg_type, [payload])
-
-                    if not hasattr(h, "mailboxes"):
-                        h.mailboxes = {}
-                    if not hasattr(h, "actor_log"):
-                        h.actor_log = []
-                    h.mailboxes.setdefault(receiver, []).append(message)
-                    delivered = message
-                    event = {
-                        "type": "message_sent",
-                        "event_id": self._next_host_event_id(h),
-                        "message": copy.deepcopy(message),
-                    }
-                    self._emit_context_event(h, event)
-                    return delivered
-
+            if symbol in {"SYS_MSG_CONSUME", "SYS_MSG_RECEIVE"}:
                 if symbol == "SYS_MSG_CONSUME":
                     event = copy.deepcopy(args[0]) if args and isinstance(args[0], dict) else {"type": "message_consumed"}
                     event.setdefault("type", "message_consumed")
@@ -1608,7 +1590,9 @@ class VMBridge:
         except VMHostError:
             raise
         except Exception as exc:
-            code = "POLICY_RUNTIME_ERROR" if symbol.startswith("SYS_POLICY_") else ("ACTOR_RUNTIME_ERROR" if symbol.startswith("SYS_ACTOR_") else "CONTEXT_RUNTIME_ERROR")
+            code = ("POLICY_RUNTIME_ERROR" if symbol.startswith("SYS_POLICY_") else
+                    "ACTOR_RUNTIME_ERROR" if symbol.startswith("SYS_ACTOR_") else
+                    "CONTEXT_RUNTIME_ERROR")
             raise VMHostError(
                 code=code,
                 message=f"Structural runtime error in {symbol}: {exc}",
@@ -1670,46 +1654,6 @@ class VMBridge:
                     return h.runtime.governance.evaluate(action, context)
                 return {"allowed": True}
 
-
-            if symbol in {"SYS_MSG_SEND", "SYS_MSG_CONSUME", "SYS_MSG_RECEIVE"}:
-                if symbol == "SYS_MSG_SEND":
-                    message = copy.deepcopy(args[0]) if args and isinstance(args[0], dict) else {}
-                    sender = str(message.get("sender_id") or message.get("sender") or "")
-                    receiver = str(message.get("target_id") or message.get("receiver") or "")
-                    msg_type = str(message.get("msg_type") or message.get("method") or "")
-                    payload = message.get("payload")
-                    actor_runtime = getattr(h, "actor_runtime", None)
-                    if actor_runtime is not None and hasattr(actor_runtime, "send_message"):
-                        # actor_runtime is the canonical mailbox authority and
-                        # already records message_sent history. Avoid double logging.
-                        return actor_runtime.send_message(sender, receiver, msg_type, [payload])
-
-                    if not hasattr(h, "mailboxes"):
-                        h.mailboxes = {}
-                    if not hasattr(h, "actor_log"):
-                        h.actor_log = []
-                    h.mailboxes.setdefault(receiver, []).append(message)
-                    delivered = message
-                    event = {
-                        "type": "message_sent",
-                        "event_id": self._next_host_event_id(h),
-                        "message": copy.deepcopy(message),
-                    }
-                    self._emit_context_event(h, event)
-                    return delivered
-
-                if symbol == "SYS_MSG_CONSUME":
-                    event = copy.deepcopy(args[0]) if args and isinstance(args[0], dict) else {"type": "message_consumed"}
-                    event.setdefault("type", "message_consumed")
-                    event.setdefault("event_id", self._next_host_event_id(h))
-                    self._emit_context_event(h, event)
-                    return event
-
-                # SYS_MSG_RECEIVE is a bridge-side hook for future host inbox sync.
-                # Commit 2 keeps CVM receive decisions over VMState.mailbox_inbound.
-                receiver = str(args[0]) if args else ""
-                mailbox = getattr(h, "mailboxes", {}).setdefault(receiver, []) if hasattr(h, "mailboxes") else []
-                return mailbox[0] if mailbox else None
         except VMHostError:
             raise
         except (TypeError, ValueError, AttributeError, IndexError) as exc:
@@ -1724,15 +1668,17 @@ class VMBridge:
             symbol=symbol,
         )
 
-    def get_cvm_callback_adapter(self, vm: Any):
+    def get_cvm_callback_adapter(self, vm: Any, *, env=None, restoring=False):
         """Return a CVM host callback that only routes CALL_HOST through Alpha.3 dispatch.
 
         Legacy v2.1 HOST_ABI opcodes (IMPRINT, RECALL, METRICS, etc.) continue to
         flow through vm_host_call unchanged.
         """
+        sender = bind_sender(self.get_host(), vm, env, restoring=restoring)
+
         def _callback(opcode: str, a: Any, b: Any) -> Any:
             if opcode == "CALL_HOST" and isinstance(a, dict):
-                return self.dispatch_host_call(vm, a.get("symbol"), a.get("args", []))
+                return self.dispatch_host_call(vm, a.get("symbol"), a.get("args", []), sender=sender)
             return self.vm_host_call(opcode, a, b)
         return _callback
 
@@ -1757,7 +1703,7 @@ class VMBridge:
         """Hydrate host ActorRuntime from restored VM actor_stack without emitting events."""
         try:
             h = self.get_host()
-            actor_runtime = getattr(h, "actor_runtime", None)
+            actor_runtime = self._actor_runtime()
             stack = list(getattr(vm.state, "actor_stack", []) or [])
             if actor_runtime is not None and hasattr(actor_runtime, "sync_from_cvm_stack"):
                 actor_runtime.sync_from_cvm_stack(stack)
@@ -1783,7 +1729,7 @@ class VMBridge:
         """Best-effort host-level actor unwind, idempotent and no-throw."""
         try:
             h = self.get_host()
-            actor_runtime = getattr(h, "actor_runtime", None)
+            actor_runtime = self._actor_runtime()
             if actor_runtime is not None and hasattr(actor_runtime, "exit_event"):
                 event = actor_runtime.exit_event(actor_name)
             else:
@@ -1912,7 +1858,7 @@ class VMBridge:
 
         if node.resume_from is not None:
             label = str(h.evaluate(node.resume_from, env))
-            vm = self.restore_vm_from_checkpoint(label, gas=gas, cognitive_budget=cognitive_budget)
+            vm = self.restore_vm_from_checkpoint(label, gas=gas, cognitive_budget=cognitive_budget, env=env)
         else:
             program_value = h.evaluate(node.source, env) if node.source else env.get("bytecode")
             program = BytecodeProgram.from_dict(program_value) if isinstance(program_value, dict) else program_value
@@ -1920,7 +1866,7 @@ class VMBridge:
                 raise VMError("run vm runs compiled bytecode (compile vm), not "
                                    f"{type(program_value).__name__}")
             vm = CognitiveVM(program, host=None)
-            vm.host = self.get_cvm_callback_adapter(vm)
+            vm.host = self.get_cvm_callback_adapter(vm, env=env)
             vm.state.gas_remaining = gas
             vm.state.cognitive_budget_remaining = cognitive_budget
             vm.state.current_context = h.current_context

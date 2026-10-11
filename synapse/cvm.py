@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Iterable
 
 from .bytecode import BytecodeProgram
+from .cvm_messaging import execute_send
 from .prompt_template import placeholders as prompt_placeholders
 from .runtime.host_abi import HOST_ABI_VERSION
 
@@ -76,7 +77,7 @@ GAS_COSTS: Dict[str, int] = {
     "IMPRINT": 5, "RECALL": 5, "AFFECT_EVENT": 3, "AFFECT_STATE": 3,
     "FRACTURE_SELF": 20, "DREAM": 20, "LLM_EVAL": 25,
     "METRICS": 2, "HOST_EVAL": 10, "SEND": 8, "RECEIVE": 8,
-    "MSG_SEND": 5, "MSG_RECEIVE": 5, "RECEIVE_ENTER": 1, "RECEIVE_EXIT": 1,
+    "MSG_SEND": 5, "MSG_SEND_ARGS": 5, "MSG_RECEIVE": 5, "RECEIVE_ENTER": 1, "RECEIVE_EXIT": 1,
     "HABIT_SUGGEST": 4, "THRESHOLD_CHECK": 3,
     "HALT": 0,
     # LLM/Prompt CVM Bridge (alpha3e Track A)
@@ -383,6 +384,9 @@ class VMState:
     pending_message_receive: Optional[Dict[str, Any]] = None
     # Security principal captured in snapshots. VM-local agent_id is trusted only after VMBridge trust gate.
     agent_id: Optional[str] = None
+    # Source-level caller identity for MSG_SEND_ARGS, separate from capability
+    # agent_id. Absent in legacy snapshots; the host binds it before execution.
+    sender_id: Optional[str] = None
     # Last terminal VM error payload, used when resume fails into HALTED.
     error: Optional[Dict[str, Any]] = None
     # --- Alpha3e Track B: Guard Blocks ---
@@ -403,7 +407,7 @@ class VMState:
     guard_violation_active: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "ip": self.ip,
             "stack": encode_vm_value(self.stack),
             "locals": encode_vm_value(self.locals),
@@ -428,9 +432,15 @@ class VMState:
             "guard_stack": [f.to_dict() if hasattr(f, "to_dict") else f for f in self.guard_stack],
             "guard_violation_active": self.guard_violation_active,
         }
+        if self.sender_id is not None:
+            result["sender_id"] = self.sender_id
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "VMState":
+        sender_id = data.get("sender_id")
+        if sender_id is not None and (type(sender_id) is not str or not sender_id):
+            raise VMSnapshotFormatError("VM sender_id must be non-empty text when present")
         call_stack = []
         for frame_data in data.get("call_stack", []):
             if isinstance(frame_data, dict):
@@ -467,6 +477,7 @@ class VMState:
             mailbox_outbound=decode_vm_value(data.get("mailbox_outbound", [])),
             pending_message_receive=decode_vm_value(data.get("pending_message_receive")),
             agent_id=data.get("agent_id"),
+            sender_id=sender_id,
             error=decode_vm_value(data.get("error")),
             guard_stack=[GuardFrame.from_dict(f) if isinstance(f, dict) else f for f in data.get("guard_stack", [])],
             guard_violation_active=bool(data.get("guard_violation_active", False)),
@@ -683,7 +694,8 @@ class CognitiveVM:
         the same general JSON encoder. Stack repr, previous hash and counters
         are always fresh. This does not change the hash profile or skip a step.
         """
-        if (payload["mailbox_inbound"] != []
+        if ("sender_id" in payload
+                or payload["mailbox_inbound"] != []
                 or payload["mailbox_outbound"] != []
                 or payload["pending_message_receive"] is not None
                 or type(payload["gas"]) is not int
@@ -746,6 +758,7 @@ class CognitiveVM:
                 "mailbox_inbound": encode_vm_value(self.state.mailbox_inbound),
                 "mailbox_outbound": encode_vm_value(self.state.mailbox_outbound),
                 "pending_message_receive": encode_vm_value(self.state.pending_message_receive),
+                **({"sender_id": self.state.sender_id} if self.state.sender_id is not None else {}),
             },
         )
         self.state.transition_hash = (
@@ -776,6 +789,7 @@ class CognitiveVM:
                 "mailbox_inbound": encode_vm_value(self.state.mailbox_inbound),
                 "mailbox_outbound": encode_vm_value(self.state.mailbox_outbound),
                 "pending_message_receive": encode_vm_value(self.state.pending_message_receive),
+                **({"sender_id": self.state.sender_id} if self.state.sender_id is not None else {}),
             },
         )
         self.state.transition_hash = (
@@ -903,29 +917,6 @@ class CognitiveVM:
             "payload_hash": payload_hash,
             "message": encode_vm_value(message),
         }
-
-    def _execute_msg_send(self, msg_type: str) -> None:
-        payload = self._pop()
-        target_id = self._pop()
-        sender_id = self._current_actor_id()
-        message = {
-            "msg_type": str(msg_type),
-            "method": str(msg_type),
-            "sender_id": sender_id,
-            "sender": sender_id,
-            "target_id": str(target_id),
-            "receiver": str(target_id),
-            "payload": payload,
-            "payload_hash": self._payload_hash(payload),
-        }
-        result = self._call_host(
-            "CALL_HOST",
-            {"symbol": "SYS_MSG_SEND", "args": [message]},
-            None,
-        )
-        self._raise_if_host_error_payload(result, "SYS_MSG_SEND")
-        self.state.mailbox_outbound.append(copy.deepcopy(message))
-        self._push(result)
 
     def _execute_receive_enter(self) -> None:
         # RAII marker reserved for D5 receive blocks. No host side effect.
@@ -1121,7 +1112,10 @@ class CognitiveVM:
             self._execute_receive_exit()
 
         elif op == "MSG_SEND":
-            self._execute_msg_send(str(ins.a))
+            execute_send(self, str(ins.a), VMHostError)
+
+        elif op == "MSG_SEND_ARGS":
+            execute_send(self, str(ins.a), VMHostError, exact_args=True)
 
         elif op == "MSG_RECEIVE":
             paused = self._execute_msg_receive(str(ins.a), str(ins.b))

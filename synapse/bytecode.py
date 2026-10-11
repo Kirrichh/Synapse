@@ -514,24 +514,17 @@ class CognitiveCompiler:
     # --- compound statement compilers ---
 
     def _compile_send_stmt(self, node: "SendStmt") -> None:
-        """Compile send receiver.method(args...) as D5 fire-and-forget MSG_SEND.
+        """Preserve source argument boundaries with the explicit MSG_SEND_ARGS opcode.
 
-        Variant A syntax is preserved: SendStmt.method becomes msg_type.  The
-        payload is the single argument when present, a list for multiple args,
-        or None for zero args.  No payload destructuring or LLM/prompt behavior
-        is introduced here.
+        Legacy MSG_SEND still consumes one opaque payload. Its lost arity cannot
+        be recovered from a list or None; new code always supplies an args list.
         """
         self._visit(node.receiver)
         args = list(getattr(node, "args", []) or [])
-        if len(args) == 0:
-            self._emit("LOAD_NONE")
-        elif len(args) == 1:
-            self._visit(args[0])
-        else:
-            for arg in args:
-                self._visit(arg)
-            self._emit("BUILD_LIST", len(args))
-        self._emit("MSG_SEND", getattr(node, "method", ""))
+        for arg in args:
+            self._visit(arg)
+        self._emit("BUILD_LIST", len(args))
+        self._emit("MSG_SEND_ARGS", getattr(node, "method", ""))
 
     def _compile_receive_block(self, node: "ReceiveBlock") -> None:
         """Compile receive { sender => payload { ... } } without grammar changes.

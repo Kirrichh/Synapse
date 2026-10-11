@@ -7,6 +7,7 @@ pending_host_call.
 
 import pytest
 
+from synapse import Interpreter, compile_to_ast
 from synapse.ast import Program, SendStmt, ReceiveBlock, ReceivePattern, Literal, LetStmt, Variable
 from synapse.bytecode import CognitiveCompiler, BytecodeProgram, Instruction
 from synapse.cvm import CognitiveVM, VMState, VMStatus
@@ -53,7 +54,10 @@ def test_msg_send_opcode_dispatches_via_bridge_and_records_outbound_snapshot():
         ],
         constants=["actor-b", {"text": "hello"}],
     )
-    vm, host, _ = _vm_with_bridge(program)
+    host = Interpreter()
+    host.interpret(compile_to_ast('policy Gov { target "actor-b.ping" forbid "blocked" }'))
+    vm = CognitiveVM(program, VMState(actor_stack=["actor-a"]))
+    vm.host = host.runtime.vm.get_cvm_callback_adapter(vm)
 
     vm.step()
     vm.step()
@@ -61,8 +65,11 @@ def test_msg_send_opcode_dispatches_via_bridge_and_records_outbound_snapshot():
 
     assert vm.state.mailbox_outbound[0]["target_id"] == "actor-b"
     assert vm.state.mailbox_outbound[0]["msg_type"] == "ping"
+    assert vm.state.mailbox_outbound[0]["sender"] == "actor-a"
     assert host.mailboxes["actor-b"][0]["payload"] == {"text": "hello"}
-    assert any(e.get("type") == "message_sent" for e in host.execution_history)
+    assert host.mailboxes["actor-b"][0]["args"] == [{"text": "hello"}]
+    assert [event["type"] for event in host.execution_history] == ["policy_evaluated", "message_sent"]
+    assert host.execution_history[0]["args"] == [{"text": "hello"}]
 
 
 def test_msg_send_does_not_commit_outbound_when_host_refuses():
@@ -172,15 +179,27 @@ def test_resume_message_receive_clears_pending_and_binds_message():
     assert vm.state.locals["payload"]["payload"] == 42
 
 
-def test_compiler_emits_msg_send_without_payload_unpacking_opcodes():
+@pytest.mark.parametrize("arguments", [[], [None], ["hello", 7], [["hello", 7]]],
+                         ids=["zero", "one-none", "two", "one-list"])
+def test_compiled_send_preserves_arguments_for_policy_and_delivery(arguments):
     program = CognitiveCompiler().compile(Program(statements=[
-        SendStmt(receiver=Literal("actor-b"), method="ping", args=[Literal("hello")])
+        SendStmt(receiver=Literal(value="actor-b"), method="ping", args=[Literal(value=arg) for arg in arguments])
     ]))
-    ops = [ins.op for ins in program.instructions]
-
-    assert "MSG_SEND" in ops
-    assert "MSG_UNPACK" not in ops
-    assert "MSG_MATCH_PAYLOAD" not in ops
+    host = Interpreter()
+    host.interpret(compile_to_ast('policy Gov { target "actor-b.ping" forbid "blocked" }'))
+    vm = CognitiveVM(program)
+    vm.host = host.runtime.vm.get_cvm_callback_adapter(vm)
+    result = host.runtime.vm.run_cvm_with_context_safety(vm)
+    assert result["halted"] is True
+    assert vm.state.mailbox_outbound[0]["argc"] == len(arguments)
+    assert "args" not in vm.state.mailbox_outbound[0]
+    assert host.mailboxes["actor-b"][0]["args"] == arguments
+    expected_payload = arguments[0] if len(arguments) == 1 else arguments
+    assert vm.state.mailbox_outbound[0]["payload"] == expected_payload
+    assert host.mailboxes["actor-b"][0]["payload"] == expected_payload
+    assert [event["type"] for event in host.execution_history] == ["policy_evaluated", "message_sent"]
+    assert host.execution_history[0]["args"] == arguments
+    assert host.execution_history[0]["sender"] == "global"
 
 
 def test_compiler_emits_receive_enter_msg_receive_and_receive_exit_for_current_syntax():

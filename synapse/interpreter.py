@@ -1728,13 +1728,7 @@ class Interpreter:
             raise RuntimeError(f"migrate is a durable suspension point; use interpret_async() for migration to {target}")
 
         if isinstance(node, SendStmt):
-            self.forbid_subagent_side_effect("send")
-            if self.dream_depth > 0:
-                raise DreamIsolationViolation("dream cannot send actor messages; use integrate")
-            if self.integrate_depth > 0:
-                raise IntegrateIsolationViolation("send is forbidden inside integrate transaction")
-            if self.policy_guard_depth > 0:
-                raise PolicyCompilationError("Policy guard cannot send actor messages")
+            self.check_send_context()
             receiver = self.evaluate(node.receiver, env)
             receiver_name = self.receiver_name(receiver)
             args = [self.evaluate(arg, env) for arg in node.args]
@@ -4085,8 +4079,18 @@ class Interpreter:
     def build_forward_packet(self, message: Dict[str, Any], node_address: str) -> Dict[str, Any]:
         return self.runtime.actor.build_forward_packet(message, node_address)
 
-    def send_message(self, sender: str, receiver: str, method: str, args: List[Any]) -> Dict[str, Any]:
+    def check_send_context(self) -> None:
+        """Reject a send before evaluating its arguments or delivering its effect."""
         self._forbid_consensus_vote_side_effect("send")
+        self.forbid_subagent_side_effect("send")
+        if self.dream_depth > 0:
+            raise DreamIsolationViolation("dream cannot send actor messages; use integrate")
+        if self.integrate_depth > 0:
+            raise IntegrateIsolationViolation("send is forbidden inside integrate transaction")
+        if self.policy_guard_depth > 0:
+            raise PolicyCompilationError("Policy guard cannot send actor messages")
+
+    def send_message(self, sender: str, receiver: str, method: str, args: List[Any]) -> Dict[str, Any]:
         return self.runtime.actor.send_message(sender, receiver, method, args)
 
     def apply_receive_patterns(self, node: ReceiveBlock, message: Dict[str, Any], env: Environment, async_mode: bool = False):
@@ -4637,13 +4641,7 @@ class Interpreter:
             return (yield from self.runtime.actor.request_migration_async(node, env, target))
 
         if isinstance(node, SendStmt):
-            self.forbid_subagent_side_effect("send")
-            if self.dream_depth > 0:
-                raise DreamIsolationViolation("dream cannot send actor messages; use integrate")
-            if self.integrate_depth > 0:
-                raise IntegrateIsolationViolation("send is forbidden inside integrate transaction")
-            if self.policy_guard_depth > 0:
-                raise PolicyCompilationError("Policy guard cannot send actor messages")
+            self.check_send_context()
             receiver = yield from self.evaluate_async(node.receiver, env)
             receiver_name = self.receiver_name(receiver)
             args = []

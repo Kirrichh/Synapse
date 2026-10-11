@@ -1,5 +1,32 @@
 # Synapse Changelog
 
+## Explicit CVM send admission — 2026-10-11
+
+- `SYS_MSG_SEND` uses the canonical actor owner. A missing owner refuses the
+  call; VMBridge no longer delivers directly into a mailbox. Actor admission
+  preserves context restrictions, governance, routing, replay and detached data.
+- New compilations use `MSG_SEND_ARGS` with `synapse.cvm.send-args/v1`, preserving
+  zero arguments, one null, several arguments and one list as distinct calls.
+  Legacy `MSG_SEND` still denotes one opaque payload and now also passes admission.
+- The invoking DSL actor is captured separately from capability `agent_id`.
+  Checkpoint resume refuses a different caller. A new-format direct host call
+  cannot select its own sender by editing the message envelope.
+- Policy rejection reaches the caller as `POLICY_VIOLATION` before delivery or
+  VM outbox commit. Isolation exceptions retain their domain types. CVM receives
+  a stable message value across replay; routing metadata remains in actor history.
+- The frozen Gold E1 profile retains its original capability digest and legacy
+  replay contract. It refuses the new instruction/caller state pending a separate
+  profile extension. Older CVMs reject the new opcode rather than guessing arity.
+  Historical records produced by the bypass are not silently upgraded or assigned
+  invented governance verdicts.
+- Independent acceptance files cover CLI/governance, caller/context admission,
+  delivery/replay ownership and legacy Gold compatibility.
+- Targeted verification: 1,152 passed across 48 independently executed files,
+  at most four processes in parallel; 106 cases are in the four new acceptance
+  files. The governance acceptance on `cb189d6` gives 24 failures and five
+  passing controls, versus 29 passes after the fix. The pre-commit corpus gate
+  passes. These results are targeted verification, not a full-suite run.
+
 ## Recheck of PR108 at 556624d — the world's order holds across windows; forget, learning, reassessment and recovery (R1–R12) — 2026-10-09
 
 Memory keeps the order its sources stated things in across consolidation

@@ -274,6 +274,7 @@ class ActorRuntime:
 
     def send_message(self, sender: str, receiver: str, method: str, args: List[Any]) -> Dict[str, Any]:
         h = self.get_host()
+        h.check_send_context()
         # Governance verdicts are durable events: a replay consumes them.
         h.check_send_governance(sender, receiver, method, args)
         # The delivered message, its records and the value returned to the sender

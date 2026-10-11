@@ -202,6 +202,20 @@ def test_every_value_bearing_field_of_a_state_is_checked_not_two_of_them() -> No
         )
         assert planted.touches == [], f"VMState.{name} was consulted before it was refused"
 
+def test_a_caller_identity_is_outside_the_frozen_e1_state_profile() -> None:
+    """A canonical ``sender_id`` is still not an E1 state.
+
+    The exact-args send binds a caller identity the frozen Gold E1 profile does
+    not carry. Its value is checked like every other field (above); a canonical
+    one is then refused as a state outside the profile, not admitted.
+    """
+
+    _, program, _ = effect_fixture()
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        vm_adapter(program, state=VMState(sender_id="caller"))
+    assert excinfo.value.failure_code is R.ReplayFailureCode.TYPE_MISMATCH
+    assert "sender_id" in str(excinfo.value)
+
 def test_a_frame_and_a_function_are_walked_field_by_field() -> None:
     """Frames and admitted functions are traversed rather than trusted by type."""
 

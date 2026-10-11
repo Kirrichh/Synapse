@@ -16,7 +16,10 @@
   a stable message value across replay; routing metadata remains in actor history.
 - The frozen Gold E1 profile retains its original capability digest and legacy
   replay contract. It refuses the new instruction/caller state pending a separate
-  profile extension. Older CVMs reject the new opcode rather than guessing arity.
+  profile extension. The caller is checked like every state field first: a
+  non-canonical value is refused as `NON_CANONICAL_VM_VALUE`, a canonical one as
+  a state outside the profile (`TYPE_MISMATCH`). Older CVMs reject the new opcode
+  rather than guessing arity.
   Historical records produced by the bypass are not silently upgraded or assigned
   invented governance verdicts.
 - Independent acceptance files cover CLI/governance, caller/context admission,
@@ -26,6 +29,13 @@
   files. The governance acceptance on `cb189d6` gives 24 failures and five
   passing controls, versus 29 passes after the fix. The pre-commit corpus gate
   passes. These results are targeted verification, not a full-suite run.
+- Follow-up: CI on `d3c0395` failed in
+  `tests/test_stage4_gold_replay_dispatch_safety.py`, which plants a hostile
+  value in every state field; the caller's was refused as outside the profile
+  before its value was checked. The profile refusal now follows the value
+  check, and a contract case pins the refusal of a canonical caller. 26 related
+  files (Gold replay, the E1 lifecycle, the CVM send acceptance files), each in
+  its own process, at most four in parallel: 497 passed.
 
 ## Recheck of PR108 at 556624d — the world's order holds across windows; forget, learning, reassessment and recovery (R1–R12) — 2026-10-09
 

@@ -1,0 +1,2023 @@
+{
+  "schema_version": "synapse.acceptance.memory-inventory-selection/v1",
+  "date": "2026-10-11",
+  "baseline_revision": "f2bf791c0bacc32118fc6f68f06ae48c1cf26fd4",
+  "patched_revision": "Uncommitted working tree on the PR108 branch; identified by product source SHA-256.",
+  "change": "Select existing event kinds before detached copying inside the held validated owner inventory. Physical scans, court inventory, storage formats and ownership rules remain unchanged.",
+  "product_source_sha256": {
+    "synapse/memory_consolidation/owner.py": "8d61bad678fd68b4d94ef3ecddf1be6702742c71e03ef1655dae3401f1ba85a8",
+    "synapse/experiments/gold/project_memory_store.py": "a75f7ea8b4590d20ab94588f15467a86b4d07d17e57f83f4ca9b6976d37e3001"
+  },
+  "acceptance_source_sha256": {
+    "acceptance/memory/inventory_selection_measure.py": "24343a721764340d86b2cfd28f3559b565b0f5132d3346e9ffeb5f1a25b154e5",
+    "acceptance/stage4/stage16/test_project_memory_inventory_selection_contract.py": "5ba4ddf6c983445419bce9c6dacaa299430b233f9dd96794e79d2382401ac98a"
+  },
+  "profile_for_selection": {
+    "revision": "f2bf791c0bacc32118fc6f68f06ae48c1cf26fd4",
+    "scope": "cProfile of the entire storage harness including setup, inspection and replay; instrumentation changes timing, these are not speedup samples. Cumulative times overlap.",
+    "total_profiled_s": 271.0254673810001,
+    "selected": [
+      {
+        "file": "/workspace/Synapse/synapse/memory_consolidation/court/knowledge.py",
+        "line": 259,
+        "function": "knowledge_stage",
+        "calls": 4,
+        "self_s": 0.09037924300000001,
+        "cumulative_s": 6.379608635
+      },
+      {
+        "file": "/workspace/Synapse/synapse/experiments/gold/project_memory_store.py",
+        "line": 58,
+        "function": "_read",
+        "calls": 255,
+        "self_s": 0.06972141,
+        "cumulative_s": 25.972175985000003
+      },
+      {
+        "file": "/workspace/Synapse/synapse/experiments/gold/project_memory_store.py",
+        "line": 90,
+        "function": "_scan_inventory",
+        "calls": 21,
+        "self_s": 0.00184872,
+        "cumulative_s": 18.038802192000002
+      },
+      {
+        "file": "/workspace/Synapse/synapse/experiments/gold/project_memory_store.py",
+        "line": 115,
+        "function": "inventory",
+        "calls": 73,
+        "self_s": 0.08335790200000001,
+        "cumulative_s": 49.788433963
+      }
+    ]
+  },
+  "durable_scenario": {
+    "schema_version": "synapse.acceptance.storage-evacuation-measurement/v1",
+    "baseline_revision": "f2bf791c0bacc32118fc6f68f06ae48c1cf26fd4",
+    "task": "24 nodes, 6 racks, 1536 shards with three replicas; drain four nodes, inject node failure and capacity correction, refuse stale plan, replan.",
+    "scope": {
+      "execution": "Four real durable application runs including their consolidation and the small source/status-file writes between phases. Project setup, retained-state inspection, replay and final report writing are excluded.",
+      "replay": "Canonical program prefix ending immediately before the recorded session_consolidated event of each phase; this does not perform consolidation again.",
+      "rss": "Linux peak process RSS in KiB after the complete harness, including inspection and replay.",
+      "timing": "Three isolated processes per variant, paired in alternating order; no profiling or timing assertion; unchanged Python environment; local simulated provider without network.",
+      "comparisons": "Byte equality for migration ledger and final cluster; complete knowledge_searched events compared with no excluded fields; explicit outcome/public-result fields.",
+      "excluded_public_fields": {
+        "artifact_path": "Different artifact root per isolated process.",
+        "history_hash": "Distinct complete run records; whole-history equality is not asserted. Each recorded history is verified by replay."
+      },
+      "fresh_state_limit": "Full fresh consolidation reports and owner states are not asserted equal: recorded provider timing, derived cost weights and content identities differ. Whole knowledge decisions/applied knowledge match at each window; complete boundary bodies match except their consolidation_id. Full state on a shared journal is compared separately by inventory_selection_measure.py."
+    },
+    "reproduction_command": "python acceptance/memory/storage_evacuation/measure.py --product-root /path/to/checkout --output /new/artifact/directory --label baseline-or-patched",
+    "cross_version_reproduction_command": "python acceptance/memory/storage_evacuation/measure.py --product-root /path/to/patched --output /new/replay/directory --label old-records-new-runtime --replay-existing /baseline/artifacts",
+    "process_order": [
+      "baseline-1",
+      "patched-1",
+      "patched-2",
+      "baseline-2",
+      "baseline-3",
+      "patched-3"
+    ],
+    "samples": [
+      {
+        "pair": 1,
+        "variant": "baseline",
+        "phases": [
+          {
+            "name": "survey-original",
+            "wall_s": 4.834496745001161,
+            "cpu_s": 4.804776571,
+            "status": "COMPLETED",
+            "exit_code": 0
+          },
+          {
+            "name": "evacuate-original",
+            "wall_s": 13.8206298540008,
+            "cpu_s": 13.791752053999998,
+            "status": "COMPLETED",
+            "exit_code": 0
+          },
+          {
+            "name": "survey-corrected",
+            "wall_s": 13.130390755000917,
+            "cpu_s": 13.105177112000003,
+            "status": "COMPLETED",
+            "exit_code": 0
+          },
+          {
+            "name": "evacuate-replanned",
+            "wall_s": 33.0435346459999,
+            "cpu_s": 32.88743561,
+            "status": "COMPLETED",
+            "exit_code": 0
+          }
+        ],
+        "execution_with_consolidation_wall_s": 64.83016067300014,
+        "phase_cpu_s": 64.589141347,
+        "replay": [
+          {
+            "name": "survey-original",
+            "wall_s": 0.379046104999361,
+            "cpu_s": 0.3790373379999892,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 1587,
+              "reason": null
+            }
+          },
+          {
+            "name": "evacuate-original",
+            "wall_s": 5.777518557000803,
+            "cpu_s": 5.775862790000005,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 10,
+              "reason": null
+            }
+          },
+          {
+            "name": "survey-corrected",
+            "wall_s": 2.2506451710014517,
+            "cpu_s": 2.2502209109999995,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 1587,
+              "reason": null
+            }
+          },
+          {
+            "name": "evacuate-replanned",
+            "wall_s": 6.657786883999506,
+            "cpu_s": 6.656965907,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 45,
+              "reason": null
+            }
+          }
+        ],
+        "replay_wall_s": 15.064996717001122,
+        "environment": {
+          "label": "baseline-f2bf791-1",
+          "product_root": "/workspace/synapse-inventory-baseline-f2bf791",
+          "search_module": "/workspace/synapse-inventory-baseline-f2bf791/synapse/memory_consolidation/knowledge/search.py",
+          "search_source_sha256": "52ebea09a481f558d726d804a15fa3fef426561dfe4ba2e0642456ab7b6d1d32",
+          "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+          "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+          "peak_rss_kib": 869912,
+          "changed_product_source_sha256": {
+            "synapse/experiments/gold/project_memory_store.py": "62be70abe7ce376a1a54c56119b17f965b45b92b4f6c53582a82d2caeec41e81",
+            "synapse/memory_consolidation/owner.py": "598344bc141fcf1bdc731f2edad2952b6d1a6f0292e97db77bca7a44baf5fd80"
+          }
+        }
+      },
+      {
+        "pair": 1,
+        "variant": "patched",
+        "phases": [
+          {
+            "name": "survey-original",
+            "wall_s": 5.158376408999175,
+            "cpu_s": 5.1140337360000006,
+            "status": "COMPLETED",
+            "exit_code": 0
+          },
+          {
+            "name": "evacuate-original",
+            "wall_s": 13.363502939999307,
+            "cpu_s": 13.324446879999998,
+            "status": "COMPLETED",
+            "exit_code": 0
+          },
+          {
+            "name": "survey-corrected",
+            "wall_s": 11.346072815000298,
+            "cpu_s": 11.323571825999998,
+            "status": "COMPLETED",
+            "exit_code": 0
+          },
+          {
+            "name": "evacuate-replanned",
+            "wall_s": 29.12717945100121,
+            "cpu_s": 28.984294705,
+            "status": "COMPLETED",
+            "exit_code": 0
+          }
+        ],
+        "execution_with_consolidation_wall_s": 58.99627141500059,
+        "phase_cpu_s": 58.746347146999994,
+        "replay": [
+          {
+            "name": "survey-original",
+            "wall_s": 0.3552247999996325,
+            "cpu_s": 0.3552172540000029,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 1587,
+              "reason": null
+            }
+          },
+          {
+            "name": "evacuate-original",
+            "wall_s": 5.9110076849992765,
+            "cpu_s": 5.910218396999994,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 10,
+              "reason": null
+            }
+          },
+          {
+            "name": "survey-corrected",
+            "wall_s": 2.4753153970013955,
+            "cpu_s": 2.474930045999997,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 1587,
+              "reason": null
+            }
+          },
+          {
+            "name": "evacuate-replanned",
+            "wall_s": 6.602378769999632,
+            "cpu_s": 6.601621339000005,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 45,
+              "reason": null
+            }
+          }
+        ],
+        "replay_wall_s": 15.343926651999936,
+        "environment": {
+          "label": "patched-f2bf791-1",
+          "product_root": "/workspace/Synapse",
+          "search_module": "/workspace/Synapse/synapse/memory_consolidation/knowledge/search.py",
+          "search_source_sha256": "52ebea09a481f558d726d804a15fa3fef426561dfe4ba2e0642456ab7b6d1d32",
+          "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+          "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+          "peak_rss_kib": 860272,
+          "changed_product_source_sha256": {
+            "synapse/experiments/gold/project_memory_store.py": "a75f7ea8b4590d20ab94588f15467a86b4d07d17e57f83f4ca9b6976d37e3001",
+            "synapse/memory_consolidation/owner.py": "8d61bad678fd68b4d94ef3ecddf1be6702742c71e03ef1655dae3401f1ba85a8"
+          }
+        }
+      },
+      {
+        "pair": 2,
+        "variant": "baseline",
+        "phases": [
+          {
+            "name": "survey-original",
+            "wall_s": 5.022690259000228,
+            "cpu_s": 4.9954635849999995,
+            "status": "COMPLETED",
+            "exit_code": 0
+          },
+          {
+            "name": "evacuate-original",
+            "wall_s": 14.221283420998589,
+            "cpu_s": 14.183942894999998,
+            "status": "COMPLETED",
+            "exit_code": 0
+          },
+          {
+            "name": "survey-corrected",
+            "wall_s": 12.558206249999785,
+            "cpu_s": 12.510325261000002,
+            "status": "COMPLETED",
+            "exit_code": 0
+          },
+          {
+            "name": "evacuate-replanned",
+            "wall_s": 31.771086773000206,
+            "cpu_s": 31.598247224000005,
+            "status": "COMPLETED",
+            "exit_code": 0
+          }
+        ],
+        "execution_with_consolidation_wall_s": 63.574535714000376,
+        "phase_cpu_s": 63.28797896500001,
+        "replay": [
+          {
+            "name": "survey-original",
+            "wall_s": 0.34704157799933455,
+            "cpu_s": 0.3469540259999917,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 1587,
+              "reason": null
+            }
+          },
+          {
+            "name": "evacuate-original",
+            "wall_s": 5.556391623000309,
+            "cpu_s": 5.555485656000002,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 10,
+              "reason": null
+            }
+          },
+          {
+            "name": "survey-corrected",
+            "wall_s": 2.4345034470006794,
+            "cpu_s": 2.4309782999999925,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 1587,
+              "reason": null
+            }
+          },
+          {
+            "name": "evacuate-replanned",
+            "wall_s": 6.652114677999634,
+            "cpu_s": 6.645005406999999,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 45,
+              "reason": null
+            }
+          }
+        ],
+        "replay_wall_s": 14.990051325999957,
+        "environment": {
+          "label": "baseline-f2bf791-2",
+          "product_root": "/workspace/synapse-inventory-baseline-f2bf791",
+          "search_module": "/workspace/synapse-inventory-baseline-f2bf791/synapse/memory_consolidation/knowledge/search.py",
+          "search_source_sha256": "52ebea09a481f558d726d804a15fa3fef426561dfe4ba2e0642456ab7b6d1d32",
+          "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+          "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+          "peak_rss_kib": 855720,
+          "changed_product_source_sha256": {
+            "synapse/experiments/gold/project_memory_store.py": "62be70abe7ce376a1a54c56119b17f965b45b92b4f6c53582a82d2caeec41e81",
+            "synapse/memory_consolidation/owner.py": "598344bc141fcf1bdc731f2edad2952b6d1a6f0292e97db77bca7a44baf5fd80"
+          }
+        }
+      },
+      {
+        "pair": 2,
+        "variant": "patched",
+        "phases": [
+          {
+            "name": "survey-original",
+            "wall_s": 4.814188066000497,
+            "cpu_s": 4.788170072,
+            "status": "COMPLETED",
+            "exit_code": 0
+          },
+          {
+            "name": "evacuate-original",
+            "wall_s": 12.924010414000804,
+            "cpu_s": 12.887392067,
+            "status": "COMPLETED",
+            "exit_code": 0
+          },
+          {
+            "name": "survey-corrected",
+            "wall_s": 11.232366150999951,
+            "cpu_s": 11.206600205,
+            "status": "COMPLETED",
+            "exit_code": 0
+          },
+          {
+            "name": "evacuate-replanned",
+            "wall_s": 28.509948711000106,
+            "cpu_s": 28.353352807999997,
+            "status": "COMPLETED",
+            "exit_code": 0
+          }
+        ],
+        "execution_with_consolidation_wall_s": 57.48158583100121,
+        "phase_cpu_s": 57.235515152,
+        "replay": [
+          {
+            "name": "survey-original",
+            "wall_s": 0.3567719379989285,
+            "cpu_s": 0.35676115599999747,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 1587,
+              "reason": null
+            }
+          },
+          {
+            "name": "evacuate-original",
+            "wall_s": 5.496964218998983,
+            "cpu_s": 5.4959203479999985,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 10,
+              "reason": null
+            }
+          },
+          {
+            "name": "survey-corrected",
+            "wall_s": 2.399330361999091,
+            "cpu_s": 2.398624300999998,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 1587,
+              "reason": null
+            }
+          },
+          {
+            "name": "evacuate-replanned",
+            "wall_s": 6.585182695000185,
+            "cpu_s": 6.584392524999998,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 45,
+              "reason": null
+            }
+          }
+        ],
+        "replay_wall_s": 14.838249213997187,
+        "environment": {
+          "label": "patched-f2bf791-2",
+          "product_root": "/workspace/Synapse",
+          "search_module": "/workspace/Synapse/synapse/memory_consolidation/knowledge/search.py",
+          "search_source_sha256": "52ebea09a481f558d726d804a15fa3fef426561dfe4ba2e0642456ab7b6d1d32",
+          "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+          "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+          "peak_rss_kib": 860120,
+          "changed_product_source_sha256": {
+            "synapse/experiments/gold/project_memory_store.py": "a75f7ea8b4590d20ab94588f15467a86b4d07d17e57f83f4ca9b6976d37e3001",
+            "synapse/memory_consolidation/owner.py": "8d61bad678fd68b4d94ef3ecddf1be6702742c71e03ef1655dae3401f1ba85a8"
+          }
+        }
+      },
+      {
+        "pair": 3,
+        "variant": "baseline",
+        "phases": [
+          {
+            "name": "survey-original",
+            "wall_s": 5.022660679000182,
+            "cpu_s": 4.9931242,
+            "status": "COMPLETED",
+            "exit_code": 0
+          },
+          {
+            "name": "evacuate-original",
+            "wall_s": 14.01358559899927,
+            "cpu_s": 13.984744938000002,
+            "status": "COMPLETED",
+            "exit_code": 0
+          },
+          {
+            "name": "survey-corrected",
+            "wall_s": 13.27516334000029,
+            "cpu_s": 13.245837392999999,
+            "status": "COMPLETED",
+            "exit_code": 0
+          },
+          {
+            "name": "evacuate-replanned",
+            "wall_s": 32.834702348000064,
+            "cpu_s": 32.677453792,
+            "status": "COMPLETED",
+            "exit_code": 0
+          }
+        ],
+        "execution_with_consolidation_wall_s": 65.14736441199966,
+        "phase_cpu_s": 64.901160323,
+        "replay": [
+          {
+            "name": "survey-original",
+            "wall_s": 0.3798409909995826,
+            "cpu_s": 0.3797873320000065,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 1587,
+              "reason": null
+            }
+          },
+          {
+            "name": "evacuate-original",
+            "wall_s": 5.895045248000315,
+            "cpu_s": 5.893706107999989,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 10,
+              "reason": null
+            }
+          },
+          {
+            "name": "survey-corrected",
+            "wall_s": 2.2605877240002883,
+            "cpu_s": 2.259861485000002,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 1587,
+              "reason": null
+            }
+          },
+          {
+            "name": "evacuate-replanned",
+            "wall_s": 6.764113826999164,
+            "cpu_s": 6.762873886000008,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 45,
+              "reason": null
+            }
+          }
+        ],
+        "replay_wall_s": 15.29958778999935,
+        "environment": {
+          "label": "baseline-f2bf791-3",
+          "product_root": "/workspace/synapse-inventory-baseline-f2bf791",
+          "search_module": "/workspace/synapse-inventory-baseline-f2bf791/synapse/memory_consolidation/knowledge/search.py",
+          "search_source_sha256": "52ebea09a481f558d726d804a15fa3fef426561dfe4ba2e0642456ab7b6d1d32",
+          "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+          "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+          "peak_rss_kib": 870708,
+          "changed_product_source_sha256": {
+            "synapse/experiments/gold/project_memory_store.py": "62be70abe7ce376a1a54c56119b17f965b45b92b4f6c53582a82d2caeec41e81",
+            "synapse/memory_consolidation/owner.py": "598344bc141fcf1bdc731f2edad2952b6d1a6f0292e97db77bca7a44baf5fd80"
+          }
+        }
+      },
+      {
+        "pair": 3,
+        "variant": "patched",
+        "phases": [
+          {
+            "name": "survey-original",
+            "wall_s": 4.608993247000399,
+            "cpu_s": 4.583116825,
+            "status": "COMPLETED",
+            "exit_code": 0
+          },
+          {
+            "name": "evacuate-original",
+            "wall_s": 12.998735354000019,
+            "cpu_s": 12.963934623,
+            "status": "COMPLETED",
+            "exit_code": 0
+          },
+          {
+            "name": "survey-corrected",
+            "wall_s": 11.332039843999155,
+            "cpu_s": 11.30392341,
+            "status": "COMPLETED",
+            "exit_code": 0
+          },
+          {
+            "name": "evacuate-replanned",
+            "wall_s": 28.689328221000324,
+            "cpu_s": 28.524701696999998,
+            "status": "COMPLETED",
+            "exit_code": 0
+          }
+        ],
+        "execution_with_consolidation_wall_s": 57.63018430900047,
+        "phase_cpu_s": 57.375676555,
+        "replay": [
+          {
+            "name": "survey-original",
+            "wall_s": 0.2945054430001619,
+            "cpu_s": 0.29409678700000086,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 1587,
+              "reason": null
+            }
+          },
+          {
+            "name": "evacuate-original",
+            "wall_s": 5.585053075999895,
+            "cpu_s": 5.584255808000002,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 10,
+              "reason": null
+            }
+          },
+          {
+            "name": "survey-corrected",
+            "wall_s": 2.1998509309996734,
+            "cpu_s": 2.1990142359999965,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 1587,
+              "reason": null
+            }
+          },
+          {
+            "name": "evacuate-replanned",
+            "wall_s": 6.332970134000789,
+            "cpu_s": 6.331864420000002,
+            "result": {
+              "status": "replay_verified",
+              "consumed": 45,
+              "reason": null
+            }
+          }
+        ],
+        "replay_wall_s": 14.412379584000519,
+        "environment": {
+          "label": "patched-f2bf791-3",
+          "product_root": "/workspace/Synapse",
+          "search_module": "/workspace/Synapse/synapse/memory_consolidation/knowledge/search.py",
+          "search_source_sha256": "52ebea09a481f558d726d804a15fa3fef426561dfe4ba2e0642456ab7b6d1d32",
+          "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+          "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+          "peak_rss_kib": 861848,
+          "changed_product_source_sha256": {
+            "synapse/experiments/gold/project_memory_store.py": "a75f7ea8b4590d20ab94588f15467a86b4d07d17e57f83f4ca9b6976d37e3001",
+            "synapse/memory_consolidation/owner.py": "8d61bad678fd68b4d94ef3ecddf1be6702742c71e03ef1655dae3401f1ba85a8"
+          }
+        }
+      }
+    ],
+    "medians": {
+      "baseline": {
+        "execution_with_consolidation_wall_s": 64.83016067300014,
+        "replay_wall_s": 15.064996717001122,
+        "peak_rss_kib": 869912
+      },
+      "patched": {
+        "execution_with_consolidation_wall_s": 57.63018430900047,
+        "replay_wall_s": 14.838249213997187,
+        "peak_rss_kib": 860272
+      }
+    },
+    "comparisons": [
+      {
+        "pair": 1,
+        "files": {
+          "move-ledger.json": {
+            "byte_equal": true,
+            "sha256": "bb038ac0663a94d6d06bede0ef40f412720c5bae05c664e831c0da338be7d869"
+          },
+          "final-cluster.json": {
+            "byte_equal": true,
+            "sha256": "4003b9a712c13acb9c44108bf66c22ce5400c068233ce7c75b76ffe14e58fb94"
+          }
+        },
+        "searches": {
+          "survey-original": {
+            "whole_events_equal": true,
+            "excluded_fields": [],
+            "event_count": 0,
+            "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+          },
+          "evacuate-original": {
+            "whole_events_equal": true,
+            "excluded_fields": [],
+            "event_count": 1,
+            "sha256": "c7f8b1fadf7788e0eacdd30b7e820ac2c867c68f3804cb0e7591683c522e5419"
+          },
+          "survey-corrected": {
+            "whole_events_equal": true,
+            "excluded_fields": [],
+            "event_count": 0,
+            "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+          },
+          "evacuate-replanned": {
+            "whole_events_equal": true,
+            "excluded_fields": [],
+            "event_count": 1,
+            "sha256": "4786614cab911e81118a3e5a53e31505bb6414b4ce978661fdc1fcd64963550a"
+          }
+        },
+        "public_results": {
+          "survey-original": {
+            "compared_fields": [
+              "artifact_revision",
+              "correlation_id",
+              "exit_code",
+              "output_delta",
+              "result_schema_version",
+              "run_id",
+              "source_hash",
+              "status"
+            ],
+            "sha256": "f432b05e55a7f23665a5cef5cd5e4b47ab664c71ae7f742320316b21b6454c58",
+            "equal": true
+          },
+          "evacuate-original": {
+            "compared_fields": [
+              "artifact_revision",
+              "correlation_id",
+              "exit_code",
+              "output_delta",
+              "result_schema_version",
+              "run_id",
+              "source_hash",
+              "status"
+            ],
+            "sha256": "aadee2f20142e0f760a4d320f3ad1b0e4928dcbdf8ff313cee7c77170fab49b9",
+            "equal": true
+          },
+          "survey-corrected": {
+            "compared_fields": [
+              "artifact_revision",
+              "correlation_id",
+              "exit_code",
+              "output_delta",
+              "result_schema_version",
+              "run_id",
+              "source_hash",
+              "status"
+            ],
+            "sha256": "b857c08757f692b609ebbaf0f2f68dd77a3edf8e6bcc4963112044bd6f670c11",
+            "equal": true
+          },
+          "evacuate-replanned": {
+            "compared_fields": [
+              "artifact_revision",
+              "correlation_id",
+              "exit_code",
+              "output_delta",
+              "result_schema_version",
+              "run_id",
+              "source_hash",
+              "status"
+            ],
+            "sha256": "9b8cdbf9e036869f2e749012df08b7f124d7c2ea30d803a050495c31beb66f4e",
+            "equal": true
+          }
+        },
+        "outcome": {
+          "fields": [
+            "shards",
+            "transport_calls",
+            "planned",
+            "applied_moves",
+            "copied_units",
+            "disturbance",
+            "stale_plan_refusals",
+            "all_applied_steps_independently_checked",
+            "final_minimum_live_copies",
+            "all_shards_distinct_racks",
+            "all_node_capacities_respected",
+            "drain_and_failed_nodes_empty",
+            "knowledge_versions",
+            "court_windows",
+            "corrected_node12_recalled_as_down",
+            "corrected_node5_free_space",
+            "recalled_candidates",
+            "replay_transport_calls"
+          ],
+          "equal": true,
+          "sha256": "8ac67766d33a98a9e0fd57748037f2eaa25c3f34f559a22fbf23ac05ea8ac25b"
+        },
+        "consolidation_knowledge": {
+          "equal": true,
+          "windows": 4,
+          "whole_fields": [
+            "report.knowledge",
+            "report.apply.knowledge"
+          ],
+          "sha256": "5911f49d2a9f896f918b677d701805f99da1f3a8348ba2e50deb6aba9d4665a3"
+        },
+        "snapshot_boundary_body": {
+          "equal": true,
+          "windows": 4,
+          "excluded_fields": [
+            "consolidation_id"
+          ],
+          "sha256": "f8987153b36df01f8ec742d1243459e91040559251d8354af75864ed7e5aad59"
+        }
+      },
+      {
+        "pair": 2,
+        "files": {
+          "move-ledger.json": {
+            "byte_equal": true,
+            "sha256": "bb038ac0663a94d6d06bede0ef40f412720c5bae05c664e831c0da338be7d869"
+          },
+          "final-cluster.json": {
+            "byte_equal": true,
+            "sha256": "4003b9a712c13acb9c44108bf66c22ce5400c068233ce7c75b76ffe14e58fb94"
+          }
+        },
+        "searches": {
+          "survey-original": {
+            "whole_events_equal": true,
+            "excluded_fields": [],
+            "event_count": 0,
+            "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+          },
+          "evacuate-original": {
+            "whole_events_equal": true,
+            "excluded_fields": [],
+            "event_count": 1,
+            "sha256": "c7f8b1fadf7788e0eacdd30b7e820ac2c867c68f3804cb0e7591683c522e5419"
+          },
+          "survey-corrected": {
+            "whole_events_equal": true,
+            "excluded_fields": [],
+            "event_count": 0,
+            "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+          },
+          "evacuate-replanned": {
+            "whole_events_equal": true,
+            "excluded_fields": [],
+            "event_count": 1,
+            "sha256": "4786614cab911e81118a3e5a53e31505bb6414b4ce978661fdc1fcd64963550a"
+          }
+        },
+        "public_results": {
+          "survey-original": {
+            "compared_fields": [
+              "artifact_revision",
+              "correlation_id",
+              "exit_code",
+              "output_delta",
+              "result_schema_version",
+              "run_id",
+              "source_hash",
+              "status"
+            ],
+            "sha256": "f432b05e55a7f23665a5cef5cd5e4b47ab664c71ae7f742320316b21b6454c58",
+            "equal": true
+          },
+          "evacuate-original": {
+            "compared_fields": [
+              "artifact_revision",
+              "correlation_id",
+              "exit_code",
+              "output_delta",
+              "result_schema_version",
+              "run_id",
+              "source_hash",
+              "status"
+            ],
+            "sha256": "aadee2f20142e0f760a4d320f3ad1b0e4928dcbdf8ff313cee7c77170fab49b9",
+            "equal": true
+          },
+          "survey-corrected": {
+            "compared_fields": [
+              "artifact_revision",
+              "correlation_id",
+              "exit_code",
+              "output_delta",
+              "result_schema_version",
+              "run_id",
+              "source_hash",
+              "status"
+            ],
+            "sha256": "b857c08757f692b609ebbaf0f2f68dd77a3edf8e6bcc4963112044bd6f670c11",
+            "equal": true
+          },
+          "evacuate-replanned": {
+            "compared_fields": [
+              "artifact_revision",
+              "correlation_id",
+              "exit_code",
+              "output_delta",
+              "result_schema_version",
+              "run_id",
+              "source_hash",
+              "status"
+            ],
+            "sha256": "9b8cdbf9e036869f2e749012df08b7f124d7c2ea30d803a050495c31beb66f4e",
+            "equal": true
+          }
+        },
+        "outcome": {
+          "fields": [
+            "shards",
+            "transport_calls",
+            "planned",
+            "applied_moves",
+            "copied_units",
+            "disturbance",
+            "stale_plan_refusals",
+            "all_applied_steps_independently_checked",
+            "final_minimum_live_copies",
+            "all_shards_distinct_racks",
+            "all_node_capacities_respected",
+            "drain_and_failed_nodes_empty",
+            "knowledge_versions",
+            "court_windows",
+            "corrected_node12_recalled_as_down",
+            "corrected_node5_free_space",
+            "recalled_candidates",
+            "replay_transport_calls"
+          ],
+          "equal": true,
+          "sha256": "8ac67766d33a98a9e0fd57748037f2eaa25c3f34f559a22fbf23ac05ea8ac25b"
+        },
+        "consolidation_knowledge": {
+          "equal": true,
+          "windows": 4,
+          "whole_fields": [
+            "report.knowledge",
+            "report.apply.knowledge"
+          ],
+          "sha256": "5911f49d2a9f896f918b677d701805f99da1f3a8348ba2e50deb6aba9d4665a3"
+        },
+        "snapshot_boundary_body": {
+          "equal": true,
+          "windows": 4,
+          "excluded_fields": [
+            "consolidation_id"
+          ],
+          "sha256": "f8987153b36df01f8ec742d1243459e91040559251d8354af75864ed7e5aad59"
+        }
+      },
+      {
+        "pair": 3,
+        "files": {
+          "move-ledger.json": {
+            "byte_equal": true,
+            "sha256": "bb038ac0663a94d6d06bede0ef40f412720c5bae05c664e831c0da338be7d869"
+          },
+          "final-cluster.json": {
+            "byte_equal": true,
+            "sha256": "4003b9a712c13acb9c44108bf66c22ce5400c068233ce7c75b76ffe14e58fb94"
+          }
+        },
+        "searches": {
+          "survey-original": {
+            "whole_events_equal": true,
+            "excluded_fields": [],
+            "event_count": 0,
+            "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+          },
+          "evacuate-original": {
+            "whole_events_equal": true,
+            "excluded_fields": [],
+            "event_count": 1,
+            "sha256": "c7f8b1fadf7788e0eacdd30b7e820ac2c867c68f3804cb0e7591683c522e5419"
+          },
+          "survey-corrected": {
+            "whole_events_equal": true,
+            "excluded_fields": [],
+            "event_count": 0,
+            "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+          },
+          "evacuate-replanned": {
+            "whole_events_equal": true,
+            "excluded_fields": [],
+            "event_count": 1,
+            "sha256": "4786614cab911e81118a3e5a53e31505bb6414b4ce978661fdc1fcd64963550a"
+          }
+        },
+        "public_results": {
+          "survey-original": {
+            "compared_fields": [
+              "artifact_revision",
+              "correlation_id",
+              "exit_code",
+              "output_delta",
+              "result_schema_version",
+              "run_id",
+              "source_hash",
+              "status"
+            ],
+            "sha256": "f432b05e55a7f23665a5cef5cd5e4b47ab664c71ae7f742320316b21b6454c58",
+            "equal": true
+          },
+          "evacuate-original": {
+            "compared_fields": [
+              "artifact_revision",
+              "correlation_id",
+              "exit_code",
+              "output_delta",
+              "result_schema_version",
+              "run_id",
+              "source_hash",
+              "status"
+            ],
+            "sha256": "aadee2f20142e0f760a4d320f3ad1b0e4928dcbdf8ff313cee7c77170fab49b9",
+            "equal": true
+          },
+          "survey-corrected": {
+            "compared_fields": [
+              "artifact_revision",
+              "correlation_id",
+              "exit_code",
+              "output_delta",
+              "result_schema_version",
+              "run_id",
+              "source_hash",
+              "status"
+            ],
+            "sha256": "b857c08757f692b609ebbaf0f2f68dd77a3edf8e6bcc4963112044bd6f670c11",
+            "equal": true
+          },
+          "evacuate-replanned": {
+            "compared_fields": [
+              "artifact_revision",
+              "correlation_id",
+              "exit_code",
+              "output_delta",
+              "result_schema_version",
+              "run_id",
+              "source_hash",
+              "status"
+            ],
+            "sha256": "9b8cdbf9e036869f2e749012df08b7f124d7c2ea30d803a050495c31beb66f4e",
+            "equal": true
+          }
+        },
+        "outcome": {
+          "fields": [
+            "shards",
+            "transport_calls",
+            "planned",
+            "applied_moves",
+            "copied_units",
+            "disturbance",
+            "stale_plan_refusals",
+            "all_applied_steps_independently_checked",
+            "final_minimum_live_copies",
+            "all_shards_distinct_racks",
+            "all_node_capacities_respected",
+            "drain_and_failed_nodes_empty",
+            "knowledge_versions",
+            "court_windows",
+            "corrected_node12_recalled_as_down",
+            "corrected_node5_free_space",
+            "recalled_candidates",
+            "replay_transport_calls"
+          ],
+          "equal": true,
+          "sha256": "8ac67766d33a98a9e0fd57748037f2eaa25c3f34f559a22fbf23ac05ea8ac25b"
+        },
+        "consolidation_knowledge": {
+          "equal": true,
+          "windows": 4,
+          "whole_fields": [
+            "report.knowledge",
+            "report.apply.knowledge"
+          ],
+          "sha256": "5911f49d2a9f896f918b677d701805f99da1f3a8348ba2e50deb6aba9d4665a3"
+        },
+        "snapshot_boundary_body": {
+          "equal": true,
+          "windows": 4,
+          "excluded_fields": [
+            "consolidation_id"
+          ],
+          "sha256": "f8987153b36df01f8ec742d1243459e91040559251d8354af75864ed7e5aad59"
+        }
+      }
+    ],
+    "baseline_records_patched_replay": {
+      "recorded_root": "/workspace/synapse-inventory-measurements/baseline-1",
+      "replay": [
+        {
+          "name": "survey-original",
+          "wall_s": 0.2740269339992665,
+          "cpu_s": 0.273964758,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 1587,
+            "reason": null
+          }
+        },
+        {
+          "name": "evacuate-original",
+          "wall_s": 7.278463546999774,
+          "cpu_s": 7.277679533000001,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 10,
+            "reason": null
+          }
+        },
+        {
+          "name": "survey-corrected",
+          "wall_s": 2.284350430998529,
+          "cpu_s": 2.284032244999999,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 1587,
+            "reason": null
+          }
+        },
+        {
+          "name": "evacuate-replanned",
+          "wall_s": 6.438915923999957,
+          "cpu_s": 6.438391023000001,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 45,
+            "reason": null
+          }
+        }
+      ],
+      "replay_transport_calls": 0,
+      "environment": {
+        "label": "patched-replay-baseline-f2bf791",
+        "product_root": "/workspace/Synapse",
+        "search_module": "/workspace/Synapse/synapse/memory_consolidation/knowledge/search.py",
+        "search_source_sha256": "52ebea09a481f558d726d804a15fa3fef426561dfe4ba2e0642456ab7b6d1d32",
+        "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+        "peak_rss_kib": 458824
+      }
+    },
+    "package_versions": [
+      "PyJWT==2.15.1",
+      "Pygments==2.21.0",
+      "annotated-types==0.8.0",
+      "anyio==4.15.1",
+      "attrs==26.1.0",
+      "cffi==2.1.1",
+      "click==8.5.0",
+      "cryptography==50.0.2",
+      "filelock==3.32.6",
+      "h11==0.16.0",
+      "httpcore2==2.13.1",
+      "httpx2==2.13.1",
+      "hypothesis==6.169.0",
+      "idna==3.20",
+      "iniconfig==2.3.1",
+      "jsonschema-specifications==2025.9.1",
+      "jsonschema==4.26.0",
+      "mcp-types==2.2.0",
+      "mcp==2.2.0",
+      "opentelemetry-api==1.45.1",
+      "packaging==26.3",
+      "pluggy==1.6.0",
+      "psutil==7.2.2",
+      "pycparser==3.11",
+      "pydantic==2.14.0",
+      "pydantic_core==2.50.0",
+      "pytest==9.1.1",
+      "python-multipart==0.0.32",
+      "referencing==0.37.0",
+      "rpds-py==2026.9.1",
+      "sortedcontainers==2.4.0",
+      "sse-starlette==3.5.0",
+      "starlette==1.7.0",
+      "truststore==0.10.4",
+      "typing-inspection==0.4.4",
+      "typing_extensions==4.16.0",
+      "uvicorn==0.54.0"
+    ],
+    "execution_speedup": 1.1249341200332619,
+    "execution_reduction_percent": 11.10590547556401,
+    "matched_outcome": {
+      "shards": 1536,
+      "transport_calls": 48,
+      "planned": [
+        {
+          "epoch": 0,
+          "planned": 768,
+          "copy_units": 3819,
+          "all_steps_independently_verified": true
+        },
+        {
+          "epoch": 1,
+          "planned": 938,
+          "copy_units": 4675,
+          "all_steps_independently_verified": true
+        }
+      ],
+      "applied_moves": 962,
+      "copied_units": 4789,
+      "disturbance": {
+        "after_moves": 24,
+        "failed_node": 12,
+        "capacity_node": 5,
+        "capacity_before": 2080,
+        "capacity_after": 971,
+        "epoch": 1
+      },
+      "stale_plan_refusals": [
+        {
+          "plan_epoch": 0,
+          "live_epoch": 1,
+          "attempted_moves": 24,
+          "applied": 0
+        }
+      ],
+      "all_applied_steps_independently_checked": true,
+      "final_minimum_live_copies": 3,
+      "all_shards_distinct_racks": true,
+      "all_node_capacities_respected": true,
+      "drain_and_failed_nodes_empty": true,
+      "knowledge_versions": 3168,
+      "court_windows": 4,
+      "corrected_node12_recalled_as_down": true,
+      "corrected_node5_free_space": 8,
+      "recalled_candidates": {
+        "evacuate-original": 48,
+        "evacuate-replanned": 48
+      },
+      "replay_transport_calls": 0
+    }
+  },
+  "same_journal_selection": {
+    "baseline": {
+      "label": "baseline-f2bf791",
+      "product_root": "/workspace/synapse-inventory-baseline-f2bf791",
+      "state_root": "/workspace/synapse-inventory-measurements/baseline-1/memory",
+      "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+      "product_source_sha256": {
+        "synapse/memory_consolidation/owner.py": "598344bc141fcf1bdc731f2edad2952b6d1a6f0292e97db77bca7a44baf5fd80",
+        "synapse/experiments/gold/project_memory_store.py": "62be70abe7ce376a1a54c56119b17f965b45b92b4f6c53582a82d2caeec41e81"
+      },
+      "journal": {
+        "transaction_directories": 17,
+        "event_body_bytes": 12743395
+      },
+      "repeats": 3,
+      "scope": {
+        "opening": "Owner session validates every committed event before any selection.",
+        "timing": "Three calls per operation under the same guard; allocation tracing disabled.",
+        "allocation": "Three separate calls per operation with tracemalloc after session opening; measures allocations during the call, not persistent process RAM.",
+        "verification": "Complete returned values are hashed outside each measured interval."
+      },
+      "session_open_wall_s": 2.4261168489992997,
+      "timing": {
+        "bound_digest": {
+          "samples": [
+            {
+              "wall_s": 0.35546348999923794,
+              "cpu_s": 0.35543029100000023
+            },
+            {
+              "wall_s": 0.35936151099849667,
+              "cpu_s": 0.3593550200000002
+            },
+            {
+              "wall_s": 0.349335016000623,
+              "cpu_s": 0.3493079139999997
+            }
+          ],
+          "result_sha256": "e30012ef40b56d3a17911881b007613c55166b6a9067afa285dfa0af8fd94b2b",
+          "median_wall_s": 0.35546348999923794
+        },
+        "sessions": {
+          "samples": [
+            {
+              "wall_s": 0.34937075399830064,
+              "cpu_s": 0.34935879400000047
+            },
+            {
+              "wall_s": 0.32146555299914326,
+              "cpu_s": 0.32146760200000024
+            },
+            {
+              "wall_s": 0.3326881350003532,
+              "cpu_s": 0.3326573399999999
+            }
+          ],
+          "result_sha256": "d75af39d83e48458e2010be59ef020b210f81251654fa0594eefd558df481eaa",
+          "median_wall_s": 0.3326881350003532
+        },
+        "retention_passes": {
+          "samples": [
+            {
+              "wall_s": 0.32078089799870213,
+              "cpu_s": 0.3207588099999992
+            },
+            {
+              "wall_s": 0.3241263150011946,
+              "cpu_s": 0.3240968449999997
+            },
+            {
+              "wall_s": 0.3299017749995983,
+              "cpu_s": 0.32980521799999973
+            }
+          ],
+          "result_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "median_wall_s": 0.3241263150011946
+        },
+        "trials": {
+          "samples": [
+            {
+              "wall_s": 0.35011649500120257,
+              "cpu_s": 0.3501171439999995
+            },
+            {
+              "wall_s": 0.3174907209995581,
+              "cpu_s": 0.31745074100000004
+            },
+            {
+              "wall_s": 0.32525836400054686,
+              "cpu_s": 0.32525379199999893
+            }
+          ],
+          "result_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "median_wall_s": 0.32525836400054686
+        },
+        "boundaries": {
+          "samples": [
+            {
+              "wall_s": 0.8024364129996684,
+              "cpu_s": 0.8022752119999996
+            },
+            {
+              "wall_s": 0.7653453330003686,
+              "cpu_s": 0.7653099959999992
+            },
+            {
+              "wall_s": 0.7858663820006768,
+              "cpu_s": 0.7858284050000002
+            }
+          ],
+          "result_sha256": "863ec710ca721f9d20b2894dea5487826b2e5c7e9794c879dd46978086e6d32c",
+          "median_wall_s": 0.7858663820006768
+        },
+        "full_inventory": {
+          "samples": [
+            {
+              "wall_s": 0.333039416000247,
+              "cpu_s": 0.33285493200000005
+            },
+            {
+              "wall_s": 0.32151972300016496,
+              "cpu_s": 0.3214831250000003
+            },
+            {
+              "wall_s": 0.32149002000005567,
+              "cpu_s": 0.32148303600000006
+            }
+          ],
+          "result_sha256": "734a27a2fb4a873c8b52536a156262eea119cbe51826360a9e6783f2eb172ed6",
+          "median_wall_s": 0.32151972300016496
+        }
+      },
+      "allocations": {
+        "bound_digest": {
+          "samples": [
+            {
+              "live_traced_bytes_at_return": 20536,
+              "peak_bytes": 30720976,
+              "peak_minus_live_bytes": 30700440
+            },
+            {
+              "live_traced_bytes_at_return": 20536,
+              "peak_bytes": 30720976,
+              "peak_minus_live_bytes": 30700440
+            },
+            {
+              "live_traced_bytes_at_return": 20536,
+              "peak_bytes": 30720976,
+              "peak_minus_live_bytes": 30700440
+            }
+          ],
+          "median_peak_bytes": 30720976
+        },
+        "sessions": {
+          "samples": [
+            {
+              "live_traced_bytes_at_return": 21712,
+              "peak_bytes": 30720976,
+              "peak_minus_live_bytes": 30699264
+            },
+            {
+              "live_traced_bytes_at_return": 21712,
+              "peak_bytes": 30720976,
+              "peak_minus_live_bytes": 30699264
+            },
+            {
+              "live_traced_bytes_at_return": 21712,
+              "peak_bytes": 30720976,
+              "peak_minus_live_bytes": 30699264
+            }
+          ],
+          "median_peak_bytes": 30720976
+        },
+        "retention_passes": {
+          "samples": [
+            {
+              "live_traced_bytes_at_return": 20640,
+              "peak_bytes": 30721224,
+              "peak_minus_live_bytes": 30700584
+            },
+            {
+              "live_traced_bytes_at_return": 20640,
+              "peak_bytes": 30721224,
+              "peak_minus_live_bytes": 30700584
+            },
+            {
+              "live_traced_bytes_at_return": 20640,
+              "peak_bytes": 30721224,
+              "peak_minus_live_bytes": 30700584
+            }
+          ],
+          "median_peak_bytes": 30721224
+        },
+        "trials": {
+          "samples": [
+            {
+              "live_traced_bytes_at_return": 20640,
+              "peak_bytes": 30721224,
+              "peak_minus_live_bytes": 30700584
+            },
+            {
+              "live_traced_bytes_at_return": 20640,
+              "peak_bytes": 30721224,
+              "peak_minus_live_bytes": 30700584
+            },
+            {
+              "live_traced_bytes_at_return": 20640,
+              "peak_bytes": 30721224,
+              "peak_minus_live_bytes": 30700584
+            }
+          ],
+          "median_peak_bytes": 30721224
+        },
+        "boundaries": {
+          "samples": [
+            {
+              "live_traced_bytes_at_return": 13904160,
+              "peak_bytes": 31325534,
+              "peak_minus_live_bytes": 17421374
+            },
+            {
+              "live_traced_bytes_at_return": 13904160,
+              "peak_bytes": 31325534,
+              "peak_minus_live_bytes": 17421374
+            },
+            {
+              "live_traced_bytes_at_return": 13904160,
+              "peak_bytes": 31325534,
+              "peak_minus_live_bytes": 17421374
+            }
+          ],
+          "median_peak_bytes": 31325534
+        },
+        "full_inventory": {
+          "samples": [
+            {
+              "live_traced_bytes_at_return": 21107024,
+              "peak_bytes": 30720976,
+              "peak_minus_live_bytes": 9613952
+            },
+            {
+              "live_traced_bytes_at_return": 21107024,
+              "peak_bytes": 30720976,
+              "peak_minus_live_bytes": 9613952
+            },
+            {
+              "live_traced_bytes_at_return": 21107024,
+              "peak_bytes": 30720976,
+              "peak_minus_live_bytes": 9613952
+            }
+          ],
+          "median_peak_bytes": 30720976
+        }
+      },
+      "full_owner_state_sha256": "2d52f4ea8365f9aad3b83921696f12b7f1f98a85dce4116b8081eb0f119596da"
+    },
+    "patched": {
+      "label": "patched-inventory",
+      "product_root": "/workspace/Synapse",
+      "state_root": "/workspace/synapse-inventory-measurements/baseline-1/memory",
+      "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+      "product_source_sha256": {
+        "synapse/memory_consolidation/owner.py": "8d61bad678fd68b4d94ef3ecddf1be6702742c71e03ef1655dae3401f1ba85a8",
+        "synapse/experiments/gold/project_memory_store.py": "a75f7ea8b4590d20ab94588f15467a86b4d07d17e57f83f4ca9b6976d37e3001"
+      },
+      "journal": {
+        "transaction_directories": 17,
+        "event_body_bytes": 12743395
+      },
+      "repeats": 3,
+      "scope": {
+        "opening": "Owner session validates every committed event before any selection.",
+        "timing": "Three calls per operation under the same guard; allocation tracing disabled.",
+        "allocation": "Three separate calls per operation with tracemalloc after session opening; measures allocations during the call, not persistent process RAM.",
+        "verification": "Complete returned values are hashed outside each measured interval."
+      },
+      "session_open_wall_s": 2.142307254000116,
+      "timing": {
+        "bound_digest": {
+          "samples": [
+            {
+              "wall_s": 0.0003804039988608565,
+              "cpu_s": 0.00037523699999963966
+            },
+            {
+              "wall_s": 0.000330339998981799,
+              "cpu_s": 0.0003264849999999875
+            },
+            {
+              "wall_s": 0.00030900800084054936,
+              "cpu_s": 0.0003046119999998709
+            }
+          ],
+          "result_sha256": "e30012ef40b56d3a17911881b007613c55166b6a9067afa285dfa0af8fd94b2b",
+          "median_wall_s": 0.000330339998981799
+        },
+        "sessions": {
+          "samples": [
+            {
+              "wall_s": 0.00031943399881129153,
+              "cpu_s": 0.00031528799999991364
+            },
+            {
+              "wall_s": 0.00031566799952997826,
+              "cpu_s": 0.0003119229999999362
+            },
+            {
+              "wall_s": 0.0003167690010741353,
+              "cpu_s": 0.0003119030000000578
+            }
+          ],
+          "result_sha256": "d75af39d83e48458e2010be59ef020b210f81251654fa0594eefd558df481eaa",
+          "median_wall_s": 0.0003167690010741353
+        },
+        "retention_passes": {
+          "samples": [
+            {
+              "wall_s": 0.0003027989987458568,
+              "cpu_s": 0.000298703999999983
+            },
+            {
+              "wall_s": 0.0002858540010493016,
+              "cpu_s": 0.0002819779999998495
+            },
+            {
+              "wall_s": 0.0003387420001672581,
+              "cpu_s": 0.0003351170000001069
+            }
+          ],
+          "result_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "median_wall_s": 0.0003027989987458568
+        },
+        "trials": {
+          "samples": [
+            {
+              "wall_s": 0.0002556180006649811,
+              "cpu_s": 0.00025166399999987377
+            },
+            {
+              "wall_s": 0.000249179000093136,
+              "cpu_s": 0.00024569400000018504
+            },
+            {
+              "wall_s": 0.0002456640013406286,
+              "cpu_s": 0.00024178899999993675
+            }
+          ],
+          "result_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "median_wall_s": 0.000249179000093136
+        },
+        "boundaries": {
+          "samples": [
+            {
+              "wall_s": 0.7140284369997971,
+              "cpu_s": 0.7140022319999999
+            },
+            {
+              "wall_s": 0.6982531670000753,
+              "cpu_s": 0.6982366950000003
+            },
+            {
+              "wall_s": 0.6872416040005191,
+              "cpu_s": 0.6862859859999997
+            }
+          ],
+          "result_sha256": "863ec710ca721f9d20b2894dea5487826b2e5c7e9794c879dd46978086e6d32c",
+          "median_wall_s": 0.6982531670000753
+        },
+        "full_inventory": {
+          "samples": [
+            {
+              "wall_s": 0.31014553499881004,
+              "cpu_s": 0.31013912799999943
+            },
+            {
+              "wall_s": 0.3143199710011686,
+              "cpu_s": 0.3143236890000001
+            },
+            {
+              "wall_s": 0.3239652810007101,
+              "cpu_s": 0.3239597959999996
+            }
+          ],
+          "result_sha256": "734a27a2fb4a873c8b52536a156262eea119cbe51826360a9e6783f2eb172ed6",
+          "median_wall_s": 0.3143199710011686
+        }
+      },
+      "allocations": {
+        "bound_digest": {
+          "samples": [
+            {
+              "live_traced_bytes_at_return": 6112,
+              "peak_bytes": 10712,
+              "peak_minus_live_bytes": 4600
+            },
+            {
+              "live_traced_bytes_at_return": 6112,
+              "peak_bytes": 10712,
+              "peak_minus_live_bytes": 4600
+            },
+            {
+              "live_traced_bytes_at_return": 6112,
+              "peak_bytes": 10712,
+              "peak_minus_live_bytes": 4600
+            }
+          ],
+          "median_peak_bytes": 10712
+        },
+        "sessions": {
+          "samples": [
+            {
+              "live_traced_bytes_at_return": 4064,
+              "peak_bytes": 7928,
+              "peak_minus_live_bytes": 3864
+            },
+            {
+              "live_traced_bytes_at_return": 4064,
+              "peak_bytes": 7928,
+              "peak_minus_live_bytes": 3864
+            },
+            {
+              "live_traced_bytes_at_return": 4064,
+              "peak_bytes": 7928,
+              "peak_minus_live_bytes": 3864
+            }
+          ],
+          "median_peak_bytes": 7928
+        },
+        "retention_passes": {
+          "samples": [
+            {
+              "live_traced_bytes_at_return": 1032,
+              "peak_bytes": 3199,
+              "peak_minus_live_bytes": 2167
+            },
+            {
+              "live_traced_bytes_at_return": 1032,
+              "peak_bytes": 3199,
+              "peak_minus_live_bytes": 2167
+            },
+            {
+              "live_traced_bytes_at_return": 1032,
+              "peak_bytes": 3199,
+              "peak_minus_live_bytes": 2167
+            }
+          ],
+          "median_peak_bytes": 3199
+        },
+        "trials": {
+          "samples": [
+            {
+              "live_traced_bytes_at_return": 976,
+              "peak_bytes": 3199,
+              "peak_minus_live_bytes": 2223
+            },
+            {
+              "live_traced_bytes_at_return": 976,
+              "peak_bytes": 3199,
+              "peak_minus_live_bytes": 2223
+            },
+            {
+              "live_traced_bytes_at_return": 976,
+              "peak_bytes": 3199,
+              "peak_minus_live_bytes": 2223
+            }
+          ],
+          "median_peak_bytes": 3199
+        },
+        "boundaries": {
+          "samples": [
+            {
+              "live_traced_bytes_at_return": 13900184,
+              "peak_bytes": 23995350,
+              "peak_minus_live_bytes": 10095166
+            },
+            {
+              "live_traced_bytes_at_return": 13900184,
+              "peak_bytes": 23995350,
+              "peak_minus_live_bytes": 10095166
+            },
+            {
+              "live_traced_bytes_at_return": 13900184,
+              "peak_bytes": 23995350,
+              "peak_minus_live_bytes": 10095166
+            }
+          ],
+          "median_peak_bytes": 23995350
+        },
+        "full_inventory": {
+          "samples": [
+            {
+              "live_traced_bytes_at_return": 21107024,
+              "peak_bytes": 30721272,
+              "peak_minus_live_bytes": 9614248
+            },
+            {
+              "live_traced_bytes_at_return": 21107024,
+              "peak_bytes": 30721272,
+              "peak_minus_live_bytes": 9614248
+            },
+            {
+              "live_traced_bytes_at_return": 21107024,
+              "peak_bytes": 30721272,
+              "peak_minus_live_bytes": 9614248
+            }
+          ],
+          "median_peak_bytes": 30721272
+        }
+      },
+      "full_owner_state_sha256": "2d52f4ea8365f9aad3b83921696f12b7f1f98a85dce4116b8081eb0f119596da"
+    },
+    "comparisons": [
+      {
+        "operation": "bound_digest",
+        "baseline_wall_s": 0.35546348999923794,
+        "patched_wall_s": 0.000330339998981799,
+        "speedup": 1076.0534331139936,
+        "baseline_peak_bytes": 30720976,
+        "patched_peak_bytes": 10712,
+        "result_equal": true,
+        "result_sha256": "e30012ef40b56d3a17911881b007613c55166b6a9067afa285dfa0af8fd94b2b"
+      },
+      {
+        "operation": "sessions",
+        "baseline_wall_s": 0.3326881350003532,
+        "patched_wall_s": 0.0003167690010741353,
+        "speedup": 1050.2547088643066,
+        "baseline_peak_bytes": 30720976,
+        "patched_peak_bytes": 7928,
+        "result_equal": true,
+        "result_sha256": "d75af39d83e48458e2010be59ef020b210f81251654fa0594eefd558df481eaa"
+      },
+      {
+        "operation": "retention_passes",
+        "baseline_wall_s": 0.3241263150011946,
+        "patched_wall_s": 0.0003027989987458568,
+        "speedup": 1070.4339061346702,
+        "baseline_peak_bytes": 30721224,
+        "patched_peak_bytes": 3199,
+        "result_equal": true,
+        "result_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      {
+        "operation": "trials",
+        "baseline_wall_s": 0.32525836400054686,
+        "patched_wall_s": 0.000249179000093136,
+        "speedup": 1305.32012681235,
+        "baseline_peak_bytes": 30721224,
+        "patched_peak_bytes": 3199,
+        "result_equal": true,
+        "result_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      {
+        "operation": "boundaries",
+        "baseline_wall_s": 0.7858663820006768,
+        "patched_wall_s": 0.6982531670000753,
+        "speedup": 1.125474855168959,
+        "baseline_peak_bytes": 31325534,
+        "patched_peak_bytes": 23995350,
+        "result_equal": true,
+        "result_sha256": "863ec710ca721f9d20b2894dea5487826b2e5c7e9794c879dd46978086e6d32c"
+      },
+      {
+        "operation": "full_inventory",
+        "baseline_wall_s": 0.32151972300016496,
+        "patched_wall_s": 0.3143199710011686,
+        "speedup": 1.022905805113381,
+        "baseline_peak_bytes": 30720976,
+        "patched_peak_bytes": 30721272,
+        "result_equal": true,
+        "result_sha256": "734a27a2fb4a873c8b52536a156262eea119cbe51826360a9e6783f2eb172ed6"
+      }
+    ],
+    "full_owner_state_equal": true,
+    "full_owner_state_sha256": "2d52f4ea8365f9aad3b83921696f12b7f1f98a85dce4116b8081eb0f119596da"
+  },
+  "selection_limits": {
+    "corpus": "One real journal retained after the durable scenario: 17 events, 12743395 event-body bytes.",
+    "empty_results": "retention_passes and trials return empty lists in this retained corpus. Nonempty custody is covered by acceptance.",
+    "copy_metric": "tracemalloc peak of allocations during a call under an already opened owner session; not process RSS.",
+    "timing": "Three untraced calls per operation per variant. Allocation tracing uses three separate calls. Baseline process precedes patched process on the same journal.",
+    "opening": "One separately reported full-session opening per variant; no claim of improving this unchanged path.",
+    "full_inventory": "Unchanged full inventory is the control; no material optimization is claimed for it."
+  },
+  "validation": {
+    "new_contract": {
+      "file": "acceptance/stage4/stage16/test_project_memory_inventory_selection_contract.py",
+      "passed": 33,
+      "seconds": 0.61,
+      "capture": "Tool output chunk 9bc2bf; no separate raw log file was written.",
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B -m pytest -q -p no:cacheprovider --tb=short acceptance/stage4/stage16/test_project_memory_inventory_selection_contract.py"
+    },
+    "baseline_regression": {
+      "revision": "f2bf791c0bacc32118fc6f68f06ae48c1cf26fd4",
+      "case": "test_owner_readers_do_not_copy_unrelated_journal_payloads",
+      "expected_failures": 1,
+      "seconds": 1.38,
+      "capture": "Tool output chunk 7dcee9; no separate raw log file was written.",
+      "setup": "Only the acceptance file was copied into the archived baseline; product was unchanged.",
+      "reason": "bound_digest copies unrelated payload kinds including MEMORY_STATE. Existing method/signature, no TypeError."
+    },
+    "existing_targeted_checks": [
+      {
+        "file": "acceptance/stage4/stage16/test_project_memory_session_inventory_contract.py",
+        "returncode": 0,
+        "seconds": 0.4492267019995779,
+        "summary": [
+          "..........                                                               [100%]",
+          "10 passed in 0.21s"
+        ]
+      },
+      {
+        "file": "acceptance/stage4/stage16/test_project_memory_store_contract.py",
+        "returncode": 0,
+        "seconds": 0.455553959000099,
+        "summary": [
+          "........                                                                 [100%]",
+          "8 passed in 0.20s"
+        ]
+      },
+      {
+        "file": "acceptance/stage4/stage16/test_project_court_contract.py",
+        "returncode": 0,
+        "seconds": 2.422963212000468,
+        "summary": [
+          "........                                                                 [100%]",
+          "8 passed in 2.10s"
+        ]
+      },
+      {
+        "file": "acceptance/stage4/stage16/test_project_memory_lifecycle_acceptance.py",
+        "returncode": 0,
+        "seconds": 15.828759924999758,
+        "summary": [
+          "..                                                                       [100%]",
+          "2 passed in 15.53s"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_earlier_policy_reassessment_acceptance.py",
+        "returncode": 0,
+        "seconds": 17.986975867999718,
+        "summary": [
+          ".                                                                        [100%]",
+          "1 passed in 17.41s"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_retention_crash_acceptance.py",
+        "returncode": 0,
+        "seconds": 13.873750139000549,
+        "summary": [
+          ".                                                                        [100%]",
+          "1 passed in 12.96s"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_retention_capacity_acceptance.py",
+        "returncode": 0,
+        "seconds": 24.347422675000416,
+        "summary": [
+          ".                                                                        [100%]",
+          "1 passed in 23.78s"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_state_snapshot_acceptance.py",
+        "returncode": 0,
+        "seconds": 44.36451913000019,
+        "summary": [
+          ".                                                                        [100%]",
+          "1 passed in 43.84s"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_forget_knowledge_acceptance.py",
+        "returncode": 0,
+        "seconds": 29.91285203699954,
+        "summary": [
+          ".                                                                        [100%]",
+          "1 passed in 29.39s"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_memory_reassessment_acceptance.py",
+        "returncode": 0,
+        "seconds": 76.95649758400032,
+        "summary": [
+          "...                                                                      [100%]",
+          "3 passed in 76.35s (0:01:16)"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_crash_recovery_acceptance.py",
+        "returncode": 0,
+        "seconds": 22.47276362299999,
+        "summary": [
+          ".                                                                        [100%]",
+          "1 passed in 21.97s"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_forget_correction_window_acceptance.py",
+        "returncode": 0,
+        "seconds": 80.4029986280002,
+        "summary": [
+          "...                                                                      [100%]",
+          "3 passed in 79.96s (0:01:19)"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_admission_record_acceptance.py",
+        "returncode": 0,
+        "seconds": 28.18064576500001,
+        "summary": [
+          "....                                                                     [100%]",
+          "4 passed in 27.63s"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_two_streams_acceptance.py",
+        "returncode": 0,
+        "seconds": 22.774088575999485,
+        "summary": [
+          ".                                                                        [100%]",
+          "1 passed in 22.22s"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_knowledge_search_acceptance.py",
+        "returncode": 0,
+        "seconds": 85.62175840500095,
+        "summary": [
+          "...                                                                      [100%]",
+          "3 passed in 85.09s (0:01:25)"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_search_grouping_acceptance.py",
+        "returncode": 0,
+        "seconds": 0.6336462920007762,
+        "summary": [
+          "....................................................                     [100%]",
+          "52 passed in 0.42s"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_search_grouping_scale_acceptance.py",
+        "returncode": 0,
+        "seconds": 13.990105327000492,
+        "summary": [
+          "......                                                                   [100%]",
+          "6 passed in 13.78s"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_stand_trial_revocation_acceptance.py",
+        "returncode": 0,
+        "seconds": 143.7069731749998,
+        "summary": [
+          ".                                                                        [100%]",
+          "1 passed in 142.97s (0:02:22)"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_stand_trial_acceptance.py",
+        "returncode": 0,
+        "seconds": 163.60352201800015,
+        "summary": [
+          ".                                                                        [100%]",
+          "1 passed in 163.08s (0:02:43)"
+        ]
+      },
+      {
+        "file": "tests/test_memory_dependency_direction.py",
+        "returncode": 0,
+        "seconds": 1.7427231050005503,
+        "summary": [
+          "..                                                                       [100%]",
+          "2 passed in 1.53s"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_reassessment_custody_acceptance.py",
+        "returncode": 0,
+        "seconds": 114.94373357899894,
+        "summary": [
+          ".....                                                                    [100%]",
+          "5 passed in 114.44s (0:01:54)"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_storage_evacuation_acceptance.py",
+        "returncode": 0,
+        "seconds": 103.33265063500039,
+        "summary": [
+          ".                                                                        [100%]",
+          "1 passed in 102.85s (0:01:42)"
+        ]
+      }
+    ],
+    "total_pytest_passed": 149,
+    "full_repository_suite_run": false,
+    "pre_commit_gate": [
+      "Gate 1 passed: all 45 .syn files parse OK",
+      "Gate 2 passed: coverage 0.935620 >= 0.9332 (47/47 files)",
+      "pre-commit: all gates passed."
+    ],
+    "ci": "New contract added to gold-fast. Existing heavy scenario retains its separate matrix job. This uncommitted patch has not run in remote CI."
+  },
+  "raw_artifact_directory": "/workspace/synapse-inventory-measurements",
+  "reproduction": "docs/MEMORY_PERFORMANCE.md"
+}

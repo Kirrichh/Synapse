@@ -56,6 +56,7 @@ established fact for the claim. Every check is separate and reported:
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 import json
 import re
@@ -130,6 +131,11 @@ def content_tokens(record: Mapping[str, Any]) -> frozenset[str]:
     return frozenset(found)
 
 
+def overlap_score(matched: int, wanted: int) -> float:
+    """The palace's exact lexical score for distinct matched/query token counts."""
+    return round(matched / wanted, 6) if wanted else 0.0
+
+
 def candidate_score(query: str, record: Mapping[str, Any]) -> dict[str, Any] | None:
     """The lexical score of one record for a query, or ``None`` when it shares no token."""
     wanted = tokens(query or "")
@@ -138,7 +144,7 @@ def candidate_score(query: str, record: Mapping[str, Any]) -> dict[str, Any] | N
     matched = sorted(wanted & content_tokens(record))
     if not matched:
         return None
-    return {"score": round(len(matched) / len(wanted), 6), "matched_tokens": matched, "scorer": SCORER_VERSION}
+    return {"score": overlap_score(len(matched), len(wanted)), "matched_tokens": matched, "scorer": SCORER_VERSION}
 
 
 def rank(records: Iterable[Mapping[str, Any]], query: str, threshold: float) -> list[dict[str, Any]]:
@@ -156,6 +162,7 @@ def _canonical(value: Any) -> str:
 
 
 def _claim(value: Any) -> dict[str, Any]:
+    """Normalize a caller's claim into the admission's own retained value."""
     required = {"entity", "attribute", "keys"}
     if type(value) is not dict or not required <= set(value) or set(value) - required - {
             "kind", "scope", "at", "threshold", "polarity", "conditions", "verified_by", "identified_by"}:
@@ -169,11 +176,11 @@ def _claim(value: Any) -> dict[str, Any]:
     threshold = value.get("threshold", DEFAULT_THRESHOLD)
     if type(threshold) not in {int, float} or not 0 < threshold <= 1:
         raise ValueError("an admission threshold is in (0, 1]")
-    return {"entity": entity_identity.canonical(value["entity"]), "attribute": str(value["attribute"]),
+    return deepcopy({"entity": entity_identity.canonical(value["entity"]), "attribute": str(value["attribute"]),
             "kind": value.get("kind", "fact"), "scope": value.get("scope"), "at": instant(value.get("at")),
             "keys": keys, "threshold": float(threshold), "polarity": value.get("polarity", True),
             "conditions": dict(value.get("conditions") or {}), "verified_by": value.get("verified_by"),
-            "identified_by": value.get("identified_by")}
+            "identified_by": value.get("identified_by")})
 
 
 def record_version(record: Mapping[str, Any]) -> Any:

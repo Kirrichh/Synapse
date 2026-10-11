@@ -5,6 +5,7 @@ from copy import deepcopy
 import pytest
 
 from synapse.experiments.gold import project_memory_store as M
+from synapse.experiments.gold import memory_event_storage as physical
 from synapse.experiments.gold.admission_journal import JournalAdapterViolation
 from synapse.experiments.gold.persistence import PersistenceViolation
 
@@ -19,13 +20,13 @@ def test_one_owner_session_reads_old_events_once_and_includes_each_new_commit(tm
     with store.session() as guard:
         prior = [_put(store, guard, job=job) for job in ("a", "b")]
     reads = Counter()
-    physical_read = M.read_committed_snapshot_transaction
+    physical_read = physical.read_committed_snapshot_transaction
 
     def counted(*args, **kwargs):
         reads[kwargs["transaction_id"]] += 1
         return physical_read(*args, **kwargs)
 
-    monkeypatch.setattr(M, "read_committed_snapshot_transaction", counted)
+    monkeypatch.setattr(physical, "read_committed_snapshot_transaction", counted)
     with store.session() as guard:
         assert len(store.inventory(guard=guard)) == 2
         added = [_put(store, guard, job="c", kind=kind)
@@ -41,13 +42,13 @@ def test_each_new_session_and_unguarded_inventory_reads_physical_events_again(tm
     with store.session() as guard:
         receipt = _put(store, guard)
     reads = []
-    physical_read = M.read_committed_snapshot_transaction
+    physical_read = physical.read_committed_snapshot_transaction
 
     def counted(*args, **kwargs):
         reads.append(kwargs["transaction_id"])
         return physical_read(*args, **kwargs)
 
-    monkeypatch.setattr(M, "read_committed_snapshot_transaction", counted)
+    monkeypatch.setattr(physical, "read_committed_snapshot_transaction", counted)
     for _ in range(2):
         with store.session() as guard:
             assert store.inventory(guard=guard)[0][1] == receipt

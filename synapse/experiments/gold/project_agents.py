@@ -11,7 +11,8 @@ from pathlib import Path
 
 from .project_court import outcome_judgement, read_court, task_subjects
 from .project_episode_outcome import reopen_completed_run
-from .project_memory_store import ProjectMemoryStore, memory_job_identity
+from .project_memory_store import MAX_MEMORY_EVENT_BYTES, MEMORY_EVENT_V1, ProjectMemoryStore, memory_job_identity
+from .project_frame_storage import COMPACT_FRAME_V1, compact_frame, restore_frame
 from .project_memory_selection import require_run_memory_selection, selected_episode, selected_episode_outcome
 from .project_model import build_active_memory_frame, build_project_model
 from .project_learning import consolidate_episode, build_memory_layers
@@ -118,11 +119,28 @@ def _frame_payload(request, request_ref, started_ref, store):
                                                run_memory_selection=selection)}
     if court is not None:
         frame["court"] = court
-    return {"profile": profile, "request_ref": request_ref, "started_ref": started_ref,
+    payload = {"profile": profile, "request_ref": request_ref, "started_ref": started_ref,
         "project_model": model, "active_memory_frame": frame,
         "owners": [{"owner_id": item["owner_id"], "element_id": item["element_id"], "state": "IDLE",
                     "completed_job": request_ref, "memory_routes": list(frame["memory_kinds"])}
                    for item in frame["elements"]]}
+    return _retained_frame_payload(payload, request)
+
+
+def _frame_byte_budget(payload):
+    envelope = {"schema_version": MEMORY_EVENT_V1, "kind": "FRAME_COMPLETED", "job_key": "0" * 64,
+                "payload": {**payload, "active_memory_frame": None}}
+    return MAX_MEMORY_EVENT_BYTES - len(canonical(envelope)) + 4
+
+
+def _retained_frame_payload(payload, request):
+    storage = request.get("frame_storage")
+    if storage is None:  # Historical jobs retain their original publication bytes.
+        return payload
+    if storage != COMPACT_FRAME_V1:
+        raise ValueError("memory request has an unknown frame storage contract")
+    return {**payload, "active_memory_frame": compact_frame(payload["active_memory_frame"],
+            max_bytes=_frame_byte_budget(payload))}
 
 
 def capture_active_memory(*, project, run_root, run_id, target_resolution, source_snapshot, run_memory_selection,
@@ -141,13 +159,13 @@ def capture_active_memory(*, project, run_root, run_id, target_resolution, sourc
         if existing:
             # A retry consumes its original history cut and lifecycle, not outcomes added later.
             original = existing[0]["payload"]
-            for field in ("profile", "prior_outcomes", "prior_learning", "court"):
+            for field in ("profile", "prior_outcomes", "prior_learning", "court", "frame_storage"):
                 if field in original:
                     request[field] = original[field]
         else:
             # The unjudged tail is judged before the job pins the decision it reads.
             decision = court.consolidate(store, guard, project_identity=identity)
-            request.update(profile=OWNER_LIFECYCLE_V3, court=decision["decision"])
+            request.update(profile=OWNER_LIFECYCLE_V3, court=decision["decision"], frame_storage=COMPACT_FRAME_V1)
         requested = store.put(kind="REQUESTED", job_key=job_key, payload=request, guard=guard)
         started = store.put(kind="STARTED", job_key=job_key, payload={"request_ref": requested}, guard=guard)
         completed = store.put(kind="FRAME_COMPLETED", job_key=job_key,
@@ -175,6 +193,9 @@ def read_active_memory(binding, *, source_snapshot, run_memory_selection):
     actual = _frame_payload(request["payload"], payload["request_ref"], payload["started_ref"], store)
     if actual != payload:
         raise ValueError("active memory differs from its retained project evidence")
+    if request["payload"].get("frame_storage") == COMPACT_FRAME_V1:
+        payload = {**payload, "active_memory_frame": restore_frame(payload["active_memory_frame"],
+                   max_bytes=_frame_byte_budget(payload))}
     return payload
 
 

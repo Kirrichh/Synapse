@@ -126,6 +126,7 @@ jobs:
           acceptance/stage4/stage16/test_project_court_contract.py
           acceptance/stage4/stage16/test_project_memory_store_contract.py
           acceptance/stage4/stage16/test_project_memory_session_inventory_contract.py
+          acceptance/stage4/stage16/test_project_memory_inventory_selection_contract.py
           acceptance/stage4/stage16/test_episode_learning_contract.py
           acceptance/stage4/stage16/test_project_model_contract.py
           acceptance/stage4/stage16/test_experiment_journal.py
@@ -739,6 +740,18 @@ jobs:
             file: acceptance/stage4/stage16/test_procedural_source_plan_acceptance.py
           - shard: project-memory-lifecycle
             file: acceptance/stage4/stage16/test_project_memory_lifecycle_acceptance.py
+          - shard: shared-memory-events
+            file: acceptance/stage4/stage16/test_project_memory_shared_event_contract.py
+          - shard: shared-memory-corruption
+            file: acceptance/stage4/stage16/test_project_memory_shared_event_corruption.py
+          - shard: shared-memory-recovery
+            file: acceptance/stage4/stage16/test_project_memory_shared_event_recovery.py
+          - shard: compact-frame-contract
+            file: acceptance/stage4/stage16/test_compact_frame_contract.py
+          - shard: compact-frame-publication
+            file: acceptance/stage4/stage16/test_compact_frame_publication_acceptance.py
+          - shard: compact-frame-scale
+            file: acceptance/stage4/stage16/test_compact_frame_scale_acceptance.py
           - shard: gold-memory-slices
             file: acceptance/stage4/stage16/test_gold_memory_slices_acceptance.py
           - shard: exact-memory-cycle
@@ -930,8 +943,20 @@ jobs:
             file: acceptance/memory/test_search_grouping_acceptance.py
           - shard: search-grouping-scale
             file: acceptance/memory/test_search_grouping_scale_acceptance.py
+          - shard: prepared-search
+            file: acceptance/memory/test_prepared_search_acceptance.py
+          - shard: prepared-search-scale
+            file: acceptance/memory/test_prepared_search_scale_acceptance.py
+          - shard: prepared-search-custody
+            file: acceptance/memory/test_prepared_search_custody_acceptance.py
+          - shard: admission-input-custody
+            file: acceptance/memory/test_admission_input_custody_acceptance.py
           - shard: storage-evacuation
             file: acceptance/memory/test_storage_evacuation_acceptance.py
+          - shard: storage-audit
+            file: acceptance/memory/test_storage_audit_acceptance.py
+          - shard: shared-storage-forget
+            file: acceptance/memory/test_shared_storage_forget_acceptance.py
           - shard: knowledge-timeline
             file: acceptance/memory/test_knowledge_timeline_acceptance.py
           - shard: knowledge-correction

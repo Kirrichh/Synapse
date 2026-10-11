@@ -5044,7 +5044,8 @@ class Interpreter:
         elif canonical_json(recorded) != canonical_json(event):
             raise ReplayIntegrityError("REPLAY_INTEGRITY_ERROR: memory_admission differs from its record")
         self.memory_audit.append(copy.deepcopy(recorded))
-        return decision
+        # The decision's nested statements may also belong to the pinned memory or its history.
+        return copy.deepcopy(decision)
 
     def _affective_filter_to_string(self, expr: Any) -> Optional[str]:
         if expr is None:

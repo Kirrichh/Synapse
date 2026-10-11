@@ -11,8 +11,9 @@ import hashlib
 import re
 
 from .admission_journal import FileSnapshotFence, require_live_guard
+from .memory_event_storage import MemoryEventStorage
 from .persistence import (commit_snapshot_transaction, committed_transaction_exists,
-    ensure_directory, new_operation_id, read_committed_snapshot_transaction,
+    ensure_directory, ensure_durable_directory, new_operation_id,
     require_directory, stage_snapshot_transaction, store_transaction)
 from .source_verification import canonical, source_ref
 from .stage10.context_codec import decode_canonical
@@ -50,16 +51,14 @@ class ProjectMemoryStore:
         for path in (self.root, self.events):
             (require_directory if read_only else ensure_directory)(path)
         self.fence = FileSnapshotFence(self.root / "coordinator", read_only=read_only)
+        self.storage = MemoryEventStorage(self.root)
         self.read_only = read_only
         self._owner_session = None
         # transaction id -> (sha256 of its bytes, the event those bytes were validated as)
         self._validated: dict[str, tuple[str, dict]] = {}
 
     def _read(self, transaction):
-        marker, members = read_committed_snapshot_transaction(self.events, transaction_id=transaction)
-        if set(members) != {"event.json"}:
-            raise ValueError("memory event has undeclared members")
-        raw = members["event.json"]
+        marker, raw = self.storage.read(transaction)
         digest = hashlib.sha256(raw).hexdigest()
         # Every read hashes the bytes and checks the marker. Bytes this reader already proved canonical and
         # within the contract (the same transaction, the same digest) are not re-validated; any other bytes are.
@@ -68,7 +67,7 @@ class ProjectMemoryStore:
             event = deepcopy(known[1])
         else:
             event = decode_canonical(raw)
-            if (len(raw) > MAX_MEMORY_EVENT_BYTES or canonical(event) != raw
+            if (len(raw) > MAX_MEMORY_EVENT_BYTES
                     or set(event) != {"schema_version", "kind", "job_key", "payload"}
                     or event["schema_version"] != MEMORY_EVENT_V1 or event["kind"] not in EVENT_KINDS
                     or type(event["job_key"]) is not str or re.fullmatch(r"[0-9a-f]{64}", event["job_key"]) is None
@@ -112,13 +111,18 @@ class ProjectMemoryStore:
             raise ValueError("memory inventory requires its uninterrupted owner session")
         return session
 
-    def inventory(self, *, guard=None):
+    def inventory(self, *, kind=None, guard=None):
+        """Detached records of the selected kind after validating the whole inventory."""
+        if kind is not None and (type(kind) is not str or kind not in EVENT_KINDS):
+            raise ValueError("unknown memory inventory event kind")
         if guard is None:
-            return self._scan_inventory()[0]
+            entries = self._scan_inventory()[0]
+            return entries if kind is None else [item for item in entries if item[0]["kind"] == kind]
         session = self._held_inventory(guard)
         # Only the owner holding exclusion can reuse this view. Callers receive
         # detached data; physical reads and each new session still validate bytes.
-        return deepcopy(sorted(session.entries.values(), key=lambda item: item[1]["transaction_id"]))
+        entries = (item for item in session.entries.values() if kind is None or item[0]["kind"] == kind)
+        return deepcopy(sorted(entries, key=lambda item: item[1]["transaction_id"]))
 
     @contextmanager
     def session(self):
@@ -167,8 +171,11 @@ class ProjectMemoryStore:
         transaction = new_operation_id()
         try:
             with store_transaction(self.fence, guard=guard) as ticket:
+                ensure_durable_directory(self.root, ticket=ticket)
+                ensure_durable_directory(self.events, ticket=ticket)
+                physical = self.storage.prepare(raw, kind=kind, ticket=ticket)
                 members = stage_snapshot_transaction(self.events, transaction_id=transaction,
-                    members={"event.json": raw}, maximum_bytes=MAX_MEMORY_EVENT_BYTES, ticket=ticket)
+                    members=physical, maximum_bytes=MAX_MEMORY_EVENT_BYTES, ticket=ticket)
                 commit_snapshot_transaction(self.events, transaction_id=transaction, members=members,
                     boundary_id=job_key, marker_sha256=hashlib.sha256(raw).hexdigest(), ticket=ticket)
             saved, receipt = self._read(transaction)
@@ -180,3 +187,15 @@ class ProjectMemoryStore:
         session.entries[key] = saved, receipt
         session.transaction_count += 1
         return deepcopy(receipt)
+
+    def collect_unreferenced_blocks(self, *, guard):
+        """Collect physical blocks that no committed event retains."""
+        if self.read_only:
+            raise TypeError("a memory reader cannot collect owner storage")
+        self._held_inventory(guard)
+        try:
+            with store_transaction(self.fence, guard=guard) as ticket:
+                return self.storage.collect_garbage(ticket=ticket, validate_inventory=self._scan_inventory)
+        except BaseException:
+            self._owner_session = None
+            raise

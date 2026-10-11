@@ -470,6 +470,16 @@ def ensure_directory(path: Path) -> None:
     require_directory(path)
 
 
+def ensure_durable_directory(path: Path, *, ticket: StoreMutationTicket) -> None:
+    """Persist a directory's namespace before publishing files that depend on it."""
+    require_open_mutation_ticket(ticket)
+    require_directory(path.parent)
+    ensure_directory(path)
+    # A prior publication may have linked entries before its directory sync failed.
+    _sync_directory(path)
+    _sync_directory(path.parent)
+
+
 def require_regular_file(path: Path) -> os.stat_result:
     if not isinstance(path, Path):
         raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "file path must be an exact Path")
@@ -1391,7 +1401,7 @@ def stage_snapshot_transaction(
         raise _fail(PersistenceFailureCode.DESTINATION_EXISTS, "transaction id is already staged")
     if type(members) is not dict or not members:
         raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "transaction members must be a non-empty exact dict")
-    ensure_directory(directory)
+    ensure_durable_directory(directory, ticket=ticket)
     staged: list[SnapshotTransactionMember] = []
     for member_name in sorted(members):
         value = members[member_name]
@@ -1586,6 +1596,18 @@ def verify_transaction_members(root: Path, members: object) -> None:
             raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "committed participant bytes differ")
 
 
+def remove_immutable(path: Path, *, ticket: StoreMutationTicket) -> None:
+    """Durably unlink a file whose owning store has authorized collection."""
+    require_open_mutation_ticket(ticket)
+    require_directory(path.parent)
+    require_regular_file(path)
+    try:
+        path.unlink()
+    except OSError as exc:
+        raise _fail(PersistenceFailureCode.FILESYSTEM_IO_FAILED, "collected file removal failed") from exc
+    _sync_directory(path.parent)
+
+
 def restore_uncommitted_file(path: Path, *, previous_bytes: bytes | None, ticket: StoreMutationTicket) -> None:
     """Restore one write-ahead metadata image under an exclusive recovery ticket."""
     require_open_mutation_ticket(ticket)
@@ -1610,6 +1632,7 @@ __all__ = [
     "DurabilityProfile",
     "encode_journal_frame",
     "ensure_directory",
+    "ensure_durable_directory",
     "ExclusiveStoreLock",
     "initialize_journal",
     "IntegrityManifestDescriptor",
@@ -1623,6 +1646,7 @@ __all__ = [
     "MAX_JOURNAL_PAYLOAD_BYTES_V1",
     "MAX_METADATA_BYTES_V1",
     "move_immutable",
+    "remove_immutable",
     "new_operation_id",
     "PersistenceFailureCode",
     "PersistenceViolation",

@@ -68,8 +68,8 @@ class MemoryOwner:
 
         The first binding supersedes nothing; each later one names the configuration it superseded, so the
         order is the chain of those links, never the journal's storage order."""
-        found = [event["payload"] for event, _ in self.store.inventory(guard=guard)
-                 if event["kind"] == "MEMORY_BOUND" and event["payload"]["project_identity"] == self.identity]
+        found = [event["payload"] for event, _ in self.store.inventory(kind="MEMORY_BOUND", guard=guard)
+                 if event["payload"]["project_identity"] == self.identity]
         chain = [item for item in found if item.get("supersedes") is None]
         if len(chain) > 1:
             raise MemoryOwnerViolation("a memory owner has more than one first binding")
@@ -137,8 +137,8 @@ class MemoryOwner:
                                                                   run["run_id"]), payload=payload, guard=guard)
 
     def sessions(self, *, guard=None) -> list[dict[str, Any]]:
-        found = [event["payload"] for event, _ in self.store.inventory(guard=guard)
-                 if event["kind"] == "SESSION_OPENED" and event["payload"]["project_identity"] == self.identity]
+        found = [event["payload"] for event, _ in self.store.inventory(kind="SESSION_OPENED", guard=guard)
+                 if event["payload"]["project_identity"] == self.identity]
         return sorted(found, key=lambda item: item["run_id"])
 
     # -- reports, state and boundaries ---------------------------------------
@@ -240,9 +240,8 @@ class MemoryOwner:
                                        "sequence": sequence, "window": window, "acts": acts})
 
     def retention_passes(self, *, guard=None) -> list[dict[str, Any]]:
-        passes = sorted((event["payload"] for event, _ in self.store.inventory(guard=guard)
-                         if event["kind"] == "MEMORY_RETENTION"
-                         and event["payload"]["project_identity"] == self.identity),
+        passes = sorted((event["payload"] for event, _ in self.store.inventory(kind="MEMORY_RETENTION", guard=guard)
+                         if event["payload"]["project_identity"] == self.identity),
                         key=lambda item: item["sequence"])
         if [item["sequence"] for item in passes] != list(range(len(passes))):
             raise MemoryOwnerViolation("retention passes are not a contiguous sequence")
@@ -256,8 +255,8 @@ class MemoryOwner:
                               payload={"project_identity": self.identity, "trial": trial})
 
     def trials(self, *, guard=None) -> list[dict[str, Any]]:
-        return sorted((event["payload"]["trial"] for event, _ in self.store.inventory(guard=guard)
-                       if event["kind"] == "MEMORY_TRIAL" and event["payload"]["project_identity"] == self.identity),
+        return sorted((event["payload"]["trial"] for event, _ in self.store.inventory(kind="MEMORY_TRIAL", guard=guard)
+                       if event["payload"]["project_identity"] == self.identity),
                       key=lambda item: item["id"])
 
     def put_boundary(self, guard, boundary: dict[str, Any]) -> dict:
@@ -272,10 +271,9 @@ class MemoryOwner:
     def boundaries(self, *, guard=None) -> dict[str, dict[str, Any]]:
         """Every recorded snapshot boundary by the consolidation it was built from, read in one pass."""
         found = {}
-        for event, _ in self.store.inventory(guard=guard):
-            if event["kind"] == "SNAPSHOT_BOUNDARY":
-                boundary = records.verify(event["payload"]["boundary"], "snapshot_boundary")
-                if consolidation_key(boundary["boundary"]["consolidation_id"]) != event["job_key"]:
-                    raise MemoryOwnerViolation("a snapshot boundary is filed under another consolidation")
-                found[boundary["boundary"]["consolidation_id"]] = boundary
+        for event, _ in self.store.inventory(kind="SNAPSHOT_BOUNDARY", guard=guard):
+            boundary = records.verify(event["payload"]["boundary"], "snapshot_boundary")
+            if consolidation_key(boundary["boundary"]["consolidation_id"]) != event["job_key"]:
+                raise MemoryOwnerViolation("a snapshot boundary is filed under another consolidation")
+            found[boundary["boundary"]["consolidation_id"]] = boundary
         return found

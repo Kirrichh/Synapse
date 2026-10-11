@@ -24,34 +24,21 @@ wall time of the query's embedding.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 import heapq
 import math
 import operator
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from synapse.palace_admission import SCORER_VERSION, candidate_score
+from synapse.palace_admission import SCORER_VERSION
 
+from .prepared import PreparedKnowledgeIndex
 from .statements import freshness_of, slot
 from .timeline import held_period, resolve
 
 SEARCH_V1 = "synapse.memory.knowledge-search/v1"
 RRF_K = 60  # The constant Cormack, Clarke and Buettcher found robust.
 _BYTES_PER_COMPONENT = 8
-
-
-def searchable(record: Mapping[str, Any]) -> dict[str, Any]:
-    """The content of a statement the lexical channel reads (its structure and its text)."""
-    return {"subject": record["subject"], "property": record["property"], "value": record["value"],
-            "conditions": record["conditions"], "text": record["text"]}
-
-
-def lexical_ranking(query: str, entries: Sequence[Mapping[str, Any]], budget: int) -> list[str]:
-    scored = []
-    for entry in entries:
-        found = candidate_score(query, searchable(entry["record"]))
-        if found is not None and found["score"] > 0:
-            scored.append((-found["score"], entry["record"]["id"]))
-    return [identity for _, identity in sorted(scored)[:budget]]
 
 
 def semantic_ranking(query_vector: Sequence[float] | None, entries: Sequence[Mapping[str, Any]],
@@ -88,43 +75,35 @@ def candidate(resolved: Mapping[str, Any], rank: int, channels: Mapping[str, lis
     """One holding version in the shape admission reads."""
     entry = resolved["entry"]
     record = entry["record"]
-    return {"id": record["id"], "kind": "fact", "entity": record["subject"], "attribute": record["property"],
+    return deepcopy({"id": record["id"], "kind": "fact", "entity": record["subject"], "attribute": record["property"],
             "value": record["value"], "polarity": record["polarity"], "conditions": dict(record["conditions"]),
             "valid_from": resolved["valid_from"], "valid_until": resolved["valid_until"],
             "freshness": resolved["freshness"], "text": record["text"],
             "source": {"tool": record["source"]["tool"], "ref": record["source"]["ref"], "source": entry["source"]},
             # The period memory held it in at the asked window, never the latest one (review R3).
             "known_from": resolved["known"]["from"], "known_until": resolved["known"]["until"], "rank": rank,
-            "found_by": sorted(name for name, ranking in channels.items() if record["id"] in ranking)}
-
-
-def _slot_members(versions: Mapping[str, Mapping[str, Any]], slots: Sequence[str]) -> dict[str, list]:
-    """Group every version of the selected slots for this query."""
-    groups: dict[str, list] = {found: [] for found in slots}
-    if groups:
-        for entry in versions.values():
-            found = slot(entry["record"])
-            if found in groups:
-                groups[found].append(entry)
-    return groups
+            "found_by": sorted(name for name, ranking in channels.items() if record["id"] in ranking)})
 
 
 def search(query: str, versions: Mapping[str, Mapping[str, Any]], policy, *, valid_at: str | None,
            known_as_of: int | None, embed: Callable[[str], tuple[list[float] | None, float | None]] | None,
-           channels: Sequence[str] = ("lexical", "semantic"), embedded_by: str | None = None) -> dict[str, Any]:
+           channels: Sequence[str] = ("lexical", "semantic"), embedded_by: str | None = None,
+           index: PreparedKnowledgeIndex | None = None) -> dict[str, Any]:
     """Candidates for ``query`` at ``valid_at`` as known at ``known_as_of``, with each channel's ranking and cost.
 
     The semantic channel compares the query's vector only with vectors of the same embedder (``embedded_by``):
     equal dimensions are no common space, so a vector of another model, or of none named, is not searched
     until a reading under this one indexes it again (review DEEP-6)."""
     budget = policy.budget
+    prepared = PreparedKnowledgeIndex(versions) if index is None else index
+    prepared.require_source(versions)
     # A version read from forgotten results left the index: it stays history, never a candidate.
     held = sorted((entry for entry in versions.values() if held_period(entry, known_as_of) is not None),
                   key=lambda entry: entry["record"]["id"])
     rankings: dict[str, list[str]] = {}
     cost = {"embedding_calls": 0, "vectors": 0, "dimensions": None, "index_bytes": 0, "embedding_ms": None}
     if "lexical" in channels:
-        rankings["lexical"] = lexical_ranking(query, held, budget)
+        rankings["lexical"] = prepared.rank(query, held, budget)
     if "semantic" in channels and embed is not None:
         vector, elapsed = embed(query)
         comparable = [entry for entry in held if embedded_by is not None and entry.get("embedded_by") == embedded_by]
@@ -140,7 +119,7 @@ def search(query: str, versions: Mapping[str, Mapping[str, Any]], policy, *, val
         found = slot(by_id[identity]["record"])
         if found not in slots:
             slots.append(found)
-    groups = _slot_members(versions, slots)
+    groups = prepared.members(slots)
     candidates = []
     for rank, found in enumerate(slots, 1):
         members = groups[found]

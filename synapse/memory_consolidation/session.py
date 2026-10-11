@@ -29,6 +29,7 @@ from .court.knowledge import known_of
 from .formation import bind_event, plan_task
 from .hypotheses import check_basis, declare, resolve, reuse, verification
 from .knowledge import search as knowledge_search
+from .knowledge.prepared import PreparedKnowledgeIndex
 from .knowledge.statements import declare as declare_statement, instant
 from .learning.behavior import execute, rivals
 from .learning.composition import (joins_of, merge_joins, planning_contingency, ranked, recorded_contingency,
@@ -101,6 +102,10 @@ class MemorySession:
         self.factory = factory
         self.run = run
         self.boundary = boundary
+        # This session keeps its original verified cut, including after a consolidation.
+        versions = {} if boundary is None else boundary["boundary"].get("knowledge") or {}
+        self._knowledge_versions = versions
+        self._knowledge_index = PreparedKnowledgeIndex(versions)
         self.digest = digest
         self.exam = exam
         self.learns = exam is None
@@ -216,17 +221,17 @@ class MemorySession:
         policy = self.factory.configuration.knowledge
         if policy is None:
             raise ValueError("this memory declares no knowledge policy")
-        versions = {} if self.boundary is None else self.boundary["boundary"].get("knowledge") or {}
-        return knowledge_search.search(query, versions, policy, valid_at=instant(valid_at), known_as_of=known_as_of,
-                                       embed=embed, channels=channels, embedded_by=self.embedded_by())
+        return knowledge_search.search(query, self._knowledge_versions, policy,
+                                       valid_at=instant(valid_at), known_as_of=known_as_of,
+                                       embed=embed, channels=channels, embedded_by=self.embedded_by(),
+                                       index=self._knowledge_index)
 
     def recorded_statement(self, identity, valid_at, known_as_of):
         """A statement of the pinned snapshot's knowledge resolved again for admission (``None`` for a candidate
         that is no statement of memory)."""
         if not (isinstance(identity, str) and identity.startswith(KINDS["statement"][1])):
             return None
-        versions = {} if self.boundary is None else self.boundary["boundary"].get("knowledge") or {}
-        return knowledge_search.recorded(identity, versions, self.factory.configuration.knowledge,
+        return knowledge_search.recorded(identity, self._knowledge_versions, self.factory.configuration.knowledge,
                                          valid_at=valid_at, known_as_of=known_as_of)
 
     # -- actions ----------------------------------------------------------------

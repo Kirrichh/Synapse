@@ -1,16 +1,18 @@
 """Freeze the repeated-scan search used before query-local grouping.
 
 Source: synapse/memory_consolidation/knowledge/search.py, commit
-fc5509e0f1c29fecece4427b6f95c6dbe053e501. Only imports are adapted: ranking,
-timeline resolution and result shaping remain the unchanged product functions.
+fc5509e0f1c29fecece4427b6f95c6dbe053e501. Only imports are adapted: lexical
+ranking is frozen separately; semantic ranking, timeline resolution and result
+shaping remain the unchanged product functions.
 This acceptance oracle must not follow changes to the search algorithm.
 """
 from __future__ import annotations
 
 from typing import Any, Callable, Mapping, Sequence
 
+from acceptance.memory._lexical_reference import lexical_ranking
 from synapse.memory_consolidation.knowledge.search import (
-    SEARCH_V1, candidate, fuse, lexical_ranking, semantic_ranking,
+    SEARCH_V1, candidate, fuse, semantic_ranking,
 )
 from synapse.memory_consolidation.knowledge.statements import freshness_of, slot
 from synapse.memory_consolidation.knowledge.timeline import held_period, resolve

@@ -1,5 +1,114 @@
 # Synapse Changelog
 
+## Shared memory event bytes and compact active frames — 2026-10-11
+
+- Large new snapshot boundaries, materialized states, consolidation reports,
+  requests and completed frames retain exact bytes in shared immutable blocks.
+  Physical manifests have their own version; logical event references and
+  publication receipts preserve their existing meaning. Old inline events
+  remain readable without rewriting their history.
+- Publication persists directory entries and blocks before the dependent
+  terminal marker. Explicit owner GC validates every committed root before
+  deleting orphan blocks; forgotten historical events still retain their
+  physical blocks. Store D keeps its existing retention authority.
+- New requests pin a compact frame representation with references confined to
+  that frame. The owner verifies retained evidence before expansion and worker
+  projection. Completed and interrupted old requests keep their original
+  representation. Expanded byte budgets remain in force.
+- Strict canonical decoding remains the verification owner. The event reader
+  no longer repeats the same canonical byte comparison after successful decode.
+  Physical hashes, markers, receipts and detached results are still checked.
+- New corruption, interrupted publication, GC, frame scope and scale acceptance
+  files have independent CI shards. Format compatibility, maintenance and
+  rollout limits are documented in `docs/MEMORY_STORAGE.md`; measurements and
+  validation evidence are recorded in `docs/MEMORY_PERFORMANCE.md`.
+- Three paired investigations show 22.6–36.2% shorter fresh memory reads.
+  The complete investigation with consolidation changes from 16.590 to 16.314
+  seconds, within overlapping sample ranges; substantial end-to-end speedup
+  and lower runtime RAM are not established by these measurements.
+- The fresh window-5 journal uses 28.9% less filesystem allocation, including
+  directory overhead. The large frame shrinks from 9,497,602 to 1,400,102
+  canonical bytes with identical restored worker output. Old executable
+  versions cannot read these new formats. Exact evidence is retained in
+  `reports/memory_shared_storage_v1.json`.
+- 168 distinct targeted pytest cases passed, including all three complete
+  Gold cycle files on unchanged final product sources. The heavy retained
+  history forget/replay driver and pre-commit corpus gate also passed.
+  Repeated verification runs are not added to that count; the full repository
+  suite was not run.
+
+## Admission retains its input claim — 2026-10-11
+
+- Palace admission now owns the normalized claim it evaluated. Reusing the
+  caller's key list or changing nested conditions after `admit` cannot rewrite
+  the recorded claim. Copying occurs at the existing normalization boundary;
+  the full admission event and its attestations are not copied again.
+- The validation rules, admission decisions and event format are unchanged.
+  Historical records are not rewritten or given invented original claims.
+- Two new canonical CLI cases fail on the preceding working tree and pass
+  after the fix: an admitted key list and refused nested conditions retain
+  their original recorded values, with court replay and integrity verified.
+  The new acceptance file has its own CI job.
+- 53 targeted cases and the pre-commit corpus gate passed. The full repository
+  suite was not run. Before/after source hashes, the exact product delta and
+  acceptance evidence are in `reports/memory_admission_input_custody_v1.json`.
+- A separate acceptance profiler captured 34 opening, exam, replay, court and
+  state-reading intervals on copies of the retained storage incident. A real
+  window-8 snapshot was included. `reports/memory_open_profile_v1.json`
+  separates diagnostic timings from the uninstrumented control; storage-read
+  optimization remains the next patch, not a claimed result of this one.
+
+## Prepared exact search of a pinned memory snapshot — 2026-10-11
+
+- A `MemorySession` lazily prepares lexical postings and slot membership
+  for its original verified boundary. Versions, provenance and vectors remain
+  in that boundary; applicability, ranking, budgets and admission are evaluated
+  on each request. Semantic-only search does not prepare lexical postings.
+- `knowledge/prepared.py` owns the derived search projection. The old product
+  lexical/grouping implementations are removed; frozen comparisons live only
+  in acceptance. Direct searches prepare a fresh projection per call; new
+  sessions and replay rebuild their own projection. No persistent index,
+  SQLite dependency, shared cache or storage format is introduced.
+- Search candidates and returned admission decisions own their nested values.
+  Real DSL acceptance reproduces the previous alias from returned admission
+  data to pinned knowledge/history, for both admission and abstention.
+- 258 targeted cases passed, including 34 new cases. Heavy acceptance files
+  have independent CI jobs. The pre-commit gate passed; the full repository
+  suite was not run.
+- Three paired durable historical investigations reduced median execution
+  including consolidation from 24.774 to 16.308 seconds (34.17% less).
+  Complete search events matched; independent historical facts and replay
+  passed, including replay of baseline records on the patch without effects.
+  This gain applies to the measured 64-query session, not every Synapse task.
+- Preparation, subsequent searches and retained Python allocations are
+  measured separately. The projections trade additional session RAM for
+  repeated-query speed; no process RSS reduction is claimed. Full methods,
+  limits and reproduction are in `docs/MEMORY_PERFORMANCE.md`; raw samples
+  and source hashes are in `reports/memory_prepared_search_v1.json`.
+
+## Selective copies of the owner inventory — 2026-10-11
+
+- `ProjectMemoryStore.inventory(kind=...)` selects one event kind from the
+  verified inventory. Within a held owner session it filters before making
+  detached copies, so reading a small binding does not copy unrelated state
+  snapshots and consolidation reports. The default still returns all events.
+- `MemoryOwner` uses this selection for bindings, sessions, retention passes,
+  trials and snapshot boundaries. Project identity, binding-chain, retention
+  sequence and boundary identity checks retain their existing owners.
+- Opening a session and every unguarded inventory read still validate the
+  whole physical journal. Excluded corruption, conflicting events and the
+  global event budget still refuse the read. Guarded reads, including empty
+  selections, still require a live guard of the uninterrupted owner session.
+- The court reads the full inventory as before. Storage formats, court
+  decisions, replay, the single writer and agent access do not change.
+- 149 targeted acceptance cases and the pre-commit gate passed. Three paired
+  durable storage runs reduced median execution with consolidation from
+  64.830 to 57.630 seconds. Complete results of six reads and the full owner
+  state matched on the same retained journal; old program prefixes replayed
+  without tool calls. Process RSS reduction is not claimed.
+  Measurements and reproduction are in `docs/MEMORY_PERFORMANCE.md`;
+  raw samples are in `reports/memory_inventory_selection_v1.json`.
+
 ## Query-local knowledge grouping — 2026-10-11
 
 - Knowledge search groups versions of selected slots in one pass per query.

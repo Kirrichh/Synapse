@@ -98,6 +98,7 @@
     "source_snapshot.py": "coherent source history capture and task-bound physical reopening for frozen runs",
     "project_model.py": "revision-bound project elements and the eight task-memory projections",
     "project_memory_store.py": "immutable maintenance transitions for permanent project element owners and the memory owner's journal records (binding, sessions, reports, boundaries, retention passes)",
+    "memory_event_storage.py": "versioned physical representation of the memory owner's journal events: exact shared content-addressed blocks written under the owner's mutation ticket and restoration of each logical event",
     "project_agents.py": "element-owner job lifecycle and active-memory frames pinned to a decision reached through the memory court port",
     "project_episode_outcome.py": "physical basis and typed requirement outcome of one completed run: reopened sealed records, attempt facts, recovery and fulfilment",
     "project_court.py": "decision chain of the memory court: established or pending basis of completed owner outcomes, per-origin credits, the versioned exact-patch policy and the one-writer append of each consolidation's decision",
@@ -109,6 +110,9 @@
     "stage10/planning_basis.py": "bounded method observations, deterministic coverage decisions and retained planning-basis schema"
   },
   "owner_components": {
+    "memory_blocks.py": "memory_event_storage.py",
+    "memory_event_encoding.py": "memory_event_storage.py",
+    "project_frame_storage.py": "project_agents.py",
     "replay_attempt_boundary.py": "replay.py",
     "replay_attempt_lifecycle.py": "replay.py",
     "replay_machine_binding.py": "replay.py",

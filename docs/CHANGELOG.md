@@ -36,6 +36,14 @@
   history forget/replay driver and pre-commit corpus gate also passed.
   Repeated verification runs are not added to that count; the full repository
   suite was not run.
+- Follow-up: CI on `93cf0c9` failed in `gold-fast`, because the Stage 4
+  ownership manifest did not describe the four new Gold modules. It now does:
+  `memory_event_storage.py` owns the physical representation of the memory
+  owner's journal events, `memory_blocks.py` and `memory_event_encoding.py`
+  are its internal components, and `project_frame_storage.py` is an internal
+  component of `project_agents.py`. The ownership DAG has no forbidden edge;
+  the whole `gold-fast` suite passes locally (2,247 passed). Every other check
+  on `93cf0c9` passed.
 
 ## Admission retains its input claim — 2026-10-11
 

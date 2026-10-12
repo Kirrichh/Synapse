@@ -679,6 +679,9 @@ def main(argv=None) -> int:
     if args.cmd == "replay":
         try:
             result = replay_mock_artifact(args.mock)
+        except ReplayArtifactError as exc:
+            print(f"ReplayArtifactError: {exc}", file=sys.stderr)
+            return 8
         except DeterministicReplayError as exc:
             print(f"DeterministicReplayError: {exc}", file=sys.stderr)
             return 1

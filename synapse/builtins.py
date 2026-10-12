@@ -3,6 +3,7 @@ Synapse Builtins - Встроенные функции и LLM backend
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import random
 import time
@@ -65,6 +66,9 @@ class LLMBackend:
         )
         self.gateway = gateway or (LLMGateway(self.gateway_config) if self.gateway_config.real_provider_enabled else None)
         self.last_result: Optional[LLMResult] = None
+        # Governed observability of multi-step reasoning: every thought step is
+        # an LLM request, so the backend retains it for golden artifacts.
+        self.thought_history: Dict[str, Dict[str, Any]] = {}
 
     def _mock_complete_result(self, prompt: str, model: str) -> LLMResult:
         from .llm import LLMProviderStatus, LLMResult, LLMTokenStatus, LLMUsage
@@ -154,6 +158,12 @@ class LLMBackend:
         for i, step in enumerate(steps):
             prompt = f"Step {i+1}: {step}\nContext: {context}"
             result = self.complete(prompt, max_tokens=self.thought_max_tokens)
+            prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+            self.thought_history[f"{prompt_hash}:{self.default_model}"] = {
+                "prompt_hash": prompt_hash,
+                "model": self.default_model,
+                "result": result,
+            }
             results.append(result)
             context += f"\n- {result}"
 

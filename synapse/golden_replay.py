@@ -255,6 +255,40 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _read_artifact_bytes(root: Path, relative: str) -> bytes:
+    """Byte-level artifact read that fails closed with a typed error."""
+    try:
+        return (root / relative).read_bytes()
+    except OSError as exc:
+        raise ReplayArtifactError(f"artifact file unreadable: {relative}: {exc}") from exc
+
+
+def _decode_artifact_text(root: Path, relative: str) -> str:
+    raw = _read_artifact_bytes(root, relative)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ReplayArtifactError(f"artifact file is not valid UTF-8: {relative}: {exc}") from exc
+
+
+def _read_artifact_json(root: Path, relative: str) -> Any:
+    text = _decode_artifact_text(root, relative)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ReplayArtifactError(f"artifact file is not valid JSON: {relative}: {exc}") from exc
+
+
+def _artifact_file_entry(manifest: Dict[str, Any], name: str) -> str:
+    files = manifest.get("files")
+    if not isinstance(files, dict):
+        raise ReplayArtifactError("manifest is missing the files map")
+    value = files.get(name)
+    if not isinstance(value, str) or not value:
+        raise ReplayArtifactError(f"manifest files map is missing entry: {name}")
+    return value
+
+
 def _run_interpreter_from_source(source: str, *, llm_backend: Optional[LLMBackend] = None) -> Interpreter:
     interp = Interpreter()
     if llm_backend is not None:
@@ -287,6 +321,15 @@ def record_source(source: str, output_dir: Path | str, *, source_path: str = "<m
     history = list(interp.execution_history)
     final_history_hash = interp.compute_history_hash()
     llm_cache = extract_llm_cache(history)
+    # Thought-chain LLM requests are retained by the backend: multi-step
+    # reasoning emits no per-step llm_call history events, so the artifact
+    # cache is merged with the retained thought requests to keep the
+    # record -> replay --mock roundtrip complete.
+    thought_history = getattr(interp.llm_backend, "thought_history", None)
+    if thought_history:
+        merged_cache = dict(llm_cache)
+        merged_cache.update(thought_history)
+        llm_cache = merged_cache
 
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -361,14 +404,16 @@ def _diff_events(expected: list[dict[str, Any]], actual: list[dict[str, Any]]) -
 def replay_mock_artifact(artifact_dir: Path | str) -> ReplayResult:
     """Replay a golden artifact using only embedded mocks and stable validators."""
     root = Path(artifact_dir)
-    manifest = _read_json(root / "manifest.json")
+    manifest = _read_artifact_json(root, "manifest.json")
     # Fail closed on an unreadable schema before loading or executing anything
-    # the artifact describes.
+    # the artifact describes. Byte-level reads are guarded the same way: a
+    # corrupted artifact must surface as a typed integrity failure, never as
+    # an unhandled decode/parse traceback.
     schema_version = _artifact_schema_version(manifest)
-    source = (root / manifest["files"]["source"]).read_text(encoding="utf-8")
-    expected_history = _read_json(root / manifest["files"]["history"])
-    expected_snapshot = _read_json(root / manifest["files"]["vm_snapshot"])
-    llm_cache = _read_json(root / manifest["files"]["llm_cache"])
+    source = _decode_artifact_text(root, _artifact_file_entry(manifest, "source"))
+    expected_history = _read_artifact_json(root, _artifact_file_entry(manifest, "history"))
+    expected_snapshot = _read_artifact_json(root, _artifact_file_entry(manifest, "vm_snapshot"))
+    llm_cache = _read_artifact_json(root, _artifact_file_entry(manifest, "llm_cache"))
 
     expected_hash = manifest["metadata"]["program_hash"]
     actual_hash = program_hash_for_source(source)
@@ -385,7 +430,7 @@ def replay_mock_artifact(artifact_dir: Path | str) -> ReplayResult:
     # Replay from the recorded initial state. The replay environment uses a
     # cache-only LLM backend, so provider calls are impossible and missing cache
     # entries become deterministic failures.
-    initial_snapshot = _read_json(root / manifest["files"]["initial_vm_snapshot"])
+    initial_snapshot = _read_artifact_json(root, _artifact_file_entry(manifest, "initial_vm_snapshot"))
     replay_interp = Interpreter.restore_snapshot(initial_snapshot)
     replay_interp.source_code = source
     replay_interp.llm_backend = CacheOnlyLLMBackend(llm_cache)
@@ -471,6 +516,13 @@ def record_integrate_artifact(
     history = list(interp.execution_history)
     final_history_hash = interp.compute_history_hash()
     llm_cache = extract_llm_cache(history)
+    # Same thought-request merge as the strict record path: the integrate
+    # artifact must replay multi-step reasoning from its cache as well.
+    thought_history = getattr(interp.llm_backend, "thought_history", None)
+    if thought_history:
+        merged_cache = dict(llm_cache)
+        merged_cache.update(thought_history)
+        llm_cache = merged_cache
 
     manifest: Dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -533,14 +585,15 @@ def replay_integrate_artifact(artifact_dir: "Path | str") -> "ReplayResult":
     """
     import copy as _copy
     root = Path(artifact_dir)
-    manifest = _read_json(root / "manifest.json")
+    manifest = _read_artifact_json(root, "manifest.json")
     # Fail closed on an unreadable schema before loading or executing anything
-    # the artifact describes.
+    # the artifact describes. Byte-level reads share the typed integrity
+    # guards of the strict replay path.
     schema_version = _artifact_schema_version(manifest)
-    source = (root / manifest["files"]["source"]).read_text(encoding="utf-8")
-    expected_history = _read_json(root / manifest["files"]["history"])
-    expected_snapshot = _read_json(root / manifest["files"]["vm_snapshot"])
-    llm_cache = _read_json(root / manifest["files"]["llm_cache"])
+    source = _decode_artifact_text(root, _artifact_file_entry(manifest, "source"))
+    expected_history = _read_artifact_json(root, _artifact_file_entry(manifest, "history"))
+    expected_snapshot = _read_artifact_json(root, _artifact_file_entry(manifest, "vm_snapshot"))
+    llm_cache = _read_artifact_json(root, _artifact_file_entry(manifest, "llm_cache"))
 
     expected_hash = manifest["metadata"]["program_hash"]
     actual_hash = program_hash_for_source(source)
@@ -556,7 +609,7 @@ def replay_integrate_artifact(artifact_dir: "Path | str") -> "ReplayResult":
     if final_hash and not _history_chain_valid(expected_history, final_hash):
         raise DeterministicReplayError("execution_history chain broken in artifact")
 
-    initial_snapshot = _read_json(root / manifest["files"]["initial_vm_snapshot"])
+    initial_snapshot = _read_artifact_json(root, _artifact_file_entry(manifest, "initial_vm_snapshot"))
     replay_interp = Interpreter.restore_snapshot(initial_snapshot)
     replay_interp.integrate_i2_skeleton_enabled = True
     replay_interp.execution_history = _copy.deepcopy(expected_history)

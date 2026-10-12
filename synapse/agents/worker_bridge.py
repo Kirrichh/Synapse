@@ -20,6 +20,7 @@ from synapse.experiments.gold.stage10.worker_transport import (
     WorkerInvocation,
     WorkerTokenStatus,
 )
+from synapse.experiments.gold.stage10.intent import EffectDisposition
 
 from .contracts import (
     AgentExecutionRequest,
@@ -72,6 +73,12 @@ class AgentBackedWorkerTransport:
             "bundle_sha256": plan_persistence.bundle_sha256,
         }))
         profile = self._execution_port.registry.adapters[0].profile
+        # The effect classes the dispatched agent must support follow the
+        # governing intent's expected effects, exactly as agent selection
+        # derived them from the task: a creation task dispatches with both
+        # PATH_CREATED and PATH_MODIFIED, a repair task with PATH_MODIFIED only.
+        effect_classes = tuple(sorted({e.kind.value for e in context.intent.effects
+                                        if e.disposition is EffectDisposition.EXPECTED}))
         request = AgentExecutionRequest(
             invocation_id=invocation.invocation_id,
             attempt_id=invocation.attempt_id,
@@ -82,8 +89,8 @@ class AgentBackedWorkerTransport:
             envelope_sha256=invocation.envelope_sha256,
             required_capabilities=coding_agent_capabilities(context),
             required_output_profile=PATCH_CANDIDATE_OUTPUT_V1,
-            required_effect_classes=("PATH_MODIFIED",),
-            allowed_effects=("PATH_MODIFIED",),
+            required_effect_classes=effect_classes,
+            allowed_effects=effect_classes,
             resource_budget=profile.resource_limits,
             selected_profile_id=profile.profile_id,
             allowed_networks=(profile.runtime_policy.network,),

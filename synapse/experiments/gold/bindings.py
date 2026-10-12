@@ -46,6 +46,12 @@ BINDING_ID_TEXT_PREFIX_V1 = "synapse.stage4.gold.binding-record.v1:"
 BINDING_MEDIA_TYPE_V1 = "application/vnd.synapse.stage4.binding+json"
 
 PYTHON_BINDING_RESOLVER_V1 = "synapse.stage4.gold.python-binding-resolver/v1"
+#: A creation target's verifiable precondition in the base revision is absence.
+#: The binding identity therefore binds (revision, path, absent), exactly as a
+#: content binding binds (revision, path, present, span): it proves the file
+#: did not exist where the task intends to create it, so a candidate that
+#: "creates" an existing file cannot acquire this identity.
+CREATION_BINDING_RESOLVER_V1 = "synapse.stage4.gold.creation-binding-resolver/v1"
 DOCUMENT_BINDING_RESOLVER_V1 = "synapse.stage4.gold.document-binding-resolver/v1"
 
 MAX_PYTHON_SOURCE_BYTES_V1 = 1_048_576
@@ -70,6 +76,7 @@ class BindingKind(str, Enum):
     PYTHON = "PYTHON"
     DOCUMENT = "DOCUMENT"
     REQUIREMENT = "REQUIREMENT"
+    CREATION = "CREATION"
 
 
 class PythonSymbolKind(str, Enum):
@@ -112,6 +119,7 @@ class BindingFailureCode(str, Enum):
     SECTION_AMBIGUOUS = "SECTION_AMBIGUOUS"
     REQUIREMENT_MISSING = "REQUIREMENT_MISSING"
     REQUIREMENT_SUPERSEDED = "REQUIREMENT_SUPERSEDED"
+    CREATION_TARGET_EXISTS = "CREATION_TARGET_EXISTS"
     BINDING_ID_MISMATCH = "BINDING_ID_MISMATCH"
     TRUSTED_OBJECT_FORGED = "TRUSTED_OBJECT_FORGED"
 
@@ -470,7 +478,64 @@ class RequirementBinding:
         return binding
 
 
-Binding = PythonBinding | DocumentBinding | RequirementBinding
+@dataclass(frozen=True, init=False)
+class CreationBinding:
+    """A declared creation target: this exact path is absent in this commit.
+
+    Content bindings prove a symbol exists; a creation binding proves the
+    opposite — that the path a task intends to create did not exist in the
+    frozen base revision. Both directions are needed for the same reason: the
+    identity must be checkable against the exact Git commit, never against a
+    mutable worktree. Reproduction then verifies the transition from absence
+    to a regular blob under the same C1 contract as modification.
+    """
+
+    schema_version: str
+    binding_kind: BindingKind
+    repository_revision: RepositoryRevision
+    path: str
+    contract_version: str
+    resolver_version: str
+    binding_id: BindingId
+    _canonical_payload: bytes
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> CreationBinding:
+        raise TypeError("CreationBinding is created only by exact Git resolution")
+
+    def to_dict(self) -> dict[str, object]:
+        _validate_creation_binding_record(self)
+        return {**_creation_payload(self), "binding_id": self.binding_id.to_dict()}
+
+    @classmethod
+    def from_dict(
+        cls,
+        value: object,
+        *,
+        repo_root: object,
+        consumer_revision: RepositoryRevision,
+    ) -> CreationBinding:
+        binding = binding_from_dict(
+            value,
+            repo_root=repo_root,
+            consumer_revision=consumer_revision,
+        )
+        if type(binding) is not CreationBinding:
+            raise _fail(BindingFailureCode.UNKNOWN_BINDING_KIND, "transport is not a creation binding")
+        return binding
+
+
+Binding = PythonBinding | DocumentBinding | RequirementBinding | CreationBinding
+
+
+def _creation_payload(value: CreationBinding) -> dict[str, object]:
+    return _common_payload(
+        binding_kind=BindingKind.CREATION,
+        repository_revision=value.repository_revision,
+        path=value.path,
+        contract_version=value.contract_version,
+        resolver_version=value.resolver_version,
+    )
 
 
 def _python_payload(value: PythonBinding) -> dict[str, object]:
@@ -520,6 +585,66 @@ def _requirement_payload(value: RequirementBinding) -> dict[str, object]:
         "requirement_ids": list(value.requirement_ids),
         "source_hash": value.source_hash,
     }
+
+
+def resolve_creation_binding(
+    repo_root: object,
+    *,
+    repository_revision: RepositoryRevision,
+    path: str,
+) -> CreationBinding:
+    """Bind a declared creation target to its provable absence in one commit."""
+
+    revision = _require_git_commit_revision(repository_revision)
+    canonical_path = _canonical_path(path)
+    assert revision.git_sha is not None
+    try:
+        resolved = resolve_revision(repo_root, revision.git_sha)
+    except (GitWorkspaceError, OSError, ValueError) as exc:
+        raise _fail(
+            BindingFailureCode.REPOSITORY_SNAPSHOT_UNAVAILABLE,
+            "recorded Git commit is unavailable",
+        ) from exc
+    if type(resolved) is not str or resolved != revision.git_sha:
+        raise _fail(BindingFailureCode.REVISION_MISMATCH, "repository did not resolve the exact recorded commit")
+    try:
+        entry = ls_tree_entry(repo_root, revision.git_sha, canonical_path)
+    except (GitWorkspaceError, TaskContractError, OSError, ValueError) as exc:
+        raise _fail(BindingFailureCode.REPOSITORY_SNAPSHOT_UNAVAILABLE, "Git tree entry is unavailable") from exc
+    if entry is not None:
+        raise _fail(
+            BindingFailureCode.CREATION_TARGET_EXISTS,
+            "creation target already exists in the recorded Git commit",
+        )
+    payload = _common_payload(
+        binding_kind=BindingKind.CREATION,
+        repository_revision=revision,
+        path=canonical_path,
+        contract_version=BINDING_CONTRACT_VERSION_V1,
+        resolver_version=CREATION_BINDING_RESOLVER_V1,
+    )
+    binding = _seal_binding(
+        CreationBinding,
+        {
+            "schema_version": BINDING_SCHEMA_V1,
+            "binding_kind": BindingKind.CREATION,
+            "repository_revision": revision,
+            "path": canonical_path,
+            "contract_version": BINDING_CONTRACT_VERSION_V1,
+            "resolver_version": CREATION_BINDING_RESOLVER_V1,
+            "_payload": payload,
+        },
+    )
+    assert type(binding) is CreationBinding
+    return _validate_creation_binding_record(binding)
+
+
+def _validate_creation_binding_record(value: object) -> CreationBinding:
+    _validate_common_record(value, CreationBinding, BindingKind.CREATION)
+    assert type(value) is CreationBinding
+    _require_resolver_version(value.resolver_version, CREATION_BINDING_RESOLVER_V1)
+    _validate_payload_identity(value, _creation_payload(value))
+    return value
 
 
 def _seal_binding(cls: type[Binding], fields: dict[str, object]) -> Binding:
@@ -1217,6 +1342,15 @@ _REQUIREMENT_FIELDS = (
     "source_hash",
     "binding_id",
 )
+_CREATION_FIELDS = (
+    "schema_version",
+    "binding_kind",
+    "repository_revision",
+    "path",
+    "contract_version",
+    "resolver_version",
+    "binding_id",
+)
 
 
 def binding_from_dict(
@@ -1240,6 +1374,7 @@ def binding_from_dict(
         BindingKind.PYTHON: _PYTHON_FIELDS,
         BindingKind.DOCUMENT: _DOCUMENT_FIELDS,
         BindingKind.REQUIREMENT: _REQUIREMENT_FIELDS,
+        BindingKind.CREATION: _CREATION_FIELDS,
     }[kind]
     data = _exact_dict(value, fields, "binding")
     claimed_revision = _revision_from_dict(data["repository_revision"])
@@ -1281,7 +1416,7 @@ def binding_from_dict(
         )
         if data["source_hash"] != result.source_hash or type(data["source_hash"]) is not str:
             raise _fail(BindingFailureCode.SOURCE_HASH_MISMATCH, "transport document source hash changed")
-    else:
+    elif kind is BindingKind.REQUIREMENT:
         resolver_version = _require_resolver_version(data["resolver_version"], DOCUMENT_BINDING_RESOLVER_V1)
         result = resolve_requirement_binding(
             repo_root,
@@ -1295,7 +1430,14 @@ def binding_from_dict(
             resolver_version=resolver_version,
         )
         if data["source_hash"] != result.source_hash or type(data["source_hash"]) is not str:
-            raise _fail(BindingFailureCode.SOURCE_HASH_MISMATCH, "transport document source hash changed")
+            raise _fail(BindingFailureCode.SOURCE_HASH_MISMATCH, "transport requirement source hash changed")
+    else:
+        _require_resolver_version(data["resolver_version"], CREATION_BINDING_RESOLVER_V1)
+        result = resolve_creation_binding(
+            repo_root,
+            repository_revision=consumer,
+            path=data["path"],
+        )
     if claimed_id.value != result.binding_id.value:
         raise _fail(BindingFailureCode.BINDING_ID_MISMATCH, "transport binding ID does not match resolved payload")
     if result.to_dict() != data:
@@ -1310,6 +1452,8 @@ def binding_to_ref(binding: object) -> HashBoundRef:
         record = _validate_document_binding_record(binding)
     elif type(binding) is RequirementBinding:
         record = _validate_requirement_binding_record(binding)
+    elif type(binding) is CreationBinding:
+        record = _validate_creation_binding_record(binding)
     else:
         raise _fail(BindingFailureCode.TYPE_MISMATCH, "binding ref source must be an exact binding record")
     return HashBoundRef(
@@ -1331,6 +1475,8 @@ def binding_canonical_payload_bytes(binding: object) -> bytes:
         record = _validate_document_binding_record(binding)
     elif type(binding) is RequirementBinding:
         record = _validate_requirement_binding_record(binding)
+    elif type(binding) is CreationBinding:
+        record = _validate_creation_binding_record(binding)
     else:
         raise _fail(BindingFailureCode.TYPE_MISMATCH, "canonical payload requires an exact binding")
     return bytes(record._canonical_payload)
@@ -1344,6 +1490,7 @@ __all__ = [
     "BINDING_ID_TEXT_PREFIX_V1",
     "BINDING_MEDIA_TYPE_V1",
     "BINDING_SCHEMA_V1",
+    "CREATION_BINDING_RESOLVER_V1",
     "DOCUMENT_BINDING_RESOLVER_V1",
     "MAX_DOCUMENT_SOURCE_BYTES_V1",
     "MAX_PYTHON_AST_NODES_V1",
@@ -1354,6 +1501,7 @@ __all__ = [
     "BindingId",
     "BindingKind",
     "BindingViolation",
+    "CreationBinding",
     "DocumentBinding",
     "PythonBinding",
     "PythonSymbolKind",
@@ -1366,6 +1514,7 @@ __all__ = [
     "consume_python_binding",
     "consume_requirement_binding",
     "discover_retained_python_bindings",
+    "resolve_creation_binding",
     "resolve_document_binding",
     "resolve_python_binding",
     "resolve_requirement_binding",

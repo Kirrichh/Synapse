@@ -17,9 +17,16 @@ from .stage10.intent import EffectKind, EffectDisposition
 def select_coding_agent(declaration, *, context=None, selected=None):
     registry = registry_from_configuration(declaration['agents'], context=context)
     task = GoverningTaskContract.from_dict(declaration['task_contract'])
+    # The effect classes follow the governing task instead of being hardcoded:
+    # a repair task still requires exactly ('PATH_MODIFIED',), while a task
+    # that also declares PATH_CREATED effects requires both classes. Anything
+    # outside the governed path-effect profile is still refused here.
+    required_effects = tuple(sorted({e.kind.value for e in task.effects
+                                      if e.disposition is EffectDisposition.EXPECTED}))
     if ('repository.edit' not in task.required_capabilities
-            or any(e.kind is not EffectKind.PATH_MODIFIED for e in task.effects
-                   if e.disposition is EffectDisposition.EXPECTED)):
+            or not required_effects
+            or any(kind not in {EffectKind.PATH_MODIFIED.value, EffectKind.PATH_CREATED.value}
+                   for kind in required_effects)):
         raise ValueError('this Gold verification profile accepts governed coding effects only')
     eligible = tuple(a for a in registry.adapters if (
         a.profile.provider_name == declaration['config']['provider']
@@ -32,8 +39,8 @@ def select_coding_agent(declaration, *, context=None, selected=None):
         preferred_profiles=tuple(p for p in declaration['agents']['preferred_profiles'] if p in names),
         retained_evidence=registry.retained_evidence)
     adapter = registry.resolve(AgentRequirements(required_capabilities=('repository.edit',),
-        required_output_profile=PATCH_CANDIDATE_OUTPUT_V1, required_effect_classes=('PATH_MODIFIED',),
-        allowed_effects=('PATH_MODIFIED',), media_types=(), information_policy=LocalInformationPolicy.LOCAL_ONLY,
+        required_output_profile=PATCH_CANDIDATE_OUTPUT_V1, required_effect_classes=required_effects,
+        allowed_effects=required_effects, media_types=(), information_policy=LocalInformationPolicy.LOCAL_ONLY,
         allowed_networks=('LOCAL_BROKER', 'NONE')))
     binding = {'profile_id': adapter.profile.profile_id, 'profile_sha256': digest(adapter.profile),
                'selection_policy': 'operator-preference-profile-id/v1'}

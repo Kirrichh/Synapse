@@ -345,9 +345,15 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
         raise _fail(GoldRunFailureCode.CONFIG_INVALID,
                     "task verification steps must cover the exact ordered C1 acceptance and full-suite commands")
     effect_paths = {item.subject_path for item in expected}
+    # A controlled change may modify several explicit task targets atomically,
+    # and may also create files at paths declared as PATH_CREATED targets: the
+    # scope still has to enumerate every effect path exactly, C1 still applies
+    # one exact patch, and Stage 12 still checks every required path (creation
+    # included, against its "A" change code).
     if (not expected or len(expected) > MAX_TARGET_PATHS
         or task.schema_version != TASK_CONTRACT_SCHEMA_V3 and len(expected) != 1
-        or any(item.kind is not EffectKind.PATH_MODIFIED or item.subject_path is None for item in expected)
+        or any(item.kind not in (EffectKind.PATH_MODIFIED, EffectKind.PATH_CREATED)
+               or item.subject_path is None for item in expected)
         or len(effect_paths) != len(expected)
         or task.allowed_scope.entries != tuple(sorted(effect_paths))
         or any(item.kind not in (AcceptanceKind.CONTRACT_CONDITION, AcceptanceKind.VERIFICATION_COMMAND)

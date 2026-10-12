@@ -123,6 +123,42 @@ def assemble_run_environment(
     #: evidence be about a generation the manifest never named.
     library_snapshot = library.current_snapshot().snapshot
 
+    #: §20 decides per object, before anything becomes a subject: Stage 3
+    #: evidence is minted over the whole declared candidate universe — so every
+    #: object keeps its compatibility decision, conflict assessment and
+    #: revalidation record in the append-only history — and the subjects the
+    #: run actually commits, gates and consumes are the objects that passed.
+    #: An incompatible object is excluded with its trace intact instead of
+    #: blocking every compatible one (Д6); only a universe where nothing passed
+    #: is a refusal.
+    evidence = mint_compatibility_evidence(
+        authority_handle=authority_handle,
+        bindings=compatibility,
+        library=library,
+        library_snapshot=library_snapshot,
+        lifecycle_store=stores.lifecycle_store,
+        attestation_store=stores.attestation_store,
+        taint_store=stores.taint_store,
+        compatibility_history=stores.compatibility_history,
+        candidates=candidates,
+        trusted_clock=trusted_clock,
+    )
+    from synapse.experiments.gold.compatibility import (
+        CompatibilityDecisionKind,
+        EvidenceCompleteness,
+    )
+    admitted_candidates = tuple(
+        item
+        for item, decision in zip(candidates, evidence.decisions)
+        if decision.decision_kind is CompatibilityDecisionKind.COMPATIBLE
+        and decision.evidence.completeness is EvidenceCompleteness.COMPLETE
+    )
+    if not admitted_candidates:
+        raise _fail(
+            GoldRunFailureCode.AUTHORITY_MISMATCH,
+            "no retained subject is compatible with this consumption",
+        )
+
     snapshot = commit_run_snapshot(
         snapshot_root=snapshot_root,
         knowledge_store=stores.knowledge_store,
@@ -133,7 +169,7 @@ def assemble_run_environment(
         compatibility_history=stores.compatibility_history,
         authority_handle=authority_handle,
         mutation_fence=stores.mutation_fence,
-        descriptors=tuple(item[1] for item in candidates),
+        descriptors=tuple(item[1] for item in admitted_candidates),
         run_id=run_id,
         attempt_id=attempt_id,
         repository_revision=repository_revision,
@@ -146,18 +182,6 @@ def assemble_run_environment(
         consumability_probe=consumability_probe,
         transaction_id=transaction_id,
         lineage=lineage,
-    )
-    evidence = mint_compatibility_evidence(
-        authority_handle=authority_handle,
-        bindings=compatibility,
-        library=library,
-        library_snapshot=library_snapshot,
-        lifecycle_store=stores.lifecycle_store,
-        attestation_store=stores.attestation_store,
-        taint_store=stores.taint_store,
-        compatibility_history=stores.compatibility_history,
-        candidates=candidates,
-        trusted_clock=trusted_clock,
     )
     controller, evaluator_declaration = configure_run_gate_controller(
         authority_handle=authority_handle,
@@ -220,7 +244,7 @@ def assemble_run_environment(
         knowledge_snapshot_ref=snapshot.boundary.manifest_ref,
         consumer_context_ref=consumer_context_ref,
         subjects=snapshot.subjects,
-        supported=candidates,
+        supported=admitted_candidates,
         snapshot_attempt_id=attempt_id,
         snapshot_evaluator_declaration=snapshot.evaluator_declaration,
         snapshot_actor_set=snapshot.actor_set,

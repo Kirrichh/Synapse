@@ -1508,6 +1508,31 @@ class RetrievalEnumeration:
     def __new__(cls, *args: object, **kwargs: object) -> RetrievalEnumeration:
         raise TypeError("RetrievalEnumeration is produced only by enumerate_retrieval_candidates")
 
+    @property
+    def eligible_subject_refs(self) -> tuple[HashBoundRef, ...]:
+        """Subjects the enumeration itself found compatible, canonically ordered.
+
+        §20 admits an object to ranking and use per object. A candidate the
+        enumeration classified REJECTED already lost its eligibility and keeps
+        its full audit trace in ``candidates``; handing it to the §22 gates as a
+        subject would let one incompatible object block every compatible one
+        from consumption — the all-or-nothing poisoning this accessor exists
+        to prevent. Only ELIGIBLE audits become gate subjects.
+        """
+
+        _enumeration_seal_check(self)
+        return tuple(
+            sorted(
+                (
+                    candidate_subject_ref(item._descriptor)
+                    for item in self.candidates
+                    if item.disposition is CandidateDisposition.ELIGIBLE
+                    and item._descriptor is not None
+                ),
+                key=_ref_key,
+            )
+        )
+
 
 def _enumeration_seal_check(value: RetrievalEnumeration) -> RetrievalEnumeration:
     if type(value) is not RetrievalEnumeration or getattr(value, "_trusted_seal", None) is not _ENUMERATION_SEAL:

@@ -367,7 +367,12 @@ def parse_status_z(output: bytes) -> tuple[ChangedPath, ...]:
 
 
 def changed_paths(cwd: str | Path) -> tuple[ChangedPath, ...]:
-    completed = git_binary(["status", "--porcelain=v1", "-z"], cwd)
+    # ``--untracked-files=all`` keeps every untracked file listed separately:
+    # git collapses a directory that holds only new files into one
+    # ``?? dir/`` record, and that directory path is outside any
+    # file-precise scope, so a lawful creation candidate would be rejected
+    # as OUT_OF_SCOPE_PATH before its files were ever examined.
+    completed = git_binary(["status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd)
     return tuple(sorted(parse_status_z(completed.stdout), key=lambda change: (change.new_path, change.old_path or "", change.index_status, change.worktree_status)))
 
 

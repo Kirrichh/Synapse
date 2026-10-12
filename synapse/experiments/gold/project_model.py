@@ -26,8 +26,16 @@ def element_identity(project_identity, path, name, kind):
 
 
 def build_project_model(*, project_identity, resolution, source_snapshot):
-    bindings = {(item["binding"]["path"], item["binding"]["qualname"], item["binding"]["symbol_kind"]):
-                item["binding"] for item in resolution["elements"]}
+    bindings = {}
+    for item in resolution["elements"]:
+        binding = item["binding"]
+        if "qualname" not in binding:
+            # A declared creation target carries no content identity (its
+            # verifiable precondition in the base revision is absence), so it
+            # becomes a path-level CREATION element rather than a symbol one.
+            bindings.setdefault((binding["path"], binding["path"], "CREATION"), binding)
+        else:
+            bindings[(binding["path"], binding["qualname"], binding["symbol_kind"])] = binding
     sources = {}
     for selected in source_snapshot["recall"]["selected"]:
         experience = selected["experience"]
@@ -77,7 +85,7 @@ def build_project_model(*, project_identity, resolution, source_snapshot):
             continue
         path = node["path"]
         parent = subsystem(str(PurePosixPath(path).parent))
-        if node["symbol_kind"] not in {"MODULE", "DOCUMENT"}:
+        if node["symbol_kind"] not in {"MODULE", "DOCUMENT", "CREATION"}:
             owner_name, separator, _ = node["name"].rpartition(".")
             module_parent = modules.get(path, parent)
             parent = symbols.get((path, owner_name), module_parent) if separator else module_parent

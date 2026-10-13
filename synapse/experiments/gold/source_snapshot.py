@@ -210,14 +210,24 @@ def _memory_information(frame):
         memory = item["memory"]
         effects = [{key: effect[key] for key in ("kind", "disposition", "subject_path")}
                    for effect in memory["Goal"]["expected_effects"]]
-        elements.append({"path": item["path"], "name": memory["Identity"]["name"],
+        entry = {"path": item["path"], "name": memory["Identity"]["name"],
             "goal": {"expected_effects": effects, "status": "DECLARED"},
             "context": {"repository_revision": memory["Context"]["repository_revision"],
                         "allowed_scope": list(memory["Context"]["allowed_scope"]["entries"])},
             "development_delta": {"expected_effects": effects, "status": item["development_delta"]["status"]},
             "episodes": [_episode_information(entry) for entry in memory["Episodic"]["task_outcomes"]],
             "source_outcomes": memory["Episodic"]["source_outcomes"],
-            "defects": memory["Defect"]["nonzero_source_exits"]})
+            "defects": memory["Defect"]["nonzero_source_exits"]}
+        if "owner_summary" in item["development_delta"]:
+            # The long-term owner's delta, as neutral counts only: no receipts,
+            # no revisions, no proof identities cross the worker port.
+            summary = item["development_delta"]["owner_summary"]
+            entry["owner_profile"] = {"lifecycle": "LONG_TERM_DERIVED",
+                "declarations_seen": summary["declarations"], "verified_earlier": summary["verified"],
+                "partial_earlier": summary["partial"], "defects_established": summary["defects"],
+                "deferred_no_basis": summary["deferred"],
+                "awaiting_fresh_verification": summary["awaiting_fresh_verification"]}
+        elements.append(entry)
     result = {"memory_kinds": list(frame["memory_kinds"]),
               "repository_revision": frame["repository_revision"], "elements": elements}
     if "court" in frame:

@@ -15,6 +15,7 @@ from .project_memory_store import MAX_MEMORY_EVENT_BYTES, MEMORY_EVENT_V1, Proje
 from .project_frame_storage import COMPACT_FRAME_V1, compact_frame, restore_frame
 from .project_memory_selection import require_run_memory_selection, selected_episode, selected_episode_outcome
 from .project_model import build_active_memory_frame, build_project_model
+from .owner_profiles import (ACTIVE_MEMORY_FRAME_V4, apply_owner_profiles, build_owner_registry)
 from .project_learning import consolidate_episode, build_memory_layers
 from .source_verification import canonical, source_ref
 from .stage10.task_contract import GoverningTaskContract
@@ -25,9 +26,14 @@ OWNER_LIFECYCLE_V2 = "synapse.stage4.gold.element-owner-lifecycle/v2"
 # V3 jobs read completed runs through their pinned court decision. Earlier
 # profiles keep the original interpretation of every job they recorded.
 OWNER_LIFECYCLE_V3 = "synapse.stage4.gold.element-owner-lifecycle/v3"
-OWNER_LIFECYCLES = (OWNER_LIFECYCLE_V1, OWNER_LIFECYCLE_V2, OWNER_LIFECYCLE_V3)
+# V4 jobs additionally maintain the long-term owner roster: accumulated target
+# declarations, verified current state and the development delta, all derived
+# from the same pinned court decision (no new writer of assessments).
+OWNER_LIFECYCLE_V4 = "synapse.stage4.gold.element-owner-lifecycle/v4"
+OWNER_LIFECYCLES = (OWNER_LIFECYCLE_V1, OWNER_LIFECYCLE_V2, OWNER_LIFECYCLE_V3, OWNER_LIFECYCLE_V4)
 _FRAME_SCHEMAS = {OWNER_LIFECYCLE_V2: "synapse.stage4.gold.active-memory-frame/v2",
-                  OWNER_LIFECYCLE_V3: "synapse.stage4.gold.active-memory-frame/v3"}
+                  OWNER_LIFECYCLE_V3: "synapse.stage4.gold.active-memory-frame/v3",
+                  OWNER_LIFECYCLE_V4: ACTIVE_MEMORY_FRAME_V4}
 MAX_PRIOR_EPISODES = 128
 # Selections whose candidate universe keeps verified positive experience.
 _AUTOMATIC_SELECTIONS = {"ALL", "SUCCESS_ONLY"}
@@ -69,7 +75,7 @@ def _historical_history(request, store, profile, selection):
 
 
 def _court_history(request, store, task, selection):
-    """V3 jobs see the judged history and subject states of their pinned decision."""
+    """V3/V4 jobs see the judged history and subject states of their pinned decision."""
     if "court" not in request:
         raise ValueError("memory request lost its court decision")
     court = read_court(store, project_identity=request["project_identity"], decision=request["court"])
@@ -93,7 +99,8 @@ def _court_history(request, store, task, selection):
                # Only the court admits automation; selection only narrows the candidate universe.
                "automatic_patches": [item["patch_sha256"] for item in subjects if item["state"] == "ADMITTED"]
                                     if selection in _AUTOMATIC_SELECTIONS else []}
-    return episodes, learning, section
+    return {"court": court, "shown": shown, "omitted": len(court["judged"]) - len(shown),
+            "episodes": episodes, "learning": learning, "section": section}
 
 
 def _frame_payload(request, request_ref, started_ref, store):
@@ -104,12 +111,18 @@ def _frame_payload(request, request_ref, started_ref, store):
         raise ValueError("memory request has an unknown lifecycle")
     selection = request["run_memory_selection"]
     court = None
-    if profile == OWNER_LIFECYCLE_V3:
-        episodes, learning, court = _court_history(request, store, task, selection)
+    registry = None
+    if profile in (OWNER_LIFECYCLE_V3, OWNER_LIFECYCLE_V4):
+        history = _court_history(request, store, task, selection)
+        episodes, learning, court = history["episodes"], history["learning"], history["section"]
     else:
         episodes, learning = _historical_history(request, store, profile, selection)
     model = build_project_model(project_identity=request["project_identity"],
         resolution=request["target_resolution"], source_snapshot=request["source_snapshot"])
+    if profile == OWNER_LIFECYCLE_V4:
+        registry = build_owner_registry(project_identity=request["project_identity"],
+            court=history["court"], shown=history["shown"], omitted=history["omitted"],
+            task=task, active_paths=model["active_paths"])
     frame = build_active_memory_frame(model=model, task=task,
         source_snapshot=request["source_snapshot"], prior_episodes=episodes)
     if profile != OWNER_LIFECYCLE_V1:
@@ -119,11 +132,15 @@ def _frame_payload(request, request_ref, started_ref, store):
                                                run_memory_selection=selection)}
     if court is not None:
         frame["court"] = court
+    if registry is not None:
+        frame = apply_owner_profiles(frame, registry)
     payload = {"profile": profile, "request_ref": request_ref, "started_ref": started_ref,
         "project_model": model, "active_memory_frame": frame,
         "owners": [{"owner_id": item["owner_id"], "element_id": item["element_id"], "state": "IDLE",
                     "completed_job": request_ref, "memory_routes": list(frame["memory_kinds"])}
                    for item in frame["elements"]]}
+    if registry is not None:
+        payload["owner_registry"] = registry
     return _retained_frame_payload(payload, request)
 
 
@@ -165,7 +182,7 @@ def capture_active_memory(*, project, run_root, run_id, target_resolution, sourc
         else:
             # The unjudged tail is judged before the job pins the decision it reads.
             decision = court.consolidate(store, guard, project_identity=identity)
-            request.update(profile=OWNER_LIFECYCLE_V3, court=decision["decision"], frame_storage=COMPACT_FRAME_V1)
+            request.update(profile=OWNER_LIFECYCLE_V4, court=decision["decision"], frame_storage=COMPACT_FRAME_V1)
         requested = store.put(kind="REQUESTED", job_key=job_key, payload=request, guard=guard)
         started = store.put(kind="STARTED", job_key=job_key, payload={"request_ref": requested}, guard=guard)
         completed = store.put(kind="FRAME_COMPLETED", job_key=job_key,

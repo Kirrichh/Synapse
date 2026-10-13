@@ -7,7 +7,7 @@ from .project_model import MAX_MODEL_ELEMENTS, MEMORY_KINDS
 from .source_verification import canonical
 
 COMPACT_FRAME_V1 = "synapse.stage4.gold.compact-active-memory-frame/v1"
-_FRAME_SCHEMAS = {f"synapse.stage4.gold.active-memory-frame/v{version}" for version in (1, 2, 3)}
+_FRAME_SCHEMAS = {f"synapse.stage4.gold.active-memory-frame/v{version}" for version in (1, 2, 3, 4)}
 _STATES = {"target_state", "current_state", "development_delta"}
 _METADATA = {"element_id", "owner_id", "path"}
 _ENVELOPE = {"schema_version", "expanded_sha256", "expanded_bytes", "frame", "elements", "values"}

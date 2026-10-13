@@ -225,6 +225,7 @@ def _memory_information(frame):
             entry["owner_profile"] = {"lifecycle": "LONG_TERM_DERIVED",
                 "declarations_seen": summary["declarations"], "verified_earlier": summary["verified"],
                 "partial_earlier": summary["partial"], "defects_established": summary["defects"],
+                "tasks_failed_no_evidence": summary["task_failures"],
                 "deferred_no_basis": summary["deferred"],
                 "awaiting_fresh_verification": summary["awaiting_fresh_verification"]}
         elements.append(entry)

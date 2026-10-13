@@ -121,8 +121,7 @@ def _frame_payload(request, request_ref, started_ref, store):
         resolution=request["target_resolution"], source_snapshot=request["source_snapshot"])
     if profile == OWNER_LIFECYCLE_V4:
         registry = build_owner_registry(project_identity=request["project_identity"],
-            court=history["court"], shown=history["shown"], omitted=history["omitted"],
-            task=task, active_paths=model["active_paths"])
+            court=history["court"], task=task, active_paths=model["active_paths"])
     frame = build_active_memory_frame(model=model, task=task,
         source_snapshot=request["source_snapshot"], prior_episodes=episodes)
     if profile != OWNER_LIFECYCLE_V1:
@@ -145,6 +144,13 @@ def _frame_payload(request, request_ref, started_ref, store):
 
 
 def _frame_byte_budget(payload):
+    """Byte budget left for the frame inside one memory event.
+
+    The owner registry travels in the same FRAME_COMPLETED event as the
+    frame, so its canonical bytes are part of the envelope this budget
+    subtracts: a larger registry leaves a smaller frame budget, and the
+    published event as a whole stays inside the memory event budget.
+    """
     envelope = {"schema_version": MEMORY_EVENT_V1, "kind": "FRAME_COMPLETED", "job_key": "0" * 64,
                 "payload": {**payload, "active_memory_frame": None}}
     return MAX_MEMORY_EVENT_BYTES - len(canonical(envelope)) + 4

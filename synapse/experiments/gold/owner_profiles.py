@@ -39,9 +39,14 @@ MAX_REGISTRY_OWNERS = 1024
 # Delta categories. A verified entry is a historical fact bound to its revision;
 # it is never a claim about the current tree, which only a fresh verified run
 # can establish (the frame's AWAITING_FRESH_VERIFICATION doctrine).
-VERIFIED, PARTIAL_VERIFIED, DEFECT, DEFERRED = ("VERIFIED_EARLIER", "PARTIAL_VERIFIED_EARLIER",
-                                                "DEFECT_ESTABLISHED", "DEFERRED_NO_BASIS")
-CATEGORIES = (VERIFIED, PARTIAL_VERIFIED, DEFECT, DEFERRED)
+VERIFIED, PARTIAL_VERIFIED, DEFECT, TASK_FAILED, DEFERRED = (
+    "VERIFIED_EARLIER", "PARTIAL_VERIFIED_EARLIER", "DEFECT_ESTABLISHED",
+    "TASK_FAILED_NO_EVIDENCE", "DEFERRED_NO_BASIS")
+CATEGORIES = (VERIFIED, PARTIAL_VERIFIED, DEFECT, TASK_FAILED, DEFERRED)
+# A counted NOT_FULFILLED episode establishes a defect only when the run
+# actually produced evidence about the element: a candidate patch that was
+# applied and judged, or an assertion the court confirmed or refuted.
+_JUDGED_ASSERTION_STATUSES = frozenset({"CONFIRMED", "REFUTED"})
 
 
 def path_owner_identity(project_identity, path):
@@ -77,7 +82,14 @@ def _current_entry(item):
 
 
 def _category(item):
-    """Policy v1 of the delta: only a counted, established outcome decides."""
+    """Policy v2 of the delta: only evidence about the element decides.
+
+    A NOT_FULFILLED outcome establishes a defect solely when the episode
+    produced element evidence - a candidate patch or a judged assertion. A
+    task that never produced a candidate (a refused worker, an empty
+    knowledge base) says nothing about the element itself, so it is recorded
+    as TASK_FAILED_NO_EVIDENCE instead of a defect.
+    """
     if item["verdict"] != "COUNTED":
         return DEFERRED
     outcome = item["observation"]["requirement"]["outcome"]
@@ -86,7 +98,13 @@ def _category(item):
     if outcome == PARTIAL:
         return PARTIAL_VERIFIED
     if outcome == NOT_FULFILLED:
-        return DEFECT
+        attempted = any(attempt.get("candidate") is not None
+                        for attempt in item["observation"]["attempts"])
+        judged = any(assertion["status"] in _JUDGED_ASSERTION_STATUSES
+                     for assertion in item["learning"]["assertions"])
+        if attempted or judged:
+            return DEFECT
+        return TASK_FAILED
     return DEFERRED  # UNCERTAIN and UNVERIFIABLE episodes have no basis at all.
 
 
@@ -117,72 +135,111 @@ def _owner(project_identity, path, history, task):
                 for effect in task.effects
                 if effect.subject_path == path and effect.disposition is EffectDisposition.EXPECTED]
     verified, partial = entries[VERIFIED], entries[PARTIAL_VERIFIED]
-    defects, deferred = entries[DEFECT], entries[DEFERRED]
+    defects, failures = entries[DEFECT], entries[TASK_FAILED]
+    deferred = entries[DEFERRED]
     return {"path": path, "owner_id": path_owner_identity(project_identity, path),
             "lifecycle": "LONG_TERM_DERIVED",
             "target_state": {"declarations": [_declaration(item) for item in history],
                              "current_task": {"task_contract_ref": task.reference.to_dict(),
                                               "expected_effects": awaiting} if awaiting else None},
             "current_state": {"verified": verified, "partial": partial, "defects": defects,
-                              "deferred": deferred, "episodes_seen": len(history)},
+                              "task_failures": failures, "deferred": deferred,
+                              "episodes_seen": len(history)},
             "development_delta": {
                 "declarations_verified_earlier": [_delta_entry(entry) for entry in verified],
                 "declarations_partial_earlier": [_delta_entry(entry) for entry in partial],
                 "defects_established": [_defect_entry(entry) for entry in defects],
+                "tasks_failed_no_evidence": [_deferred_entry(entry) for entry in failures],
                 "deferred_no_basis": [_deferred_entry(entry) for entry in deferred],
                 "awaiting_fresh_verification": awaiting,
-                "summary": {"declarations": len(history), "verified": len(verified), "partial": len(partial),
-                            "defects": len(defects), "deferred": len(deferred),
+                "summary": {"declarations": len(history), "verified": len(verified),
+                            "partial": len(partial), "defects": len(defects),
+                            "task_failures": len(failures), "deferred": len(deferred),
                             "awaiting_fresh_verification": len(awaiting)}}}
 
 
-def _subsystem_summary(owners):
-    """Roll owners up to their top-level directory (the subsystem grain)."""
+def _subsystem_summary(judged):
+    """Roll the whole judged history up to its top-level directories.
+
+    Counting runs over every judged episode and every touched path, so the
+    rollup stays complete even when the roster itself degrades to the active
+    owners: dropped paths keep their subsystem-level totals.
+    """
     subsystems = {}
-    for owner in owners:
-        path = owner["path"]
-        grain = path.rsplit("/", 1)[0] if "/" in path else "(project-root)"
-        summary = owner["development_delta"]["summary"]
-        section = subsystems.setdefault(grain, {"subsystem": grain, "paths": 0, "declarations": 0,
-                                                "verified": 0, "defects": 0})
-        section["paths"] += 1
-        section["declarations"] += summary["declarations"]
-        section["verified"] += summary["verified"]
-        section["defects"] += summary["defects"]
+    paths_by_grain = {}
+    for item in judged:
+        category = _category(item)
+        for path in item["observation"]["requirement"]["paths"]:
+            grain = path.rsplit("/", 1)[0] if "/" in path else "(project-root)"
+            paths_by_grain.setdefault(grain, set()).add(path)
+            section = subsystems.setdefault(grain, {"subsystem": grain, "paths": 0, "declarations": 0,
+                                                    "verified": 0, "defects": 0, "task_failures": 0})
+            section["declarations"] += 1
+            if category == VERIFIED:
+                section["verified"] += 1
+            elif category == DEFECT:
+                section["defects"] += 1
+            elif category == TASK_FAILED:
+                section["task_failures"] += 1
+    for grain, paths in paths_by_grain.items():
+        subsystems[grain]["paths"] = len(paths)
     return sorted(subsystems.values(), key=lambda item: item["subsystem"])
 
 
-def build_owner_registry(*, project_identity, court, shown, omitted, task, active_paths):
+def build_owner_registry(*, project_identity, court, task, active_paths):
     """Derive the long-term owner roster from the pinned court decision.
 
-    ``shown`` is the bounded cut of ``court['judged']`` the frame itself reads;
-    the registry keeps the same cut so the roster and the frame can never
-    disagree about history. ``active_paths`` guarantees every active element
-    finds its owner even before its first judged episode. A fresh project
-    pins no decision yet (``decision`` is None): the roster then honestly
-    carries zero history instead of refusing to exist.
+    The roster reads the *complete* judged history of the pinned decision, not
+    the bounded working cut the frame itself shows: an element keeps its
+    declarations, verified facts and defects for the life of the project even
+    after hundreds of unrelated episodes push it out of the frame's window.
+
+    ``active_paths`` (the current task's elements) always receive full owner
+    profiles. Historic paths join them with full profiles while the whole
+    roster fits :data:`MAX_REGISTRY_OWNERS`; beyond that the roster degrades
+    to the active owners plus complete per-subsystem rollups instead of
+    refusing the task - a new small task is never blocked by the volume of
+    unrelated history. Only a task whose own active scope exceeds the budget
+    is refused. A fresh project pins no decision yet (``decision`` is None):
+    the roster then honestly carries zero history instead of refusing to
+    exist.
     """
-    paths = set(active_paths)
-    for item in shown:
-        paths |= set(item["observation"]["requirement"]["paths"])
-    if not paths or len(paths) > MAX_REGISTRY_OWNERS:
-        raise ValueError("owner registry exceeds its explicit path budget")
-    owners = [_owner(project_identity, path, [item for item in shown
+    judged = list(court["judged"])
+    active = sorted(set(active_paths))
+    if len(active) > MAX_REGISTRY_OWNERS:
+        raise ValueError("owner registry exceeds its active path budget")
+    seen = set(active)
+    for item in judged:
+        for path in item["observation"]["requirement"]["paths"]:
+            seen.add(path)
+    degraded = len(seen) > MAX_REGISTRY_OWNERS
+    roster = active if degraded else sorted(seen)
+    owners = [_owner(project_identity, path, [item for item in judged
                                               if path in item["observation"]["requirement"]["paths"]], task)
-              for path in sorted(paths)]
-    judged = len(court["judged"])
-    return {"schema_version": OWNER_REGISTRY_V1, "project_identity": project_identity,
-            "decision": court["decision"], "judged_episodes": judged, "shown_episodes": len(shown),
-            "omitted_episodes": omitted,
-            "system": {"owner": "system-owner", "judged_episodes": judged, "shown_episodes": len(shown),
-                       "omitted_episodes": omitted, "pending_outcomes": len(court["pending"]),
-                       "admitted_subjects": sum(1 for subject in court["subjects"].values()
-                                                if subject["state"] == "ADMITTED")},
-            "subsystems": _subsystem_summary(owners), "owners": owners}
+              for path in roster]
+    registry = {"schema_version": OWNER_REGISTRY_V1, "project_identity": project_identity,
+                "decision": court["decision"], "judged_episodes": len(judged),
+                "history_paths": len(seen), "owner_paths": len(roster),
+                "roster_mode": "ACTIVE_OWNERS_WITH_SUBSYSTEM_ROLLUP" if degraded else "FULL_ROSTER",
+                "system": {"owner": "system-owner", "judged_episodes": len(judged),
+                           "pending_outcomes": len(court["pending"]),
+                           "admitted_subjects": sum(1 for subject in court["subjects"].values()
+                                                    if subject["state"] == "ADMITTED")},
+                "subsystems": _subsystem_summary(judged), "owners": owners}
+    if degraded:
+        registry["degraded_paths"] = len(seen) - len(roster)
+    return registry
 
 
 def apply_owner_profiles(frame, registry):
-    """Enrich the three element states of a v4 frame from the long-term registry."""
+    """Enrich the three element states of a v4 frame from the long-term registry.
+
+    The frame is the bounded working context, so element states carry the
+    owner's delta as neutral counts only; the complete declaration,
+    verification and defect lists stay in the published registry next to the
+    frame. The frame's size therefore stays independent of the owner's
+    history volume.
+    """
     if (frame.get("schema_version") != ACTIVE_MEMORY_FRAME_V4
             or registry.get("schema_version") != OWNER_REGISTRY_V1):
         raise ValueError("owner profiles need their v4 frame and owner registry")
@@ -193,13 +250,10 @@ def apply_owner_profiles(frame, registry):
             raise ValueError("active memory element lacks its long-term owner")
         current, delta = owner["current_state"], owner["development_delta"]
         element["target_state"] = {**element["target_state"],
-                                   "declared_history": owner["target_state"]["declarations"]}
+                                   "owner_declarations": len(owner["target_state"]["declarations"])}
         element["current_state"] = {**element["current_state"], "episodes_seen": current["episodes_seen"],
-                                    "verified_history": current["verified"], "partial_history": current["partial"],
-                                    "defect_history": current["defects"], "deferred_history": current["deferred"]}
-        element["development_delta"] = {**element["development_delta"], "owner_summary": delta["summary"],
-                                        "declarations_verified_earlier": delta["declarations_verified_earlier"],
-                                        "declarations_partial_earlier": delta["declarations_partial_earlier"],
-                                        "defects_established": delta["defects_established"],
-                                        "deferred_no_basis": delta["deferred_no_basis"]}
+                                    "owner_counts": {key: len(current[key]) for key in
+                                                     ("verified", "partial", "defects",
+                                                      "task_failures", "deferred")}}
+        element["development_delta"] = {**element["development_delta"], "owner_summary": delta["summary"]}
     return frame

@@ -1514,8 +1514,10 @@ class Parser:
                 self.consume(TokenType.DREAM, "Expected 'dream' after consolidate during")
                 consolidate_during_dream = True
             elif self.match(TokenType.BACKEND):
-                if self.match(TokenType.IDENTIFIER, TokenType.STRING):
+                if self.match(TokenType.STRING):
                     backend = str(self.previous().value)
+                elif self.is_name_type(self.peek().type):
+                    backend = self.name_of(self.advance())
                 else:
                     self.error("Expected backend name")
             elif self.match(TokenType.BIND):
@@ -1837,10 +1839,13 @@ class Parser:
     def parse_habit_condition(self) -> Node:
         if self.check(TokenType.LBRACE):
             return self.parse_inline_habit_cond()
-        # Named threshold reference. Accept keywords used as names too.
-        if self.match(TokenType.IDENTIFIER, TokenType.THRESHOLD, TokenType.STABILITY, TokenType.COHERENCE):
-            tok = self.previous()
-            return ThresholdRef(name=str(tok.value or tok.type.name.lower()), line=tok.line, column=tok.column)
+        # Named threshold reference. Any user-defined name is accepted here,
+        # including soft keywords (``affective threshold target`` must be
+        # referenceable as ``activate when target``), so the reference side
+        # agrees with the declaration side instead of carrying its own list.
+        if self.is_name_type(self.peek().type):
+            tok = self.advance()
+            return ThresholdRef(name=self.name_of(tok), line=tok.line, column=tok.column)
         self.error("Expected threshold name or inline condition block after when")
 
     def literal_number_value(self, node):
@@ -2008,8 +2013,10 @@ class Parser:
                     pass
                 converge_on = self.expression()
             elif self.match(TokenType.DEPTH):
-                if self.match(TokenType.IDENTIFIER, TokenType.STRING):
+                if self.match(TokenType.STRING):
                     depth = str(self.previous().value)
+                elif self.is_name_type(self.peek().type):
+                    depth = self.name_of(self.advance())
                 else:
                     self.error("Expected depth value")
             elif self.match(TokenType.TIMEOUT):
@@ -2076,13 +2083,15 @@ class Parser:
                 self.consume(TokenType.LBRACE, "Expected '{' after roles")
                 self.skip_newlines()
                 while not self.check(TokenType.RBRACE) and not self.is_at_end():
-                    if self.match(TokenType.IDENTIFIER, TokenType.SELF):
-                        actor = str(self.previous().value or "self")
+                    if self.is_name_type(self.peek().type):
+                        actor = self.name_of(self.advance())
                     else:
                         self.error("Expected actor name in roles block")
                     self.consume(TokenType.ARROW, "Expected '->' in roles block")
-                    if self.match(TokenType.IDENTIFIER, TokenType.STRING):
+                    if self.match(TokenType.STRING):
                         role = str(self.previous().value)
+                    elif self.is_name_type(self.peek().type):
+                        role = self.name_of(self.advance())
                     else:
                         self.error("Expected role name in roles block")
                     roles[actor] = role
@@ -2194,15 +2203,15 @@ class Parser:
         if not self.check(TokenType.RBRACKET):
             if self.match(TokenType.STRING):
                 items.append(self.previous().value)
-            elif self.match(TokenType.IDENTIFIER, TokenType.STABILITY, TokenType.CONSENSUS_RATE, TokenType.RESONANCE_DRIFT, TokenType.COHERENCE):
-                items.append(str(self.previous().value or self.previous().type.name.lower()))
+            elif self.is_name_type(self.peek().type):
+                items.append(self.name_of(self.advance()))
             else:
                 self.error("Expected string or metric name")
             while self.match(TokenType.COMMA):
                 if self.match(TokenType.STRING):
                     items.append(self.previous().value)
-                elif self.match(TokenType.IDENTIFIER, TokenType.STABILITY, TokenType.CONSENSUS_RATE, TokenType.RESONANCE_DRIFT, TokenType.COHERENCE):
-                    items.append(str(self.previous().value or self.previous().type.name.lower()))
+                elif self.is_name_type(self.peek().type):
+                    items.append(self.name_of(self.advance()))
                 else:
                     self.error("Expected string or metric name after comma")
         self.consume(TokenType.RBRACKET, "Expected ']'")

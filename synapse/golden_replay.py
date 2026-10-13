@@ -122,16 +122,21 @@ def extract_llm_cache(history: Iterable[dict[str, Any]]) -> Dict[str, Dict[str, 
     Every key retains its recorded occurrences in execution order: repeated
     requests with different answers stay distinguishable, so mock replay can
     serve them one by one instead of collapsing them onto the last answer.
+    Each occurrence also records its position - the index of its llm_call
+    event in the execution history - so the merge with retained thought
+    requests can interleave both sources in true execution order.
     """
     cache: Dict[str, Dict[str, Any]] = {}
-    for event in history:
+    for position, event in enumerate(history):
         if event.get("type") != "llm_call":
             continue
         prompt_hash = str(event.get("prompt_hash", ""))
         model = str(event.get("model") or "mock")
         key = f"{prompt_hash}:{model}"
-        cache.setdefault(key, {"prompt_hash": prompt_hash, "model": model, "results": []})
-        cache[key]["results"].append(event.get("result"))
+        entry = cache.setdefault(key, {"prompt_hash": prompt_hash, "model": model,
+                                       "results": [], "positions": []})
+        entry["results"].append(event.get("result"))
+        entry["positions"].append(position)
     return cache
 
 
@@ -139,17 +144,47 @@ def _merge_llm_cache(llm_cache: Dict[str, Dict[str, Any]],
                      thought_history: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     """Merge retained thought requests into the recorded llm_call table.
 
-    Both sources keep per-key occurrence lists, so the merge concatenates
-    them; artifacts recorded before the occurrence lists carry a plain
-    ``result`` and are wrapped as a single occurrence.
+    Both sources keep per-key occurrence lists. When the recording carried
+    positions - every thought observation the history length it ran at, every
+    llm occurrence its llm_call event's index in the same history - the merge
+    orders each key's observations by true execution order: a thought step
+    that ran while the history held N events precedes the llm_call event
+    appended at index N, because that call's backend request happened before
+    its append. Artifacts recorded without positions (and backends never
+    wired to an interpreter) keep the previous contract: llm_call occurrences
+    first, thought occurrences after, each in source order. Legacy entries
+    carrying a plain ``result`` are wrapped as a single occurrence.
     """
-    merged = {key: {"prompt_hash": value.get("prompt_hash"), "model": value.get("model"),
-                    "results": list(value.get("results") or [value.get("result")])}
-              for key, value in llm_cache.items()}
+    merged: Dict[str, Dict[str, Any]] = {}
+    for key, value in llm_cache.items():
+        results = list(value.get("results") or [value.get("result")])
+        positions = list(value.get("positions") or [])
+        merged[key] = {"prompt_hash": value.get("prompt_hash"), "model": value.get("model"),
+                       "results": results,
+                       "positions": [positions[i] if i < len(positions) else None
+                                     for i in range(len(results))],
+                       "sources": ["llm_call"] * len(results)}
     for key, value in thought_history.items():
         entry = merged.setdefault(key, {"prompt_hash": value.get("prompt_hash"),
-                                        "model": value.get("model"), "results": []})
-        entry["results"].extend(value.get("results") or [value.get("result")])
+                                        "model": value.get("model"), "results": [],
+                                        "positions": [], "sources": []})
+        results = list(value.get("results") or [value.get("result")])
+        positions = list(value.get("positions") or [])
+        entry["results"].extend(results)
+        entry["positions"].extend(positions[i] if i < len(positions) else None
+                                   for i in range(len(results)))
+        entry["sources"].extend(["thought"] * len(results))
+    for entry in merged.values():
+        positions, sources = entry.pop("positions"), entry.pop("sources")
+        if positions and all(position is not None for position in positions):
+            order = sorted(range(len(entry["results"])),
+                           key=lambda i: (positions[i], 0 if sources[i] == "thought" else 1))
+            entry["positions"] = [positions[i] for i in order]
+        else:
+            # No interleaving information: keep the previous contract.
+            order = sorted(range(len(entry["results"])),
+                           key=lambda i: (0 if sources[i] == "llm_call" else 1, i))
+        entry["results"] = [entry["results"][i] for i in order]
     return merged
 
 
@@ -157,15 +192,24 @@ class CacheOnlyLLMBackend(LLMBackend):
     """LLM backend used by replay --mock.
 
     It has no provider fallback. Missing cache entries fail deterministically.
-    Each key holds the ordered list of recorded occurrences: a repeated
-    request is served the next recorded answer, and a request occurring more
-    often than recorded fails instead of silently reusing the last answer.
+    Each key recorded with an occurrence list is served one occurrence per
+    request in order, and a request occurring more often than recorded fails
+    instead of silently reusing the last answer. A legacy entry carrying a
+    plain ``result`` - the format every earlier recorder wrote - is reusable:
+    the previous replayer served that one answer to every matching request,
+    and an unchanged old artifact must keep replaying exactly as it did.
     """
 
     def __init__(self, cache: Dict[str, Dict[str, Any]]):
         super().__init__(default_model="mock", provider="mock", mode="mock")
-        self.cache = {key: list(value.get("results") or [value.get("result")])
-                      for key, value in dict(cache).items()}
+        self.cache: Dict[str, list] = {}
+        self.reusable: set = set()
+        for key, value in dict(cache).items():
+            results = value.get("results")
+            if results is None:  # legacy single-result artifact entry
+                self.reusable.add(key)
+                results = [value.get("result")]
+            self.cache[key] = list(results)
         self.provider_call_count = 0
 
     def _cached_entry(self, prompt: str, model: Optional[str]) -> tuple[str, Any]:
@@ -177,6 +221,8 @@ class CacheOnlyLLMBackend(LLMBackend):
             raise DeterministicReplayError(
                 f"LLM_REQUEST unresolved in mock replay: missing cache entry {key}"
             )
+        if key in self.reusable:
+            return model_name, occurrences[0] if occurrences else None
         if not occurrences:
             raise DeterministicReplayError(
                 f"LLM_REQUEST occurred more often than recorded: cache entry {key} is exhausted"

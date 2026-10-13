@@ -69,6 +69,13 @@ class LLMBackend:
         # Governed observability of multi-step reasoning: every thought step is
         # an LLM request, so the backend retains it for golden artifacts.
         self.thought_history: Dict[str, Dict[str, Any]] = {}
+        # One observation order for llm calls and thought steps: the interpreter
+        # wires a probe reporting its current history length, and every thought
+        # observation records that length. Together with the llm_call events'
+        # positions in the same history this yields the true interleaving of
+        # both sources for the artifact cache. A backend used outside an
+        # interpreter keeps ``None`` and falls back to per-source order.
+        self.history_length_probe: Optional[Any] = None
 
     def _mock_complete_result(self, prompt: str, model: str) -> LLMResult:
         from .llm import LLMProviderStatus, LLMResult, LLMTokenStatus, LLMUsage
@@ -167,6 +174,13 @@ class LLMBackend:
             entry = self.thought_history.setdefault(key,
                 {"prompt_hash": prompt_hash, "model": self.default_model, "results": []})
             entry.setdefault("results", []).append(result)
+            # Where this observation stands in the shared order: the number of
+            # history events at the moment of the call. A thought step that ran
+            # while the history held N events precedes the llm_call event
+            # appended at index N, because that event's backend call happened
+            # before its append.
+            entry.setdefault("positions", []).append(
+                self.history_length_probe() if callable(self.history_length_probe) else None)
             results.append(result)
             context += f"\n- {result}"
 

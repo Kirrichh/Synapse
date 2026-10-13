@@ -1072,12 +1072,29 @@ class Interpreter:
         if self._llm_backend is None:
             self._llm_backend = LLMBackend(environ=self._llm_environment)
             self._llm_environment = None
+            self._wire_llm_history_probe()
         return self._llm_backend
 
     @llm_backend.setter
     def llm_backend(self, value):
         self._llm_backend = value
         self._llm_environment = None
+        self._wire_llm_history_probe()
+
+    def _wire_llm_history_probe(self):
+        """Give the backend its shared observation-order probe.
+
+        Thought steps and llm calls must serialize into one golden-artifact
+        cache in true execution order. The backend cannot see the history
+        itself, so the interpreter hands it a probe reporting the current
+        history length; every thought observation records that length next to
+        its result, and the llm_call events carry their own positions as
+        history indices. Backends without retained thought history (or any
+        non-LLMBackend object) are left untouched.
+        """
+        backend = self._llm_backend
+        if backend is not None and hasattr(backend, "thought_history"):
+            backend.history_length_probe = lambda: len(self.execution_history)
 
     @property
     def source_code(self):

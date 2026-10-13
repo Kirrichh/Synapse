@@ -30,12 +30,20 @@ the registry by path.
 import hashlib
 
 from .project_episode_outcome import FULFILLED, NOT_FULFILLED, PARTIAL
+from .project_memory_store import MAX_MEMORY_EVENT_BYTES
 from .source_verification import canonical
 from .stage10.intent import EffectDisposition
 
 OWNER_REGISTRY_V1 = "synapse.stage4.gold.element-owner-registry/v1"
 ACTIVE_MEMORY_FRAME_V4 = "synapse.stage4.gold.active-memory-frame/v4"
 MAX_REGISTRY_OWNERS = 1024
+# The registry travels inside one FRAME_COMPLETED memory event next to the
+# frame, so its published bytes are bounded to half the event budget: the
+# frame keeps a healthy share regardless of how much history the project has
+# accumulated. The bound applies to the *publication* only - the derived
+# registry itself keeps complete owner profiles, and every compacted owner
+# still names the pinned court decision its full profile rebuilds from.
+MAX_REGISTRY_PUBLICATION_BYTES = MAX_MEMORY_EVENT_BYTES // 2
 # Delta categories. A verified entry is a historical fact bound to its revision;
 # it is never a claim about the current tree, which only a fresh verified run
 # can establish (the frame's AWAITING_FRESH_VERIFICATION doctrine).
@@ -43,9 +51,10 @@ VERIFIED, PARTIAL_VERIFIED, DEFECT, TASK_FAILED, DEFERRED = (
     "VERIFIED_EARLIER", "PARTIAL_VERIFIED_EARLIER", "DEFECT_ESTABLISHED",
     "TASK_FAILED_NO_EVIDENCE", "DEFERRED_NO_BASIS")
 CATEGORIES = (VERIFIED, PARTIAL_VERIFIED, DEFECT, TASK_FAILED, DEFERRED)
-# A counted NOT_FULFILLED episode establishes a defect only when the run
-# actually produced evidence about the element: a candidate patch that was
-# applied and judged, or an assertion the court confirmed or refuted.
+# A counted NOT_FULFILLED episode establishes a defect only when the court
+# judged an assertion about the element (confirmed or refuted). A proposed
+# but unjudged candidate patch is not evidence: it stays recorded among the
+# Current State's candidate_patches without claiming a defect.
 _JUDGED_ASSERTION_STATUSES = frozenset({"CONFIRMED", "REFUTED"})
 
 
@@ -82,13 +91,16 @@ def _current_entry(item):
 
 
 def _category(item):
-    """Policy v2 of the delta: only evidence about the element decides.
+    """Policy v3 of the delta: only judged evidence about the element decides.
 
-    A NOT_FULFILLED outcome establishes a defect solely when the episode
-    produced element evidence - a candidate patch or a judged assertion. A
-    task that never produced a candidate (a refused worker, an empty
-    knowledge base) says nothing about the element itself, so it is recorded
-    as TASK_FAILED_NO_EVIDENCE instead of a defect.
+    A NOT_FULFILLED outcome establishes a defect solely when the court
+    actually judged evidence about the element: an assertion it confirmed or
+    refuted. A candidate that was merely *proposed* - the worker suggested a
+    patch but verification never ran (INFRA_ERROR, an uncertain run, a later
+    refusal without any candidate) - proves nothing about the element itself,
+    so the episode is recorded as TASK_FAILED_NO_EVIDENCE. The unjudged
+    candidate stays visible in the Current State's candidate_patches; only
+    the defect category stops claiming it was established.
     """
     if item["verdict"] != "COUNTED":
         return DEFERRED
@@ -98,11 +110,9 @@ def _category(item):
     if outcome == PARTIAL:
         return PARTIAL_VERIFIED
     if outcome == NOT_FULFILLED:
-        attempted = any(attempt.get("candidate") is not None
-                        for attempt in item["observation"]["attempts"])
         judged = any(assertion["status"] in _JUDGED_ASSERTION_STATUSES
                      for assertion in item["learning"]["assertions"])
-        if attempted or judged:
+        if judged:
             return DEFECT
         return TASK_FAILED
     return DEFERRED  # UNCERTAIN and UNVERIFIABLE episodes have no basis at all.
@@ -238,7 +248,9 @@ def apply_owner_profiles(frame, registry):
     owner's delta as neutral counts only; the complete declaration,
     verification and defect lists stay in the published registry next to the
     frame. The frame's size therefore stays independent of the owner's
-    history volume.
+    history volume. Both publication forms enrich the frame identically: a
+    full owner profile is counted here, a counts-only owner already carries
+    its counts.
     """
     if (frame.get("schema_version") != ACTIVE_MEMORY_FRAME_V4
             or registry.get("schema_version") != OWNER_REGISTRY_V1):
@@ -248,6 +260,17 @@ def apply_owner_profiles(frame, registry):
         owner = by_path.get(element["path"])
         if owner is None:
             raise ValueError("active memory element lacks its long-term owner")
+        if owner.get("history_publication") == "COUNTS_ONLY":
+            counts = owner["counts"]
+            element["target_state"] = {**element["target_state"],
+                                       "owner_declarations": counts["declarations"]}
+            element["current_state"] = {**element["current_state"],
+                                        "episodes_seen": owner["episodes_seen"],
+                                        "owner_counts": {key: counts[key] for key in
+                                                         ("verified", "partial", "defects",
+                                                          "task_failures", "deferred")}}
+            element["development_delta"] = {**element["development_delta"], "owner_summary": dict(counts)}
+            continue
         current, delta = owner["current_state"], owner["development_delta"]
         element["target_state"] = {**element["target_state"],
                                    "owner_declarations": len(owner["target_state"]["declarations"])}
@@ -257,3 +280,86 @@ def apply_owner_profiles(frame, registry):
                                                       "task_failures", "deferred")}}
         element["development_delta"] = {**element["development_delta"], "owner_summary": delta["summary"]}
     return frame
+
+
+def _compact_owner(owner, grounds):
+    """Counts-only publication form of one owner profile.
+
+    Every list-valued history is replaced by the summary counts the frame's
+    element states are enriched with; ``grounds`` names the pinned court
+    decision the complete profile rebuilds from, so the owner keeps access to
+    its full basis outside the bounded event.
+    """
+    summary = owner["development_delta"]["summary"]
+    return {"path": owner["path"], "owner_id": owner["owner_id"], "lifecycle": owner["lifecycle"],
+            "history_publication": "COUNTS_ONLY",
+            "episodes_seen": owner["current_state"]["episodes_seen"],
+            "counts": {"declarations": summary["declarations"], "verified": summary["verified"],
+                       "partial": summary["partial"], "defects": summary["defects"],
+                       "task_failures": summary["task_failures"], "deferred": summary["deferred"],
+                       "awaiting_fresh_verification": summary["awaiting_fresh_verification"]},
+            "grounds": dict(grounds)}
+
+
+def _published_registry(registry, owners, mode, max_bytes):
+    """Assemble a publication candidate with its exact canonical size.
+
+    The body (everything except the publication section) is canonicalized
+    once; only the small section is sized to a fixed point, because its own
+    digit count is the only self-reference. Inserting the ``publication``
+    key into the canonical body costs exactly ``len('"publication":')`` plus
+    one comma, so the candidate's total size is known without a second full
+    serialization - bounding a registry whose active scope alone cannot fit
+    costs two canonical passes, not a per-digit re-serialization of the
+    whole candidate.
+    """
+    body = {key: value for key, value in registry.items() if key != "publication"}
+    body = {**body, "owners": owners}
+    body_bytes = len(canonical(body))
+    section = {"mode": mode, "max_bytes": int(max_bytes), "registry_bytes": 0}
+    size = body_bytes + 15 + len(canonical(section))
+    for _ in range(4):
+        if section["registry_bytes"] == size:
+            break
+        section["registry_bytes"] = size
+        size = body_bytes + 15 + len(canonical(section))
+    return {**body, "publication": section}, size
+
+
+def bound_owner_registry(registry, *, max_bytes=MAX_REGISTRY_PUBLICATION_BYTES, active_paths=()):
+    """Bound the published bytes of the derived registry.
+
+    The derived registry keeps complete owner profiles; this function bounds
+    only what travels inside the FRAME_COMPLETED memory event:
+
+    * a registry already inside ``max_bytes`` is published unchanged;
+    * otherwise historic (non-active) owners degrade to counts-only
+      publication while the current task's active paths keep their full
+      profiles, and each compacted owner names the pinned court decision its
+      grounds rebuild from;
+    * if even that exceeds the budget - an active scope whose own history is
+      heavier than the budget - every owner publishes counts only.
+
+    Only a registry that cannot fit its budget in counts-only form refuses,
+    which is the byte-level twin of the active-path budget: unrelated history
+    never blocks a new task, but a task may not silently publish unbounded
+    bytes.
+    """
+    if len(canonical(registry)) <= max_bytes:
+        return registry
+    grounds = {"decision": registry.get("decision"),
+               "derivation": "element-owner-registry/v1 rebuilds every full owner "
+                             "profile from the pinned court decision"}
+    owners = registry.get("owners") or []
+    active = set(active_paths or ())
+    kept = [owner for owner in owners if owner["path"] in active]
+    compacted = [_compact_owner(owner, grounds) for owner in owners if owner["path"] not in active]
+    candidate, size = _published_registry(registry, sorted(kept + compacted, key=lambda owner: owner["path"]),
+                                          "COMPACT_HISTORY", max_bytes)
+    if size <= max_bytes:
+        return candidate
+    candidate, size = _published_registry(registry, [_compact_owner(owner, grounds) for owner in owners],
+                                          "COUNTS_ONLY", max_bytes)
+    if size > max_bytes:
+        raise ValueError("owner registry publication exceeds its byte budget even in counts-only form")
+    return candidate

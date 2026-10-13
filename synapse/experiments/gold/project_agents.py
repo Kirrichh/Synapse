@@ -15,7 +15,8 @@ from .project_memory_store import MAX_MEMORY_EVENT_BYTES, MEMORY_EVENT_V1, Proje
 from .project_frame_storage import COMPACT_FRAME_V1, compact_frame, restore_frame
 from .project_memory_selection import require_run_memory_selection, selected_episode, selected_episode_outcome
 from .project_model import build_active_memory_frame, build_project_model
-from .owner_profiles import (ACTIVE_MEMORY_FRAME_V4, apply_owner_profiles, build_owner_registry)
+from .owner_profiles import (ACTIVE_MEMORY_FRAME_V4, apply_owner_profiles, bound_owner_registry,
+                             build_owner_registry)
 from .project_learning import consolidate_episode, build_memory_layers
 from .source_verification import canonical, source_ref
 from .stage10.task_contract import GoverningTaskContract
@@ -139,7 +140,11 @@ def _frame_payload(request, request_ref, started_ref, store):
                     "completed_job": request_ref, "memory_routes": list(frame["memory_kinds"])}
                    for item in frame["elements"]]}
     if registry is not None:
-        payload["owner_registry"] = registry
+        # The published registry is byte-bounded inside the same memory event
+        # as the frame: unrelated history degrades to counts-only publication
+        # instead of squeezing the frame out of the event budget, while every
+        # compacted owner keeps the decision ref its full grounds rebuild from.
+        payload["owner_registry"] = bound_owner_registry(registry, active_paths=model["active_paths"])
     return _retained_frame_payload(payload, request)
 
 
@@ -149,7 +154,10 @@ def _frame_byte_budget(payload):
     The owner registry travels in the same FRAME_COMPLETED event as the
     frame, so its canonical bytes are part of the envelope this budget
     subtracts: a larger registry leaves a smaller frame budget, and the
-    published event as a whole stays inside the memory event budget.
+    published event as a whole stays inside the memory event budget. The
+    registry itself is byte-bounded before it reaches this accounting, so
+    the subtraction can never drive the frame budget negative through
+    unrelated history.
     """
     envelope = {"schema_version": MEMORY_EVENT_V1, "kind": "FRAME_COMPLETED", "job_key": "0" * 64,
                 "payload": {**payload, "active_memory_frame": None}}

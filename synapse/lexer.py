@@ -582,9 +582,10 @@ class Lexer:
             self.advance()
         text = self.source[self.start:self.current]
         type = KEYWORDS.get(text, TokenType.IDENTIFIER)
-        # Store value for keyword operators (not, and, or)
-        value = text if type in (TokenType.IDENTIFIER, TokenType.NOT, TokenType.AND, TokenType.OR) else None
-        self.add_token(type, value)
+        # Every identifier-shaped token carries its source text so that the
+        # parser can recover the name when a keyword is used in a name position
+        # (soft keywords, D7).
+        self.add_token(type, text)
 
     def skip_whitespace(self):
         while self.peek() in ' \t\r':

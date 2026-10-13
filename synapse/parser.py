@@ -1,12 +1,22 @@
 
 from typing import List, Optional, Dict
-from .lexer import Lexer, Token, TokenType
+from .lexer import Lexer, Token, TokenType, KEYWORDS
 from .ast import *
 
 class ParseError(Exception):
     pass
 
 class Parser:
+    # Soft keywords (D7): every keyword except this small hard-reserved set may
+    # appear in a name position (let binding, parameter, dict key, member name,
+    # plain variable reference). The keyword keeps its dedicated meaning
+    # wherever the grammar consumes it explicitly first; name positions are
+    # fallbacks, so no existing program can change how it parses.
+    _HARD_NAME_TYPES = {
+        TokenType.TRUE, TokenType.FALSE, TokenType.NULL,
+        TokenType.AND, TokenType.OR, TokenType.NOT,
+    }
+    _SOFT_NAME_TYPES = frozenset(KEYWORDS.values()) - _HARD_NAME_TYPES
     def __init__(self, tokens: List[Token]):
         self.tokens = tokens
         self.current = 0
@@ -56,44 +66,28 @@ class Parser:
         while self.match(TokenType.NEWLINE):
             pass
 
-    # Keywords that are commonly used as user-defined function / method names.
-    # When a keyword appears immediately after `fn` or as a method name, the
-    # parser treats its source text as an identifier rather than a keyword.
-    _KEYWORD_AS_NAME_TYPES = {
-        TokenType.RECALL, TokenType.IMPRINT, TokenType.MAX,
-        TokenType.FILTER, TokenType.PROMOTE, TokenType.KEEP, TokenType.TAG,
-        TokenType.SEND, TokenType.RECEIVE, TokenType.MIGRATE, TokenType.SPAWN,
-        TokenType.SUSPEND, TokenType.AWAIT, TokenType.EVOLVE, TokenType.PLAN,
-        TokenType.ACTION, TokenType.CONTENT, TokenType.SOURCE, TokenType.STATE,
-        TokenType.REASON, TokenType.SCOPE, TokenType.TRUST, TokenType.LEVEL,
-        TokenType.MEMORY, TokenType.CONTEXT, TokenType.BODY, TokenType.PATTERN,
-    }
+    def is_name_type(self, type: TokenType) -> bool:
+        """True when a token of this type can serve as a user-defined name."""
+        return type == TokenType.IDENTIFIER or type in self._SOFT_NAME_TYPES
 
     def consume_name(self, msg: str) -> Token:
-        """Consume an IDENTIFIER or any keyword that is valid as a name token.
+        """Consume an IDENTIFIER or any soft keyword acting as a name token.
 
-        This allows programs to define functions or methods whose names collide
-        with reserved words (e.g. ``fn recall(...)``, ``fn max(...)``).  The
-        returned token's ``.value`` is always the lowercase keyword string so
-        that downstream AST nodes receive a plain str name.
+        This allows programs to define bindings, parameters, members and
+        functions whose names collide with reserved words (e.g. ``fn target``,
+        ``let budget = 1``, ``d.quorum``). The lexer stores the source text on
+        every identifier-shaped token, so ``.value`` is always the plain name.
         """
-        if self.check(TokenType.IDENTIFIER):
+        if self.is_name_type(self.peek().type):
             return self.advance()
-        if self.peek().type in self._KEYWORD_AS_NAME_TYPES:
-            tok = self.advance()
-            # Normalise: keyword tokens may have value=None; use the type name.
-            if tok.value is None:
-                tok = Token(tok.type, tok.type.name.lower(), tok.line, tok.column)
-            return tok
         self.error(msg)
+
+    def name_of(self, token: Token) -> str:
+        """Source-text name of a token accepted by consume_name."""
+        return str(token.value if token.value is not None else token.type.name.lower())
 
     def consume_binding_name(self, msg: str) -> str:
-        allowed = {TokenType.IDENTIFIER, TokenType.COHERENCE, TokenType.STABILITY,
-                   TokenType.CONSENSUS_RATE, TokenType.RESONANCE_DRIFT, TokenType.PALACE, TokenType.PLAN, TokenType.COHERENCE, TokenType.ENERGY, TokenType.MARKER, TokenType.STATE, TokenType.TAG}
-        if self.peek().type in allowed:
-            tok = self.advance()
-            return str(tok.value or tok.type.name.lower())
-        self.error(msg)
+        return self.name_of(self.consume_name(msg))
 
     def parse(self) -> Program:
         statements = []
@@ -233,7 +227,7 @@ class Parser:
 
     def agent_def(self) -> AgentDef:
         token = self.advance()  # agent
-        name = self.consume(TokenType.IDENTIFIER, "Expected agent name").value
+        name = self.name_of(self.consume_name("Expected agent name"))
 
         model = None
         memory = None
@@ -361,7 +355,7 @@ class Parser:
 
     def flow_def(self) -> FlowDef:
         token = self.advance()  # flow
-        name = self.consume(TokenType.IDENTIFIER, "Expected flow name").value
+        name = self.name_of(self.consume_name("Expected flow name"))
         body = self.block()
         return FlowDef(name=name, body=body, line=token.line, column=token.column)
 
@@ -371,7 +365,7 @@ class Parser:
     def parallel_stmt(self) -> ParallelStmt:
         """``parallel NAME [limit N] { node X [on "e"] = expr … signal "e" when expr … commit X [=> expr] }``."""
         token = self.advance()  # parallel
-        name = self.consume(TokenType.IDENTIFIER, "Expected parallel graph name").value
+        name = self.name_of(self.consume_name("Expected parallel graph name"))
         limit = None
         if self.match(TokenType.LIMIT):
             limit = self.consume(TokenType.NUMBER, "Expected a number after 'limit'").value
@@ -382,7 +376,7 @@ class Parser:
             start = self.peek()
             if self._contextual("node"):
                 self.advance()
-                node_name = self.consume(TokenType.IDENTIFIER, "Expected node name").value
+                node_name = self.name_of(self.consume_name("Expected node name"))
                 event = None
                 if self.match(TokenType.ON):
                     event = self.consume(TokenType.STRING, "Expected event name after 'on'").value
@@ -399,7 +393,7 @@ class Parser:
                 if commit is not None:
                     raise ParseError(f"A parallel graph commits once at line {start.line}")
                 self.advance()
-                commit = self.consume(TokenType.IDENTIFIER, "Expected the committed node").value
+                commit = self.name_of(self.consume_name("Expected the committed node"))
                 if self.match(TokenType.FATARROW):
                     effect = self.expression()
             else:
@@ -413,7 +407,7 @@ class Parser:
 
     def policy_def(self) -> PolicyDef:
         token = self.advance()  # policy
-        name = self.consume(TokenType.IDENTIFIER, "Expected policy name").value
+        name = self.name_of(self.consume_name("Expected policy name"))
         self.consume(TokenType.LBRACE, "Expected '{' after policy name")
         self.skip_newlines()
         target = None
@@ -447,13 +441,9 @@ class Parser:
                     fields["guard"] = guard_expr
             else:
                 key_token = self.advance()
-                allowed = {
-                    TokenType.IDENTIFIER, TokenType.ON, TokenType.AFTER, TokenType.WITH,
-                    TokenType.WHEN, TokenType.REASON, TokenType.SCOPE, TokenType.LEVEL, TokenType.TRIGGER, TokenType.COOLDOWN if hasattr(TokenType, "COOLDOWN") else TokenType.IDENTIFIER, TokenType.REQUIRE
-                }
-                if key_token.type not in allowed:
+                if not self.is_name_type(key_token.type):
                     self.error("Expected policy field name")
-                key = str(key_token.value or key_token.type.name.lower())
+                key = self.name_of(key_token)
                 self.consume(TokenType.COLON, "Expected ':' after policy field name")
                 value = self.expression()
                 # Optional unit sugar: cooldown: 10 events
@@ -504,9 +494,9 @@ class Parser:
         self.consume(TokenType.LPAREN, "Expected '(' after guard")
         params = []
         if not self.check(TokenType.RPAREN):
-            params.append(self.consume(TokenType.IDENTIFIER, "Expected guard parameter name").value)
+            params.append(self.name_of(self.consume_name("Expected guard parameter name")))
             while self.match(TokenType.COMMA):
-                params.append(self.consume(TokenType.IDENTIFIER, "Expected guard parameter name").value)
+                params.append(self.name_of(self.consume_name("Expected guard parameter name")))
         self.consume(TokenType.RPAREN, "Expected ')' after guard parameters")
         return params
 
@@ -519,19 +509,15 @@ class Parser:
 
     def intent_def(self) -> IntentDef:
         token = self.advance()  # intent
-        name = self.consume(TokenType.IDENTIFIER, "Expected intent name").value
+        name = self.name_of(self.consume_name("Expected intent name"))
         self.consume(TokenType.LBRACE, "Expected '{' after intent name")
         self.skip_newlines()
         fields = {}
-        allowed = {TokenType.IDENTIFIER, TokenType.TARGET, TokenType.REQUIRE, TokenType.FORBID,
-                   TokenType.CHECK, TokenType.TEXT, TokenType.EVIDENCE, TokenType.CONFIDENCE,
-                   TokenType.SCOPE, TokenType.REASON, TokenType.RETENTION, TokenType.LEVEL,
-                   TokenType.VALUES, TokenType.SCENARIO, TokenType.DEPTH, TokenType.CONSTRAINTS, TokenType.WITH, TokenType.AFTER, TokenType.ACTION, TokenType.MISSION, TokenType.OBJECTIVE, TokenType.TASK, TokenType.CONTENT, TokenType.SOURCE, TokenType.TRACE_ID}
         while not self.check(TokenType.RBRACE) and not self.is_at_end():
             key_token = self.advance()
-            if key_token.type not in allowed:
+            if not self.is_name_type(key_token.type):
                 self.error("Expected intent field name")
-            key = str(key_token.value or key_token.type.name.lower())
+            key = self.name_of(key_token)
             fields[key] = self.expression()
             self.skip_newlines()
         self.consume(TokenType.RBRACE, "Expected '}' after intent body")
@@ -540,7 +526,7 @@ class Parser:
     def declare_intent_stmt(self) -> DeclareIntentStmt:
         token = self.advance()  # declare
         self.consume(TokenType.INTENT, "Expected 'intent' after declare")
-        name = self.consume(TokenType.IDENTIFIER, "Expected declared intent name").value
+        name = self.name_of(self.consume_name("Expected declared intent name"))
         return DeclareIntentStmt(name=name, line=token.line, column=token.column)
 
     def observe_block(self) -> ObserveBlock:
@@ -552,11 +538,11 @@ class Parser:
         while not self.check(TokenType.RBRACE) and not self.is_at_end():
             self.consume(TokenType.ON, "Expected 'on' in observe block")
             ev_tok = self.advance()
-            if ev_tok.type not in {TokenType.IDENTIFIER, TokenType.STRING, TokenType.CLAIM, TokenType.CHECK, TokenType.RECEIVE, TokenType.SEND}:
+            if ev_tok.type != TokenType.STRING and not self.is_name_type(ev_tok.type):
                 self.error("Expected event type after on")
             event_type = str(ev_tok.value or ev_tok.type.name.lower())
             self.consume(TokenType.FATARROW, "Expected '=>' after observed event type")
-            binding = self.consume(TokenType.IDENTIFIER, "Expected event binding name").value
+            binding = self.name_of(self.consume_name("Expected event binding name"))
             body = self.block()
             handlers.append(ObserveHandler(event_type=event_type, binding=binding, body=body, line=token.line, column=token.column))
             self.skip_newlines()
@@ -588,7 +574,7 @@ class Parser:
 
     def claim_def(self) -> ClaimDef:
         token = self.advance()  # claim
-        name = self.consume(TokenType.IDENTIFIER, "Expected claim name").value
+        name = self.name_of(self.consume_name("Expected claim name"))
         self.consume(TokenType.LBRACE, "Expected '{' after claim name")
         self.skip_newlines()
         text = evidence = confidence = None
@@ -607,18 +593,15 @@ class Parser:
 
     def consequence_def(self) -> ConsequenceDef:
         token = self.advance()  # consequence
-        name = self.consume(TokenType.IDENTIFIER, "Expected consequence name").value
+        name = self.name_of(self.consume_name("Expected consequence name"))
         self.consume(TokenType.LBRACE, "Expected '{' after consequence name")
         self.skip_newlines()
         fields = {}
         while not self.check(TokenType.RBRACE) and not self.is_at_end():
             key_token = self.advance()
-            allowed = {TokenType.IDENTIFIER, TokenType.REQUIRE, TokenType.FORBID, TokenType.CHECK,
-                       TokenType.TEXT, TokenType.EVIDENCE, TokenType.CONFIDENCE, TokenType.SCOPE,
-                       TokenType.REASON, TokenType.RETENTION, TokenType.TRUST, TokenType.LEVEL, TokenType.POLICY, TokenType.TARGET}
-            if key_token.type not in allowed:
+            if not self.is_name_type(key_token.type):
                 self.error("Expected consequence field name")
-            fields[str(key_token.value or key_token.type.name.lower())] = self.expression()
+            fields[self.name_of(key_token)] = self.expression()
             self.skip_newlines()
         self.consume(TokenType.RBRACE, "Expected '}' after consequence body")
         return ConsequenceDef(name=name, fields=fields, line=token.line, column=token.column)
@@ -627,13 +610,11 @@ class Parser:
         self.consume(TokenType.LBRACE, "Expected '{' after governed memory write")
         self.skip_newlines()
         fields = {}
-        allowed = {TokenType.IDENTIFIER, TokenType.SCOPE, TokenType.REASON, TokenType.RETENTION,
-                   TokenType.TEXT, TokenType.EVIDENCE, TokenType.CONFIDENCE, TokenType.GUARD}
         while not self.check(TokenType.RBRACE) and not self.is_at_end():
             key_token = self.advance()
-            if key_token.type not in allowed:
+            if not self.is_name_type(key_token.type):
                 self.error("Expected governance field name")
-            fields[str(key_token.value or key_token.type.name.lower())] = self.expression()
+            fields[self.name_of(key_token)] = self.expression()
             self.skip_newlines()
         self.consume(TokenType.RBRACE, "Expected '}' after governed field block")
         return fields
@@ -642,7 +623,7 @@ class Parser:
         token = self.advance()  # send
         receiver = self.primary()
         self.consume(TokenType.DOT, "Expected '.' after send receiver")
-        method_token = self.consume(TokenType.IDENTIFIER, "Expected target method after send receiver")
+        method_token = self.consume_name("Expected target method after send receiver")
         self.consume(TokenType.LPAREN, "Expected '(' after send method")
         args = []
         if not self.check(TokenType.RPAREN):
@@ -650,7 +631,7 @@ class Parser:
             while self.match(TokenType.COMMA):
                 args.append(self.expression())
         self.consume(TokenType.RPAREN, "Expected ')' after send arguments")
-        return SendStmt(receiver=receiver, method=method_token.value, args=args, line=token.line, column=token.column)
+        return SendStmt(receiver=receiver, method=self.name_of(method_token), args=args, line=token.line, column=token.column)
 
     def receive_block(self) -> ReceiveBlock:
         token = self.advance()  # receive
@@ -661,9 +642,9 @@ class Parser:
         self.skip_newlines()
         patterns = []
         while not self.check(TokenType.RBRACE) and not self.is_at_end():
-            sender = self.consume(TokenType.IDENTIFIER, "Expected sender binding name in receive pattern").value
+            sender = self.name_of(self.consume_name("Expected sender binding name in receive pattern"))
             self.consume(TokenType.FATARROW, "Expected '=>' in receive pattern")
-            target = self.consume(TokenType.IDENTIFIER, "Expected payload binding name in receive pattern").value
+            target = self.name_of(self.consume_name("Expected payload binding name in receive pattern"))
             body = self.block()
             patterns.append(ReceivePattern(sender_var=sender, target_var=target, body=body, line=token.line, column=token.column))
             self.skip_newlines()
@@ -710,7 +691,7 @@ class Parser:
             elif self.match(TokenType.AFFECTIVE_WEIGHTED):
                 consensus = "affective_weighted"
                 self.consume(TokenType.LPAREN, "Expected '(' after affective_weighted")
-                mood_ref = self.consume(TokenType.IDENTIFIER, "Expected mood variable in affective_weighted(...)").value
+                mood_ref = self.name_of(self.consume_name("Expected mood variable in affective_weighted(...)"))
                 self.consume(TokenType.RPAREN, "Expected ')' after affective_weighted mood variable")
                 biases = self.affective_bias_mapping()
                 consensus_config = AffectiveWeightedConsensus(mood_ref=mood_ref, biases=biases, line=token.line, column=token.column)
@@ -737,7 +718,7 @@ class Parser:
             if self.match(TokenType.DEFAULT):
                 name = "Default"
             else:
-                name = self.consume(TokenType.IDENTIFIER, "Expected branch name or Default in bias mapping").value
+                name = self.name_of(self.consume_name("Expected branch name or Default in bias mapping"))
             self.consume(TokenType.BIAS, "Expected 'bias' after branch name in affective_weighted mapping")
             biases[name] = self.expression()
             self.skip_newlines()
@@ -745,7 +726,7 @@ class Parser:
         return biases
 
     def subagent_def(self) -> SubAgentDef:
-        name = self.consume(TokenType.IDENTIFIER, "Expected subagent name").value
+        name = self.name_of(self.consume_name("Expected subagent name"))
         self.consume(TokenType.LBRACE, "Expected '{' after subagent name")
         self.skip_newlines()
         focus = None
@@ -772,8 +753,9 @@ class Parser:
             if self.match(TokenType.VALUES):
                 self.consume(TokenType.COLON, "Expected ':' after values")
                 override["values"] = self.parse_soulprint_values_list()
-            elif self.match(TokenType.IDENTIFIER, TokenType.STYLE, TokenType.VERSION, TokenType.PROTECTED, TokenType.MEMORY):
-                key = str(self.previous().value or self.previous().type.name.lower())
+            elif self.is_name_type(self.peek().type):
+                key_token = self.advance()
+                key = self.name_of(key_token)
                 self.consume(TokenType.COLON, "Expected ':' after soulprint override field")
                 val = self.expression()
                 override[key] = val
@@ -787,7 +769,7 @@ class Parser:
         self.consume(TokenType.LBRACKET, "Expected '[' after values ':'")
         values = {}
         while not self.check(TokenType.RBRACKET) and not self.is_at_end():
-            key = self.consume(TokenType.IDENTIFIER, "Expected value key").value
+            key = self.name_of(self.consume_name("Expected value key"))
             self.consume(TokenType.COLON, "Expected ':' after value key")
             val = self.consume(TokenType.NUMBER, "Expected numeric soulprint value").value
             values[key] = float(val)
@@ -798,20 +780,8 @@ class Parser:
 
     def let_stmt(self) -> LetStmt:
         token = self.advance()  # let
-        if self.match(TokenType.IDENTIFIER):
-            name = self.previous().value
-        elif self.match(TokenType.SELF):
-            name = "self"
-        elif self.match(TokenType.PLAN):
-            name = "plan"
-        elif self.match(TokenType.PALACE):
-            name = "palace"
-        elif self.match(TokenType.CONTENT):
-            name = "content"
-        elif self.match(TokenType.ACTION):
-            name = "action"
-        else:
-            self.error("Expected variable name")
+        # Soft keywords (D7): any non-hard keyword can name a binding.
+        name = self.name_of(self.consume_name("Expected variable name"))
         self.consume(TokenType.ASSIGN, "Expected '=' after variable name")
         value = self.expression()
         return LetStmt(name=name, value=value, line=token.line, column=token.column)
@@ -834,7 +804,7 @@ class Parser:
 
     def for_stmt(self) -> ForStmt:
         token = self.advance()  # for
-        var = self.consume(TokenType.IDENTIFIER, "Expected loop variable").value
+        var = self.name_of(self.consume_name("Expected loop variable"))
         self.consume(TokenType.IN, "Expected 'in' after loop variable")
         iterable = self.expression()
         body = self.block()
@@ -852,14 +822,14 @@ class Parser:
         module = self.consume(TokenType.STRING, "Expected module path").value
         alias = None
         if self.match(TokenType.AS):
-            alias = self.consume(TokenType.IDENTIFIER, "Expected alias").value
+            alias = self.name_of(self.consume_name("Expected alias"))
         return ImportStmt(module=module, alias=alias, line=token.line, column=token.column)
 
     def expr_stmt(self) -> Node:
         expr = self.expression()
         # Location-transparent async actor send: actor_ref => method(args)
         if self.match(TokenType.FATARROW):
-            method_token = self.consume(TokenType.IDENTIFIER, "Expected async target method after '=>'")
+            method_token = self.consume_name("Expected async target method after '=>'")
             self.consume(TokenType.LPAREN, "Expected '(' after async method")
             args = []
             if not self.check(TokenType.RPAREN):
@@ -867,7 +837,7 @@ class Parser:
                 while self.match(TokenType.COMMA):
                     args.append(self.expression())
             self.consume(TokenType.RPAREN, "Expected ')' after async send arguments")
-            return SendStmt(receiver=expr, method=method_token.value, args=args, async_send=True, line=expr.line, column=expr.column)
+            return SendStmt(receiver=expr, method=self.name_of(method_token), args=args, async_send=True, line=expr.line, column=expr.column)
         return ExprStmt(expr=expr, line=expr.line, column=expr.column)
 
     def expression(self) -> Node:
@@ -888,7 +858,8 @@ class Parser:
         expr = self.or_expr()
         while self.match(TokenType.PIPE):
             token = self.previous()
-            func_name = self.consume(TokenType.IDENTIFIER, "Expected function name after '|>'").value
+            # Soft keywords (D7): a piped function may collide with a keyword.
+            func_name = self.name_of(self.consume_name("Expected function name after '|>'"))
             expr = CallExpr(
                 callee=Variable(name=func_name, line=token.line, column=token.column),
                 args=[expr],
@@ -965,29 +936,11 @@ class Parser:
                 expr = CallExpr(callee=expr, args=args, line=expr.line, column=expr.column)
             elif self.match(TokenType.DOT):
                 member_token = self.advance()
-                allowed_members = {TokenType.IDENTIFIER, TokenType.TEXT, TokenType.EVIDENCE,
-                                   TokenType.CONFIDENCE, TokenType.SCOPE, TokenType.REASON,
-                                   TokenType.RETENTION, TokenType.TRUST, TokenType.LEVEL, TokenType.POLICY, TokenType.TARGET,
-                                   TokenType.JUDGE, TokenType.ROUNDS, TokenType.LAST, TokenType.EVENTS, TokenType.FILTER,
-                                   TokenType.VALUES, TokenType.SELF, TokenType.DEPTH, TokenType.SCENARIO, TokenType.CONSTRAINTS,
-                                   TokenType.UNDER, TokenType.AFTER, TokenType.WHEN, TokenType.WITH,
-                                   TokenType.ASPECTS, TokenType.WINDOW, TokenType.COHERENCE, TokenType.STABILITY,
-                                   TokenType.CONSENSUS_RATE, TokenType.RESONANCE_DRIFT, TokenType.METRICS, TokenType.BIND,
-                                   TokenType.SEMANTIC, TokenType.EPISODIC, TokenType.PROCEDURAL, TokenType.PALACE,
-                                   TokenType.SUPPRESS, TokenType.ELEVATE, TokenType.VALENCE, TokenType.AROUSAL,
-                                   TokenType.DOMINANCE, TokenType.MARKER, TokenType.ESCALATE_TO, TokenType.TRACE_ID,
-                                   # Common user-defined method names that collide with keywords:
-                                   TokenType.RECALL, TokenType.IMPRINT, TokenType.SEND, TokenType.RECEIVE,
-                                   TokenType.SPAWN, TokenType.MIGRATE, TokenType.EVOLVE, TokenType.PLAN,
-                                   TokenType.ACTION, TokenType.CONTENT, TokenType.SOURCE, TokenType.STATE,
-                                   TokenType.BODY, TokenType.CONTEXT, TokenType.MAX, TokenType.PATTERN,
-                                   TokenType.MEMORY, TokenType.PROMOTE, TokenType.KEEP, TokenType.TAG,
-                                   # Fields of a parallel graph's result:
-                                   TokenType.STEPS, TokenType.VERSION, TokenType.LIMIT,
-                                   }
-                if member_token.type not in allowed_members:
+                # Soft keywords (D7): any name-shaped token can follow '.';
+                # dedicated keyword forms keep priority elsewhere in the grammar.
+                if not self.is_name_type(member_token.type):
                     self.error("Expected property name after '.'")
-                name = str(member_token.value or member_token.type.name.lower())
+                name = self.name_of(member_token)
                 expr = MemberAccess(obj=expr, member=name, line=expr.line, column=expr.column)
             elif self.match(TokenType.LBRACKET):
                 index = self.expression()
@@ -1130,6 +1083,13 @@ class Parser:
             self.consume(TokenType.RPAREN, "Expected ')' after expression")
             return expr
 
+        # Soft keywords (D7): any remaining keyword in expression position is a
+        # plain variable reference. Dedicated keyword forms (prompt, llm,
+        # thought, spawn, memory, ...) are matched above and keep their meaning.
+        if self.is_name_type(self.peek().type):
+            tok = self.advance()
+            return Variable(name=self.name_of(tok), line=tok.line, column=tok.column)
+
         self.error(f"Unexpected token: {self.peek().type.name}")
 
 
@@ -1236,7 +1196,7 @@ class Parser:
         affective_bias = None
         if self.match(TokenType.AFFECTIVE_BIAS):
             self.consume(TokenType.LPAREN, "Expected '(' after affective_bias")
-            mood_ref = self.consume(TokenType.IDENTIFIER, "Expected mood variable in affective_bias(...)").value
+            mood_ref = self.name_of(self.consume_name("Expected mood variable in affective_bias(...)"))
             self.consume(TokenType.RPAREN, "Expected ')' after affective_bias")
             affective_bias = AffectiveBias(mood_ref=mood_ref, line=token.line, column=token.column)
         return DebateBlock(branches=branches, judge=judge, rounds=rounds, affective_bias=affective_bias, line=token.line, column=token.column)
@@ -1252,7 +1212,7 @@ class Parser:
             elif self.match(TokenType.VALUES):
                 target = "values"
             else:
-                target = self.consume(TokenType.IDENTIFIER, "Expected reflect target after on").value
+                target = self.name_of(self.consume_name("Expected reflect target after on"))
         self.consume(TokenType.LBRACE, "Expected '{' after reflect")
         self.skip_newlines()
         last = None
@@ -1298,7 +1258,7 @@ class Parser:
     def affective_threshold_def(self) -> AffectiveThresholdDef:
         token = self.advance()  # affective
         self.consume(TokenType.THRESHOLD, "Expected 'threshold' after affective")
-        name = self.consume(TokenType.STRING, "Expected threshold name string").value if self.check(TokenType.STRING) else self.consume(TokenType.IDENTIFIER, "Expected threshold name").value
+        name = self.consume(TokenType.STRING, "Expected threshold name string").value if self.check(TokenType.STRING) else self.name_of(self.consume_name("Expected threshold name"))
         self.consume(TokenType.LBRACE, "Expected '{' after affective threshold name")
         self.skip_newlines()
         condition = None
@@ -1325,9 +1285,9 @@ class Parser:
                 if self.match(TokenType.IDENTIFIER):
                     priority = str(self.previous().value)
                 else:
-                    priority = self.consume(TokenType.IDENTIFIER, "Expected priority level").value
+                    priority = self.name_of(self.consume_name("Expected priority level"))
             elif self.match(TokenType.IDENTIFIER) and self.previous().value == "priority":
-                priority = self.consume(TokenType.IDENTIFIER, "Expected priority level").value
+                priority = self.name_of(self.consume_name("Expected priority level"))
             elif self.match(TokenType.ACTION):
                 action = self.block()
             else:
@@ -1343,7 +1303,7 @@ class Parser:
     def affective_state_def(self) -> AffectiveStateDef:
         token = self.advance()  # affective
         self.consume(TokenType.STATE, "Expected 'state' after affective")
-        name = self.consume(TokenType.STRING, "Expected affective state name string").value if self.check(TokenType.STRING) else self.consume(TokenType.IDENTIFIER, "Expected affective state name").value
+        name = self.consume(TokenType.STRING, "Expected affective state name string").value if self.check(TokenType.STRING) else self.name_of(self.consume_name("Expected affective state name"))
         self.consume(TokenType.LBRACE, "Expected '{' after affective state name")
         self.skip_newlines()
         dimensions = {}
@@ -1384,7 +1344,7 @@ class Parser:
 
     def affective_event_stmt(self) -> AffectiveEventStmt:
         token = self.advance(); self.consume(TokenType.EVENT, "Expected 'event' after affective")
-        name = self.consume(TokenType.STRING, "Expected affective event name").value if self.check(TokenType.STRING) else self.consume(TokenType.IDENTIFIER, "Expected affective event name").value
+        name = self.consume(TokenType.STRING, "Expected affective event name").value if self.check(TokenType.STRING) else self.name_of(self.consume_name("Expected affective event name"))
         self.consume(TokenType.LBRACE, "Expected '{' after affective event name")
         fields = {}; binding = "emotional_tag"; self.skip_newlines()
         while not self.check(TokenType.RBRACE) and not self.is_at_end():
@@ -1424,7 +1384,7 @@ class Parser:
         token = self.advance(); self.consume(TokenType.RESONANCE, "Expected 'resonance' after affective")
         self.consume(TokenType.WITH, "Expected 'with' after affective resonance")
         if self.match(TokenType.AT):
-            target = Literal(value='@' + self.consume(TokenType.IDENTIFIER, "Expected name after @").value, line=token.line, column=token.column)
+            target = Literal(value='@' + self.name_of(self.consume_name("Expected name after @")), line=token.line, column=token.column)
         else:
             target = self.expression()
         self.consume(TokenType.LBRACE, "Expected '{' after affective resonance target")
@@ -1441,7 +1401,7 @@ class Parser:
 
     def somatic_marker_stmt(self) -> SomaticMarkerStmt:
         token = self.advance(); self.consume(TokenType.MARKER, "Expected 'marker' after somatic")
-        name = self.consume(TokenType.STRING, "Expected somatic marker name").value if self.check(TokenType.STRING) else self.consume(TokenType.IDENTIFIER, "Expected somatic marker name").value
+        name = self.consume(TokenType.STRING, "Expected somatic marker name").value if self.check(TokenType.STRING) else self.name_of(self.consume_name("Expected somatic marker name"))
         self.consume(TokenType.LBRACE, "Expected '{' after somatic marker name")
         fields={}; binding="marker"; self.skip_newlines()
         while not self.check(TokenType.RBRACE) and not self.is_at_end():
@@ -1515,7 +1475,7 @@ class Parser:
     def memory_palace_def(self) -> MemoryPalaceDef:
         token = self.advance()  # memory
         self.consume(TokenType.PALACE, "Expected 'palace' after memory")
-        name = self.consume(TokenType.STRING, "Expected palace name string").value if self.check(TokenType.STRING) else self.consume(TokenType.IDENTIFIER, "Expected palace name").value
+        name = self.consume(TokenType.STRING, "Expected palace name string").value if self.check(TokenType.STRING) else self.name_of(self.consume_name("Expected palace name"))
         self.consume(TokenType.LBRACE, "Expected '{' after memory palace name")
         self.skip_newlines()
         rooms = []
@@ -1724,7 +1684,7 @@ class Parser:
     def intention_cascade_def(self) -> IntentionCascadeDef:
         token = self.advance()  # intention
         self.consume(TokenType.CASCADE, "Expected 'cascade' after intention")
-        name = self.consume(TokenType.STRING, "Expected cascade name string").value if self.check(TokenType.STRING) else self.consume(TokenType.IDENTIFIER, "Expected cascade name").value
+        name = self.consume(TokenType.STRING, "Expected cascade name string").value if self.check(TokenType.STRING) else self.name_of(self.consume_name("Expected cascade name"))
         self.consume(TokenType.LBRACE, "Expected '{' after intention cascade")
         self.skip_newlines()
         levels = {}
@@ -2153,7 +2113,7 @@ class Parser:
         token = self.advance()  # resonate
         self.consume(TokenType.WITH, "Expected 'with' after resonate")
         if self.match(TokenType.AT):
-            user_name = self.consume(TokenType.IDENTIFIER, "Expected entity identifier after '@'").value
+            user_name = self.name_of(self.consume_name("Expected entity identifier after '@'"))
             target = Literal(value=f"@{user_name}", line=token.line, column=token.column)
         else:
             target = self.expression()
@@ -2263,7 +2223,7 @@ class Parser:
                 self.consume(TokenType.LBRACKET, "Expected '[' after values:")
                 if not self.check(TokenType.RBRACKET):
                     while True:
-                        key = self.consume(TokenType.IDENTIFIER, "Expected value name in soulprint values").value
+                        key = self.name_of(self.consume_name("Expected value name in soulprint values"))
                         self.consume(TokenType.COLON, "Expected ':' after soulprint value name")
                         val = self.consume(TokenType.NUMBER, "Expected numeric soulprint value").value
                         values[key] = float(val)
@@ -2395,7 +2355,7 @@ class Parser:
                 delay_unit = self.advance().value
         policy_ref = None
         if self.match(TokenType.UNDER):
-            policy_ref = self.consume(TokenType.IDENTIFIER, "Expected policy name after 'under'").value
+            policy_ref = self.name_of(self.consume_name("Expected policy name after 'under'"))
         safety_guard = None
         if self.match(TokenType.WITH):
             safety_guard = self.expression()
@@ -2404,7 +2364,7 @@ class Parser:
 
     def branch_def(self) -> BranchDef:
         token = self.advance()  # branch
-        name = self.consume(TokenType.IDENTIFIER, "Expected branch name").value
+        name = self.name_of(self.consume_name("Expected branch name"))
         body = self.block()
         return BranchDef(name=name, body=body, line=token.line, column=token.column)
 
@@ -2442,14 +2402,23 @@ class Parser:
         token = self.advance()  # {
         pairs = []
         if not self.check(TokenType.RBRACE):
-            key = self.consume(TokenType.STRING, "Expected string key").value
+            key = self.dict_key()
             self.consume(TokenType.COLON, "Expected ':' after key")
             value = self.expression()
             pairs.append((key, value))
             while self.match(TokenType.COMMA):
-                key = self.consume(TokenType.STRING, "Expected string key").value
+                key = self.dict_key()
                 self.consume(TokenType.COLON, "Expected ':' after key")
                 value = self.expression()
                 pairs.append((key, value))
         self.consume(TokenType.RBRACE, "Expected '}' after dict elements")
         return DictExpr(pairs=pairs, line=token.line, column=token.column)
+
+    def dict_key(self) -> str:
+        """Dict literal key: a string, or a bare name (soft keywords allowed,
+        D7) that is sugar for its quoted form — ``{target: 1}`` == ``{"target": 1}``"""
+        if self.check(TokenType.STRING):
+            return self.advance().value
+        if self.is_name_type(self.peek().type):
+            return self.name_of(self.advance())
+        self.error("Expected string or name key")

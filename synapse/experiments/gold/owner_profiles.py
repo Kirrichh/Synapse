@@ -158,10 +158,10 @@ def build_owner_registry(*, project_identity, court, shown, omitted, task, activ
     ``shown`` is the bounded cut of ``court['judged']`` the frame itself reads;
     the registry keeps the same cut so the roster and the frame can never
     disagree about history. ``active_paths`` guarantees every active element
-    finds its owner even before its first judged episode.
+    finds its owner even before its first judged episode. A fresh project
+    pins no decision yet (``decision`` is None): the roster then honestly
+    carries zero history instead of refusing to exist.
     """
-    if court.get("decision") is None:
-        raise ValueError("an owner registry needs a pinned court decision")
     paths = set(active_paths)
     for item in shown:
         paths |= set(item["observation"]["requirement"]["paths"])

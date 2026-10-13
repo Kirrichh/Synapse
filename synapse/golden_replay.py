@@ -117,7 +117,12 @@ def _history_chain_valid(history: list[dict[str, Any]], expected_hash: str) -> b
 
 
 def extract_llm_cache(history: Iterable[dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """Build a deterministic mock table from recorded llm_call events."""
+    """Build a deterministic mock table from recorded llm_call events.
+
+    Every key retains its recorded occurrences in execution order: repeated
+    requests with different answers stay distinguishable, so mock replay can
+    serve them one by one instead of collapsing them onto the last answer.
+    """
     cache: Dict[str, Dict[str, Any]] = {}
     for event in history:
         if event.get("type") != "llm_call":
@@ -125,34 +130,58 @@ def extract_llm_cache(history: Iterable[dict[str, Any]]) -> Dict[str, Dict[str, 
         prompt_hash = str(event.get("prompt_hash", ""))
         model = str(event.get("model") or "mock")
         key = f"{prompt_hash}:{model}"
-        cache[key] = {
-            "prompt_hash": prompt_hash,
-            "model": model,
-            "result": event.get("result"),
-        }
+        cache.setdefault(key, {"prompt_hash": prompt_hash, "model": model, "results": []})
+        cache[key]["results"].append(event.get("result"))
     return cache
+
+
+def _merge_llm_cache(llm_cache: Dict[str, Dict[str, Any]],
+                     thought_history: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Merge retained thought requests into the recorded llm_call table.
+
+    Both sources keep per-key occurrence lists, so the merge concatenates
+    them; artifacts recorded before the occurrence lists carry a plain
+    ``result`` and are wrapped as a single occurrence.
+    """
+    merged = {key: {"prompt_hash": value.get("prompt_hash"), "model": value.get("model"),
+                    "results": list(value.get("results") or [value.get("result")])}
+              for key, value in llm_cache.items()}
+    for key, value in thought_history.items():
+        entry = merged.setdefault(key, {"prompt_hash": value.get("prompt_hash"),
+                                        "model": value.get("model"), "results": []})
+        entry["results"].extend(value.get("results") or [value.get("result")])
+    return merged
 
 
 class CacheOnlyLLMBackend(LLMBackend):
     """LLM backend used by replay --mock.
 
     It has no provider fallback. Missing cache entries fail deterministically.
+    Each key holds the ordered list of recorded occurrences: a repeated
+    request is served the next recorded answer, and a request occurring more
+    often than recorded fails instead of silently reusing the last answer.
     """
 
     def __init__(self, cache: Dict[str, Dict[str, Any]]):
         super().__init__(default_model="mock", provider="mock", mode="mock")
-        self.cache = dict(cache)
+        self.cache = {key: list(value.get("results") or [value.get("result")])
+                      for key, value in dict(cache).items()}
         self.provider_call_count = 0
 
     def _cached_entry(self, prompt: str, model: Optional[str]) -> tuple[str, Any]:
         prompt_hash = hashlib.sha256(str(prompt).encode("utf-8")).hexdigest()
         model_name = str(model or self.default_model)
         key = f"{prompt_hash}:{model_name}"
-        if key not in self.cache:
+        occurrences = self.cache.get(key)
+        if occurrences is None:
             raise DeterministicReplayError(
                 f"LLM_REQUEST unresolved in mock replay: missing cache entry {key}"
             )
-        return model_name, self.cache[key].get("result")
+        if not occurrences:
+            raise DeterministicReplayError(
+                f"LLM_REQUEST occurred more often than recorded: cache entry {key} is exhausted"
+            )
+        return model_name, occurrences.pop(0)
 
     def complete_result(
         self,
@@ -300,8 +329,14 @@ def _run_interpreter_from_source(source: str, *, llm_backend: Optional[LLMBacken
 
 def record_source(source: str, output_dir: Path | str, *, source_path: str = "<memory>",
                   layer: str = "strict", virtual_clock_start: str = DEFAULT_VIRTUAL_CLOCK_START,
-                  clock_step: int = DEFAULT_CLOCK_STEP) -> Dict[str, Any]:
-    """Record a golden artifact directory for a source program."""
+                  clock_step: int = DEFAULT_CLOCK_STEP,
+                  llm_backend: Optional[LLMBackend] = None) -> Dict[str, Any]:
+    """Record a golden artifact directory for a source program.
+
+    ``llm_backend`` optionally pins the recording backend (acceptance tests
+    script it to make repeated identical prompts answer differently); the
+    default keeps the runtime's own backend.
+    """
     output = Path(output_dir)
     if output.exists():
         # Avoid stale files corrupting the artifact; keep implementation simple.
@@ -316,7 +351,7 @@ def record_source(source: str, output_dir: Path | str, *, source_path: str = "<m
     initial.source_code = source
     initial_snapshot = initial.snapshot()
 
-    interp = _run_interpreter_from_source(source)
+    interp = _run_interpreter_from_source(source, llm_backend=llm_backend)
     final_snapshot = interp.snapshot()
     history = list(interp.execution_history)
     final_history_hash = interp.compute_history_hash()
@@ -324,12 +359,11 @@ def record_source(source: str, output_dir: Path | str, *, source_path: str = "<m
     # Thought-chain LLM requests are retained by the backend: multi-step
     # reasoning emits no per-step llm_call history events, so the artifact
     # cache is merged with the retained thought requests to keep the
-    # record -> replay --mock roundtrip complete.
+    # record -> replay --mock roundtrip complete. Both sides keep per-key
+    # occurrence lists, so repeated identical prompts replay in order.
     thought_history = getattr(interp.llm_backend, "thought_history", None)
     if thought_history:
-        merged_cache = dict(llm_cache)
-        merged_cache.update(thought_history)
-        llm_cache = merged_cache
+        llm_cache = _merge_llm_cache(llm_cache, thought_history)
 
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -520,9 +554,7 @@ def record_integrate_artifact(
     # artifact must replay multi-step reasoning from its cache as well.
     thought_history = getattr(interp.llm_backend, "thought_history", None)
     if thought_history:
-        merged_cache = dict(llm_cache)
-        merged_cache.update(thought_history)
-        llm_cache = merged_cache
+        llm_cache = _merge_llm_cache(llm_cache, thought_history)
 
     manifest: Dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,

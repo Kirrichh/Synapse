@@ -159,11 +159,14 @@ class LLMBackend:
             prompt = f"Step {i+1}: {step}\nContext: {context}"
             result = self.complete(prompt, max_tokens=self.thought_max_tokens)
             prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-            self.thought_history[f"{prompt_hash}:{self.default_model}"] = {
-                "prompt_hash": prompt_hash,
-                "model": self.default_model,
-                "result": result,
-            }
+            # Identical prompts can recur within one recording with different
+            # answers. Every occurrence is retained in order, keyed by prompt
+            # and model, so a golden artifact replays them one by one instead
+            # of collapsing them onto the last answer.
+            key = f"{prompt_hash}:{self.default_model}"
+            entry = self.thought_history.setdefault(key,
+                {"prompt_hash": prompt_hash, "model": self.default_model, "results": []})
+            entry.setdefault("results", []).append(result)
             results.append(result)
             context += f"\n- {result}"
 

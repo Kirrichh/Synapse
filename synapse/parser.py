@@ -1984,10 +1984,11 @@ class Parser:
     def policy_ref_value(self) -> Optional[str]:
         if self.match(TokenType.STRING):
             return str(self.previous().value)
-        if self.match(TokenType.IDENTIFIER):
-            return str(self.previous().value)
-        if self.match(TokenType.POLICY):
-            return "policy"
+        # A policy declared under a soft keyword name (`policy target {}`) is
+        # referenced by the same name (`under target`); the reference position
+        # accepts every name the declaration position accepts.
+        if self.is_name_type(self.peek().type):
+            return self.name_of(self.advance())
         self.error("Expected policy name")
 
     def collective_dream_stmt(self) -> CollectiveDreamStmt:

@@ -1,0 +1,28 @@
+memory palace "StorageIncidentInvestigation" {
+ rooms { semantic }
+ consolidate during dream
+ backend sqlite
+ bind palace
+}
+let requirement = {"kind": "attempt_report", "tool": null, "admissible_err": [], "allowed_alternatives": []}
+let segment = {"segment": "investigate", "intent": "Reconstruct placement, health and capacity across valid and known time", "element_part": "storage-engineering", "requirement": requirement}
+let plan = task_plan({"task_id": "storage-incident-audit", "goal": "Separate historical observations from later corrections without changing the cluster", "segments": [segment]})
+let questions = INVESTIGATION_QUESTIONS
+let answers = []
+context "investigate" {
+ for question in questions {
+  let found = search_knowledge(question.query, question.options)
+  let node12 = null
+  let node5 = null
+  let placement_count = 0
+  for fact in found.candidates {
+   if fact.entity.namespace == "storage" {
+    if fact.entity.id == 12 and fact.attribute == "alive" { node12 = fact.value }
+    if fact.entity.id == 5 and fact.attribute == "free" { node5 = fact.value }
+   }
+   if fact.attribute == "placement" { placement_count = placement_count + 1 }
+  }
+  answers = answers + [{"view": question.view, "topic": question.topic, "candidates": len(found.candidates), "node12_alive": node12, "node5_free": node5, "placements": placement_count}]
+ }
+}
+print({"investigation_queries": len(answers), "views": answers})

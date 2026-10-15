@@ -1,0 +1,35 @@
+{
+  "diagnostics": {
+    "scope_violations": [],
+    "tracked_files": [
+      "src/calc.py"
+    ],
+    "untracked_files": []
+  },
+  "diff_text": "diff --git a/src/calc.py b/src/calc.py\nindex 0cc6d4a..e2f7003 100644\n--- a/src/calc.py\n+++ b/src/calc.py\n@@ -1,2 +1,2 @@\n-def add(a, b):\n-    return a - b  # bug\n+def add(a, b):  \n+    return a + b \n",
+  "touched_files": [
+    "src/calc.py"
+  ],
+  "usage": {
+    "diagnostics": {
+      "reported_fields": [
+        "completion_tokens",
+        "completion_tokens_details",
+        "prompt_tokens",
+        "prompt_tokens_details",
+        "total_tokens"
+      ]
+    },
+    "input_tokens": 1003,
+    "output_tokens": 70,
+    "thinking_included": false,
+    "thinking_tokens": null,
+    "token_status": "TOOL_REPORTED",
+    "total_tokens": 1073
+  },
+  "worker_report": {
+    "failure_reason": null,
+    "summary": null
+  },
+  "worker_status": "PROPOSED_PATCH"
+}

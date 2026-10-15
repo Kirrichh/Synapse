@@ -56,13 +56,38 @@ APPROVED_GOLD_OUTBOUND = frozenset(
 # Keeping these separate prevents a composition-only dependency from becoming
 # available to every Gold owner and adapter.
 MODULE_SPECIFIC_GOLD_OUTBOUND = {
-    "stage10_composition.py": frozenset({"synapse.worker.mini_adapter", "synapse.worker.provider_transport"}),
+    # Task/information translation uses neutral immutable worker data contracts.
+    # No worker input contract imports Gold or obtains execution authority.
+    "stage10/context.py": frozenset({"synapse.worker.input_contract"}),
+    "stage10/context_codec.py": frozenset({"synapse.worker.input_contract"}),
+    "stage10/worker_transport.py": frozenset({"synapse.worker.input_contract"}),
+    # NR-03/NR-05: independent local-selection observation reuses the bounded
+    # pure worker interpreter. Neither module imports an agent/SDK, performs IO,
+    # authorizes effects or claims task correctness; C1 remains its sole owner.
+    "stage10/influence.py": frozenset({"synapse.worker.input_contract", "synapse.worker.local_edits"}),
+    # Synapse forms every local-edit candidate with the same pure interpreter:
+    # its admitted exact-memory route and an agent's raw proposal. No IO or effect.
+    "stage10/local_candidate.py": frozenset({"synapse.worker.input_contract", "synapse.worker.local_edits"}),
+    # Source recipes reuse Controlled Change command verification; no second command runner.
+    "source_verification.py": frozenset({"synapse.change.verification"}),
+    # The single admitted execution port is the only agent dispatch path.
+    "stage10_composition.py": frozenset({"synapse.agents.execution", "synapse.agents.outputs",
+        "synapse.agents.registry", "synapse.agents.worker_bridge"}),
+    # Project governed task constraints into deterministic execution eligibility.
+    # This adapter does not construct task context or issue Gold authorization.
+    "agent_selection.py": frozenset({"synapse.agents.codec", "synapse.agents.configuration",
+        "synapse.agents.contracts", "synapse.agents.outputs", "synapse.agents.registry"}),
+    # Run decisions read the capabilities Synapse's local-edit protocol declares,
+    # never an agent's profile name.
+    "runner_composition.py": frozenset({"synapse.worker.local_edits", "synapse.agents.registry"}),
     # Stage 15: exact neutral physical capture boundary; no SDK/worker imports Gold.
-    "run_inputs.py": frozenset({"synapse.worker.provider_transport"}),
+    "run_inputs.py": frozenset({"synapse.agents.configuration"}),
     "stage15/capture_store.py": frozenset({"synapse.llm.capture"}),
-    "stage15/worker_accounting.py": frozenset({"synapse.worker.provider_transport"}),
+    # Gold's capture owner is the model-accounting port of the agent runtime's broker.
+    "stage15/worker_accounting.py": frozenset({"synapse.agents.model_broker", "synapse.agents.configuration"}),
     # NR-05 explicitly requires read-only use of the unchanged Stage 3A writer contract.
-    "stage15/reconciliation.py": frozenset({"synapse.llm.capture", "synapse.worker.provider_transport",
+    # Agents report a neutral response inventory; Synapse reads no agent record.
+    "stage15/reconciliation.py": frozenset({"synapse.llm.capture",
         "synapse.worker", "synapse.experiments.swebench.telemetry"}),
     # NR-05: Stage 11 calls the unchanged single-attempt C1 adapter rather than
     # absorbing it. The edge is one module's, not the package's: the stop policy,
@@ -1371,7 +1396,9 @@ APPROVED_C1_ADAPTER_SURFACE = frozenset(
         "GOLD_INFRA_ERROR",
         "GOLD_NO_CANDIDATE",
         "GOLD_ORACLE_UNRESOLVED",
-        "ExperimentArm",
+        # The arm a C1 attempt record names, owned by the writer that alone
+        # produces GOLD records (it replaced the whole ExperimentArm enum here).
+        "C1_ATTEMPT_ARM",
         "GoldAttemptWriter",
         "GoldOracle",
         "GoldRunnerCommandPolicy",
@@ -1391,6 +1418,9 @@ APPROVED_C1_ADAPTER_SURFACE = frozenset(
         "seal_gold_evidence",
         "parse_swebench_report",
         "compute_oracle_config_fingerprint",
+        # The same read-only C1 boundary verifies retained environment bytes;
+        # it neither starts an oracle nor grants a new executor capability.
+        "compute_oracle_environment_fingerprint",
         "build_oracle_config_fingerprint_payload",
     }
 )

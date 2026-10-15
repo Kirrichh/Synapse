@@ -56,6 +56,7 @@ class Component(str, Enum):
 
 class UsageProfile(str, Enum):
     OPENAI_CHAT = "openai-chat-usage/v1"
+    GEMINI_OPENAI_CHAT = "gemini-openai-chat-usage/v1"
     GEMINI_NATIVE = "gemini-generate-content-usage/v1"
     ANTHROPIC_MESSAGES = "anthropic-messages-usage/v1"
 
@@ -220,13 +221,23 @@ def normalize_usage(profile: UsageProfile, raw: object) -> TokenUsage:
     if type(raw) is not dict:
         return TokenUsage(profile, *(None for _ in range(8)), UsageConsistency.SOURCE_INCONSISTENT, ("malformed_usage",))
     try:
-        if profile is UsageProfile.OPENAI_CHAT:
+        if profile in {UsageProfile.OPENAI_CHAT, UsageProfile.GEMINI_OPENAI_CHAT}:
             inputs, outputs, total = (_count(raw.get(k)) for k in ("prompt_tokens", "completion_tokens", "total_tokens"))
-            detail_in = raw.get("prompt_tokens_details") or {}
-            detail_out = raw.get("completion_tokens_details") or {}
+            detail_in = raw.get("prompt_tokens_details", {})
+            detail_out = raw.get("completion_tokens_details", {})
+            # Null is an absent optional object. Present values of another
+            # type must not acquire absence/zero semantics through truthiness.
+            if detail_in is None:
+                detail_in = {}
+            if detail_out is None:
+                detail_out = {}
             if type(detail_in) is not dict or type(detail_out) is not dict:
                 raise TelemetryViolation("invalid token details")
-            read, write, thinking = _count(detail_in.get("cached_tokens", 0)), None, _count(detail_out.get("reasoning_tokens", 0))
+            # Gemini's compatibility surface supplies OpenAI-shaped totals.
+            # Missing subset details do not prove zero cache or zero thinking.
+            absent_subset = None if profile is UsageProfile.GEMINI_OPENAI_CHAT else 0
+            read, write = _count(detail_in.get("cached_tokens", absent_subset)), None
+            thinking = _count(detail_out.get("reasoning_tokens", absent_subset))
         elif profile is UsageProfile.GEMINI_NATIVE:
             inputs = _count(raw.get("promptTokenCount"))
             visible = _count(raw.get("candidatesTokenCount"))
@@ -236,7 +247,7 @@ def normalize_usage(profile: UsageProfile, raw: object) -> TokenUsage:
             read, write = _count(raw.get("cachedContentTokenCount", 0)), None
             # Tool-use prompt tokens have their own scope. Preserve the mismatch
             # until that provider profile has a proved allocation contract.
-            if raw.get("toolUsePromptTokenCount", 0) not in (None, 0):
+            if _count(raw.get("toolUsePromptTokenCount", 0)) not in (None, 0):
                 raise TelemetryViolation("unallocated tool-use prompt tokens")
         else:
             uncached = _count(raw.get("input_tokens"))
@@ -363,9 +374,26 @@ def call_record_from_capture(*, run_id: str, invocation: dict, started: dict,
         except (ValueError, UnicodeError):
             raw_response = "malformed_provider_response"
     profile = UsageProfile(invocation["usage_profile"])
-    usage_key = "usageMetadata" if profile is UsageProfile.GEMINI_NATIVE else "usage"
-    usage = normalize_usage(profile, raw_response.get(usage_key) if type(raw_response) is dict else raw_response)
     terminal = terminal or {}
+    status_code = terminal.get("status_code")
+    usage_response = raw_response
+    # Gemini can wrap an HTTP error object in a singleton JSON array. That
+    # envelope is not a usage measurement. Only unwrap a matching error;
+    # successful responses and malformed/ambiguous arrays remain invalid.
+    if (profile is UsageProfile.GEMINI_OPENAI_CHAT
+            and type(status_code) is int and 400 <= status_code <= 599
+            and type(raw_response) is list and len(raw_response) == 1
+            and type(raw_response[0]) is dict):
+        error = raw_response[0].get("error")
+        if (type(error) is dict and type(error.get("code")) is int
+                and error["code"] == status_code
+                and type(error.get("status")) is str and error["status"]
+                and type(error.get("message")) is str):
+            usage_response = raw_response[0]
+    # Preserve any supplied usage for strict validation. An absent field
+    # remains unknown, including on a failed request followed by a retry.
+    usage_key = "usageMetadata" if profile is UsageProfile.GEMINI_NATIVE else "usage"
+    usage = normalize_usage(profile, usage_response.get(usage_key) if type(usage_response) is dict else usage_response)
     response_ref = terminal.get("response_ref")
     if response_ref is None:
         status = "UNKNOWN"

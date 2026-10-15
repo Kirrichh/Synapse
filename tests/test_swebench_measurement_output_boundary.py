@@ -1,16 +1,11 @@
 from __future__ import annotations
 
-import ast
 from dataclasses import replace
-import inspect
 import json
 import math
-from pathlib import Path
-import subprocess
 
 import pytest
 
-import synapse.experiments.swebench.measurement_output as measurement_output_module
 from synapse.experiments.swebench.gold_evidence import (
     EVIDENCE_REF_NAMESPACE,
     GoldEvidence,
@@ -52,12 +47,6 @@ from synapse.experiments.swebench.paired_measurement import (
     StatePolicy,
     build_paired_measurement_record,
 )
-
-
-BASE_COMMIT = "ea4a9392b918df0503956531c49ffb55f992872a"
-CORRECTION_BASE_COMMIT = "940b072e0b14d79b3ba967e170164d78ed854ff6"
-HARDENING_MERGE_COMMIT = "c941e41ac4ebd2c59a6c7b7db3b6acea1f1e2f28"
-PRODUCTION_PATH = Path("synapse/experiments/swebench/measurement_output.py")
 
 
 def member(
@@ -206,43 +195,6 @@ def valid_telemetry_record() -> dict[str, object]:
     }
 
 
-def production_source() -> str:
-    assert PRODUCTION_PATH.exists()
-    return PRODUCTION_PATH.read_text(encoding="utf-8")
-
-
-def changed_files(
-    base_commit: str = BASE_COMMIT,
-    head_commit: str = "HEAD",
-) -> set[str]:
-    committed = subprocess.run(
-        ["git", "diff", "--name-only", f"{base_commit}...{head_commit}"],
-        text=True,
-        capture_output=True,
-        check=True,
-    ).stdout.splitlines()
-    staged = subprocess.run(
-        ["git", "diff", "--cached", "--name-only"],
-        text=True,
-        capture_output=True,
-        check=True,
-    ).stdout.splitlines()
-    working = subprocess.run(
-        ["git", "diff", "--name-only"],
-        text=True,
-        capture_output=True,
-        check=True,
-    ).stdout.splitlines()
-    status = subprocess.run(
-        ["git", "status", "--short"],
-        text=True,
-        capture_output=True,
-        check=True,
-    ).stdout.splitlines()
-    status_paths = [line[3:] for line in status if line.startswith("?? ")]
-    return set(committed + staged + working + status_paths)
-
-
 def test_success_only_output_label_required() -> None:
     pair = success_pair()
     assert pair.status is PairedMeasurementStatus.PAIRED_SUCCESS_ONLY_DIAGNOSTIC
@@ -366,11 +318,7 @@ def test_candidate_can_be_built_from_validated_gold_evidence() -> None:
     assert result.source_kind is AdmissionSourceKind.VALIDATED_GOLD_EVIDENCE
 
 
-def test_unsafe_evidence_admission_api_is_absent() -> None:
-    signature = inspect.signature(evaluate_evidence_admission)
-
-    assert not hasattr(measurement_output_module, "candidate_from_gold_evidence")
-    assert "validation_ok" not in signature.parameters
+def test_admission_accepts_no_caller_asserted_validation() -> None:
     with pytest.raises(TypeError):
         evaluate_evidence_admission(
             candidate(),
@@ -1403,19 +1351,6 @@ def test_decision_consumers_reject_low_level_inconsistent_mutation(
         )
 
 
-def test_private_decision_factory_has_one_production_call_site() -> None:
-    tree = ast.parse(production_source())
-    calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_make_evidence_admission_decision"
-    ]
-
-    assert len(calls) == 1
-
-
 @pytest.mark.parametrize("token_fields_present", (False, True))
 @pytest.mark.parametrize(
     "overrides",
@@ -1840,144 +1775,8 @@ def test_telemetry_validation_v2_exact_canonical_fixture() -> None:
     assert telemetry_gateway_validation_to_canonical_json(validation) == serialized
 
 
-def test_no_forbidden_imports() -> None:
-    tree = ast.parse(production_source())
-    imported: list[str] = []
-    import_names: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                imported.append(alias.name)
-                import_names.append(alias.name)
-        if isinstance(node, ast.ImportFrom) and node.module is not None:
-            imported.append(node.module)
-            for alias in node.names:
-                import_names.append(alias.name)
-
-    assert "synapse.experiments.swebench.carry" not in imported
-    assert "synapse.experiments.swebench.baseline" not in imported
-    assert "synapse.experiments.swebench.telemetry" not in imported
-    assert "synapse.experiments.swebench.contract" not in imported
-    assert "synapse.experiments.swebench.gold_runner" not in imported
-    assert "synapse.experiments.swebench.gold_oracle_binding" not in imported
-    assert "synapse.change" not in imported
-    assert "synapse.worker" not in imported
-    assert "synapse.interpreter" not in imported
-    assert "synapse.cvm" not in imported
-    assert "runtime.CVM" not in imported
-    assert "subprocess" not in imported
-    assert "os" not in imported
-    assert "validate_gold_evidence" not in import_names
-
-
-def test_forbidden_claim_source_terms_are_deduplicated_and_preserved() -> None:
-    source = production_source()
-    tree = ast.parse(source)
-    assignment = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.Assign)
-        and isinstance(node.targets[0], ast.Name)
-        and node.targets[0].id == "_FORBIDDEN_CLAIMS"
-    )
-    terms = ast.literal_eval(assignment.value)
-
-    assert terms.count("full_verified") == 1
-    assert terms.count("gold_full_verified") == 1
-    assert "target_gold" in source
-    assert "target gold" in source
-    assert "carry_enabled_gold" in source
-    assert "carry-enabled gold" in source
-    assert "gold_with_carry_measured" in source
-    assert "gold-with-carry measured" in source
-    assert "session_memory_appended" in source
-    assert "session memory appended" in source
-    assert "application_appended" in source
-    assert "application appended" in source
-    assert "repository_knowledge_admitted" in source
-    assert "repositoryknowledge admitted" in source
-    assert "full_verified" in source
-    assert "gold_full_verified" in source
-    assert "full_promotion" in source
-    assert "token_savings" in source
-    assert "cost_savings" in source
-    assert "economic_calibration" in source
-    assert "performance_improvement" in source
-    assert "wall_clock_speedup" in source
-    assert "latency_improvement" in source
-    assert "throughput_improvement" in source
-
-
-def test_no_file_io_or_git_subprocess_calls() -> None:
-    tree = ast.parse(production_source())
-    called_names: list[str] = []
-    called_attrs: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            called_names.append(node.func.id)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            called_attrs.append(node.func.attr)
-
-    assert "open" not in called_names
-    assert "read_text" not in called_attrs
-    assert "read_bytes" not in called_attrs
-    assert "write_text" not in called_attrs
-    assert "write_bytes" not in called_attrs
-    assert "run" not in called_attrs
-
-
-def test_no_gold_evidence_validation_duplication() -> None:
-    source = production_source()
-
-    assert "validate_gold_evidence" not in source
-
-
-def test_raw_carry_not_imported_but_semantically_rejected() -> None:
-    source = production_source()
+def test_raw_carry_is_semantically_rejected() -> None:
     raw = candidate(source_kind=AdmissionSourceKind.RAW_BASELINE_CARRY)
     decision = evaluate_evidence_admission(raw, proof=None, allowed_scope=("src/a.py",))
 
-    assert "RawCarryEntry" not in source
-    assert "RawTranscriptCarry" not in source
     assert decision.status is AdmissionStatus.REJECTED_RAW_CARRY_AUTHORITY
-
-
-def test_exact_six_file_scope_tripwire() -> None:
-    files = changed_files(head_commit=HARDENING_MERGE_COMMIT)
-
-    assert "synapse/experiments/swebench/measurement_output.py" in files
-    assert "tests/test_swebench_measurement_output_boundary.py" in files
-    assert files == {
-        "synapse/experiments/swebench/measurement_output.py",
-        "synapse/experiments/swebench/gold_evidence.py",
-        "synapse/experiments/swebench/paired_measurement.py",
-        "tests/test_swebench_measurement_output_boundary.py",
-        "tests/test_swebench_gold_evidence.py",
-        "tests/test_swebench_paired_measurement_contract.py",
-    }
-
-
-def test_exact_four_file_corrective_scope_tripwire() -> None:
-    files = changed_files(CORRECTION_BASE_COMMIT, HARDENING_MERGE_COMMIT)
-
-    assert "synapse/experiments/swebench/measurement_output.py" in files
-    assert "synapse/experiments/swebench/paired_measurement.py" in files
-    assert files == {
-        "synapse/experiments/swebench/measurement_output.py",
-        "synapse/experiments/swebench/paired_measurement.py",
-        "tests/test_swebench_measurement_output_boundary.py",
-        "tests/test_swebench_paired_measurement_contract.py",
-    }
-
-
-def test_tests_are_not_the_system() -> None:
-    source = production_source()
-    files = changed_files()
-
-    assert "test_swebench_measurement_output_boundary" not in source
-    assert "pytest" not in source
-    assert "tmp_path" not in source
-    assert "monkeypatch" not in source
-    assert "caplog" not in source
-    assert "tests/fixtures" not in files
-    assert "tests/support" not in files

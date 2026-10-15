@@ -22,7 +22,7 @@ from synapse.experiments.gold.persistence import store_transaction
 from synapse.llm.http_transport import provider_http_exchange
 store = CaptureStore(Path(sys.argv[1]), run_id="crash-run", manifest_ref=reference({"run": "crash-run"}, "test.run/v1"))
 capture = store.open_invocation(invocation_id="invocation", attempt_id="attempt", invocation_payload={"physical": "acceptance"},
-    provider="openai", model="gpt-4o-mini", profile=UsageProfile.OPENAI_CHAT, worker_profile="mini-2.4.6-litellm-openai-chat/v1")
+    provider="openai", model="gpt-4o-mini", profile=UsageProfile.OPENAI_CHAT, worker_profile="synapse.agent.model-broker/v1")
 logical = capture.register_logical_call(request_identity="request")
 def crash_before_receipt(**kwargs):
     with store.fence.exclusive() as guard:
@@ -62,7 +62,7 @@ def test_required_capture_failure_precedes_the_provider_effect(tmp_path, monkeyp
     import pytest
     store = CaptureStore(tmp_path / "capture", run_id="refused-run", manifest_ref=reference({"run": "refused"}, "test.run/v1"))
     capture = store.open_invocation(invocation_id="invocation", attempt_id="attempt", invocation_payload={"test": "boundary"},
-        provider="openai", model="gpt-4o-mini", profile=UsageProfile.OPENAI_CHAT, worker_profile="mini-2.4.6-litellm-openai-chat/v1")
+        provider="openai", model="gpt-4o-mini", profile=UsageProfile.OPENAI_CHAT, worker_profile="synapse.agent.model-broker/v1")
     logical = capture.register_logical_call(request_identity="request")
     def fail_storage(*args, **kwargs):
         raise OSError("required capture storage is unavailable")

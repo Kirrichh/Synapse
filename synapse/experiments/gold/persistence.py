@@ -470,6 +470,16 @@ def ensure_directory(path: Path) -> None:
     require_directory(path)
 
 
+def ensure_durable_directory(path: Path, *, ticket: StoreMutationTicket) -> None:
+    """Persist a directory's namespace before publishing files that depend on it."""
+    require_open_mutation_ticket(ticket)
+    require_directory(path.parent)
+    ensure_directory(path)
+    # A prior publication may have linked entries before its directory sync failed.
+    _sync_directory(path)
+    _sync_directory(path.parent)
+
+
 def require_regular_file(path: Path) -> os.stat_result:
     if not isinstance(path, Path):
         raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "file path must be an exact Path")
@@ -837,6 +847,11 @@ def create_coordinator_metadata_once(
     if type(maximum_bytes) is not int or maximum_bytes < 0 or len(value) > maximum_bytes:
         raise _fail(PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED, "metadata exceeds byte limit")
     destination = directory / final_name
+    # An established identity is a physical read, not another staged write.
+    # This does not authorize replacement: two callers that both observe an
+    # absent name still race through the same no-overwrite publication below.
+    if destination.exists() or destination.is_symlink():
+        return read_regular_bytes(destination, maximum_bytes=maximum_bytes)
     operation_id = secrets.token_hex(16)
     staged = _write_staged_bytes_unfenced(
         directory,
@@ -1212,9 +1227,13 @@ def _read_exact_or_eof(stream: BinaryIO, size: int) -> bytes:
     return b"".join(chunks)
 
 
-def iter_journal_frames(path: Path, *, prefix_length: int | None = None) -> Iterator[JournalFrame]:
+def iter_journal_frames(path: Path, *, prefix_length: int | None = None,
+                        maximum_frames: int | None = MAX_JOURNAL_FRAMES_V1) -> Iterator[JournalFrame]:
+    """Validate frames incrementally; a coordinator may retain an unbounded history."""
     if prefix_length is not None and (type(prefix_length) is not int or prefix_length < len(JOURNAL_FRAME_MAGIC_V1)):
         raise _fail(PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED, "invalid journal prefix boundary")
+    if maximum_frames is not None and (type(maximum_frames) is not int or maximum_frames < 0):
+        raise _fail(PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED, "invalid journal frame budget")
     try:
         stream = os.fdopen(_open_no_follow_read(path), "rb", buffering=0)
     except PersistenceViolation:
@@ -1247,7 +1266,7 @@ def iter_journal_frames(path: Path, *, prefix_length: int | None = None) -> Iter
             if hashlib.sha256(payload).digest() != checksum:
                 raise _fail(PersistenceFailureCode.JOURNAL_CHECKSUM_MISMATCH, "journal frame checksum mismatch")
             count += 1
-            if count > MAX_JOURNAL_FRAMES_V1:
+            if maximum_frames is not None and count > maximum_frames:
                 raise _fail(PersistenceFailureCode.JOURNAL_FRAME_LIMIT_EXCEEDED, "journal frame count exceeds limit")
             yield JournalFrame(payload, start, stream.tell())
 
@@ -1386,7 +1405,7 @@ def stage_snapshot_transaction(
         raise _fail(PersistenceFailureCode.DESTINATION_EXISTS, "transaction id is already staged")
     if type(members) is not dict or not members:
         raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "transaction members must be a non-empty exact dict")
-    ensure_directory(directory)
+    ensure_durable_directory(directory, ticket=ticket)
     staged: list[SnapshotTransactionMember] = []
     for member_name in sorted(members):
         value = members[member_name]
@@ -1461,20 +1480,8 @@ def commit_snapshot_transaction(
     publish_immutable(file, directory / _COMMIT_MARKER_NAME, ticket=ticket)
 
 
-def read_committed_snapshot_transaction(
-    root: Path,
-    *,
-    transaction_id: str,
-) -> tuple[dict[str, object], dict[str, bytes]]:
-    """Return the commit marker and verified member bytes, or fail closed.
-
-    A staged transaction without a terminal marker does not exist: recovery
-    reports an absent commit marker instead of assembling a snapshot from the
-    partial records it can still see on disk.
-    """
-
-    directory = _transaction_directory(root, transaction_id)
-    require_directory(directory)
+def _read_snapshot_marker(directory: Path, *, transaction_id: str, maximum_members: int | None):
+    """Validate a committed publication descriptor before loading its members."""
     marker_path = directory / _COMMIT_MARKER_NAME
     if not marker_path.exists():
         raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "commit marker is absent")
@@ -1496,12 +1503,39 @@ def read_committed_snapshot_transaction(
     raw_members = marker["members"]
     if type(raw_members) is not list or not raw_members:
         raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "commit marker members are invalid")
+    if maximum_members is not None and len(raw_members) > maximum_members:
+        raise _fail(PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED, "snapshot exceeds its member count budget")
     members = tuple(SnapshotTransactionMember.from_payload(item) for item in raw_members)
     names = [member.member_name for member in members]
     if names != sorted(names) or len(set(names)) != len(names):
         raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "commit marker members are unordered")
+    return marker, members
+
+
+def read_committed_snapshot_transaction(
+    root: Path,
+    *,
+    transaction_id: str,
+    maximum_member_bytes: int | None = None,
+    maximum_members: int | None = None,
+) -> tuple[dict[str, object], dict[str, bytes]]:
+    """Return the committed marker with verified members within the reader's bounds.
+
+    A staged transaction without a terminal marker does not exist: recovery
+    refuses instead of assembling a snapshot from partially staged records.
+    """
+    if maximum_member_bytes is not None and (type(maximum_member_bytes) is not int or maximum_member_bytes < 0):
+        raise _fail(PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED, "invalid snapshot member byte budget")
+    if maximum_members is not None and (type(maximum_members) is not int or maximum_members < 0):
+        raise _fail(PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED, "invalid snapshot member count budget")
+    directory = _transaction_directory(root, transaction_id)
+    require_directory(directory)
+    marker, members = _read_snapshot_marker(directory, transaction_id=transaction_id,
+                                             maximum_members=maximum_members)
     observed: dict[str, bytes] = {}
     for member in members:
+        if maximum_member_bytes is not None and member.byte_length > maximum_member_bytes:
+            raise _fail(PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED, "snapshot member exceeds byte budget")
         value = read_regular_bytes(directory / member.member_name, maximum_bytes=member.byte_length)
         if len(value) != member.byte_length or hashlib.sha256(value).hexdigest() != member.sha256:
             raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "committed member bytes do not match")
@@ -1581,6 +1615,18 @@ def verify_transaction_members(root: Path, members: object) -> None:
             raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "committed participant bytes differ")
 
 
+def remove_immutable(path: Path, *, ticket: StoreMutationTicket) -> None:
+    """Durably unlink a file whose owning store has authorized collection."""
+    require_open_mutation_ticket(ticket)
+    require_directory(path.parent)
+    require_regular_file(path)
+    try:
+        path.unlink()
+    except OSError as exc:
+        raise _fail(PersistenceFailureCode.FILESYSTEM_IO_FAILED, "collected file removal failed") from exc
+    _sync_directory(path.parent)
+
+
 def restore_uncommitted_file(path: Path, *, previous_bytes: bytes | None, ticket: StoreMutationTicket) -> None:
     """Restore one write-ahead metadata image under an exclusive recovery ticket."""
     require_open_mutation_ticket(ticket)
@@ -1605,6 +1651,7 @@ __all__ = [
     "DurabilityProfile",
     "encode_journal_frame",
     "ensure_directory",
+    "ensure_durable_directory",
     "ExclusiveStoreLock",
     "initialize_journal",
     "IntegrityManifestDescriptor",
@@ -1618,6 +1665,7 @@ __all__ = [
     "MAX_JOURNAL_PAYLOAD_BYTES_V1",
     "MAX_METADATA_BYTES_V1",
     "move_immutable",
+    "remove_immutable",
     "new_operation_id",
     "PersistenceFailureCode",
     "PersistenceViolation",

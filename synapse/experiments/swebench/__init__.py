@@ -14,7 +14,6 @@ from .contract import (
     UsageConsistencyStatus,
     UsageSource,
 )
-from .mini_config import MiniInvocationConfig
 from .oracle import CommandOracleRunner, OracleRunner
 
 __all__ = [
@@ -25,7 +24,6 @@ __all__ = [
     "BaselineTask",
     "CommandOracleRunner",
     "ExperimentArm",
-    "MiniInvocationConfig",
     "OracleResult",
     "OracleRunner",
     "PrimaryMetricStatus",

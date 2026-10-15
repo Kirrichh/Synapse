@@ -35,7 +35,7 @@ execution path для базовых примитивов языка.
   FRACTURE_SELF  DREAM  LLM_EVAL  HOST_EVAL
   HALT
   --- LLM/PROMPT CVM BRIDGE (alpha3e Track A) ---
-  PROMPT_BUILD  a=template_hash b=variable_names : build PromptEnvelope onto stack
+  PROMPT_BUILD  a=template_hash b=variable_names c=template : build PromptEnvelope onto stack
   LLM_REQUEST   a=schema_hash b=engine_params c=cache_policy : pause VM for LLM call
   LLM_RESUME    : resume VM after LLM result injected by Bridge (no operands needed)
 """
@@ -201,6 +201,9 @@ class CognitiveCompiler:
     """
 
     def __init__(self) -> None:
+        self._reset()
+
+    def _reset(self) -> None:
         self.instructions: List[Instruction] = []
         self.constants: List[Any] = []
         # Стек фреймов функций: список (name, params, start_ip_placeholder)
@@ -210,6 +213,7 @@ class CognitiveCompiler:
         self._guard_recovery_depth: int = 0
         self._guard_handler_stack: List[Dict[str, Any]] = []
         self._guard_cleanup_table: List[GuardCleanupRange] = []
+        self._loop_sequence = 0
 
     # --- helpers ---
 
@@ -236,6 +240,9 @@ class CognitiveCompiler:
     # --- public entry ---
 
     def compile(self, node: Node) -> BytecodeProgram:
+        # Each compilation owns fresh buffers; reusing the compiler must not
+        # append to, or mutate, a program previously returned to its caller.
+        self._reset()
         self._visit(node)
         self._emit("HALT")
         return BytecodeProgram(
@@ -507,24 +514,17 @@ class CognitiveCompiler:
     # --- compound statement compilers ---
 
     def _compile_send_stmt(self, node: "SendStmt") -> None:
-        """Compile send receiver.method(args...) as D5 fire-and-forget MSG_SEND.
+        """Preserve source argument boundaries with the explicit MSG_SEND_ARGS opcode.
 
-        Variant A syntax is preserved: SendStmt.method becomes msg_type.  The
-        payload is the single argument when present, a list for multiple args,
-        or None for zero args.  No payload destructuring or LLM/prompt behavior
-        is introduced here.
+        Legacy MSG_SEND still consumes one opaque payload. Its lost arity cannot
+        be recovered from a list or None; new code always supplies an args list.
         """
         self._visit(node.receiver)
         args = list(getattr(node, "args", []) or [])
-        if len(args) == 0:
-            self._emit("LOAD_NONE")
-        elif len(args) == 1:
-            self._visit(args[0])
-        else:
-            for arg in args:
-                self._visit(arg)
-            self._emit("BUILD_LIST", len(args))
-        self._emit("MSG_SEND", getattr(node, "method", ""))
+        for arg in args:
+            self._visit(arg)
+        self._emit("BUILD_LIST", len(args))
+        self._emit("MSG_SEND_ARGS", getattr(node, "method", ""))
 
     def _compile_receive_block(self, node: "ReceiveBlock") -> None:
         """Compile receive { sender => payload { ... } } without grammar changes.
@@ -665,7 +665,9 @@ class CognitiveCompiler:
         var_names = list(node.args.keys())
         for var_node in node.args.values():
             self._visit(var_node)
-        self._emit("PROMPT_BUILD", template_hash, var_names)
+        # The template travels with the request; its placeholders take their
+        # values when the envelope is built (synapse.prompt_template).
+        self._emit("PROMPT_BUILD", template_hash, var_names, node.template)
 
     def _compile_llm_call(self, node: "LLMCall") -> None:
         """Compile LLMCall → PROMPT_BUILD + LLM_REQUEST.
@@ -680,9 +682,10 @@ class CognitiveCompiler:
         else:
             # bare string expression or variable — evaluate it
             self._visit(node.prompt)
-            # wrap in a minimal prompt envelope with no named variables
+            # wrap it in an inline prompt envelope that carries the text itself (review: a request that dropped
+            # its text left every prompt the same request)
             inline_hash = "sha256:inline-" + hashlib.sha256(b"inline").hexdigest()[:16]
-            self._emit("PROMPT_BUILD", inline_hash, [])
+            self._emit("PROMPT_BUILD", inline_hash, ["__text__"])
 
         # schema_hash is empty until LLMCall AST grows a schema annotation
         schema_hash = ""
@@ -756,7 +759,12 @@ class CognitiveCompiler:
           JUMP loop
         end:
         """
-        uid = str(id(node))
+        # Stable lexical traversal order, independent of process addresses.
+        # '$' cannot occur in a parsed source identifier, so generated locals
+        # cannot shadow user variables such as __iter_0 or __idx_0. Existing
+        # serialized programs retain their original names and program hashes.
+        uid = f"${self._loop_sequence}"
+        self._loop_sequence += 1
         iter_name = f"__iter_{uid}"
         idx_name = f"__idx_{uid}"
 
@@ -893,8 +901,9 @@ class CognitiveCompiler:
                 self._visit(arg)
             self._emit("CALL_METHOD", node.callee.member, len(node.args))
         else:
-            # Сложный каллибль — fallback
-            self._visit(node.callee)
+            # Вычисляемый каллибль: аргументы, затем функция на вершине стека —
+            # контракт CALL и порядок вычисления интерпретатора.
             for arg in node.args:
                 self._visit(arg)
+            self._visit(node.callee)
             self._emit("CALL", len(node.args))

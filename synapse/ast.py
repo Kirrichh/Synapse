@@ -39,6 +39,31 @@ class FlowDef(Node):
     name: str = ""
     body: List[Node] = field(default_factory=list)
 
+@dataclass
+class ParallelNode(Node):
+    """One node of a ``parallel`` graph: its value, and the event that makes it read again."""
+    name: str = ""
+    event: Optional[str] = None
+    expr: Optional[Node] = None
+
+
+@dataclass
+class ParallelSignal(Node):
+    """An event a ``parallel`` graph raises whenever its condition over node values holds."""
+    event: str = ""
+    condition: Optional[Node] = None
+
+
+@dataclass
+class ParallelStmt(Node):
+    """``parallel NAME [limit N] { node … signal … commit NODE [=> effect] }`` (refinement §16)."""
+    name: str = ""
+    limit: Optional[int] = None
+    nodes: List[ParallelNode] = field(default_factory=list)
+    signals: List[ParallelSignal] = field(default_factory=list)
+    commit: str = ""
+    effect: Optional[Node] = None
+
 # --- Операторы ---
 @dataclass
 class LetStmt(Node):
@@ -357,6 +382,10 @@ class PlanWeaveStmt(Node):
 class InlineHabitCond(Node):
     pad_conditions: List[tuple] = field(default_factory=list)  # [(key, op, Node)]
     context: Optional[str] = None
+    # Typed trigger (memory spec part 1 §6): subscribed event types and ordered
+    # ``(field, op, literal)`` conditions on the event's typed fields.
+    event_types: List[str] = field(default_factory=list)
+    field_conditions: List[tuple] = field(default_factory=list)
 
 @dataclass
 class FatigueDef(Node):

@@ -1,0 +1,188 @@
+{
+  "schema_version": "synapse.acceptance.memory-boundary-followup/v1",
+  "branch": "codex/stage4-stage16-acceptance",
+  "head": "d258ef5517484c84b14ce5cd9f1333795237a1b5",
+  "preexisting_product_diff_sha256": "0b25b4fa7791ce9333d48bb67cfc068484d22868e664e7b864e2ad11c4cf9825",
+  "product_file_sha256": {
+    "synapse/experiments/gold/admission_journal.py": "bb48ab7cbc1c0fa1cf3381980c1559004fb15ee1596fa1ce4fc55573b845e98d",
+    "synapse/experiments/gold/memory_blocks.py": "13ab6707e489183eeb1720ddba56f891d41ff3c724d645f115dcc7400512a430",
+    "synapse/experiments/gold/memory_event_encoding.py": "ab9d758ca58a9484e9386af74b4fc4fa6f628ed9dd1bc7d08be607ff5c213f99",
+    "synapse/experiments/gold/memory_event_storage.py": "94d267e9a4e5d510a94525446aee9ae787931782fb9394d5f7c51ad69e763fab",
+    "synapse/experiments/gold/owner_profiles.py": "67fad70dbf917ba052d72be3addddbad96226409224f317350676ab869d0c1e5",
+    "synapse/experiments/gold/persistence.py": "76cdba7592cdc6e5ce27269e2cc20a0fa294844719d44ed76705fd8d22d91db5",
+    "synapse/experiments/gold/project_agents.py": "61db750017a2fbe9dff403c7240e7989e3ac38fe8cfa5e333c24e16d639a569a",
+    "synapse/experiments/gold/project_frame_storage.py": "c7d4db383b47304943c9f46e3ea59a183d7ef82c35380033373f0800b706c477",
+    "synapse/experiments/gold/project_memory_store.py": "a251c733e03c7ddb28b919b0f3d6172459255ee4905db6f5db35647bda4aa9b9",
+    "synapse/experiments/gold/runner/delivery.py": "c190a46e7962e23dca50711304bdcf55e19922c131a3ff54b47db53a3da2085b",
+    "synapse/experiments/gold/source_delivery.py": "75a68b81daeb85c7af51487dcd8bf19eec19631f7f321d13de73c9c00ac67df5",
+    "synapse/experiments/gold/source_snapshot.py": "d0cf568c809189d15530dca8450cd242b33a48d00db09a9b78684381c5abcf8d",
+    "synapse/experiments/gold/stage10/context.py": "db945a6d1d30026ae8571cda6b25f10a1b092163a1c1f88df60bc7bd79965017",
+    "synapse/experiments/gold/stage10/context_codec.py": "158673655154f6375e36bdbd8cda6b3c3d58af4ceb59c1a38176ec2b0510fa80",
+    "synapse/experiments/gold/stage14/execution.py": "b0f1401571fa1c44a6a98ef383e1396985a5ed1cc0eac0b5ae187caf0d83b5ff"
+  },
+  "scope": "Item 2 corrected; items 1, 3, 4, 5, 6 physically investigated without changing those semantics.",
+  "narrative": "/workspace/synapse-memory-followup-20261014/REPORT.txt",
+  "evidence": {
+    "custody": {
+      "path": "/workspace/synapse-memory-followup-20261014/custody/summary.json",
+      "sha256": "93446ae2159f609e4338766b8b28c285d81441f4a1c1ff01f7e8c2c8bfe7c50a"
+    },
+    "delivery": {
+      "path": "/workspace/synapse-memory-followup-20261014/source-delivery-fix/results.json",
+      "sha256": "9046a1f19acb2d8b4a2d7b0f744134d93f88ad208dd635967f17a104dcb62c35"
+    },
+    "independent_delivery_review": {
+      "path": "/workspace/synapse-memory-followup-20261014/worker-source-independent-review.json",
+      "sha256": "e82829d69953cacd24010473bb2603cff2cc0582b8674d4dad2a5b923b13a66b"
+    },
+    "delivery_compatibility": {
+      "path": "/workspace/synapse-source-delivery-compat-20261014/results.json",
+      "sha256": "ba8a13b83c7bc2821aa5b6c6206fece0365fe69a25c21ca8b904e9068e870cf3"
+    },
+    "cost": {
+      "path": "/workspace/synapse-memory-followup-20261014/cost/summary.json",
+      "sha256": "740788d31ce9631c9563b61550cdb4c9882ae1993f7d411648f8067883ea7aac"
+    },
+    "frame_limit": {
+      "path": "/workspace/synapse-memory-followup-20261014/limits/frame-results.json",
+      "sha256": "0733e89d27ef0400a9eed817fb795615151ae676d8f70154a0821d528237936a"
+    },
+    "registry_limit": {
+      "path": "/workspace/synapse-memory-followup-20261014/limits/registry-results.json",
+      "sha256": "559b62a0d72be7374f368b4b4dd708b576ffe8a28c0e133ef7fbe43d77d13f2a"
+    },
+    "coordinator_limit": {
+      "path": "/workspace/synapse-memory-followup-20261014/limits/journal-results.json",
+      "sha256": "cd414772e8794dca2fc0264aca5531cdc7eeb80ae092d5cdce340cc48ac0ff9b"
+    },
+    "replay_ablation": {
+      "path": "/workspace/synapse-memory-followup-20261014/replay/ablation-results.json",
+      "sha256": "ff22a2ab6c78f719447494f8dd5e7ad65bf939b40a1e0bc2c98242fbbe427645"
+    },
+    "retention_gate": {
+      "path": "/workspace/synapse-memory-followup-20261014/replay/retention-gate-results.json",
+      "sha256": "a294fe8513e5f887bef73fb7bba8552504c1ebf88a66e6e2d6e1507c203fb8b9"
+    },
+    "runtime_matrix": {
+      "path": "/workspace/synapse-memory-followup-20261014/replay/runtime-matrix-results.json",
+      "sha256": "0213fb7b2890999fa6ce6e77cf82dd14df973a85e27222bcff79203f2a4c368f"
+    },
+    "historical_replay_gate": {
+      "path": "/workspace/synapse-memory-followup-20261014/replay/historical-gate-result.json",
+      "sha256": "f1356689926be7434691ee78d5d4ffcf2b2b609daf9bc91d3c6f9c08def3a0ac"
+    },
+    "preexisting_acceptance_expectation": {
+      "path": "/workspace/synapse-memory-followup-20261014/episode-profile-baseline/result.json",
+      "sha256": "7a38fd8a4dc87990d99d9e69986f32a5861b655e473bf2d2848cc45a4f739862"
+    }
+  },
+  "findings": {
+    "unreferenced_live_replay_data": "Became the basis of 9 cases after session continuation; zero current references is not a GC criterion.",
+    "completed_plan_only": {
+      "paired_removal_bytes": 1312144,
+      "sessions": 4,
+      "scope": "Only these completed plan-only scenarios; no general GC proof."
+    },
+    "scoped_delivery": "Only matched paths; operation-wide recipe/result omitted for partial selections; complete owner proof retained.",
+    "legacy_delivery": "Completed history opens exactly; changed-runtime continuation refused by existing Gold runtime pin; original-runtime control succeeds.",
+    "state_materialization": {
+      "versions": 18480,
+      "ordinary_runs_with_consolidation_s": 421.1165894380065,
+      "replay_s": 86.04633771899535,
+      "peak_process_mib": 1295.140625,
+      "effects": 1,
+      "replay_external_calls": 0
+    },
+    "expanded_frame": {
+      "elements": 121,
+      "accepted_conditions": 172,
+      "refused_conditions": 173,
+      "accepted_expanded_bytes": 16547484,
+      "stored_completed_event_bytes": 644906,
+      "legacy_worker_envelope_bytes": 128668
+    },
+    "registry_rollup": {
+      "synthetic_component_only": true,
+      "historical_directories": 65536,
+      "active_owners": 1,
+      "bytes": 8849258,
+      "result": "REFUSED"
+    },
+    "unused_input_and_comment": {
+      "exact_case_traces": 32,
+      "exact_full_history_events": 310,
+      "saved_bytes": 32944,
+      "whole_state_percent_saved": 1.46,
+      "general_dependency_slicing_proven": false
+    },
+    "trimmed_tool_answers": {
+      "saved_answer_bytes": 525040,
+      "exact_case_traces": 0,
+      "total_case_traces": 32,
+      "mandatory_gate_kept_raw_cases": 16
+    },
+    "runtime_compatibility": {
+      "four_specific_implementations_exact": "32/32 each on the same legacy corpus",
+      "historical_counterexample": "1b58d18: 0/16 in first session despite same executor label; retention rejects divergence"
+    }
+  },
+  "limits": [
+    "Single ordinary timing runs on a shared machine; OS cache was not cleared.",
+    "Profiled timings and inclusive call costs are not ordinary execution times or additive shares.",
+    "Synthetic registry history is not a corpus of court-admitted Gold tasks.",
+    "A prepared million-frame journal is not a million real sessions.",
+    "Maximum total memory capacity, arbitrary-runtime replay, and minimality of every stored field remain unproved.",
+    "No commit or push was performed."
+  ],
+  "verification": {
+    "distinct_pytest_passed": 678,
+    "groups": {
+      "architecture_dependencies": 593,
+      "admission_context_frame_episodes": 59,
+      "source_delivery_consumer_snapshot_study": 10,
+      "codec_version_lineage_recovery": 16
+    },
+    "new_acceptance_cases": 12,
+    "full_repository_suite_run": false,
+    "initial_integration_result": {
+      "passed": 58,
+      "failed": 1,
+      "cause": "Existing test expected owner lifecycle v3 although unchanged d258ef5 physically emits v4."
+    },
+    "corrected_heavy_case": {
+      "passed": 1,
+      "seconds": 268.26,
+      "semantic_assertions_preserved": true
+    },
+    "source_regression_old_code": {
+      "failed": 2,
+      "passed": 1
+    },
+    "corpus_gate": "passed",
+    "ownership_dag": "passed",
+    "workflow_yaml": "parsed",
+    "diff_check": "passed",
+    "prior_storage_product_patch_preserved_exactly": true
+  },
+  "publication_preparation": {
+    "date": "2026-10-15",
+    "changes": {
+      "synapse/experiments/gold/source_delivery.py": {
+        "validated_sha256": "75a68b81daeb85c7af51487dcd8bf19eec19631f7f321d13de73c9c00ac67df5",
+        "publication_sha256": "ee5570ce9ed88b8f1190e7004f8d6b2e2b5ece066b1560e9118641d427a4061e",
+        "change": "Remove two blank lines at EOF; Python AST including positions unchanged."
+      },
+      "acceptance/stage4/stage16/_source_delivery_case.py": {
+        "validated_sha256": "038c7028232c63f1ba606947edd2e9e46d0254a39747450244d9e9c90071644a",
+        "publication_sha256": "5774f1c9111b6872efcdccc2a54c1e94cfee06582dea8db2dac0c4426dba2282",
+        "change": "Remove two blank lines at EOF; Python AST including positions unchanged."
+      }
+    },
+    "evidence_policy": "Earlier hashes and verification results above describe the physically tested snapshot and are retained unchanged. Only trailing empty lines changed before publication.",
+    "checks": [
+      "Python AST including positions unchanged",
+      "Corpus gate passed",
+      "Ownership DAG passed"
+    ]
+  }
+}

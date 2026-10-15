@@ -28,6 +28,13 @@ The operator grant covers matching plans in this frozen run for its declared
 lifetime. Each attempt still receives an independent decision and fresh
 point-of-use checks. A later attempt with the same task, scope and policy does
 not require another prompt just because its attempt or snapshot ID changed.
+For governing task v2, approval request v2 explicitly covers selection from
+`CURRENT_ADMITTED_SNAPSHOT`. Its knowledge references can change between
+attempts without changing the task grant. Operation structure, non-knowledge
+inputs, scope, capabilities, verification, policy and executor stay bound to
+the request. Selection must still pass independent compatibility/admission;
+the grant alone cannot authorize an unselected subject. Historical task v1
+and approval request v1 keep their exact required knowledge references.
 New conditions, expiration or revocation require a new grant.
 
 ```sh
@@ -63,55 +70,91 @@ the independent C1/C2 oracle execute in their existing phases. Other replay
 profiles and arbitrary task operations are not implicitly enabled by this
 schema. This is a concrete Stage 11 experiment, not the full Stage 4 product.
 
-The governing task is separate from the planner's proposal. Intent v3 includes
-`task_contract_ref`, `target_bindings` and `behavior_refs`. Rehashing a proposal
-cannot authorize another task, target, behavior, scope, effect or acceptance
-condition. Required behavior references must be admitted for the current
-attempt and present in the worker's selected knowledge.
+The governing task is separate from the planner's proposal. New
+`GoverningTaskContract` objects default to `synapse.stage4.gold.governing-task/v2`:
+task, revision, scope, capabilities, targets, effects and acceptance remain
+fixed; the wire contract has no `behavior_refs` field. Supplying that field,
+even as null or an empty list, is refused. Historical task v1 remains readable
+with its exact required behavior references; old records are not rewritten.
+
+Intent v3 still includes `task_contract_ref`, `target_bindings` and nonempty
+`behavior_refs`. For task v2, those behavior references come from this attempt's
+admitted handle and the plan names the same selection. Plan authority checks
+the selected subjects against independently minted consumption evidence and
+the durable compatibility records. Rehashing a proposal cannot replace that
+selection or the governing conditions. Stage 12 checks the recorded plan
+against the retained knowledge basis bound to the dispatch's attempt identity
+and digest. Historical inspection grants no fresh execution authority.
+
+For automatic project targets, use `experiment-input/v3` with
+`governing-task/v3`. This task wire form omits both `target_bindings` and
+`behavior_refs`; the experiment omits `target_records`. Adding these fields,
+including empty lists, is rejected. Goal, revision, scope, capabilities, effects
+and acceptance remain operator requirements. The current execution profile
+still requires one exact existing Python modification path.
+
+The freeze derives targets using the existing committed-source binding
+resolver and stores its explanation in `frozen-input/v5.target_resolution`.
+The selected module covers the expected effect path; exact symbol mentions in
+the task select the corresponding declarations. The record retains all found
+elements, selection reasons, task reference and commit identity. Worktree edits
+are not resolution evidence. Unsupported syntax, ambiguous declarations,
+missing commits and resource-limit exhaustion fail explicitly. There is no
+whole-repository call graph or inferred natural-language effect analysis.
+
+Retrieval, intent, plan authority and historical verification consume these
+same physically revalidated targets. `approval-request/v3` binds the resolved
+targets while retaining the independently admitted knowledge-selection rule;
+selection alone does not request another grant. The original task bytes and
+reference are never rewritten. V1/v2 tasks retain their former input contracts.
+
+Automatic tasks require `knowledge-input/v3` to select source experience from
+the connected project. Model-call accounting belongs to the selected agent
+profile's declared model access and is frozen with the run. Resume
+reopens the same target resolution and original memory snapshot.
+
+For V3 tasks, `operation-plan-semantics/v2` hashes actual operation kinds,
+inputs, arguments, dependencies, scope and verification conditions. It omits
+proposal/actor/snapshot provenance and normalizes operation names by execution
+position. Stage 12 compares the recorded semantic digest with the actual
+accepted plan. Historical task versions keep their prior semantic algorithm.
+This change does not itself introduce a procedural planner: the current
+canonical execution profile still proposes one controlled edit.
 
 ## Operator input fields
 
-Every field below is required; unknown fields and duplicate JSON keys fail
-validation. Use the existing records' `to_dict()` methods for their wire form.
+The table describes the explicit-target declaration. An automatic task omits
+`target_records` and uses the task form described above. Other fields remain
+required; unknown fields and duplicate JSON keys fail validation.
 
 | Field | Content / owner |
 | --- | --- |
-| `schema_version` | `synapse.stage4.gold.experiment-input/v1` |
+| `schema_version` | `experiment-input/v4` for every new run; v1–v3 are historical records only |
 | `run_id` | New experiment identity |
 | `config` | `GoldRunConfig.to_dict()`: task, instance, base, worker provider/model, oracle class identity, environment, budgets, attempts, replicate identity and fallback policy |
 | `versions` | `GoldRunVersions.to_dict()`: specification and policy version/digest, implementation revision |
-| `task_contract` | `GoverningTaskContract.to_dict()`: task ID/statement, revision, scope, capabilities, target/behavior refs, typed effects and acceptance criteria |
+| `task_contract` | `GoverningTaskContract.to_dict()`: task ID/statement, revision, scope, capabilities, target refs, typed effects and acceptance criteria; v2 does not preselect knowledge, historical v1 requires `behavior_refs` |
 | `target_records` | Complete Python, document or requirement binding records corresponding exactly to `target_bindings` |
 | `command_policy` | Full JSON projection of existing C1 `GoldRunnerCommandPolicy`, including both reproduction expectations and all command groups |
-| `worker` | Provider, executable argv, model, timeout, step limit and decimal-string cost limit |
+| `agents` | `synapse.agent.configuration/v1`: operator-admitted agent profiles and preferences (see `UNIVERSAL_AGENT_EXECUTION.md`) |
 | `oracle` | Full JSON projection of existing `SWEbenchHarnessOracleConfig`, including its default fields |
 | `actor_namespace` | Explicit bounded namespace for the independent runtime actors |
 | `observation` | Builder identity, base revision, task ref, policy/environment/tool inputs, source/verification refs and oracle observation |
 | `knowledge_path` | Seed export JSON; relative paths resolve against the operator input directory |
 | `replay_profile` | `pure-cvm/v1` |
 
-The worker declaration has this form:
-
-```json
-{
-  "provider": "mini",
-  "command": ["mini"],
-  "model": "YOUR_MODEL",
-  "timeout_seconds": 600,
-  "max_steps": 20,
-  "cost_limit": "1.00"
-}
-```
-
-Mini is the currently installed external worker integration. Its concrete
-configuration is decoded at the Stage 10 composition boundary; run decisions
-consume the shared worker contract. Mini supplies neither approval authority,
-replay semantics, compatibility verdicts nor the final success decision.
+The coding agent is an ordinary admitted profile selected through the agent
+registry; `config.provider` and `config.model` must name its profile's provider
+and model. The agent supplies neither approval authority, replay semantics,
+compatibility verdicts nor the final success decision. Runs frozen with the
+retired built-in `worker` declaration remain readable and are refused for
+execution.
 
 `command_policy_reference(policy)` returns the exact condition reference used
 by the task's effects and acceptance. `binding_to_ref(binding)` gives each
-target reference. Behavior references use the existing library subject
-identity, not an arbitrary label or a raw behavior transcript.
+target reference. Attempt knowledge references use the existing library subject
+identity, not an arbitrary label or a raw behavior transcript. New tasks do not
+need those subject references before retrieval.
 
 ## Seed evidence
 
@@ -137,14 +180,56 @@ another task to obtain a favorable compatibility decision is refused.
 Each `conflicts` entry contains `left` and `right` behavior content keys,
 `kind` (a conflict kind or null), and nonempty `evidence_refs`. A candidate
 pair with no evidenced assessment is unavailable. A single-candidate corpus
-needs no pair assessment. Ranking follows the task's explicit behavior order;
-no learned ranking or retrieval-quality improvement is claimed.
+needs no pair assessment. The production ranking component is
+`synapse.stage4.task-binding-relevance/v1`. It scores exact target coverage as
+`floor(1_000_000 * matched_target_count / task_target_count)` using the candidate's
+canonical binding references. Its input reference binds the query, descriptor,
+governing task and both sets of bindings. Reordering the seed or substituting
+another score input cannot change that evidence into a higher score.
+
+This is a structural ranking feature, not semantic retrieval. The declared
+seed remains the candidate universe and the current selection limit remains
+its full size. A zero score alone does not exclude a candidate. Target bindings
+are still supplied in the task. Automatic project exploration, search across
+all experience, empty-result handling and applicable procedure alternatives
+remain subsequent work. The separate worker-input extension described below
+addresses delivery and provider provenance, not local interpretation or use.
+
+## Separate agent inputs and recovery
+
+New contexts use `worker-context-record/v3` and `worker-delivery-body/v5` (under
+the existing `synapse.stage4.gold.stage10` namespace). `worker-delivery-envelope`,
+`worker-invocation`, `delivery-receipt` and the runner's `completed-worker-delivery`
+advance to v2. The context retains the full Gold evidence; the agent receives
+two neutral data projections in its STDIO request frame:
+
+| Input | Delivery | Binding |
+|---|---|---|
+| `synapse.worker.task-input/v1` | `task.text` of `synapse.agent.stdio-request/v1` | Task SHA-256 and byte length |
+| `synapse.worker.local-information-input/v1` | `local_information.text` of the same frame | Independent information SHA-256 and byte length |
+
+Envelope, invocation, receipt and completed-delivery recovery must agree on
+both inputs and versions. Empty information is an explicit `items: []` envelope;
+missing information, null and unknown profiles are refused. Legacy record
+readers retain their original bytes and do not grant a v2 delivery receipt.
+
+With local information, an agent that reaches a model must declare a Synapse
+local-edit protocol. Synapse's model broker then forwards only the protocol's
+public conversation: its instructions, the public task, the provider's own
+replies and the protocol's fixed correction message. Any other message is
+refused before a provider call. The agent returns only its model's raw proposal;
+Synapse interprets it over the delivered bytes.
+
+Acceptance lives in `acceptance/` and `tests/`, never in the product. The
+independent file `test_public_conversation_acceptance.py` is a separate Stage 15
+CI job. See `GOLD_KNOWLEDGE_INGESTION.md` for current observed results and
+remaining scope.
 
 ## Freeze and evidence
 
 Run manifest v3 binds `inputs_sha256` to the complete frozen input envelope.
 The envelope includes the seed export, project declaration digest, trusted
-history heads, runtime source digest, resolved worker executable digest,
+history heads, runtime source digest, admitted agent configuration and its runtime identity,
 locations and freeze time. The operator's declared version labels remain
 distinct from those observed byte digests. Resume verifies the actual runtime
 and project identity. Gates check that the project declaration still matches;
@@ -170,3 +255,14 @@ in the compatibility observation. Their worker
 and SWE-bench subprocesses are deterministic external stand-ins; the Gold
 runtime, C1 controlled changes and C2 report parsing are real. These tests do
 not measure model quality, live SWE-bench performance or token savings.
+
+### Project source experience input
+
+A declaration's `knowledge_path` may name `synapse.stage4.gold.knowledge-input/v3`
+with exactly `schema_version`, `files`, and `experience_limit` (integer 1–64).
+`files` retains the existing reference/path format for task evidence. This mode
+freezes actual project source publications and task-scoped retained experience
+in `frozen-input/v4`; it does not accept an operator-selected candidate list.
+Admission and governed replay still apply to executable behaviors. Raw retained
+experience is a separate local-information input and grants no behavior authority.
+See `GOLD_KNOWLEDGE_INGESTION.md` for retention, physical reopening, and limits.

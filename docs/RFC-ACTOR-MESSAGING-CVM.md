@@ -196,6 +196,46 @@ fields.
 
 `MSG_SEND` sends a message through VMBridge to actor_runtime.
 
+The original instruction consumes one opaque payload. It cannot distinguish
+source calls with several arguments from one list argument, or no arguments
+from one null argument. This legacy interpretation remains available for saved
+bytecode; its sends now pass the canonical actor admission path.
+
+New source compilations use `MSG_SEND_ARGS` (`a=method`, `b=c=None`), consuming
+an explicit argument list above the receiver on the stack. Its host envelope
+has `schema_version: "synapse.cvm.send-args/v1"` and an explicit integer `argc`.
+Zero arguments require an empty payload list; one argument treats the payload
+as opaque; several arguments require a payload list of exactly `argc` values.
+This preserves arity without duplicating the payload in serialized VM outboxes.
+Older VMs cannot
+execute this instruction as a legacy send. The frozen Gold E1 artifact/replay
+profile deliberately refuses this extension; its capability digest is unchanged.
+
+`synapse.cvm_messaging` owns execution of the send instruction contract.
+`synapse.runtime.vm_messaging` owns admission of its envelope to the actor owner.
+The latter validates addressing and caller identity, then delegates delivery
+to `runtime.actor.send_message`. It has no mailbox mutation fallback. No separate
+policy store or delivery implementation is introduced.
+
+For new sends, `VMState.sender_id` captures the invoking DSL actor (`global`
+outside an actor environment), independently of capability `agent_id`. An active
+VM actor scope takes precedence. The caller binding survives checkpoints and
+cannot change on resume; direct new-format `SYS_MSG_SEND` host calls obey it too.
+Legacy states omit the new field and retain their original serialization.
+
+Actor admission rejects prohibited contexts before delivery and evaluates the
+applicable policies against the exact argument list. An unavailable actor owner
+raises `ACTOR_RUNTIME_MISSING`; a policy denial raises `POLICY_VIOLATION` with
+its reason. The VM commits its outbound view only after host success. A failure
+of an observer after delivery is not a transactional rollback guarantee.
+
+The VM-visible result contains `sender`, `receiver`, `method`, `args`, `payload`.
+Invocation flags such as `replayed` or `forwarded` are excluded from this value
+so that replay reproduces the same stack and transition hash. Actor history
+retains the routing evidence. Recorded sends do not deliver again; a send past
+the recorded boundary receives a current verdict. Records produced by the old
+bypass are not silently rewritten into governed records.
+
 Responsibilities:
 
 1. Resolve receiver id / actor reference through the bridge.

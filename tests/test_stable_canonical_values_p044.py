@@ -34,9 +34,31 @@ def test_unicode_values_and_keys_are_nfc_normalized():
     assert canonical_json_bytes({decomposed: decomposed}) == canonical_json_bytes({composed: composed})
 
 
-def test_lone_surrogate_rejected():
-    with pytest.raises(CanonicalSerializationError):
-        canonical_json_bytes("bad\ud800")
+@pytest.mark.parametrize("text", ["bad\ud800", "\udbff", "\udc00", "\udfff", "\ud800\udc00", "a" * 4096 + "\udfff"])
+def test_lone_surrogate_rejected(text):
+    for value in (text, {text: "value"}, {"key": text}):
+        with pytest.raises(CanonicalSerializationError, match="lone surrogate"):
+            canonical_json_bytes(value)
+
+
+def test_surrogate_boundaries_preserve_valid_unicode_bytes():
+    text = "\ud7ff\ue000\U00010000\U0010ffff память 😀"
+    assert canonical_json_bytes(text) == ('"' + text + '"').encode("utf-8")
+
+
+def test_string_subclass_validation_preserves_iteration_and_utf8_checks():
+    class SurrogateIteration(str):
+        def __iter__(self):
+            return iter("\ud800")
+
+    class ScalarIteration(str):
+        def __iter__(self):
+            return iter("valid")
+
+    with pytest.raises(CanonicalSerializationError, match="lone surrogate"):
+        canonical_json_bytes(SurrogateIteration("valid"))
+    with pytest.raises(CanonicalSerializationError, match="invalid Unicode scalar"):
+        canonical_json_bytes(ScalarIteration("\ud800"))
 
 
 def test_safe_integer_boundary_and_large_int_wrapper():

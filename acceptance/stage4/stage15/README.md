@@ -9,24 +9,26 @@ This file is the maintained acceptance contract, not the disposable research pla
 
 The entry point remains `python -m synapse` → `synapse.cli.main`. Existing
 `project run`, `approve --resume-run` and `project resume` drive the same run
-controller. The experiment input v2 selects one accounted worker profile:
-`mini-2.4.6-litellm-openai-chat/v1`. Install it with
-`python -m pip install -e '.[gold-worker]'`.
-
-The input's `worker.accounting` contains `profile`, the provider `endpoint`
-(`/v1/chat/completions`) and `credential_env`. `worker.command` names the exact
-installed Mini console executable. Credentials stay in the parent process and
-are not frozen in experiment records. Mini 2.4.6, LiteLLM 1.100.0 and OpenAI
-2.54.0 are pinned; their installed source identities are frozen for each run.
-The parent-owned loopback transport exists only inside that worker invocation.
-It is neither another entry point nor an independently operated service.
+controller. The experiment input v4 selects one admitted agent profile from its
+`agents` configuration. A profile whose runtime policy is `LOCAL_BROKER`
+declares `native.model_access` with profile `synapse.agent.model-broker/v1`,
+its `model`, the provider `endpoint` (`/v1/chat/completions`), `credential_env`
+and `timeout_seconds`. Credentials stay in the parent process and are not frozen
+in experiment records; the agent receives only a per-invocation broker address
+and capability (`SYNAPSE_MODEL_ENDPOINT`, `SYNAPSE_MODEL_CAPABILITY`,
+`SYNAPSE_MODEL_NAME`). The broker exists only inside that agent invocation. It
+is neither another entry point nor an independently operated service.
 
 Capture persists a physical-call start before HTTP dispatch and raw response
-plus canonical observation before delivery to the worker. Mini's actual model
-plugin binds logical queries to physical attempts. Retries create distinct call
-IDs; equal prompts are never deduplicated into one call. The retained original
-trajectory and the existing Stage 3A/C1 aggregate are independent comparison
-sources. No aggregate is expanded into fictional per-call records.
+plus canonical observation before delivery to the agent. The broker opens one
+logical request per new conversation step; an agent retries an unsuccessful
+step by naming it, and every retry is a new physical call ID. Equal prompts are
+never deduplicated into one call. At its terminal boundary the agent reports a
+neutral response inventory (`synapse.agent.response-inventory/v1`); it and the
+existing Stage 3A/C1 aggregate are independent comparison sources. No aggregate
+is expanded into fictional per-call records. When local information is
+delivered, only the protocol's public conversation reaches the provider: its
+roots, the provider's own replies and the fixed correction message.
 
 The supported execution profile is non-streaming OpenAI Chat. Parsers for
 Gemini and Anthropic declare their inclusion rules; parser support alone is not
@@ -37,7 +39,7 @@ acceptance and a new frozen profile. The Stage 3A writer remains unchanged.
 
 | Evidence | Required behavior |
 | --- | --- |
-| Telemetry report | Physical inventory, raw responses, canonical calls, actual Mini trajectory and durable C1 aggregate agree; missing usage remains unknown. |
+| Telemetry report | Physical inventory, raw responses, canonical calls, the agent's response inventory and durable C1 aggregate agree; missing usage remains unknown. |
 | Artifact report | Original Stage 14 reconstruction plus C1/oracle source revalidation; validate physical hashes, endpoints and mandatory lineage dependencies. |
 | Snapshot report | Read historical index/integrity roots, committed input boundary, retained lifecycle/provenance/taint prefixes, policy/bindings and repository revision. |
 | Resource report | Reopen actual operation starts/finishes, validate clocks and nesting, bind replay results and required domain phases, expose unfinished work and recording failures. |
@@ -69,7 +71,7 @@ CPU and actual Gold-persistence byte counters are exclusive per operation.
 Nested durations are subtracted; bucket wall totals union overlapping intervals
 within each process clock domain. Wall totals from different buckets can overlap
 and must not be added as run elapsed time. CPU excludes child processes such as
-Mini and the oracle; their provider/command measurements remain separate.
+the agent and the oracle; their provider/command measurements remain separate.
 I/O counts bytes returned by the persistence primitives, not physical disk
 traffic. Storage reports the distinct raw capture sources and journal prefix
 reachable from the cut; each operation also reports its own retained receipt
@@ -121,11 +123,16 @@ The existing Stage 11 terminal-resume shard checks both boundaries.
 ## Executable acceptance
 
 Each heavy scenario has its own file and GitHub Actions matrix shard. Tests use
-the installed Mini and SDK against a controlled HTTP provider; no commercial
+the acceptance-only model agent (`acceptance/agents/coding_agents.py`), admitted
+like any operator agent, against a controlled HTTP provider; no commercial
 network call is required. The fixture supplies provider responses and operator
 inputs only. Product modules never import the acceptance layer.
 
-- `test_provider_capture_acceptance.py`: real Mini process and retry boundaries.
+- `test_provider_capture_acceptance.py`: real agent process, broker and retry boundaries.
+- `test_public_conversation_acceptance.py`: identical public requests under different
+  local information, public continuation, and refusal of agent-added local data.
+- `test_agent_local_edit_acceptance.py` / `test_agent_local_edit_c1_acceptance.py`:
+  agent proposals interpreted by Synapse, then checked by C1 and a fresh oracle.
 - `test_capture_reconciliation_acceptance.py`: physical token/source discrepancies.
 - `test_capture_recovery_acceptance.py`: process death after HTTP, no replay,
   and failed capture before dispatch.
@@ -160,7 +167,6 @@ physical retry as the normative logical client span and emits no token metrics.
 Canonical retained evidence remains the accounting source of truth.
 
 The design follows the primary contracts for
-[Mini model plugins](https://github.com/SWE-agent/mini-swe-agent/blob/04d809ceab9df28f9adaed044884180159172930/src/minisweagent/models/__init__.py),
 [OpenAI Chat usage](https://developers.openai.com/api/reference/resources/chat),
 [Anthropic cache accounting](https://platform.claude.com/docs/en/build-with-claude/prompt-caching),
 [Gemini usage metadata](https://ai.google.dev/api/generate-content#UsageMetadata),

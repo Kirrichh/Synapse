@@ -21,6 +21,7 @@ from .planning import (
     FailureAction,
     OperationKind,
     OperationPlanCandidate,
+    OPERATION_PLAN_SCHEMA_V2,
     OperationRecord,
     PlanFailureCode,
     PlanViolation,
@@ -53,6 +54,8 @@ def _plan_from_dict(value: object, *, intent: IntentCandidate) -> OperationPlanC
         "operations",
         "execution_order",
     }
+    if type(payload) is dict and payload.get("schema_version") == OPERATION_PLAN_SCHEMA_V2:
+        required.add("planning_basis")
     if type(payload) is not dict or set(payload) != required:
         raise PlanViolation(PlanFailureCode.TYPE_MISMATCH, "plan payload has an unknown shape")
     sources = payload["source_actors"]
@@ -121,6 +124,7 @@ def _plan_from_dict(value: object, *, intent: IntentCandidate) -> OperationPlanC
         allowed_scope=RepositoryScope.from_dict(payload["allowed_scope"]),
         capability_profile=tuple(capabilities),
         operations=tuple(parsed),
+        planning_basis=encode_canonical(payload["planning_basis"]) if "planning_basis" in payload else None,
     )
     if result.proposal_id.to_dict() != value["proposal_id"] or result.to_dict() != value:
         raise PlanViolation(PlanFailureCode.IDENTITY_MISMATCH, "plan transport differs from canonical proposal")
@@ -182,6 +186,8 @@ def _read_plan_decision(
         "compatibility_evidence_refs",
         "verification_obligations",
     }
+    if type(payload) is dict and payload.get("schema_version") == OPERATION_PLAN_SCHEMA_V2:
+        required.add("planning_basis")
     if type(payload) is not dict or set(payload) != required:
         raise PlanViolation(PlanFailureCode.TYPE_MISMATCH, "decision payload has an unknown shape")
     try:

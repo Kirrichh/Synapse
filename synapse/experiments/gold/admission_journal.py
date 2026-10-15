@@ -50,7 +50,6 @@ from pathlib import Path
 
 from .persistence import (
     ExclusiveStoreLock,
-    MAX_JOURNAL_FRAMES_V1,
     PersistenceFailureCode,
     PersistenceViolation,
     StoreMutationFencePort,
@@ -60,6 +59,8 @@ from .persistence import (
     append_coordinator_epoch_frame,
     append_journal_payload,
     ensure_directory,
+    initialize_journal,
+    iter_journal_frames,
     create_coordinator_metadata_once,
     read_regular_bytes,
     require_directory,
@@ -125,7 +126,6 @@ class JournalAdapterFailureCode(str, Enum):
     RECORD_ABSENT = "RECORD_ABSENT"
     JOURNAL_CORRUPT = "JOURNAL_CORRUPT"
     EPOCH_CORRUPT = "EPOCH_CORRUPT"
-    EPOCH_EXHAUSTED = "EPOCH_EXHAUSTED"
     #: The record is durable and the shared mutation epoch did not move, so a
     #: fenced reader cannot see that this store changed. Not an outage: a retry
     #: would append a second copy of a decision that already landed.
@@ -543,9 +543,9 @@ class FileSnapshotFence:
     two writers both read *n* and both write *n+1*, and the second mutation
     becomes invisible to exactly the readers the fence exists to protect. An
     `O_APPEND` frame cannot be lost that way, so the count only ever rises. The
-    cost is that reading the epoch scans the journal, which `persistence` bounds
-    at `MAX_JOURNAL_FRAMES_V1` frames; past that this fence refuses rather than
-    silently wrapping.
+    cost is that reading the epoch scans the journal. Frames are validated one
+    at a time without collecting the history or imposing a lifetime frame cap;
+    each frame still has the persistence codec's byte bound.
     """
 
     directory: Path
@@ -555,18 +555,29 @@ class FileSnapshotFence:
     def _epoch_path(self) -> Path:
         return self.directory / FENCE_EPOCH_JOURNAL_NAME
 
+    def _epoch_frames(self):
+        """Validate the retained coordinator history without materializing it."""
+        try:
+            if not self.read_only:
+                ensure_directory(self.directory)
+                initialize_journal(self._epoch_path)
+            yield from iter_journal_frames(self._epoch_path, maximum_frames=None)
+        except PersistenceViolation as exc:
+            if exc.failure_code is PersistenceFailureCode.JOURNAL_TORN_TAIL:
+                raise _fail(JournalAdapterFailureCode.EPOCH_CORRUPT, "snapshot fence epoch is torn") from exc
+            if self.read_only:
+                raise
+            if exc.failure_code is PersistenceFailureCode.JOURNAL_MAGIC_MISMATCH:
+                raise _fail(JournalAdapterFailureCode.EPOCH_CORRUPT,
+                            "the snapshot fence epoch journal is present but is not this adapter's journal") from exc
+            raise _unavailable("the snapshot fence epoch journal could not be read") from exc
+        except OSError as exc:
+            if self.read_only:
+                raise PersistenceViolation(PersistenceFailureCode.FILESYSTEM_IO_FAILED, "journal scan failed") from exc
+            raise _unavailable("the snapshot fence epoch journal could not be read") from exc
+
     def _read_epoch(self) -> int:
-        if self.read_only:
-            result = scan_journal(self._epoch_path, create_if_missing=False)
-            if result.torn_tail:
-                raise _fail(JournalAdapterFailureCode.EPOCH_CORRUPT, "snapshot fence epoch is torn")
-            return len(result.frames)
-        result = _scan_or_classify(
-            self._epoch_path,
-            corrupt_code=JournalAdapterFailureCode.EPOCH_CORRUPT,
-            what="the snapshot fence epoch journal",
-        )
-        return len(result.frames)
+        return sum(1 for _ in self._epoch_frames())
 
     def coordinator_id(self) -> str:
         """A stable identity for this coordinator, persisted beside its epoch.
@@ -797,12 +808,7 @@ class FileSnapshotFence:
         self._mark("close")
 
     def _mark(self, phase: str, *, recovery_payload: bytes | None = None) -> int:
-        current = self._read_epoch()
-        if current >= MAX_JOURNAL_FRAMES_V1:
-            raise _fail(
-                JournalAdapterFailureCode.EPOCH_EXHAUSTED,
-                "the fence epoch journal is full and can no longer record a mutation",
-            )
+        self._read_epoch()
         try:
             payload = phase.encode("ascii") + os.urandom(16)
             if recovery_payload is not None:
@@ -827,11 +833,14 @@ class FileSnapshotFence:
         to this exact interval. The journal's existing payload bound applies.
         """
         require_live_guard(guard, coordinator_id=self.coordinator_id())
-        result = _scan_or_classify(self._epoch_path,
-            corrupt_code=JournalAdapterFailureCode.EPOCH_CORRUPT, what="the snapshot fence epoch journal")
-        if type(epoch) is not int or epoch < 1 or epoch % 2 != 1 or epoch > len(result.frames):
+        if type(epoch) is not int or epoch < 1 or epoch % 2 != 1:
             raise ValueError("recovery must name an existing opening interval")
-        payload = result.frames[epoch - 1].payload
+        payload = None
+        for position, frame in enumerate(self._epoch_frames(), 1):
+            if position == epoch:
+                payload = frame.payload
+        if payload is None:
+            raise ValueError("recovery must name an existing opening interval")
         prefix = b"open-recovery\x00"
         return payload[len(prefix):] if payload.startswith(prefix) else None
 

@@ -32,7 +32,7 @@ from synapse.experiments.gold.stage10.planning import (
     propose_operation_plan,
 )
 from synapse.experiments.gold.stage10.repository_scope import create_repository_scope
-from synapse.experiments.gold.stage10.task_contract import GoverningTaskContract
+from synapse.experiments.gold.stage10.task_contract import GoverningTaskContract, TASK_CONTRACT_SCHEMA_V1
 
 
 def hash_ref(kind: RefKind, label: str, *, schema: str = "acceptance.stage10/v1") -> HashBoundRef:
@@ -65,6 +65,7 @@ def plan_world(
     risky: bool = False,
     uncertainties: tuple[str, ...] = (),
     behavior_refs: tuple[HashBoundRef, ...] | None = None,
+    task_schema: str = TASK_CONTRACT_SCHEMA_V1,
 ):
     condition = hash_ref(RefKind.CONTRACT_CONDITION, "condition")
     approval = hash_ref(RefKind.CONTRACT_CONDITION, "human-approval")
@@ -77,12 +78,14 @@ def plan_world(
     effect_kind = EffectKind.ARTIFACT_PUBLISHED if risky else EffectKind.PATH_MODIFIED
     capability = CAPABILITY_BY_OPERATION[kind]
     scope = create_repository_scope(allowed_scope)
+    selected = behavior_refs or (hash_ref(RefKind.ARTIFACT, "behavior"),)
     task = GoverningTaskContract(
+        schema_version=task_schema,
         task_id="acceptance-task",
         task_statement=task_statement,
         repository_revision_sha256=repository_revision_sha256,
         target_bindings=(hash_ref(RefKind.BINDING, "target"),),
-        behavior_refs=behavior_refs or (hash_ref(RefKind.ARTIFACT, "behavior"),),
+        behavior_refs=selected if task_schema == TASK_CONTRACT_SCHEMA_V1 else (),
         allowed_scope=scope,
         required_capabilities=(capability,),
         effects=(
@@ -102,8 +105,10 @@ def plan_world(
             ),
         ),
     )
+    fields = task.intent_fields()
+    fields["behavior_refs"] = selected
     intent = propose_intent(
-        **task.intent_fields(),
+        **fields,
         task_contract_ref=task.reference,
         proposer=ActorIdentity("acceptance-intent-producer"),
         source_actors=(ActorIdentity("acceptance-requirement-source"),),
@@ -114,7 +119,8 @@ def plan_world(
         operation_id="operation-main",
         kind=kind,
         subject_paths=(subject_path,),
-        input_refs=(),
+        input_refs=(tuple(sorted(task.target_bindings + selected, key=lambda ref: (ref.kind.value, ref.ref_id, ref.sha256)))
+                    if task_schema != TASK_CONTRACT_SCHEMA_V1 else ()),
         argv=(),
         depends_on=(),
         capability=capability,

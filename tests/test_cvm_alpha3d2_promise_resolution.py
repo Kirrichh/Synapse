@@ -28,6 +28,10 @@ class FakeHost:
         self.replay_cursor = 0
         self.runtime = SimpleNamespace(actor=ActorRuntime(lambda: self, "live", "replay"))
 
+    def record_history_event(self, event):
+        self.execution_history.append(event)
+        return event
+
     def current_trace_id(self):
         return "trace-test"
 

@@ -26,6 +26,9 @@ This repository contains the Synapse DSL/runtime and AS2 verification work.
 - Acceptance tests remain outside product semantics and imports. Keep heavy
   scenarios in separate acceptance files so CI can schedule them independently;
   do not test LOC, file names or file counts as architectural correctness.
+- Tests, fixtures, scenario builders and acceptance harnesses belong only to
+  the acceptance/test layer. Product code must never import them, depend on
+  them, or contain an alternate implementation used to satisfy a test.
 
 ## Local Setup
 
@@ -105,6 +108,393 @@ Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:
 No Linux full suite was run for Patch 2. A recorded baseline is evidence of an
 observed run, not a command to rerun the full suite before each patch.
 
+The latest observed Linux verification is the recheck package of PR #108 on
+`556624d`, findings R1–R12 (R1/P1-1 a check made before a correction another
+session consolidated first never establishes the claim, and an action's
+admission reads the basis itself; R2/P1-2 a reading made before the source said
+something else is history, whatever session finished last, and a report adds
+to the order of statements memory keeps; R3 a forget completed again keeps an
+answer observed after it; R4 a forget removes nothing a retained case carries;
+R5 a forget and a correction consolidate in one window; R6 a forgotten example
+leaves its candidate, in the pool and in a composition; R7 demand never wakes a
+habit whose basis a forget left short, and its procedure is learned again from
+fresh examples; R8 a wake consumes its events by run and id; R9 a reassessment
+after a partial forget republishes only what it verified; R10 a reassessment
+reads the basis from the owner's custody in store D; R11 an emergency before a
+crashed session continues applies nothing and the session's next window judges
+its tail once; R12 a step-1 decision clears the pair's earlier resolution;
+court policy v6, `synapse.memory.reassessment/v4`,
+`synapse.memory.state-projection/v2`). Python 3.11, every file in its own
+process, four files in parallel, on the uncommitted working tree; the whole
+`acceptance/memory` directory ran because the court's decision stages changed,
+and elsewhere only the files the change reaches:
+
+```text
+acceptance/memory:   106 files, 613 passed
+acceptance/runtime:  9 files, 138 passed
+stage16 memory:      6 files (court, episode outcome, project court contract,
+                     project memory lifecycle, session inventory, store),
+                     30 passed
+tests/:              5 architecture and memory direction files, 614 passed
+```
+
+The reviewer's reproductions on the final tree, every file in its own process
+(component driver of the packages): R1/R2 delayed probe 4 passed, delayed
+knowledge 2 passed, delayed correction 3 passed and the earlier reassessment 3
+passed — the last two in copies adapted to the court's current entries (the
+window's checks folded, then `decided` with every correction memory's order
+makes; the reproduction port of R10); R3/R4 5 passed; R5 3, R6 2, R7 3, R8 3,
+R9 2, R10 2, R11 3 and R12 2 passed. Through the packages' canonical CLI
+adapter (`MemoryWorld`) R3/R4, R6, R7, R8, R9, R10, R11 and R12 passed alike;
+the R5 file drives component entries only, and
+`test_forget_correction_window_acceptance.py` runs its scenario canonically.
+The earlier memory batteries 21 and 30 passed; the earlier runtime battery 59
+passed, its five documented incompatible expectations failing as recorded (two
+draw `uuid()` inside `integrate`, three read the court's earlier decision
+shape; the adapted copies pass, 6/6). On `556624d` the new acceptance files
+fail in exactly their defect cases (13) and pass every control (14). Mutation
+campaigns on the final tree killed all 63 mutants of R1–R2 (their two earlier
+rounds, of 61 and 63 mutants, had closed their survivors) and all 29 of R3–R12;
+two of these survived their first run and were closed by contract cases (an
+archived habit whose trigger covers the candidate; a re-execution that declares
+the same plan and does not reproduce its case)
+(`reports/memory_second_review_mutation_evidence_v1.json`, `recheck_556624d`).
+The cost of the order of statements is measured in
+`docs/MEMORY_PERFORMANCE.md`.
+
+The previous observed Linux verification is the resilience review of PR #108 at
+`1b58d18` (M1 a check after a consolidation names the hypothesis its session
+declared; M2 checks decide in the gateway's order; M3 a window stating
+knowledge is consolidated; M4 a correction revises what was decided before it,
+also in one window; M5 the admission is a recorded event; M6 an action's basis
+is read again before its effect; F1 a guard puts program data back on every
+exit; F2 a rollback restores memory in place; F3 one model-call barrier for
+callbacks and the VM; F4 records own their copies; F5 snapshot `1.1.0`
+restores aliases; F6 replay ends with its record and an ordinary replay's own
+records take their places; K1 `time`/`random`/`uuid` are refused inside
+`integrate`; LOCK a cognitive run lock appears with its owner). Python 3.11,
+every file in its own process, three files in parallel, on the uncommitted
+working tree; the whole `tests/` directory ran because the interpreter's replay
+path changed:
+
+```text
+tests/:              208 files, 5224 passed, 12 skipped
+acceptance/memory:   94 files, 502 passed
+acceptance/runtime:  9 files, 138 passed
+stage16 memory/CVM:  8 files, 16 passed
+```
+
+The palace expiry check changed while that run went on (an expiry is reported
+once by this execution's memory audit); `acceptance/runtime` and the palace,
+affective memory, golden replay and integrate files that reach it were run
+again on the final tree and passed.
+
+The reviewer's batteries on `1b58d18` and after: the fault matrix and repeated
+recovery 24 passed before and after; active sessions, storage and lock 2 failed
+(M6), 11 passed before, 12 passed after, the one failure being the reviewer's
+test that pinned the lock limitation now removed (its adapted copy passes);
+canonical memory 7 failed, 8 passed before, 15 passed after; the earlier runtime
+battery 21 failed, 43 passed before, 59 passed after, the five failures being
+the two K1 tests that draw `uuid()` inside `integrate`, now refused by decision,
+and three that read the court's earlier internal decision shape (their adapted
+copies pass, 6/6). Mutation campaigns of 64 mutants over the package and 37 over
+the replay records killed 99 of 101; the other two name code that was removed
+or replaced (`reports/memory_second_review_mutation_evidence_v1.json`,
+`resilience_1b58d18`). The first rounds left three survivors each, closed by
+removing a redundant traversal, routing a shadowed builtin name through the one
+dispatcher, and contract cases (a verdict past the end of the record, a recall
+before expiry, an expiry reported once, a checkpoint record naming its trigger).
+
+An earlier observed Linux verification is the review of PR #108 at `59e6ab3`
+(F1 a rolled-back `integrate` puts back every scope it could write, in place;
+F2 a policy guard that changed program data, a closure's state or the guarded
+arguments is refused and the change put back; F3 every call form is the
+operation it calls; F4 a recorded or cached model answer is the bridge's own
+copy). Python 3.11, every file in its own process, four files in parallel, on
+the uncommitted working tree; the whole `tests/` directory ran because the
+interpreter's call path changed:
+
+```text
+tests/:              208 files, 5224 passed, 12 skipped
+acceptance/memory:   88 files, 440 passed
+acceptance/runtime:  6 files, 65 passed
+stage16 memory/CVM:  8 files, 16 passed
+```
+
+The reviewer's battery (9 counterexamples, 4 positive controls, 15 earlier
+regressions) passes 28/28. A mutation campaign over the four fixes killed all
+25 mutants (`reports/memory_second_review_mutation_evidence_v1.json`,
+`review_59e6ab3`); its first round left four survivors, closed by contract
+cases (nested containers, a same-length list change, a rebinding alone).
+
+An earlier observed Linux verification is the recheck package of PR #108 on
+`c4999a4`: the nine recheck findings (R1-R3, DEEP-1..6) and every earlier
+review family (C-R) still reproducible on that tree (failures inside `main()`,
+VM host calls and prompts, free-tier privacy declaration, integrate rollback,
+overlay closures and barrier, state ownership, policy guard purity). Python
+3.11, every file in its own process, four files in parallel, on the
+uncommitted working tree; the whole `tests/` directory ran because the
+interpreter, the CVM and the bridge changed:
+
+```text
+tests/:              208 files, 6 failed, 5216 passed, 12 skipped
+acceptance/memory:   88 files, 440 passed
+acceptance/runtime:  6 files, 56 passed (57 after the pause case)
+stage16 memory:      6 files, 14 passed
+```
+
+The six failures (`test_stage4_od10_execution_conformance.py`,
+`test_stage4_replay_vm_adapter_acceptance.py`) were this package's: the VM's
+LLM pause was marked halted, which the Gold replay adapter refuses as a pause
+that is not isolated. The pause now stops `run()` on the pending host call and
+keeps its scopes open; both files then passed (140 and 15), and every file
+naming the CVM or the bridge was rerun: 49 files, 1163 passed. Two
+interpreter golden fixtures (`inline_guard_*`) left the strict suite (see
+`docs/DETERMINISM_CONTRACT.md`). Mutation campaigns: 32/32 for the recheck
+findings, 59/59 for the earlier families
+(`reports/memory_second_review_mutation_evidence_v1.json`,
+`recheck_c4999a4`, `earlier_families_c4999a4`).
+
+An earlier observed Linux verification is the independent audit of PR #108 at
+`746967d` (AUD-1 purity of a `parallel` graph belongs to the function called,
+not its name; AUD-2 an event is admitted at its moment only; AUD-3 a correction
+back to an answer memory held before holds it again and keeps its earlier
+periods; AUD-4 an explicit consolidation applies a recorded forget; AUD-5 a
+removal marker only strengthens). It is a targeted run, not a full suite:
+Python 3.11, every file in its own process, four files in parallel, on the
+uncommitted working tree:
+
+```text
+acceptance/memory:  84 files, 420 passed
+stage16 court:      6 files, 14 passed
+tests/:             test_memory_dependency_direction.py 2 passed,
+                    test_durable_execution.py 78 passed,
+                    test_durable_mailbox_wait.py 16 passed
+```
+
+The auditor's battery (6 regressions, 2 positive controls) passes 8/8; it was
+6 failed, 2 passed on `746967d`. A mutation campaign over the five fixes killed
+all 25 mutants (`reports/memory_second_review_mutation_evidence_v1.json`,
+`independent_audit`); its first round left two survivors, a dead fallback that
+was removed and accumulated earlier periods now covered by two returns.
+
+An earlier observed Linux verification is the third review of PR #108 at
+`4905d47` (N1 a resolution found in stand trials stands only while the trials
+recorded so far name the same winner, decided in every ordinary consolidation;
+N2 a hypothesis status is reused and kept only on the check basis it was
+decided on: the checking tool's contract, the provenance relation, the identity
+rules). It is a targeted run, not a full suite: Python 3.11, every
+`acceptance/memory` file in its own process, four files in parallel, on the
+uncommitted working tree, plus six stage16 memory court files and
+`tests/test_memory_dependency_direction.py`:
+
+```text
+acceptance/memory:  79 files, 397 passed
+stage16 court:      6 files, 14 passed
+tests/ (memory):    1 file, 2 passed
+```
+
+The reviewer's battery (3 counterexamples, 2 positive controls, 10 earlier
+regressions) passes 15/15; its N2 probe calls `reuse` with the check basis of
+the configuration in force, the argument the corrected signature requires. A
+mutation campaign over N1 and N2 killed all 26 mutants
+(`reports/memory_second_review_mutation_evidence_v1.json`, `third_review`).
+
+An earlier observed Linux verification is the reassessment package of the
+second review of PR #108 (court policy v4: memory decided under v3 is
+reassessed before use, deciding again from the record hypothesis statuses,
+promotions and trial-based resolutions). It is a targeted run, not a full
+suite: Python 3.11, every `acceptance/memory` file in its own process, four
+files in parallel, on the uncommitted working tree, plus the stage16 memory
+court files and `tests/test_memory_dependency_direction.py`:
+
+```text
+acceptance/memory:  77 files, 372 passed
+stage16 court:      6 files, 30 passed
+tests/ (memory):    1 file, 2 passed
+```
+
+`test_memory_lifecycle_sequence_acceptance.py` first failed on two defects of
+the acceptance harness, both present on `0a229eb`: the crash driver's
+`boundary` point also killed a session that opens on a lagging boundary of an
+earlier crash (no run artifact, nothing to resume), and the scripted world was
+read without the lock it is written under. Both were fixed in the harness and
+the file passed, replaying the failing example. A mutation campaign over the
+reassessment killed all 26 mutants
+(`reports/memory_second_review_mutation_evidence_v1.json`).
+
+An earlier observed Linux verification is the second review of PR #108 at
+`5580007` (F1 a check decides only the claim its contract binds it to; F2 a
+stand trial covers a trigger only inside the tested scope; F3 contradicting
+trials name no winner; F4 promotion reads confirmed experience only). It is a
+targeted run, not a full suite: Python 3.11, every `acceptance/memory` file in
+its own process, four files in parallel, on the uncommitted working tree,
+plus the memory files of `tests/` and the stage16 memory court files:
+
+```text
+acceptance/memory:  75 files, 343 passed
+tests/ (memory):    tests/test_memory_dependency_direction.py, 2 passed
+stage16 court:      6 files, 30 passed
+```
+
+One expectation changed with F1 and was rerun alone:
+`test_admission_identity_acceptance.py` — billing quotes the old incarnation of
+a recreated database, so the check of the new incarnation stays provisional
+(an added admission reason, the same abstention). The reviewer's battery
+(4 findings, 5 positive controls) passes 9/9. A mutation campaign over the new
+rules killed all 22 mutants (`reports/memory_second_review_mutation_evidence_v1.json`).
+
+The latest observed full Linux run is the completed memory review package on PR
+#108 (attestations of admission bases, contract violations archive a habit,
+the dependency projection and forget, generalization explanations and
+contract versions, stand trials, state snapshots with tail replay; Python
+3.11, every `tests/` and `acceptance/` file in its own process, four files in
+parallel, on the uncommitted working tree):
+
+```text
+tests/:       2 failed, 5232 passed, 12 skipped
+acceptance/:  1 failed, 1061 passed, 1 skipped
+```
+
+All three failures were diagnosed:
+
+- `acceptance/stage4/stage16/test_live_gemini_worker.py` is the explicit live
+  job that requires `GEMINI_API_KEY` (absent here).
+- Two scope tripwires of `tests/test_swebench_measurement_output_boundary.py`
+  compared fixed historical commits and the working tree with a file list;
+  they passed on the committed tree and were then removed with the other
+  checks of that file that did not exercise the product.
+
+The acceptance count includes the seven contract cases added after the run to
+kill surviving mutants; the files changed then were rerun alone and passed. A
+mutation campaign over the package's new memory paths killed all 55 mutants
+(`reports/memory_review_mutation_evidence_v1.json`). Measurements are in
+`docs/MEMORY_PERFORMANCE.md`.
+
+The previous observed Linux run is the memory review package on PR #108
+(exact entity identity and admission bases, operation-bound state checks,
+unknown effects and gateway-issued idempotency keys, verified conflict
+comparison with blocking before any effect, the experience-based automaton,
+reassessment of recorded memory; court policy v3, tool configuration v2;
+Python 3.11, every `tests/` and `acceptance/` file in its own process, four
+files in parallel, on the uncommitted working tree):
+
+```text
+tests/:       2 failed, 5228 passed, 12 skipped
+acceptance/:  1 failed, 999 passed, 1 skipped
+```
+
+All three failures were diagnosed:
+
+- `acceptance/stage4/stage16/test_live_gemini_worker.py` is the explicit live
+  job that requires `GEMINI_API_KEY` (absent here).
+- Two tests of `tests/test_swebench_measurement_output_boundary.py` are scope
+  tripwires over fixed historical commit ranges that also count uncommitted
+  and untracked files; they fail on a dirty working tree only.
+
+An earlier observed Linux run is the memory stage 6 and language stage 7
+package on PR #108 (semantic knowledge with two times and hybrid search;
+event-driven `parallel` graphs; Python 3.11, every `tests/` and `acceptance/`
+file in its own process, four files in parallel, on the committed tree):
+
+```text
+tests/:       5224 passed, 12 skipped
+acceptance/:  1 failed, 909 passed, 1 skipped
+```
+
+The one acceptance failure is `acceptance/stage4/stage16/test_live_gemini_worker.py`,
+the explicit live job that requires `GEMINI_API_KEY` (absent here). The run
+first found 52 failures in `tests/test_durable_execution.py` and
+`tests/test_durable_mailbox_wait.py`: the P2a classifier refuses every run
+while an AST class is unclassified, and the new `parallel` nodes were not
+classified. They are now classified outside the P2a subset and the pinned
+inventory count moved from 93 to 96; the counts above include those two files
+rerun after the fix (78 and 16 passed), together with every other durable
+test file and the dataflow acceptance files, all passing.
+
+An earlier observed Linux run is the memory stage 5b package on PR #108
+(composition of learned procedures with ordered alternatives, nested parts and
+sequences; Python 3.11, every `tests/` and `acceptance/` file in its own
+process, four files in parallel, on the committed tree):
+
+```text
+tests/:       5212 passed, 12 skipped
+acceptance/:  2 failed, 874 passed, 1 skipped
+```
+
+Both failures were diagnosed:
+
+- `acceptance/stage4/stage16/test_live_gemini_worker.py` is the explicit live
+  job that requires `GEMINI_API_KEY` (absent here).
+- `acceptance/stage4/stage16/test_gold_memory_slices_acceptance.py` reached the
+  7200-second per-file limit of the local runner. The machine was slower than
+  in the previous run (the other heavy Gold files, which do not use the memory
+  subsystem, took about 1.7 times as long); rerun alone on the same tree it
+  passed: `1 passed in 7373.32s`.
+
+An earlier observed Linux run is the memory stage 5a package on PR #108
+(learned applicability D1 and result references D2; Python 3.11, every
+`tests/` and `acceptance/` file in its own process, four files in parallel,
+on the committed tree):
+
+```text
+tests/:       5208 passed, 12 skipped
+acceptance/:  1 failed, 853 passed, 1 skipped
+```
+
+The one failure is `acceptance/stage4/stage16/test_live_gemini_worker.py`, the
+explicit live job that requires `GEMINI_API_KEY` (absent here).
+
+An earlier observed Linux run is the memory stage 4 package on PR #108
+(retention, hypotheses, palace admission; Python 3.11, every `tests/` and
+`acceptance/` file in its own process, four files in parallel, about 100
+minutes of wall time):
+
+```text
+tests/:       3 failed, 5201 passed, 12 skipped
+acceptance/:  1 failed, 827 passed, 1 skipped
+```
+
+All four failures were diagnosed:
+
+- `acceptance/stage4/stage16/test_live_gemini_worker.py` is the explicit live
+  job that requires `GEMINI_API_KEY` (absent here).
+- Two tests of `tests/test_swebench_measurement_output_boundary.py` are scope
+  tripwires over fixed historical commit ranges that also count uncommitted
+  and untracked files; they fail on a dirty working tree only and pass once the
+  package is committed.
+- `tests/test_system_execution_path.py` pinned the CLI help surface; the new
+  `synapse memory` operator command is an intended surface change and the
+  expectation was updated.
+
+An earlier observed Linux run is the memory stage 3 package on PR #108
+(commit `5641d17`, Python 3.11, `tests/` and `acceptance/` run as separate
+processes; the acceptance tail was split across parallel processes):
+
+```text
+tests/:       3 failed, 5189 passed, 12 skipped in 6139.63s
+acceptance/:  2 failed, 772 passed (774 collected)
+```
+
+All five failures were diagnosed and none is caused by the package:
+
+- `tests/test_swebench_gold_production_tripwire.py::test_gold_fitness_v2_production_surface`
+  failed on the base `a664492` as well; fixed afterwards in this package (the
+  C1 record's arm is the writer's `ARM` constant).
+- `tests/test_stage4_gold_replay_recorded_bytes.py` (two tests) fail only when
+  `tests/test_stage4_gold_replay_permit_budget.py` ran earlier in the same
+  process, which leaves an open mutation interval on the shared point-of-use
+  world; reproduced identically on `a664492`. Each file passes alone; CI runs
+  them as separate shards.
+- `acceptance/stage4/stage16/test_live_gemini_worker.py` is an explicit live
+  job that requires `GEMINI_API_KEY` (absent here).
+- `acceptance/stage4/stage16/test_task_result_acceptance.py` failed because a
+  package was installed into the same environment mid-run (Gold re-observes the
+  package set at consumption); it passes when rerun in an unchanged environment.
+
+The CI workflow now also runs every `tests/` suite that had no dedicated shard
+(`repository-tests`).
+
 The external GitHub Actions PostgreSQL/CDC verification was last observed as:
 
 ```text
@@ -171,6 +561,11 @@ Do not commit generated local runtime data or credentials:
 - `*.log`
 
 ## Documentation Touchpoints
+
+For Gold initial knowledge ingestion, follow the agreed process and ownership
+boundaries in `docs/GOLD_KNOWLEDGE_INGESTION.md`. Update that instruction with
+the implemented operator commands and verified limitations. It is not evidence
+that ingestion or a live Baseline/Gold experiment has already passed acceptance.
 
 When AS2 verification behavior changes, update the relevant docs:
 

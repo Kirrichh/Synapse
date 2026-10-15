@@ -1,0 +1,174 @@
+{
+  "all_configurations_exact": 128,
+  "base_commit": "d258ef5517484c84b14ce5cd9f1333795237a1b5",
+  "configuration_bytes_each": 163840,
+  "effects": [
+    {
+      "args": {
+        "expected_epoch": 8,
+        "node": "router-000"
+      },
+      "effect": "routes-activated",
+      "tool": "activate_routes"
+    }
+  ],
+  "events_by_kind": {
+    "CONSOLIDATION_REPORTED": 14,
+    "JUDGED": 14,
+    "MEMORY_BOUND": 1,
+    "MEMORY_RETENTION": 7,
+    "MEMORY_STATE": 1,
+    "SESSION_OPENED": 14,
+    "SNAPSHOT_BOUNDARY": 14
+  },
+  "external_calls": 18,
+  "knowledge_versions": 130,
+  "largest_logical_event_bytes": {
+    "CONSOLIDATION_REPORTED": 21367468,
+    "JUDGED": 1539,
+    "MEMORY_BOUND": 2906,
+    "MEMORY_RETENTION": 537,
+    "MEMORY_STATE": 21357532,
+    "SESSION_OPENED": 616,
+    "SNAPSHOT_BOUNDARY": 21295976
+  },
+  "main": {
+    "artifacts": "/tmp/pr108-growth-main-final/test_large_memory_continues_wi0",
+    "passed": 1,
+    "wall_s": 316.2
+  },
+  "old_base": {
+    "applied_reports": 0,
+    "artifacts": "/tmp/pr108-growth-old-failure",
+    "diagnosis": "ValueError: memory event exceeds its retained byte budget",
+    "failed": 1,
+    "passed": 0,
+    "wall_s": 20.47
+  },
+  "product_diff_sha256": "0b25b4fa7791ce9333d48bb67cfc068484d22868e664e7b864e2ad11c4cf9825",
+  "recovery": {
+    "artifacts": "/tmp/pr108-growth-recovery-final",
+    "passed": 2,
+    "wall_s": 271.64
+  },
+  "scope": "Real public CLI, admitted MCP tools, Gateway, court, owner and replay. External routing control is an acceptance model; no production network was changed. Files ran concurrently; durations are acceptance runtimes, not isolated benchmarks.",
+  "storage_acceptance": {
+    "genuine_publications_retained": 4099,
+    "large_event_kinds_passed": 14,
+    "large_memory_state_bytes": 22003944,
+    "physical_tree_object_limit_bytes": 65536,
+    "retained_coordinator_prefix_frames": 1000001,
+    "coordinator_epoch_after_recovery_and_publication": 1000004,
+    "coordinator_scale_scope": "A prepared checksummed history prefix followed by a real owner mutation, not one million full sessions."
+  },
+  "targeted_validation": {
+    "store_session_inventory": 48,
+    "shared_events_corruption_recovery_and_growth": 73,
+    "coordinator_persistence_admission_and_physical_bounds": 99,
+    "compact_frame": 20,
+    "prior_pr108_review_cases": 38,
+    "architecture_dependency_coordination_court": 638,
+    "existing_memory_integration": 7,
+    "new_large_cli_integration": 3,
+    "distinct_passed": 926,
+    "full_repository_suite_run": false,
+    "corpus_gate_passed": true,
+    "ownership_dag_passed": true,
+    "repeat_policy": "Reruns are excluded from counts; three failed architecture cases passed after declaring the existing owner_profiles component, which adds one parametrized case. The v4 publication fixture failure was reproduced on base and corrected in acceptance only."
+  },
+  "limits": [
+    "Logical events and full owner state still materialize in RAM.",
+    "Inventory and coordinator epoch validation scan retained history.",
+    "Court consolidation algorithm and agent publication budgets are unchanged.",
+    "No bounded-RSS or million-semantic-version claim is made."
+  ],
+  "previously_blocked_corpus_recovery": {
+    "before": {
+      "versions": 18456,
+      "knowledge_sha256": "cc12d562c33481b8549de537d2f58a4c02ae93591400c192cc35c65743794d84",
+      "window": 6,
+      "kinds": {
+        "SESSION_OPENED": 11,
+        "CONSOLIDATION_REPORTED": 6,
+        "JUDGED": 6,
+        "SNAPSHOT_BOUNDARY": 5,
+        "MEMORY_BOUND": 1
+      }
+    },
+    "after": {
+      "versions": 18456,
+      "knowledge_sha256": "cc12d562c33481b8549de537d2f58a4c02ae93591400c192cc35c65743794d84",
+      "window": 6,
+      "kinds": {
+        "SESSION_OPENED": 12,
+        "CONSOLIDATION_REPORTED": 6,
+        "JUDGED": 6,
+        "SNAPSHOT_BOUNDARY": 6,
+        "MEMORY_BOUND": 1
+      }
+    },
+    "cli": {
+      "elapsed_s": 40.47072447499886,
+      "payload": {
+        "artifact_path": "/workspace/synapse-storage-fix-acceptance-20261014/recovered-old-corpus/runs/recovered-old-memory.json",
+        "artifact_revision": 1,
+        "correlation_id": null,
+        "exit_code": 0,
+        "history_hash": "61434801b4f484a2fbbc53766c5365811ff0746c5d2b23cb5856147204ab2fa4",
+        "output_delta": [
+          "recovered-old-memory"
+        ],
+        "result_schema_version": "1.0.0",
+        "run_id": "recovered-old-memory",
+        "source_hash": "sha256:b7b8488be8fae86ce9877c1e5ccbeae152b852f3b21db43a501c6fc9018a20d8",
+        "status": "COMPLETED"
+      },
+      "queries": [
+        [
+          "current",
+          0
+        ],
+        [
+          "current",
+          3072
+        ],
+        [
+          "current",
+          6143
+        ],
+        [
+          "history",
+          0
+        ],
+        [
+          "history",
+          3072
+        ],
+        [
+          "history",
+          6143
+        ]
+      ],
+      "candidate_checks": 18
+    },
+    "replay": {
+      "observe": {
+        "status": "replay_verified",
+        "consumed": 6181,
+        "reason": null
+      },
+      "apply-replanned": {
+        "status": "replay_verified",
+        "consumed": 11,
+        "reason": null
+      }
+    },
+    "old_receipts_preserved": 29,
+    "original_files_unchanged": 3944,
+    "external_gateway_unchanged": true,
+    "elapsed_s": 123.66879986600179,
+    "full_evidence_path": "/workspace/synapse-storage-fix-acceptance-20261014/recovered-old-corpus/recovery-result.json",
+    "full_evidence_sha256": "62191260879ae7e01fff0028b9f2f10000b312dc036033e2f1e91ef10b23fb6c",
+    "scope": "Copy of the actual previously blocked 18456-version corpus; the original corpus was not modified."
+  }
+}

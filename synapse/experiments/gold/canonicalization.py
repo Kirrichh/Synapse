@@ -77,6 +77,7 @@ CVM_HOST_ABI_VERSION = "2.2"
 _MAX_CANONICAL_DEPTH = 128
 _MAX_REF_BYTES = 2**53 - 1
 _TRUSTED_SEAL = object()
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
 _POLICY_RULE_LABEL_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}:rule:(0|[1-9][0-9]*):(require|forbid)\Z")
@@ -164,7 +165,7 @@ def _exact_list(value: object, name: str) -> list[Any]:
 def _text(value: object, name: str, *, nonempty: bool = True) -> str:
     if type(value) is not str or (nonempty and not value):
         raise _fail(CanonicalizationFailureCode.TYPE_MISMATCH, f"{name} must be an exact string")
-    if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+    if _SURROGATE_RE.search(value) is not None:
         raise _fail(CanonicalizationFailureCode.INVALID_UTF8, f"{name} contains a lone surrogate")
     try:
         value.encode("utf-8")

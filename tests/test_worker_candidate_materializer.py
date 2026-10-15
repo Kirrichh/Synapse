@@ -21,7 +21,7 @@ from synapse.worker.contract import (
 )
 
 
-FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "mini_capture"
+FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "worker_capture"
 
 
 def run(cmd: list[str], cwd: Path, **kwargs):

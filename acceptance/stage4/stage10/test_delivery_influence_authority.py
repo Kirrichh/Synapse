@@ -23,8 +23,9 @@ from synapse.experiments.gold.stage10.influence import (
     WorkerConsumptionAcknowledgement,
     assess_context_influence,
     validate_influence_assessment,
+    observe_local_context_influence,
 )
-from synapse.experiments.gold.stage10.worker_transport import WorkerDeliveryStatus
+from synapse.experiments.gold.stage10.worker_transport import SYNAPSE_MEMORY_TRANSPORT, WorkerDeliveryStatus
 
 
 def _acknowledgement(world, kind: AcknowledgementKind) -> WorkerConsumptionAcknowledgement:
@@ -104,6 +105,20 @@ def test_delivery_refuses_a_foreign_attempt_before_minting_receipt(
     assert raised.value.failure_code is DeliveryFailureCode.INVOCATION_MISMATCH
 
 
+@pytest.mark.parametrize("status,transport", [
+    (WorkerDeliveryStatus.SYNAPSE_EXACT_MEMORY, None),
+    (WorkerDeliveryStatus.PROCESS_STARTED, SYNAPSE_MEMORY_TRANSPORT),
+    (WorkerDeliveryStatus.NOT_DISPATCHED, None),
+])
+def test_an_agent_transport_cannot_claim_synapse_memory_route(stage10_delivery_world, status, transport) -> None:
+    world = stage10_delivery_world
+    evidence = world.dispatch.worker_result.delivery_evidence
+    forged = replace(evidence, status=status, transport_name=transport or evidence.transport_name)
+    with pytest.raises(DeliveryViolation) as raised:
+        verify_delivery(context=world.context, invocation=world.dispatch.invocation, evidence=forged)
+    assert raised.value.failure_code is DeliveryFailureCode.NOT_DISPATCHED
+
+
 def test_influence_stage_is_derived_from_exact_bound_evidence(stage10_delivery_world) -> None:
     world = stage10_delivery_world
     receipt = world.dispatch.delivery_receipt
@@ -134,6 +149,18 @@ def test_influence_stage_is_derived_from_exact_bound_evidence(stage10_delivery_w
     )
     with pytest.raises(ValueError):
         assess_context_influence(receipt=receipt, acknowledgement=wrong_context)
+
+
+def test_delivery_without_a_local_interpretation_never_claims_influence(stage10_delivery_world):
+    world = stage10_delivery_world
+    receipt = world.dispatch.delivery_receipt
+    observation = observe_local_context_influence(receipt=receipt,
+        invocation=world.dispatch.invocation, worker_result=world.dispatch.worker_result)
+    assert observation is None
+    with store_transaction(world.store_fence) as ticket:
+        refs = world.store.persist_local_context_influence(receipt=receipt, observation=observation, ticket=ticket)
+    assert refs['output_ref'] is None and refs['observation_ref'] is None
+    assert world.store.require_local_context_influence(receipt=receipt, observation=None) == refs
 
 
 def test_influence_store_rejects_changed_stage_and_unsealed_assessment(

@@ -237,6 +237,15 @@ def materialize_worker_candidate(
         "base_commit": base_commit,
         "worker_diff_text_diverges_from_worktree": False,
         "usage": worker_result.usage.to_dict(),
+        # Д5: the worker's own refusal narrative travels with the attempt
+        # record. Without these two fields a NO_PATCH/ERROR attempt keeps only
+        # its status, and the reason a worker declined (its report and its own
+        # diagnostics, e.g. failed self-checks) is lost to the run journal.
+        "worker_report": {
+            "summary": worker_result.worker_report.summary,
+            "failure_reason": worker_result.worker_report.failure_reason,
+        },
+        "worker_diagnostics": dict(worker_result.diagnostics),
     }
     try:
         worker_source = _worker_source(worker_result)

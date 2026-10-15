@@ -13,6 +13,7 @@ import copy
 import threading
 
 from synapse.ast import Program, AtIpTrigger, BeforeOpTrigger
+from synapse.program_state import detached
 from synapse.bytecode import CognitiveCompiler, BytecodeProgram
 from synapse.cvm import (
     CognitiveVM,
@@ -20,6 +21,7 @@ from synapse.cvm import (
     decode_vm_value,
     OutOfEnergy,
     VMSnapshot,
+    VMError,
     VMSnapshotFormatError,
     VMConflictingSourceError,
     VMResumeSyncError,
@@ -27,15 +29,18 @@ from synapse.cvm import (
     VMCodeMigrationRequiresMapError,
     VMHostError,
     VMStatus,
+    VMStepLimitExceeded,
 )
 from synapse.hardening import hash_event_chain
+from synapse.prompt_template import render as render_prompt
 from synapse.runtime.vm_routing import (
     classify_ast_node, classify_host_opcode, fallback_reason_for, VM_STRUCTURAL_RUNTIME,
     DETERMINISTIC_PURE_HOST_SYMBOLS, DETERMINISTIC_SIDE_EFFECT_HOST_SYMBOLS,
-    NONDETERMINISTIC_HOST_SYMBOLS,
+    NONDETERMINISTIC_HOST_SYMBOLS, RECORDED_SIDE_EFFECT_HOST_SYMBOLS,
 )
 from synapse.runtime.migration import validate_vm_state_program_hashes, iter_function_objects
 from synapse.runtime.host_abi import HOST_ABI_VERSION
+from synapse.runtime.vm_messaging import bind_sender, send_from_vm
 
 
 @dataclass
@@ -391,7 +396,7 @@ class VMBridge:
         h = self.get_host()
         decision = classify_ast_node(node)
         node_type = decision.node
-        structured_reason = fallback_reason_for(node_type)
+        structured_reason = dict(fallback_reason_for(node_type))
         if reason and reason not in {"not_yet_compiled", decision.reason}:
             structured_reason = {"code": str(reason), "detail": structured_reason.get("detail", str(reason))}
         event = {
@@ -433,7 +438,7 @@ class VMBridge:
         data["version"] = "2.1"
         env.define(node.binding, data)
         event = {"type": "vm_bytecode_compiled", "instructions": len(data.get("instructions", [])), "trace_id": h.current_trace_id()}
-        h.execution_history.append(event)
+        h.record_history_event(event)
         return data
 
     def event_id_for_index(self, idx: int) -> str:
@@ -797,7 +802,8 @@ class VMBridge:
                 value = self._find_host_call_resolution(call_id).get("result")
             vm.resume_host_call(call_id, value)
 
-    def make_vm_snapshot(self, vm: CognitiveVM, label: str, embed_history: bool = False) -> Dict[str, Any]:
+    def make_vm_snapshot(self, vm: CognitiveVM, label: str, embed_history: bool = False,
+                         trigger: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         h = self.get_host()
         self._ensure_history_streams(h)
         # Phase 1: copy-on-read under lock only. Slow serialization/enrichment stays outside.
@@ -850,10 +856,12 @@ class VMBridge:
             "current_context": snapshot["current_context"],
             "trace_id": h.current_trace_id(),
         }
-        h.execution_history.append(event)
+        if trigger is not None:
+            event["trigger"] = trigger
+        h.record_history_event(event)
         return snapshot
 
-    def restore_vm_from_checkpoint(self, label: str, gas: Optional[int] = None, cognitive_budget: Optional[int] = None) -> CognitiveVM:
+    def restore_vm_from_checkpoint(self, label: str, gas: Optional[int] = None, cognitive_budget: Optional[int] = None, *, env=None) -> CognitiveVM:
         h = self.get_host()
         if label not in h.vm_checkpoints:
             raise VMSnapshotFormatError(f"Unknown VM checkpoint: {label}")
@@ -879,13 +887,13 @@ class VMBridge:
         program_dict = raw.get("program") or {"type": "bytecode_program", "version": "2.1", "constants": [], "instructions": [{"op": "HALT"}]}
         program = BytecodeProgram.from_dict(program_dict)
         vm = restore_vm_from_snapshot(raw, program, gas=gas, cognitive_budget=cognitive_budget, host=None)
-        vm.host = self.get_cvm_callback_adapter(vm)
+        vm.host = self.get_cvm_callback_adapter(vm, env=env, restoring=True)
         self._validate_pending_against_host(vm.state.pending_host_call or {}, vm)
         self.sync_context_tracker_from_vm_state(vm)
         self.sync_actor_runtime_from_vm_state(vm)
         self.sync_policy_runtime_from_vm_state(vm)
         h.current_context = getattr(getattr(h, "context_tracker", None), "current", vm.state.current_context)
-        h.execution_history.append({"type": "vm_resumed", "from_checkpoint": label, "hash_valid": True, "sync_valid": True, "resumed_at_ip": vm.state.ip, "trace_id": h.current_trace_id()})
+        h.record_history_event({"type": "vm_resumed", "from_checkpoint": label, "hash_valid": True, "sync_valid": True, "resumed_at_ip": vm.state.ip, "trace_id": h.current_trace_id()})
         return vm
 
     def vm_host_call(self, opcode: str, a: Any, b: Any) -> Dict[str, Any]:
@@ -906,10 +914,10 @@ class VMBridge:
         if opcode == "METRICS":
             result.update({"status": "ok", "value": h.metrics_snapshot(), "from_cache": False})
         if result.get("status") == "fallback":
-            structured_reason = fallback_reason_for(opcode)
+            structured_reason = dict(fallback_reason_for(opcode))
             if decision.route != "HOST_EVAL":
                 structured_reason = {"code": "HOST_ABI_FALLBACK", "detail": "Legacy HOST_ABI fallback path"}
-            h.execution_history.append({
+            h.record_history_event({
                 "type": "vm_fallback",
                 "node": opcode,
                 "ast_node_type": opcode,
@@ -923,11 +931,16 @@ class VMBridge:
                 "trace_id": h.current_trace_id(),
             })
         event = {"type": "vm_host_call", "opcode": opcode, "host_call": result["host_call"], "from_cache": bool(result.get("from_cache")), "gas_cost": 0, "gas_refund": result.get("gas_refund", 0), "trace_id": h.current_trace_id()}
-        h.execution_history.append(event)
+        h.record_history_event(event)
+        if opcode == "HOST_EVAL":
+            # A construct the compiler did not lower has no value here: a placeholder would be read as one (review
+            # computed callee). The run fails instead of continuing on it.
+            raise VMError(f"run vm cannot evaluate {a if isinstance(a, str) else type(a).__name__}: it is not "
+                          f"compiled to bytecode")
         return result
 
 
-    def _get_host_call_context(self, vm: Any) -> HostCallContext:
+    def _get_host_call_context(self, vm: Any, *, capture_identity=True) -> HostCallContext:
         """Build the capability context for a CVM CALL_HOST dispatch.
 
         VM snapshot agent_id is fail-closed when it conflicts with the current
@@ -949,7 +962,7 @@ class VMBridge:
         else:
             agent_id = snapshot_agent_id or host_agent_id
 
-        if state is not None and getattr(state, "agent_id", None) is None:
+        if capture_identity and state is not None and getattr(state, "agent_id", None) is None:
             state.agent_id = agent_id
 
         trace_fn = getattr(h, "current_trace_id", None)
@@ -1021,13 +1034,12 @@ class VMBridge:
             return
         h = self.get_host()
         # Write SIDE_EFFECT_BLOCKED event to history for audit trail
-        if hasattr(h, "execution_history"):
-            h.execution_history.append({
-                "type": "SIDE_EFFECT_BLOCKED_BY_GUARD",
-                "request_symbol": symbol,
-                "agent_id": getattr(state, "agent_id", None),
-                "instruction_pointer": getattr(state, "ip", None),
-            })
+        h.record_history_event({
+            "type": "SIDE_EFFECT_BLOCKED_BY_GUARD",
+            "request_symbol": symbol,
+            "agent_id": getattr(state, "agent_id", None),
+            "instruction_pointer": getattr(state, "ip", None),
+        })
         raise VMHostError(
             code="SIDE_EFFECT_BLOCKED_BY_GUARD",
             message=(
@@ -1096,6 +1108,9 @@ class VMBridge:
         # Live cache
         if not hasattr(h, "_llm_response_cache"):
             h._llm_response_cache = {}
+        # The record owns its answer: what the program does with its own copy
+        # never rewrites the cache or the history.
+        result = copy.deepcopy(result)
         h._llm_response_cache[content_key] = result
 
         # Deterministic history event (embedded replay source-of-truth)
@@ -1158,6 +1173,8 @@ class VMBridge:
         """
         import json as _j
 
+        # The host's transaction holds across the VM boundary: a model call there is refused before it is made.
+        h.forbid_model_call("llm")
         envelope    = args[0] if args else {}
         schema_hash = str(args[1]) if len(args) > 1 and args[1] else ""
         engine_params = args[2] if len(args) > 2 and isinstance(args[2], dict) else {}
@@ -1176,7 +1193,8 @@ class VMBridge:
                          or engine_params.get("model", "default"))
 
         # --- 2. Replay mode: must find cached response ---
-        is_replay = getattr(self, "replay_mode", False)
+        # A replay is the host's mode, not the bridge's constant naming it (which is always truthy).
+        is_replay = getattr(h, "runtime_mode", None) == self.replay_mode
         if is_replay:
             cached = self._llm_cache_lookup_replay(h, content_key)
             if cached is _SENTINEL:
@@ -1193,7 +1211,7 @@ class VMBridge:
                              f"content_key={content_key[:16]}..."),
                     symbol="llm.request",
                 )
-            return cached
+            return copy.deepcopy(cached)
 
         # --- 3. Live mode: check live cache (unless policy=never) ---
         if cache_policy != "never":
@@ -1206,7 +1224,7 @@ class VMBridge:
                         "content_key": content_key,
                         "cache_policy": cache_policy,
                     })
-                return cached
+                return copy.deepcopy(cached)
 
         # --- 4. Dispatch to LLM provider ---
         llm_backend = getattr(h, "llm_backend", None)
@@ -1219,9 +1237,12 @@ class VMBridge:
         else:
             try:
                 prompt_text = self._render_prompt(envelope, h)
+                # "default" is the compiler's mark for a call that names no model:
+                # the provider then answers with the configured one.
+                named_model = engine_params.get("model", "default")
                 raw_result = llm_backend.complete(
                     prompt=prompt_text,
-                    model=engine_params.get("model", "default"),
+                    model=None if named_model == "default" else named_model,
                     temperature=engine_params.get("temperature", 0.0),
                     max_tokens=engine_params.get("max_tokens", 512),
                 )
@@ -1252,18 +1273,11 @@ class VMBridge:
         return result
 
     def _render_prompt(self, envelope: dict, h: Any) -> str:
-        """Render prompt envelope into text for LLM provider call."""
+        """The prompt text a request carries: its template rendered, or its inline text."""
         variables = envelope.get("variables", {})
-        template_hash = envelope.get("template_hash", "")
-        # Look up template text from host registry
-        template_registry = getattr(h, "llm_template_registry", {})
-        template_text = template_registry.get(template_hash)
-        if template_text:
-            try:
-                return template_text.format(**variables)
-            except (KeyError, ValueError):
-                pass
-        # Fallback: render variables as plain text
+        template = envelope.get("template")
+        if template is not None:
+            return render_prompt(template, variables.__getitem__)
         if "__text__" in variables:
             return str(variables["__text__"])
         parts = [f"{k}: {v}" for k, v in variables.items()]
@@ -1323,8 +1337,7 @@ class VMBridge:
                 "instruction_pointer": ctx.instruction_pointer,
                 "history_hash": event_hash,
             }
-            if hasattr(h, "execution_history"):
-                h.execution_history.append(denial_event)
+            h.record_history_event(denial_event)
 
             # Event 2: capability missing record (second layer for security audit)
             missing_event = {
@@ -1335,8 +1348,7 @@ class VMBridge:
                     (event_hash + required).encode()
                 ).hexdigest(),
             }
-            if hasattr(h, "execution_history"):
-                h.execution_history.append(missing_event)
+            h.record_history_event(missing_event)
 
             raise VMHostError(
                 code="CAPABILITY_DENIED",
@@ -1347,7 +1359,7 @@ class VMBridge:
                 symbol=symbol,
             )
 
-    def dispatch_host_call(self, vm: Any, symbol: str, args: list) -> Any:
+    def dispatch_host_call(self, vm: Any, symbol: str, args: list, *, sender=None) -> Any:
         """Dispatch Alpha.3 CALL_HOST calls without intercepting legacy HOST_ABI opcodes."""
         if self._nested_host_call_depth > 0:
             raise VMHostError(
@@ -1376,8 +1388,10 @@ class VMBridge:
                 }
                 h.side_effect_history.append(event)
                 return result
+            if symbol in RECORDED_SIDE_EFFECT_HOST_SYMBOLS:
+                return self.get_host().execute_side_effect(symbol, list(args))
             if symbol in VM_STRUCTURAL_RUNTIME:
-                return self._execute_structural_runtime(vm, symbol, args)
+                return self._execute_structural_runtime(vm, symbol, args, sender=sender)
             if symbol in BRIDGE_DISPATCHED:
                 ctx = self._get_host_call_context(vm)
                 self._check_capability(symbol, ctx)
@@ -1397,15 +1411,21 @@ class VMBridge:
         return f"evt-{len(getattr(h, 'execution_history', []) or []):08d}"
 
     def _emit_context_event(self, h: Any, event: Dict[str, Any]) -> None:
-        if hasattr(h, "execution_history"):
-            h.execution_history.append(event)
+        h.record_history_event(event)
         emit = getattr(h, "emit_runtime_event", None)
         if callable(emit):
             emit(event, getattr(h, "current_env", None))
 
-    def _execute_structural_runtime(self, vm: Any, symbol: str, args: list) -> Any:
+    def _execute_structural_runtime(self, vm: Any, symbol: str, args: list, *, sender=None) -> Any:
         """Execute non-capability-gated structural runtime host calls."""
         h = self.get_host()
+        if symbol == "SYS_MSG_SEND":
+            # Isolation failures retain their domain type (dream/integrate/fracture).
+            # The message adapter translates policy rejection, never delivery.
+            # A legacy envelope already names its sender. Validate the trust
+            # gate without changing that identity after the VM built it.
+            self._get_host_call_context(vm, capture_identity=False)
+            return send_from_vm(h, vm, args, self._actor_runtime(), sender=sender)
         label = str(args[0]) if args else ""
         reason = str(args[1]) if len(args) > 1 else None
 
@@ -1436,7 +1456,7 @@ class VMBridge:
                 return None
 
             if symbol in {"SYS_ACTOR_ENTER", "SYS_ACTOR_EXIT"}:
-                actor_runtime = getattr(h, "actor_runtime", None)
+                actor_runtime = self._actor_runtime()
                 if actor_runtime is None:
                     raise VMHostError(
                         code="ACTOR_RUNTIME_MISSING",
@@ -1554,36 +1574,7 @@ class VMBridge:
 
 
 
-            if symbol == "llm.request":
-                return self._execute_llm_request(h, args)
-
-            if symbol in {"SYS_MSG_SEND", "SYS_MSG_CONSUME", "SYS_MSG_RECEIVE"}:
-                if symbol == "SYS_MSG_SEND":
-                    message = copy.deepcopy(args[0]) if args and isinstance(args[0], dict) else {}
-                    sender = str(message.get("sender_id") or message.get("sender") or "")
-                    receiver = str(message.get("target_id") or message.get("receiver") or "")
-                    msg_type = str(message.get("msg_type") or message.get("method") or "")
-                    payload = message.get("payload")
-                    actor_runtime = getattr(h, "actor_runtime", None)
-                    if actor_runtime is not None and hasattr(actor_runtime, "send_message"):
-                        # actor_runtime is the canonical mailbox authority and
-                        # already records message_sent history. Avoid double logging.
-                        return actor_runtime.send_message(sender, receiver, msg_type, [payload])
-
-                    if not hasattr(h, "mailboxes"):
-                        h.mailboxes = {}
-                    if not hasattr(h, "actor_log"):
-                        h.actor_log = []
-                    h.mailboxes.setdefault(receiver, []).append(message)
-                    delivered = message
-                    event = {
-                        "type": "message_sent",
-                        "event_id": self._next_host_event_id(h),
-                        "message": copy.deepcopy(message),
-                    }
-                    self._emit_context_event(h, event)
-                    return delivered
-
+            if symbol in {"SYS_MSG_CONSUME", "SYS_MSG_RECEIVE"}:
                 if symbol == "SYS_MSG_CONSUME":
                     event = copy.deepcopy(args[0]) if args and isinstance(args[0], dict) else {"type": "message_consumed"}
                     event.setdefault("type", "message_consumed")
@@ -1599,7 +1590,9 @@ class VMBridge:
         except VMHostError:
             raise
         except Exception as exc:
-            code = "POLICY_RUNTIME_ERROR" if symbol.startswith("SYS_POLICY_") else ("ACTOR_RUNTIME_ERROR" if symbol.startswith("SYS_ACTOR_") else "CONTEXT_RUNTIME_ERROR")
+            code = ("POLICY_RUNTIME_ERROR" if symbol.startswith("SYS_POLICY_") else
+                    "ACTOR_RUNTIME_ERROR" if symbol.startswith("SYS_ACTOR_") else
+                    "CONTEXT_RUNTIME_ERROR")
             raise VMHostError(
                 code=code,
                 message=f"Structural runtime error in {symbol}: {exc}",
@@ -1650,6 +1643,8 @@ class VMBridge:
                 if hasattr(h, "runtime") and hasattr(h.runtime, "affective"):
                     return h.runtime.affective.apply_delta(delta, source=name)
                 return None
+            if symbol == "llm.request":  # The one owner of an LLM request a VM paused on (review L).
+                return self._execute_llm_request(h, args)
             if symbol == "SYS_POLICY_CHECK":
                 action = args[0] if args else "unknown"
                 context = args[1] if len(args) > 1 else {}
@@ -1659,46 +1654,6 @@ class VMBridge:
                     return h.runtime.governance.evaluate(action, context)
                 return {"allowed": True}
 
-
-            if symbol in {"SYS_MSG_SEND", "SYS_MSG_CONSUME", "SYS_MSG_RECEIVE"}:
-                if symbol == "SYS_MSG_SEND":
-                    message = copy.deepcopy(args[0]) if args and isinstance(args[0], dict) else {}
-                    sender = str(message.get("sender_id") or message.get("sender") or "")
-                    receiver = str(message.get("target_id") or message.get("receiver") or "")
-                    msg_type = str(message.get("msg_type") or message.get("method") or "")
-                    payload = message.get("payload")
-                    actor_runtime = getattr(h, "actor_runtime", None)
-                    if actor_runtime is not None and hasattr(actor_runtime, "send_message"):
-                        # actor_runtime is the canonical mailbox authority and
-                        # already records message_sent history. Avoid double logging.
-                        return actor_runtime.send_message(sender, receiver, msg_type, [payload])
-
-                    if not hasattr(h, "mailboxes"):
-                        h.mailboxes = {}
-                    if not hasattr(h, "actor_log"):
-                        h.actor_log = []
-                    h.mailboxes.setdefault(receiver, []).append(message)
-                    delivered = message
-                    event = {
-                        "type": "message_sent",
-                        "event_id": self._next_host_event_id(h),
-                        "message": copy.deepcopy(message),
-                    }
-                    self._emit_context_event(h, event)
-                    return delivered
-
-                if symbol == "SYS_MSG_CONSUME":
-                    event = copy.deepcopy(args[0]) if args and isinstance(args[0], dict) else {"type": "message_consumed"}
-                    event.setdefault("type", "message_consumed")
-                    event.setdefault("event_id", self._next_host_event_id(h))
-                    self._emit_context_event(h, event)
-                    return event
-
-                # SYS_MSG_RECEIVE is a bridge-side hook for future host inbox sync.
-                # Commit 2 keeps CVM receive decisions over VMState.mailbox_inbound.
-                receiver = str(args[0]) if args else ""
-                mailbox = getattr(h, "mailboxes", {}).setdefault(receiver, []) if hasattr(h, "mailboxes") else []
-                return mailbox[0] if mailbox else None
         except VMHostError:
             raise
         except (TypeError, ValueError, AttributeError, IndexError) as exc:
@@ -1713,15 +1668,17 @@ class VMBridge:
             symbol=symbol,
         )
 
-    def get_cvm_callback_adapter(self, vm: Any):
+    def get_cvm_callback_adapter(self, vm: Any, *, env=None, restoring=False):
         """Return a CVM host callback that only routes CALL_HOST through Alpha.3 dispatch.
 
         Legacy v2.1 HOST_ABI opcodes (IMPRINT, RECALL, METRICS, etc.) continue to
         flow through vm_host_call unchanged.
         """
+        sender = bind_sender(self.get_host(), vm, env, restoring=restoring)
+
         def _callback(opcode: str, a: Any, b: Any) -> Any:
             if opcode == "CALL_HOST" and isinstance(a, dict):
-                return self.dispatch_host_call(vm, a.get("symbol"), a.get("args", []))
+                return self.dispatch_host_call(vm, a.get("symbol"), a.get("args", []), sender=sender)
             return self.vm_host_call(opcode, a, b)
         return _callback
 
@@ -1746,7 +1703,7 @@ class VMBridge:
         """Hydrate host ActorRuntime from restored VM actor_stack without emitting events."""
         try:
             h = self.get_host()
-            actor_runtime = getattr(h, "actor_runtime", None)
+            actor_runtime = self._actor_runtime()
             stack = list(getattr(vm.state, "actor_stack", []) or [])
             if actor_runtime is not None and hasattr(actor_runtime, "sync_from_cvm_stack"):
                 actor_runtime.sync_from_cvm_stack(stack)
@@ -1772,7 +1729,7 @@ class VMBridge:
         """Best-effort host-level actor unwind, idempotent and no-throw."""
         try:
             h = self.get_host()
-            actor_runtime = getattr(h, "actor_runtime", None)
+            actor_runtime = self._actor_runtime()
             if actor_runtime is not None and hasattr(actor_runtime, "exit_event"):
                 event = actor_runtime.exit_event(actor_name)
             else:
@@ -1783,8 +1740,7 @@ class VMBridge:
                 event["unwind_reason"] = reason
                 if actor_runtime is not None and hasattr(actor_runtime, "current") and hasattr(h, "current_actor"):
                     h.current_actor = actor_runtime.current
-                if hasattr(h, "execution_history"):
-                    h.execution_history.append(event)
+                h.record_history_event(event)
                 emit = getattr(h, "emit_runtime_event", None)
                 if callable(emit):
                     emit(event, getattr(h, "current_env", None))
@@ -1842,8 +1798,7 @@ class VMBridge:
                 event["unwind_reason"] = reason
                 if hasattr(tracker, "current"):
                     h.current_context = tracker.current
-                if hasattr(h, "execution_history"):
-                    h.execution_history.append(event)
+                h.record_history_event(event)
                 emit = getattr(h, "emit_runtime_event", None)
                 if callable(emit):
                     emit(event, getattr(h, "current_env", None))
@@ -1862,53 +1817,37 @@ class VMBridge:
             self.unwind_context(vm, label, reason=reason)
 
     def run_cvm_with_context_safety(self, vm: CognitiveVM, *args, **kwargs) -> Dict[str, Any]:
-        """Run CVM with Python-level context-stack safety net.
+        """Run an application invocation, unwinding scopes on terminal failure.
 
-        Commit 1 only introduces the infrastructure. Future ContextBlock support
-        will route SYS_CONTEXT_ENTER/EXIT through this bridge; this wrapper keeps
-        context cleanup centralized without changing the core vm.run contract.
+        Core vm.run(max_steps=...) remains a bounded, resumable component API.
+        Here a step ceiling is an explicit failure, not a completed application
+        result. Existing host/message suspension handling remains unchanged.
         """
+        paused = False
         try:
-            return vm.run(*args, **kwargs)
+            result = vm.run(*args, **kwargs)
+            if not result["halted"]:
+                if vm.state.pending_host_call is not None:
+                    # Paused on a host call: neither the end nor a failure; its scopes stay open until resumed.
+                    paused = True
+                    return result
+                raise VMStepLimitExceeded(result["steps"])
+            return result
         except Exception as exc:
-            if getattr(vm.state, "actor_stack", None):
-                self.unwind_dangling_actors(
-                    vm,
-                    vm.state.actor_stack,
-                    reason=f"exception:{type(exc).__name__}",
-                )
-            if getattr(vm.state, "policy_stack", None):
-                self.unwind_dangling_policies(
-                    vm,
-                    vm.state.policy_stack,
-                    reason=f"exception:{type(exc).__name__}",
-                )
-            if getattr(vm.state, "context_stack", None):
-                self.unwind_dangling_contexts(
-                    vm,
-                    vm.state.context_stack,
-                    reason=f"exception:{type(exc).__name__}",
-                )
+            self.unwind_open_scopes(vm, f"exception:{type(exc).__name__}")
             raise
         finally:
-            if getattr(vm.state, "actor_stack", None):
-                self.unwind_dangling_actors(
-                    vm,
-                    vm.state.actor_stack,
-                    reason="vm_halted",
-                )
-            if getattr(vm.state, "policy_stack", None):
-                self.unwind_dangling_policies(
-                    vm,
-                    vm.state.policy_stack,
-                    reason="vm_halted",
-                )
-            if getattr(vm.state, "context_stack", None):
-                self.unwind_dangling_contexts(
-                    vm,
-                    vm.state.context_stack,
-                    reason="vm_halted",
-                )
+            if not paused:
+                self.unwind_open_scopes(vm, "vm_halted")
+
+    def unwind_open_scopes(self, vm: CognitiveVM, reason: str) -> None:
+        """Close every actor, policy and context scope the VM still holds open."""
+        if getattr(vm.state, "actor_stack", None):
+            self.unwind_dangling_actors(vm, vm.state.actor_stack, reason=reason)
+        if getattr(vm.state, "policy_stack", None):
+            self.unwind_dangling_policies(vm, vm.state.policy_stack, reason=reason)
+        if getattr(vm.state, "context_stack", None):
+            self.unwind_dangling_contexts(vm, vm.state.context_stack, reason=reason)
 
     def evaluate_run_vm(self, node, env) -> Dict[str, Any]:
         h = self.get_host()
@@ -1919,12 +1858,15 @@ class VMBridge:
 
         if node.resume_from is not None:
             label = str(h.evaluate(node.resume_from, env))
-            vm = self.restore_vm_from_checkpoint(label, gas=gas, cognitive_budget=cognitive_budget)
+            vm = self.restore_vm_from_checkpoint(label, gas=gas, cognitive_budget=cognitive_budget, env=env)
         else:
             program_value = h.evaluate(node.source, env) if node.source else env.get("bytecode")
             program = BytecodeProgram.from_dict(program_value) if isinstance(program_value, dict) else program_value
+            if not isinstance(program, BytecodeProgram):
+                raise VMError("run vm runs compiled bytecode (compile vm), not "
+                                   f"{type(program_value).__name__}")
             vm = CognitiveVM(program, host=None)
-            vm.host = self.get_cvm_callback_adapter(vm)
+            vm.host = self.get_cvm_callback_adapter(vm, env=env)
             vm.state.gas_remaining = gas
             vm.state.cognitive_budget_remaining = cognitive_budget
             vm.state.current_context = h.current_context
@@ -1945,21 +1887,36 @@ class VMBridge:
         def save_checkpoint(candidate_vm: CognitiveVM):
             nonlocal saved_snapshot
             label = node.checkpoint_label or "checkpoint"
-            saved_snapshot = self.make_vm_snapshot(candidate_vm, label)
-            h.vm_checkpoints[label]["program"] = candidate_vm.program.to_dict()
             trigger_kind = "at_ip" if isinstance(node.checkpoint_trigger, AtIpTrigger) else "before_op"
             trigger_value = getattr(node.checkpoint_trigger, "ip", getattr(node.checkpoint_trigger, "op", None))
-            h.execution_history[-1]["trigger"] = {"kind": trigger_kind, "value": trigger_value}
+            saved_snapshot = self.make_vm_snapshot(candidate_vm, label, trigger={"kind": trigger_kind, "value": trigger_value})
+            h.vm_checkpoints[label]["program"] = candidate_vm.program.to_dict()
 
         try:
             result = self.run_cvm_with_context_safety(vm, checkpoint_trigger=should_checkpoint, checkpoint_callback=save_checkpoint)
+            while (vm.state.pending_host_call or {}).get("symbol") == "llm.request":
+                # The VM paused on its LLM request (review K): the bridge performs it — capability, cache and
+                # replay included — and resumes the VM with the answer, as the routed path does.
+                pending = vm.state.pending_host_call
+                try:
+                    value = self.dispatch_host_call(vm, "llm.request", decode_vm_value(pending["args"]))
+                except Exception as exc:
+                    # A refused request ends the run: the scopes the paused VM held open close (review F3).
+                    self.unwind_open_scopes(vm, f"exception:{type(exc).__name__}")
+                    raise
+                self.resume_host_call(vm, pending["call_id"], value)
+                result = self.run_cvm_with_context_safety(vm)
         except OutOfEnergy as exc:
             result = {"halted": False, "error": "OUT_OF_ENERGY", "message": str(exc), "snapshot": vm.snapshot()}
+        except VMStepLimitExceeded as exc:
+            result = {"halted": False, "error": "STEP_LIMIT_REACHED", "message": str(exc),
+                      "steps": exc.steps, "snapshot": vm.snapshot()}
         snapshot = vm.snapshot()
         h.vm_snapshots.append(snapshot)
         env.define(node.binding, result)
-        event = {"type": "vm_executed", "result": result, "transition_hash": snapshot["state"].get("transition_hash"), "trace_id": h.current_trace_id()}
+        # The program owns the result it binds; the record keeps its own copy (review F4).
+        event = {"type": "vm_executed", "result": detached(result), "transition_hash": snapshot["state"].get("transition_hash"), "trace_id": h.current_trace_id()}
         if saved_snapshot:
             event["checkpoint_label"] = node.checkpoint_label
-        h.execution_history.append(event)
+        h.record_history_event(event)
         return result

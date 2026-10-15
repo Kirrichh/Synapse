@@ -21,22 +21,6 @@ PROGRAMS = {
     "print_math": 'let x = 2 + 3\nprint(x)\n',
     "llm_cached": 'let a = llm "hello"\nprint(a)\n',
     "nested_context": 'context "work" {\n    print("inside")\n}\n',
-    "inline_guard_pass": '''fn main() {
-    try {
-        memory.write("x") { guard true }
-    } catch (GUARD_VIOLATION) {
-        print("denied")
-    }
-}
-''',
-    "inline_guard_fail_recovery": '''fn main() {
-    try {
-        memory.write("x") { guard false }
-    } catch (GUARD_VIOLATION) {
-        print("denied")
-    }
-}
-''',
     "actor_message": '''agent Worker {
     model "mock"
 }

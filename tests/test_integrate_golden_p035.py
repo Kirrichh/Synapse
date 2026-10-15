@@ -270,7 +270,10 @@ integrate x {
     replay.source_code = src
     replay.interpret(_parse(src))
 
-    # Attempt to replay the same integrate event again (reset cursor to replay same event)
+    # Attempt to replay the same integrate event again in the same run: the replay ended with its record, so
+    # following it again means re-entering REPLAY at the start of the record.
+    assert replay.runtime_mode == RuntimeMode.LIVE
+    replay.runtime_mode = RuntimeMode.REPLAY
     replay.replay_cursor = 0
     with pytest.raises(ReplayIntegrityError, match="already applied"):
         replay.interpret(_parse(src))

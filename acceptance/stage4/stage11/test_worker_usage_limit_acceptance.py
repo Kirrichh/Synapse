@@ -17,8 +17,7 @@ def test_worker_token_limit_stops_before_next_preparation(tmp_path: Path, monkey
         worker_outcomes=("PATCH",),
         run_id="worker-budget-limit",
     )
-    program = world.worker_process.program_path
-    program.write_text(program.read_text().replace('"total_tokens": 0', '"total_tokens": 100000'))
+    world.worker_process.report_tokens(100_000)
     approval_checks = []
     original_check = world.attempt_inputs.check_approval
 

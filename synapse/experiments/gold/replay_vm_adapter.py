@@ -87,6 +87,36 @@ def certify_literal_return_transitions(program, *, gas_budget, execution_context
     return tuple(transitions)
 
 
+def observe_typed_pure_invocation(unit, *, inputs, gas_budget, step_limit, execution_context):
+    """Measure a bounded prospective pure contract using the existing compiler/VM.
+
+    Learning may inspect an unadmitted pure candidate. The resulting transcript
+    is only a prospective contract: publication still needs independent source
+    proof, and use still needs the governed capture and replay. External and
+    structural operations are refused before the first transition.
+    """
+    from .behavior import (bind_contract_values, compile_behavior_unit,
+        create_behavior_invocation, inspect_behavior_invocation)
+    invocation = inspect_behavior_invocation(create_behavior_invocation(unit, inputs), unit=unit)
+    program = compile_behavior_unit(unit).program
+    allowed = REPLAY_ADMISSIBLE_OPCODES | {"RETURN"}
+    if any(instruction.op not in allowed for instruction in program.instructions):
+        raise _fail(ReplayFailureCode.UNGOVERNED_DISPATCH, "pure contract observation excludes host or structural activity")
+    _natural(step_limit, "step_limit", maximum=100_000)
+    machine = CognitiveVMReplayAdapter(program, gas_budget=gas_budget,
+        execution_context=execution_context, initial_values=invocation["bound_values"])
+    transitions = []
+    while not machine.is_halted():
+        if len(transitions) >= step_limit or machine.next_step_gas_cost() > machine.gas_remaining():
+            raise _fail(ReplayFailureCode.RESOURCE_LIMIT_EXCEEDED, "prospective pure computation exhausted its budget")
+        machine.step()
+        transitions.append(machine.transition_hash())
+    fields = unit.core.output_contract.fields
+    result = machine.read_return_value()
+    bind_contract_values(fields, {fields[0].name: result})
+    return tuple(transitions), result
+
+
 def read_replayed_return_value(observation, snapshot_bytes):
     """Read a completed pure VM return without executing or restoring authority."""
     validate_replay_observation(observation)
@@ -97,7 +127,8 @@ def read_replayed_return_value(observation, snapshot_bytes):
         raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "replay output snapshot differs from its observation")
     program, state, halted, sequence, history = _vm_codec.decode_adapter_snapshot(snapshot_bytes)
     if (not halted or program.program_hash != observation.program_hash or len(state.stack) != 1
-            or state.call_stack or state.pending_host_call is not None
+            or state.error is not None or state.call_stack or state.pending_host_call is not None
+            or state.pending_message_receive is not None
             or observation.failure_reason is not None or not observation.transcript_matched
             or observation.first_unexpected_index is not None or sequence != 0
             or observation.consumed_activity_identities):
@@ -213,6 +244,7 @@ class CognitiveVMReplayAdapter:
         *,
         gas_budget: int,
         execution_context: ReplayMachineExecutionContext,
+        initial_values: dict[str, object] | None = None,
         _state: VMState | None = None,
         _halted: bool = False,
         _activity_sequence: int = 0,
@@ -224,7 +256,13 @@ class CognitiveVMReplayAdapter:
         _vm_codec.require_canonical_vm_value(program.constants, field="program constants", data_only=True)
         _natural(gas_budget, "gas_budget", maximum=_vm_codec.MAX_SAFE_INTEGER)
         context = require_replay_machine_execution_context(execution_context)
+        if initial_values is not None:
+            if _state is not None or type(initial_values) is not dict:
+                raise _fail(ReplayFailureCode.TYPE_MISMATCH, "fresh typed inputs cannot override a restored VM state")
+            _vm_codec.require_canonical_vm_value(initial_values, field="initial values", data_only=True)
         state = _state if _state is not None else VMState(gas_remaining=gas_budget)
+        if initial_values is not None:
+            state.locals = copy.deepcopy(initial_values)
         _vm_codec.require_canonical_vm_state(state, program=program)
         if type(_halted) is not bool:
             raise _fail(ReplayFailureCode.TYPE_MISMATCH, "snapshot halted flag must be exact")
@@ -262,6 +300,26 @@ class CognitiveVMReplayAdapter:
 
     def program_hash(self) -> str:
         return self._vm.program.program_hash
+
+    def read_return_value(self) -> object:
+        """One physical pure return, without supplying an output default."""
+        state = self._vm.state
+        if (not self.is_halted() or state.error is not None or len(state.stack) != 1
+                or state.call_stack or state.pending_host_call is not None
+                or state.pending_message_receive is not None or self._sequence):
+            raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "typed pure replay did not produce one completed return")
+        _vm_codec.require_canonical_vm_value(state.stack[0], field="return value", data_only=True)
+        return copy.deepcopy(state.stack[0])
+
+    def require_initial_values(self, expected: dict[str, object]) -> None:
+        """Refuse a fresh manifest captured for different invocation data."""
+        _vm_codec.require_canonical_vm_value(expected, field="expected initial values", data_only=True)
+        state = self._vm.state
+        if (state.ip != 0 or state.stack or state.call_stack or self.is_halted()
+                or state.error is not None or state.transition_hash != "sha256:genesis"
+                or state.pending_host_call is not None or state.pending_message_receive is not None
+                or self._sequence or _vm_codec.machine_value_bytes(state.locals) != _vm_codec.machine_value_bytes(expected)):
+            raise _fail(ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH, "fresh snapshot differs from the bound invocation")
 
     def host_abi_version(self) -> str:
         return str(self._vm.program.host_abi_version)
@@ -1026,8 +1084,10 @@ class CognitiveVMReplayMachineFactory:
 
     def build(self, program: BytecodeProgram, *, gas_budget: int,
               execution_context: ReplayMachineExecutionContext,
+              initial_values: dict[str, object] | None = None,
               expected_structural_history: bytes | None = None) -> ReplayMachinePort:
         return CognitiveVMReplayAdapter(program, gas_budget=gas_budget, execution_context=execution_context,
+            initial_values=initial_values,
             expected_structural_history=expected_structural_history)
     def restore(self, snapshot_bytes: bytes, *, gas_budget: int,
                 execution_context: ReplayMachineExecutionContext,

@@ -1,0 +1,228 @@
+"""A connected project with admitted scripted tools, driven only by the canonical CLI.
+
+The world connects a Gold project (the stage 16 source fixture), serves the
+scenario's tools from ``acceptance.memory.tool_server`` over MCP stdio, admits
+their descriptors by digest in a frozen memory configuration, and runs Synapse
+programs with ``python -m synapse run --durable --project-state
+--memory-config``. Checks read three independent places: the run artifacts,
+the project journal through the memory owner's reader, and the tool server's
+own world record.
+"""
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+from acceptance.memory.tool_server import SCRIPT_V1, descriptor
+from acceptance.stage4.stage16._source_inputs import prepare
+from synapse.agents.codec import digest
+from synapse.memory_consolidation.owner import MemoryOwner
+
+REPOSITORY = Path(__file__).resolve().parents[2]
+OBJECT = {"type": "object"}
+
+
+def tool(name, source, answers, *, contract=None, event_fields=(), role="action", server="scripted", dedupe=None):
+    """One scripted tool: its server, the server's answers, the operator's contract for it and, when the
+    provider deduplicates by an idempotency key, how (``{"field", "retention_s"}``)."""
+    return {"name": name, "source": source, "answers": answers, "contract": contract or {},
+            "event_fields": list(event_fields), "role": role, "server": server, "dedupe": dedupe}
+
+
+def answer(payload, *, when=None, sequence=(), effect=None, delay=None, until=None):
+    """A rule: ``sequence`` answers the first calls of one exact request, then ``payload``; ``delay``
+    seconds pass before the answer is given, or less once the signal file ``until`` appears."""
+    then = {"payload": payload} if effect is None else {"payload": payload, "effect": effect}
+    if delay is not None:
+        then["delay"] = delay
+    if until is not None:
+        then["until"] = until
+    return {"when": when or {}, "sequence": list(sequence), "then": then}
+
+
+def embedder(concepts, *, model="concepts-v1"):
+    """The rule of a scripted embedding model: one component per concept, counting its words in the text."""
+    return {"when": {}, "sequence": [], "then": {"payload": {}, "embed": {"concepts": [[name, sorted(members)]
+                                                                            for name, members in concepts],
+                                                                "model": model}}}
+
+
+def stateful(payload, *, act, otherwise=None, effect=None, when=None):
+    """A rule answered from the server's objects: ``act`` creates, reads, moves or consumes one of them.
+
+    ``otherwise`` answers when the object ``act`` needs does not exist; the
+    effect applies only when ``act`` succeeds.
+    """
+    then = {"payload": payload, "act": act}
+    if otherwise is not None:
+        then["otherwise"] = {"payload": otherwise}
+    if effect is not None:
+        then["effect"] = effect
+    return {"when": when or {}, "sequence": [], "then": then}
+
+
+class MemoryWorld:
+    """One project, its tool server and its runs."""
+
+    def __init__(self, root: Path, tools, *, provenance, parameters=None, decision_rule="threshold",
+                 state: Path | None = None, advisor: str | None = None, knowledge: dict | None = None) -> None:
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        # A world connects its own project, or joins the state of one another stream already uses.
+        self.state = Path(state) if state is not None else prepare(self.root)[1]
+        self.runs = self.root / "runs"
+        self.runs.mkdir()
+        self.world_path = self.root / "world.json"
+        servers, served = [], {}
+        for server_id in sorted({item["server"] for item in tools}):
+            script = {"schema_version": SCRIPT_V1, "tools": [
+                {"name": item["name"], "input_schema": OBJECT, "output_schema": OBJECT, "answers": item["answers"],
+                 **({"dedupe": item["dedupe"]} if item.get("dedupe") else {})}
+                for item in tools if item["server"] == server_id]}
+            served.update((entry["name"], entry) for entry in script["tools"])
+            script_path = self.root / f"{server_id}.tools.json"
+            script_path.write_text(json.dumps(script, sort_keys=True))
+            servers.append({"id": server_id, "argv": [sys.executable, "-B", "-m", "acceptance.memory.tool_server",
+                                                      str(script_path), str(self.world_path)],
+                            "env": {"PYTHONPATH": str(REPOSITORY)}, "cwd": str(REPOSITORY)})
+        admitted = []
+        for item in tools:
+            entry = {"name": item["name"], "server": item["server"], "input_schema": OBJECT, "output_schema": OBJECT,
+                     "descriptor_sha256": digest(descriptor(served[item["name"]]).model_dump(
+                         mode="json", by_alias=True, exclude_none=True)),
+                     "source": item["source"], "role": item["role"], "contract": item["contract"],
+                     "event_fields": item["event_fields"]}
+            admitted.append(entry)
+        self.configuration_path = self.root / "memory.json"
+        configuration = {
+            "schema_version": "synapse.memory.configuration/v1",
+            "tools": {"schema_version": "synapse.memory.tool-configuration/v2", "servers": servers,
+                      "tools": admitted, "provenance": provenance},
+            "court": {"decision_rule": decision_rule, "parameters": parameters or {}},
+            # The advisor, when a scenario has one, is one of its admitted reason tools.
+            "advisor": None if advisor is None else {"tool": advisor, "version": "acceptance-v1"},
+            "scorer": None, "element": "acceptance.travel"}
+        if knowledge is not None:
+            # Semantic knowledge (refinement §15) is declared by configuration schema v2.
+            configuration.update(schema_version="synapse.memory.configuration/v2", knowledge=knowledge)
+        self.configuration_path.write_text(json.dumps(configuration, sort_keys=True))
+
+    # -- the canonical launch --------------------------------------------------
+    def _cli(self, *arguments) -> tuple[int, dict | None, str]:
+        environment = {**os.environ, "PYTHONPATH": str(REPOSITORY)}
+        completed = subprocess.run([sys.executable, "-B", "-m", "synapse", *map(str, arguments)], cwd=REPOSITORY,
+                                   env=environment, capture_output=True, text=True, timeout=900)
+        lines = [line for line in completed.stdout.splitlines() if line.startswith("{")]
+        return completed.returncode, json.loads(lines[-1]) if lines else None, completed.stderr
+
+    def _run_arguments(self, source: str, run_id: str, bindings: dict, exam=None, configuration=None) -> list:
+        program = self.root / f"{run_id}.syn"
+        program.write_text(source)
+        inputs = self.root / f"{run_id}.input.json"
+        inputs.write_text(json.dumps(bindings, sort_keys=True))
+        arguments = ["run", program, "--durable", "--state-dir", self.runs, "--run-id", run_id,
+                     "--input-file", inputs, "--project-state", self.state,
+                     "--memory-config", configuration or self.configuration_path]
+        if exam is not None:
+            mode, snapshot, *trial = exam
+            arguments += ["--exam-mode", mode, "--exam-snapshot", snapshot]
+            if trial:  # A trial arm: the one learned habit the exam runs alone.
+                arguments += ["--exam-trial", trial[0]]
+        return arguments
+
+    def run(self, source: str, run_id: str, bindings: dict, *, exam=None) -> dict:
+        """One ordinary durable session, or an exam ``(mode, snapshot boundary id[, trial habit])`` on a fixed
+        snapshot."""
+        code, payload, stderr = self._cli(*self._run_arguments(source, run_id, bindings, exam))
+        assert code == 0 and payload is not None and payload["status"] == "COMPLETED", (code, payload, stderr)
+        return payload
+
+    def reconfigured(self, name: str, contracts: dict) -> Path:
+        """The same configuration with other operator contracts for the named tools (a contract correction)."""
+        configuration = json.loads(self.configuration_path.read_text())
+        for item in configuration["tools"]["tools"]:
+            if item["name"] in contracts:
+                item["contract"] = contracts[item["name"]]
+        path = self.root / f"memory.{name}.json"
+        path.write_text(json.dumps(configuration, sort_keys=True))
+        return path
+
+    def attempt(self, source: str, run_id: str, bindings: dict, *, configuration: Path) -> tuple[int, dict | None, str]:
+        """A launch with another memory configuration, whatever its outcome."""
+        return self._cli(*self._run_arguments(source, run_id, bindings, configuration=configuration))
+
+    def start(self, source: str, run_id: str, bindings: dict) -> subprocess.Popen:
+        """The same launch as its own process group, for a crash or a concurrent stream."""
+        arguments = self._run_arguments(source, run_id, bindings)
+        return subprocess.Popen([sys.executable, "-B", "-m", "synapse", *map(str, arguments)], cwd=REPOSITORY,
+                                env={**os.environ, "PYTHONPATH": str(REPOSITORY)}, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, start_new_session=True)
+
+    def resume(self, run_id: str) -> tuple[int, dict | None, str]:
+        return self._cli("resume", "--state-file", self.runs / f"{run_id}.json")
+
+    def memory(self, act: str, *arguments, configuration: Path | None = None) -> tuple[int, dict | None, str]:
+        """An operator act on the owner's memory (``synapse memory forget|restore|reassess``)."""
+        return self._cli("memory", act, "--project-state", self.state, "--memory-config",
+                         configuration or self.configuration_path, *arguments)
+
+    # -- observations ------------------------------------------------------------
+    def history(self, run_id: str) -> list[dict]:
+        artifact = json.loads((self.runs / f"{run_id}.json").read_text())
+        return artifact["replay_state"]["execution_history"]
+
+    def events(self, run_id: str, kind: str) -> list[dict]:
+        return [event for event in self.history(run_id) if event.get("type") == kind]
+
+    def opening(self, run_id: str) -> dict:
+        opening, = self.events(run_id, "memory_session_opened")
+        return opening
+
+    def world(self) -> dict:
+        """The servers' world, read under the lock they write it under: never a half-written file."""
+        if not self.world_path.exists():
+            return {"calls": [], "effects": []}
+        with open(self.world_path.with_suffix(".lock"), "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_SH)
+            return json.loads(self.world_path.read_text())
+
+    def restore(self, environment: dict) -> None:
+        """Put the environment back into a recorded state (a paired experiment's common start)."""
+        self.world_path.write_text(json.dumps(environment, sort_keys=True))
+
+    def calls(self, name: str) -> list[dict]:
+        return [item["args"] for item in self.world()["calls"] if item["tool"] == name]
+
+    def owner(self) -> MemoryOwner:
+        return MemoryOwner(self.state, read_only=True)
+
+    def reports(self) -> list[dict]:
+        return [item["report"] for item in self.owner().applied() if item["report"] is not None]
+
+    def journal(self) -> list:
+        return self.owner().store.inventory()
+
+    def failures(self, run_id: str) -> list[dict]:
+        """The failed operations of one session as the court derives them from the gateway's journal."""
+        from synapse.memory_consolidation.configuration import read_memory_configuration
+        from synapse.memory_consolidation.tools.episodes import derive_scope, group_scopes
+        from synapse.memory_consolidation.tools.gateway import Gateway
+
+        configuration = read_memory_configuration(self.configuration_path)
+        reader = Gateway(self.owner().gateway_root, configuration.tools, executor="acceptance-reader",
+                         transport=object())
+        found = []
+        for (run, _), records in sorted(group_scopes(reader.records()).items(), key=lambda item: str(item[0])):
+            if run == run_id:
+                found.extend(derive_scope(records, configuration.tools, self.evidence())["failures"])
+        return found
+
+    def evidence(self):
+        """The owner's store D: recorded results, raw traces and replay data."""
+        from synapse.memory_consolidation.tools.evidence import EvidenceStore
+
+        return EvidenceStore(self.owner().gateway_root / "evidence")

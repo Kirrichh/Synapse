@@ -1,0 +1,1209 @@
+{
+  "schema_version": "synapse.acceptance.storage-evacuation-measurement/v1",
+  "baseline_revision": "fc5509e0f1c29fecece4427b6f95c6dbe053e501",
+  "task": "24 nodes, 6 racks, 1536 shards with three replicas; drain four nodes, inject node failure and capacity correction, refuse stale plan, replan.",
+  "scope": {
+    "execution": "Four real durable application runs including their consolidation and the small source/status-file writes between phases. Project setup, retained-state inspection, replay and final report writing are excluded.",
+    "replay": "Canonical program prefix ending immediately before the recorded session_consolidated event of each phase; this does not perform consolidation again.",
+    "rss": "Linux peak process RSS in KiB after the complete harness, including inspection and replay.",
+    "timing": "Three isolated processes per variant, paired in alternating order; no profiling or timing assertion; unchanged Python environment; local simulated provider without network.",
+    "comparisons": "Byte equality for migration ledger and final cluster; complete knowledge_searched events compared with no excluded fields; explicit outcome/public-result fields.",
+    "excluded_public_fields": {
+      "artifact_path": "Different artifact root per isolated process.",
+      "history_hash": "Distinct complete run records; whole-history equality is not asserted. Each recorded history is verified by replay."
+    }
+  },
+  "reproduction_command": "python acceptance/memory/storage_evacuation/measure.py --product-root /path/to/checkout --output /new/artifact/directory --label baseline-or-patched",
+  "cross_version_reproduction_command": "python acceptance/memory/storage_evacuation/measure.py --product-root /path/to/patched --output /new/replay/directory --label old-records-new-runtime --replay-existing /baseline/artifacts",
+  "process_order": [
+    "baseline-1",
+    "patched-1",
+    "patched-2",
+    "baseline-2",
+    "baseline-3",
+    "patched-3"
+  ],
+  "samples": [
+    {
+      "pair": 1,
+      "variant": "baseline",
+      "phases": [
+        {
+          "name": "survey-original",
+          "wall_s": 4.697094675000699,
+          "cpu_s": 4.670338222,
+          "status": "COMPLETED",
+          "exit_code": 0
+        },
+        {
+          "name": "evacuate-original",
+          "wall_s": 15.808257570999558,
+          "cpu_s": 15.768683807999999,
+          "status": "COMPLETED",
+          "exit_code": 0
+        },
+        {
+          "name": "survey-corrected",
+          "wall_s": 12.486930664999818,
+          "cpu_s": 12.461069147000003,
+          "status": "COMPLETED",
+          "exit_code": 0
+        },
+        {
+          "name": "evacuate-replanned",
+          "wall_s": 35.58260236500064,
+          "cpu_s": 35.428287303999994,
+          "status": "COMPLETED",
+          "exit_code": 0
+        }
+      ],
+      "execution_with_consolidation_wall_s": 68.5759415020002,
+      "phase_cpu_s": 68.328378481,
+      "replay": [
+        {
+          "name": "survey-original",
+          "wall_s": 0.37245452299976023,
+          "cpu_s": 0.3724435430000028,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 1587,
+            "reason": null
+          }
+        },
+        {
+          "name": "evacuate-original",
+          "wall_s": 6.842717370000173,
+          "cpu_s": 6.841240026000008,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 10,
+            "reason": null
+          }
+        },
+        {
+          "name": "survey-corrected",
+          "wall_s": 2.2664025300000503,
+          "cpu_s": 2.2659808109999915,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 1587,
+            "reason": null
+          }
+        },
+        {
+          "name": "evacuate-replanned",
+          "wall_s": 8.654252827000164,
+          "cpu_s": 8.652932031999995,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 45,
+            "reason": null
+          }
+        }
+      ],
+      "replay_wall_s": 18.135827250000148,
+      "environment": {
+        "label": "baseline-fc5509e-1",
+        "product_root": "/workspace/synapse-grouping-baseline-fc5509e",
+        "search_module": "/workspace/synapse-grouping-baseline-fc5509e/synapse/memory_consolidation/knowledge/search.py",
+        "search_source_sha256": "90db44df66f4f4432d25cf811239f96663bc5b937857fe8c725d1b5ca9ec553c",
+        "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+        "peak_rss_kib": 860044
+      }
+    },
+    {
+      "pair": 1,
+      "variant": "patched",
+      "phases": [
+        {
+          "name": "survey-original",
+          "wall_s": 4.704408322000745,
+          "cpu_s": 4.674387126,
+          "status": "COMPLETED",
+          "exit_code": 0
+        },
+        {
+          "name": "evacuate-original",
+          "wall_s": 13.581604714001514,
+          "cpu_s": 13.550127779999999,
+          "status": "COMPLETED",
+          "exit_code": 0
+        },
+        {
+          "name": "survey-corrected",
+          "wall_s": 12.812365712999963,
+          "cpu_s": 12.786533242,
+          "status": "COMPLETED",
+          "exit_code": 0
+        },
+        {
+          "name": "evacuate-replanned",
+          "wall_s": 31.100530536001315,
+          "cpu_s": 30.93498218,
+          "status": "COMPLETED",
+          "exit_code": 0
+        }
+      ],
+      "execution_with_consolidation_wall_s": 62.199984418000895,
+      "phase_cpu_s": 61.946030328,
+      "replay": [
+        {
+          "name": "survey-original",
+          "wall_s": 0.32642260100146814,
+          "cpu_s": 0.32637899099999856,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 1587,
+            "reason": null
+          }
+        },
+        {
+          "name": "evacuate-original",
+          "wall_s": 5.520492640000157,
+          "cpu_s": 5.519043158999992,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 10,
+            "reason": null
+          }
+        },
+        {
+          "name": "survey-corrected",
+          "wall_s": 2.224151571999755,
+          "cpu_s": 2.2237929810000026,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 1587,
+            "reason": null
+          }
+        },
+        {
+          "name": "evacuate-replanned",
+          "wall_s": 6.864648163000311,
+          "cpu_s": 6.863451385999994,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 45,
+            "reason": null
+          }
+        }
+      ],
+      "replay_wall_s": 14.935714976001691,
+      "environment": {
+        "label": "patched-fc5509e-1",
+        "product_root": "/workspace/Synapse",
+        "search_module": "/workspace/Synapse/synapse/memory_consolidation/knowledge/search.py",
+        "search_source_sha256": "52ebea09a481f558d726d804a15fa3fef426561dfe4ba2e0642456ab7b6d1d32",
+        "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+        "peak_rss_kib": 863652
+      }
+    },
+    {
+      "pair": 2,
+      "variant": "baseline",
+      "phases": [
+        {
+          "name": "survey-original",
+          "wall_s": 4.887987594000151,
+          "cpu_s": 4.859480312,
+          "status": "COMPLETED",
+          "exit_code": 0
+        },
+        {
+          "name": "evacuate-original",
+          "wall_s": 16.02460379600052,
+          "cpu_s": 15.995322736000002,
+          "status": "COMPLETED",
+          "exit_code": 0
+        },
+        {
+          "name": "survey-corrected",
+          "wall_s": 12.837374945000192,
+          "cpu_s": 12.806795954000002,
+          "status": "COMPLETED",
+          "exit_code": 0
+        },
+        {
+          "name": "evacuate-replanned",
+          "wall_s": 35.443862931000695,
+          "cpu_s": 35.262482672,
+          "status": "COMPLETED",
+          "exit_code": 0
+        }
+      ],
+      "execution_with_consolidation_wall_s": 69.19499818900113,
+      "phase_cpu_s": 68.924081674,
+      "replay": [
+        {
+          "name": "survey-original",
+          "wall_s": 0.3132222719996207,
+          "cpu_s": 0.31314527400000713,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 1587,
+            "reason": null
+          }
+        },
+        {
+          "name": "evacuate-original",
+          "wall_s": 6.626935525999215,
+          "cpu_s": 6.625723765999993,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 10,
+            "reason": null
+          }
+        },
+        {
+          "name": "survey-corrected",
+          "wall_s": 2.384744889001013,
+          "cpu_s": 2.3842190370000083,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 1587,
+            "reason": null
+          }
+        },
+        {
+          "name": "evacuate-replanned",
+          "wall_s": 8.846057218001079,
+          "cpu_s": 8.843072824999993,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 45,
+            "reason": null
+          }
+        }
+      ],
+      "replay_wall_s": 18.170959905000927,
+      "environment": {
+        "label": "baseline-fc5509e-2",
+        "product_root": "/workspace/synapse-grouping-baseline-fc5509e",
+        "search_module": "/workspace/synapse-grouping-baseline-fc5509e/synapse/memory_consolidation/knowledge/search.py",
+        "search_source_sha256": "90db44df66f4f4432d25cf811239f96663bc5b937857fe8c725d1b5ca9ec553c",
+        "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+        "peak_rss_kib": 866396
+      }
+    },
+    {
+      "pair": 2,
+      "variant": "patched",
+      "phases": [
+        {
+          "name": "survey-original",
+          "wall_s": 4.566999949000092,
+          "cpu_s": 4.540646852999999,
+          "status": "COMPLETED",
+          "exit_code": 0
+        },
+        {
+          "name": "evacuate-original",
+          "wall_s": 13.633352380998986,
+          "cpu_s": 13.601037516000002,
+          "status": "COMPLETED",
+          "exit_code": 0
+        },
+        {
+          "name": "survey-corrected",
+          "wall_s": 12.738249408999764,
+          "cpu_s": 12.707951999000002,
+          "status": "COMPLETED",
+          "exit_code": 0
+        },
+        {
+          "name": "evacuate-replanned",
+          "wall_s": 31.31107052599873,
+          "cpu_s": 31.139788485,
+          "status": "COMPLETED",
+          "exit_code": 0
+        }
+      ],
+      "execution_with_consolidation_wall_s": 62.25090182799977,
+      "phase_cpu_s": 61.989424853,
+      "replay": [
+        {
+          "name": "survey-original",
+          "wall_s": 0.29007638599978236,
+          "cpu_s": 0.29006753699999877,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 1587,
+            "reason": null
+          }
+        },
+        {
+          "name": "evacuate-original",
+          "wall_s": 5.483779008000056,
+          "cpu_s": 5.48318272600001,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 10,
+            "reason": null
+          }
+        },
+        {
+          "name": "survey-corrected",
+          "wall_s": 2.4211153780015593,
+          "cpu_s": 2.4206692509999925,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 1587,
+            "reason": null
+          }
+        },
+        {
+          "name": "evacuate-replanned",
+          "wall_s": 6.372257089999039,
+          "cpu_s": 6.3714034430000055,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 45,
+            "reason": null
+          }
+        }
+      ],
+      "replay_wall_s": 14.567227862000436,
+      "environment": {
+        "label": "patched-fc5509e-2",
+        "product_root": "/workspace/Synapse",
+        "search_module": "/workspace/Synapse/synapse/memory_consolidation/knowledge/search.py",
+        "search_source_sha256": "52ebea09a481f558d726d804a15fa3fef426561dfe4ba2e0642456ab7b6d1d32",
+        "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+        "peak_rss_kib": 848772
+      }
+    },
+    {
+      "pair": 3,
+      "variant": "baseline",
+      "phases": [
+        {
+          "name": "survey-original",
+          "wall_s": 4.807936975999837,
+          "cpu_s": 4.775132080000001,
+          "status": "COMPLETED",
+          "exit_code": 0
+        },
+        {
+          "name": "evacuate-original",
+          "wall_s": 15.7012040289992,
+          "cpu_s": 15.664491425000001,
+          "status": "COMPLETED",
+          "exit_code": 0
+        },
+        {
+          "name": "survey-corrected",
+          "wall_s": 12.557147284000166,
+          "cpu_s": 12.53072268,
+          "status": "COMPLETED",
+          "exit_code": 0
+        },
+        {
+          "name": "evacuate-replanned",
+          "wall_s": 35.65232471300078,
+          "cpu_s": 35.49100686300001,
+          "status": "COMPLETED",
+          "exit_code": 0
+        }
+      ],
+      "execution_with_consolidation_wall_s": 68.7197319299994,
+      "phase_cpu_s": 68.461353048,
+      "replay": [
+        {
+          "name": "survey-original",
+          "wall_s": 0.3918931470016105,
+          "cpu_s": 0.3916617919999936,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 1587,
+            "reason": null
+          }
+        },
+        {
+          "name": "evacuate-original",
+          "wall_s": 6.836772018999909,
+          "cpu_s": 6.835337525,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 10,
+            "reason": null
+          }
+        },
+        {
+          "name": "survey-corrected",
+          "wall_s": 2.2460562479991495,
+          "cpu_s": 2.245277376000004,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 1587,
+            "reason": null
+          }
+        },
+        {
+          "name": "evacuate-replanned",
+          "wall_s": 9.065913286000068,
+          "cpu_s": 9.064192902000002,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 45,
+            "reason": null
+          }
+        }
+      ],
+      "replay_wall_s": 18.540634700000737,
+      "environment": {
+        "label": "baseline-fc5509e-3",
+        "product_root": "/workspace/synapse-grouping-baseline-fc5509e",
+        "search_module": "/workspace/synapse-grouping-baseline-fc5509e/synapse/memory_consolidation/knowledge/search.py",
+        "search_source_sha256": "90db44df66f4f4432d25cf811239f96663bc5b937857fe8c725d1b5ca9ec553c",
+        "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+        "peak_rss_kib": 865284
+      }
+    },
+    {
+      "pair": 3,
+      "variant": "patched",
+      "phases": [
+        {
+          "name": "survey-original",
+          "wall_s": 4.869608237000648,
+          "cpu_s": 4.841399519,
+          "status": "COMPLETED",
+          "exit_code": 0
+        },
+        {
+          "name": "evacuate-original",
+          "wall_s": 13.728459419999126,
+          "cpu_s": 13.696880419000001,
+          "status": "COMPLETED",
+          "exit_code": 0
+        },
+        {
+          "name": "survey-corrected",
+          "wall_s": 12.646543110000493,
+          "cpu_s": 12.622081440999999,
+          "status": "COMPLETED",
+          "exit_code": 0
+        },
+        {
+          "name": "evacuate-replanned",
+          "wall_s": 30.5752050709998,
+          "cpu_s": 30.423536365999997,
+          "status": "COMPLETED",
+          "exit_code": 0
+        }
+      ],
+      "execution_with_consolidation_wall_s": 61.82085981500131,
+      "phase_cpu_s": 61.583897744999994,
+      "replay": [
+        {
+          "name": "survey-original",
+          "wall_s": 0.2692276679990755,
+          "cpu_s": 0.26900605600000205,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 1587,
+            "reason": null
+          }
+        },
+        {
+          "name": "evacuate-original",
+          "wall_s": 5.380185517000427,
+          "cpu_s": 5.379563484999991,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 10,
+            "reason": null
+          }
+        },
+        {
+          "name": "survey-corrected",
+          "wall_s": 2.401578024000628,
+          "cpu_s": 2.4007745370000038,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 1587,
+            "reason": null
+          }
+        },
+        {
+          "name": "evacuate-replanned",
+          "wall_s": 6.796791945000223,
+          "cpu_s": 6.795741094000007,
+          "result": {
+            "status": "replay_verified",
+            "consumed": 45,
+            "reason": null
+          }
+        }
+      ],
+      "replay_wall_s": 14.847783154000354,
+      "environment": {
+        "label": "patched-fc5509e-3",
+        "product_root": "/workspace/Synapse",
+        "search_module": "/workspace/Synapse/synapse/memory_consolidation/knowledge/search.py",
+        "search_source_sha256": "52ebea09a481f558d726d804a15fa3fef426561dfe4ba2e0642456ab7b6d1d32",
+        "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+        "peak_rss_kib": 863936
+      }
+    }
+  ],
+  "medians": {
+    "baseline": {
+      "execution_with_consolidation_wall_s": 68.7197319299994,
+      "replay_wall_s": 18.170959905000927,
+      "peak_rss_kib": 865284
+    },
+    "patched": {
+      "execution_with_consolidation_wall_s": 62.199984418000895,
+      "replay_wall_s": 14.847783154000354,
+      "peak_rss_kib": 863652
+    }
+  },
+  "comparisons": [
+    {
+      "pair": 1,
+      "files": {
+        "move-ledger.json": {
+          "byte_equal": true,
+          "sha256": "bb038ac0663a94d6d06bede0ef40f412720c5bae05c664e831c0da338be7d869"
+        },
+        "final-cluster.json": {
+          "byte_equal": true,
+          "sha256": "4003b9a712c13acb9c44108bf66c22ce5400c068233ce7c75b76ffe14e58fb94"
+        }
+      },
+      "searches": {
+        "survey-original": {
+          "whole_events_equal": true,
+          "excluded_fields": [],
+          "event_count": 0,
+          "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "evacuate-original": {
+          "whole_events_equal": true,
+          "excluded_fields": [],
+          "event_count": 1,
+          "sha256": "c7f8b1fadf7788e0eacdd30b7e820ac2c867c68f3804cb0e7591683c522e5419"
+        },
+        "survey-corrected": {
+          "whole_events_equal": true,
+          "excluded_fields": [],
+          "event_count": 0,
+          "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "evacuate-replanned": {
+          "whole_events_equal": true,
+          "excluded_fields": [],
+          "event_count": 1,
+          "sha256": "4786614cab911e81118a3e5a53e31505bb6414b4ce978661fdc1fcd64963550a"
+        }
+      },
+      "public_results": {
+        "survey-original": {
+          "compared_fields": [
+            "artifact_revision",
+            "correlation_id",
+            "exit_code",
+            "output_delta",
+            "result_schema_version",
+            "run_id",
+            "source_hash",
+            "status"
+          ],
+          "sha256": "f432b05e55a7f23665a5cef5cd5e4b47ab664c71ae7f742320316b21b6454c58",
+          "equal": true
+        },
+        "evacuate-original": {
+          "compared_fields": [
+            "artifact_revision",
+            "correlation_id",
+            "exit_code",
+            "output_delta",
+            "result_schema_version",
+            "run_id",
+            "source_hash",
+            "status"
+          ],
+          "sha256": "aadee2f20142e0f760a4d320f3ad1b0e4928dcbdf8ff313cee7c77170fab49b9",
+          "equal": true
+        },
+        "survey-corrected": {
+          "compared_fields": [
+            "artifact_revision",
+            "correlation_id",
+            "exit_code",
+            "output_delta",
+            "result_schema_version",
+            "run_id",
+            "source_hash",
+            "status"
+          ],
+          "sha256": "b857c08757f692b609ebbaf0f2f68dd77a3edf8e6bcc4963112044bd6f670c11",
+          "equal": true
+        },
+        "evacuate-replanned": {
+          "compared_fields": [
+            "artifact_revision",
+            "correlation_id",
+            "exit_code",
+            "output_delta",
+            "result_schema_version",
+            "run_id",
+            "source_hash",
+            "status"
+          ],
+          "sha256": "9b8cdbf9e036869f2e749012df08b7f124d7c2ea30d803a050495c31beb66f4e",
+          "equal": true
+        }
+      },
+      "outcome": {
+        "fields": [
+          "shards",
+          "transport_calls",
+          "planned",
+          "applied_moves",
+          "copied_units",
+          "disturbance",
+          "stale_plan_refusals",
+          "all_applied_steps_independently_checked",
+          "final_minimum_live_copies",
+          "all_shards_distinct_racks",
+          "all_node_capacities_respected",
+          "drain_and_failed_nodes_empty",
+          "knowledge_versions",
+          "court_windows",
+          "corrected_node12_recalled_as_down",
+          "corrected_node5_free_space",
+          "recalled_candidates",
+          "replay_transport_calls"
+        ],
+        "equal": true,
+        "sha256": "8ac67766d33a98a9e0fd57748037f2eaa25c3f34f559a22fbf23ac05ea8ac25b"
+      }
+    },
+    {
+      "pair": 2,
+      "files": {
+        "move-ledger.json": {
+          "byte_equal": true,
+          "sha256": "bb038ac0663a94d6d06bede0ef40f412720c5bae05c664e831c0da338be7d869"
+        },
+        "final-cluster.json": {
+          "byte_equal": true,
+          "sha256": "4003b9a712c13acb9c44108bf66c22ce5400c068233ce7c75b76ffe14e58fb94"
+        }
+      },
+      "searches": {
+        "survey-original": {
+          "whole_events_equal": true,
+          "excluded_fields": [],
+          "event_count": 0,
+          "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "evacuate-original": {
+          "whole_events_equal": true,
+          "excluded_fields": [],
+          "event_count": 1,
+          "sha256": "c7f8b1fadf7788e0eacdd30b7e820ac2c867c68f3804cb0e7591683c522e5419"
+        },
+        "survey-corrected": {
+          "whole_events_equal": true,
+          "excluded_fields": [],
+          "event_count": 0,
+          "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "evacuate-replanned": {
+          "whole_events_equal": true,
+          "excluded_fields": [],
+          "event_count": 1,
+          "sha256": "4786614cab911e81118a3e5a53e31505bb6414b4ce978661fdc1fcd64963550a"
+        }
+      },
+      "public_results": {
+        "survey-original": {
+          "compared_fields": [
+            "artifact_revision",
+            "correlation_id",
+            "exit_code",
+            "output_delta",
+            "result_schema_version",
+            "run_id",
+            "source_hash",
+            "status"
+          ],
+          "sha256": "f432b05e55a7f23665a5cef5cd5e4b47ab664c71ae7f742320316b21b6454c58",
+          "equal": true
+        },
+        "evacuate-original": {
+          "compared_fields": [
+            "artifact_revision",
+            "correlation_id",
+            "exit_code",
+            "output_delta",
+            "result_schema_version",
+            "run_id",
+            "source_hash",
+            "status"
+          ],
+          "sha256": "aadee2f20142e0f760a4d320f3ad1b0e4928dcbdf8ff313cee7c77170fab49b9",
+          "equal": true
+        },
+        "survey-corrected": {
+          "compared_fields": [
+            "artifact_revision",
+            "correlation_id",
+            "exit_code",
+            "output_delta",
+            "result_schema_version",
+            "run_id",
+            "source_hash",
+            "status"
+          ],
+          "sha256": "b857c08757f692b609ebbaf0f2f68dd77a3edf8e6bcc4963112044bd6f670c11",
+          "equal": true
+        },
+        "evacuate-replanned": {
+          "compared_fields": [
+            "artifact_revision",
+            "correlation_id",
+            "exit_code",
+            "output_delta",
+            "result_schema_version",
+            "run_id",
+            "source_hash",
+            "status"
+          ],
+          "sha256": "9b8cdbf9e036869f2e749012df08b7f124d7c2ea30d803a050495c31beb66f4e",
+          "equal": true
+        }
+      },
+      "outcome": {
+        "fields": [
+          "shards",
+          "transport_calls",
+          "planned",
+          "applied_moves",
+          "copied_units",
+          "disturbance",
+          "stale_plan_refusals",
+          "all_applied_steps_independently_checked",
+          "final_minimum_live_copies",
+          "all_shards_distinct_racks",
+          "all_node_capacities_respected",
+          "drain_and_failed_nodes_empty",
+          "knowledge_versions",
+          "court_windows",
+          "corrected_node12_recalled_as_down",
+          "corrected_node5_free_space",
+          "recalled_candidates",
+          "replay_transport_calls"
+        ],
+        "equal": true,
+        "sha256": "8ac67766d33a98a9e0fd57748037f2eaa25c3f34f559a22fbf23ac05ea8ac25b"
+      }
+    },
+    {
+      "pair": 3,
+      "files": {
+        "move-ledger.json": {
+          "byte_equal": true,
+          "sha256": "bb038ac0663a94d6d06bede0ef40f412720c5bae05c664e831c0da338be7d869"
+        },
+        "final-cluster.json": {
+          "byte_equal": true,
+          "sha256": "4003b9a712c13acb9c44108bf66c22ce5400c068233ce7c75b76ffe14e58fb94"
+        }
+      },
+      "searches": {
+        "survey-original": {
+          "whole_events_equal": true,
+          "excluded_fields": [],
+          "event_count": 0,
+          "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "evacuate-original": {
+          "whole_events_equal": true,
+          "excluded_fields": [],
+          "event_count": 1,
+          "sha256": "c7f8b1fadf7788e0eacdd30b7e820ac2c867c68f3804cb0e7591683c522e5419"
+        },
+        "survey-corrected": {
+          "whole_events_equal": true,
+          "excluded_fields": [],
+          "event_count": 0,
+          "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "evacuate-replanned": {
+          "whole_events_equal": true,
+          "excluded_fields": [],
+          "event_count": 1,
+          "sha256": "4786614cab911e81118a3e5a53e31505bb6414b4ce978661fdc1fcd64963550a"
+        }
+      },
+      "public_results": {
+        "survey-original": {
+          "compared_fields": [
+            "artifact_revision",
+            "correlation_id",
+            "exit_code",
+            "output_delta",
+            "result_schema_version",
+            "run_id",
+            "source_hash",
+            "status"
+          ],
+          "sha256": "f432b05e55a7f23665a5cef5cd5e4b47ab664c71ae7f742320316b21b6454c58",
+          "equal": true
+        },
+        "evacuate-original": {
+          "compared_fields": [
+            "artifact_revision",
+            "correlation_id",
+            "exit_code",
+            "output_delta",
+            "result_schema_version",
+            "run_id",
+            "source_hash",
+            "status"
+          ],
+          "sha256": "aadee2f20142e0f760a4d320f3ad1b0e4928dcbdf8ff313cee7c77170fab49b9",
+          "equal": true
+        },
+        "survey-corrected": {
+          "compared_fields": [
+            "artifact_revision",
+            "correlation_id",
+            "exit_code",
+            "output_delta",
+            "result_schema_version",
+            "run_id",
+            "source_hash",
+            "status"
+          ],
+          "sha256": "b857c08757f692b609ebbaf0f2f68dd77a3edf8e6bcc4963112044bd6f670c11",
+          "equal": true
+        },
+        "evacuate-replanned": {
+          "compared_fields": [
+            "artifact_revision",
+            "correlation_id",
+            "exit_code",
+            "output_delta",
+            "result_schema_version",
+            "run_id",
+            "source_hash",
+            "status"
+          ],
+          "sha256": "9b8cdbf9e036869f2e749012df08b7f124d7c2ea30d803a050495c31beb66f4e",
+          "equal": true
+        }
+      },
+      "outcome": {
+        "fields": [
+          "shards",
+          "transport_calls",
+          "planned",
+          "applied_moves",
+          "copied_units",
+          "disturbance",
+          "stale_plan_refusals",
+          "all_applied_steps_independently_checked",
+          "final_minimum_live_copies",
+          "all_shards_distinct_racks",
+          "all_node_capacities_respected",
+          "drain_and_failed_nodes_empty",
+          "knowledge_versions",
+          "court_windows",
+          "corrected_node12_recalled_as_down",
+          "corrected_node5_free_space",
+          "recalled_candidates",
+          "replay_transport_calls"
+        ],
+        "equal": true,
+        "sha256": "8ac67766d33a98a9e0fd57748037f2eaa25c3f34f559a22fbf23ac05ea8ac25b"
+      }
+    }
+  ],
+  "baseline_records_patched_replay": {
+    "recorded_root": "/workspace/synapse-grouping-measurements/baseline-1",
+    "replay": [
+      {
+        "name": "survey-original",
+        "wall_s": 0.25326937199861277,
+        "cpu_s": 0.2532702910000001,
+        "result": {
+          "status": "replay_verified",
+          "consumed": 1587,
+          "reason": null
+        }
+      },
+      {
+        "name": "evacuate-original",
+        "wall_s": 7.491687073999856,
+        "cpu_s": 7.491141132000001,
+        "result": {
+          "status": "replay_verified",
+          "consumed": 10,
+          "reason": null
+        }
+      },
+      {
+        "name": "survey-corrected",
+        "wall_s": 2.3044799830004195,
+        "cpu_s": 2.304108232000001,
+        "result": {
+          "status": "replay_verified",
+          "consumed": 1587,
+          "reason": null
+        }
+      },
+      {
+        "name": "evacuate-replanned",
+        "wall_s": 6.469874111000536,
+        "cpu_s": 6.4680375680000015,
+        "result": {
+          "status": "replay_verified",
+          "consumed": 45,
+          "reason": null
+        }
+      }
+    ],
+    "replay_transport_calls": 0,
+    "environment": {
+      "label": "patched-replay-baseline-fc5509e",
+      "product_root": "/workspace/Synapse",
+      "search_module": "/workspace/Synapse/synapse/memory_consolidation/knowledge/search.py",
+      "search_source_sha256": "52ebea09a481f558d726d804a15fa3fef426561dfe4ba2e0642456ab7b6d1d32",
+      "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+      "peak_rss_kib": 457416
+    }
+  },
+  "package_versions": [
+    "PyJWT==2.15.1",
+    "Pygments==2.21.0",
+    "annotated-types==0.8.0",
+    "anyio==4.15.1",
+    "attrs==26.1.0",
+    "cffi==2.1.1",
+    "click==8.5.0",
+    "cryptography==50.0.2",
+    "filelock==3.32.6",
+    "h11==0.16.0",
+    "httpcore2==2.13.1",
+    "httpx2==2.13.1",
+    "hypothesis==6.169.0",
+    "idna==3.20",
+    "iniconfig==2.3.1",
+    "jsonschema-specifications==2025.9.1",
+    "jsonschema==4.26.0",
+    "mcp-types==2.2.0",
+    "mcp==2.2.0",
+    "opentelemetry-api==1.45.1",
+    "packaging==26.3",
+    "pluggy==1.6.0",
+    "psutil==7.2.2",
+    "pycparser==3.11",
+    "pydantic==2.14.0",
+    "pydantic_core==2.50.0",
+    "pytest==9.1.1",
+    "python-multipart==0.0.32",
+    "referencing==0.37.0",
+    "rpds-py==2026.9.1",
+    "sortedcontainers==2.4.0",
+    "sse-starlette==3.5.0",
+    "starlette==1.7.0",
+    "truststore==0.10.4",
+    "typing-inspection==0.4.4",
+    "typing_extensions==4.16.0",
+    "uvicorn==0.54.0"
+  ],
+  "execution_speedup": 1.1048191180914777,
+  "execution_reduction_percent": 9.487446078281813,
+  "matched_outcome": {
+    "shards": 1536,
+    "transport_calls": 48,
+    "planned": [
+      {
+        "epoch": 0,
+        "planned": 768,
+        "copy_units": 3819,
+        "all_steps_independently_verified": true
+      },
+      {
+        "epoch": 1,
+        "planned": 938,
+        "copy_units": 4675,
+        "all_steps_independently_verified": true
+      }
+    ],
+    "applied_moves": 962,
+    "copied_units": 4789,
+    "disturbance": {
+      "after_moves": 24,
+      "failed_node": 12,
+      "capacity_node": 5,
+      "capacity_before": 2080,
+      "capacity_after": 971,
+      "epoch": 1
+    },
+    "stale_plan_refusals": [
+      {
+        "plan_epoch": 0,
+        "live_epoch": 1,
+        "attempted_moves": 24,
+        "applied": 0
+      }
+    ],
+    "all_applied_steps_independently_checked": true,
+    "final_minimum_live_copies": 3,
+    "all_shards_distinct_racks": true,
+    "all_node_capacities_respected": true,
+    "drain_and_failed_nodes_empty": true,
+    "knowledge_versions": 3168,
+    "court_windows": 4,
+    "corrected_node12_recalled_as_down": true,
+    "corrected_node5_free_space": 8,
+    "recalled_candidates": {
+      "evacuate-original": 48,
+      "evacuate-replanned": 48
+    },
+    "replay_transport_calls": 0
+  },
+  "validation": {
+    "scope": "Targeted acceptance only; the full repository suite was not run.",
+    "pytest_environment": {
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"
+    },
+    "pytest_invocation": "/tmp/synapse-grouping-venv/bin/python -B -m pytest -q -p no:cacheprovider --tb=short <acceptance-file>",
+    "new_search_acceptance": {
+      "files": [
+        "acceptance/memory/test_search_grouping_acceptance.py",
+        "acceptance/memory/test_search_grouping_scale_acceptance.py"
+      ],
+      "baseline": {
+        "passed": 56,
+        "failed": 2,
+        "expected_failures": "Repeated whole-memory traversals with candidate budgets 25 and 100; all behavioral cases pass."
+      },
+      "patched": {
+        "passed": 58,
+        "failed": 0
+      },
+      "comparison": "Canonical bytes of the complete search result, plus explicit semantic expectations. The unchanged ranking/timeline functions are shared with the frozen old search body."
+    },
+    "storage_acceptance": {
+      "file": "acceptance/memory/test_storage_evacuation_acceptance.py",
+      "passed": 1,
+      "failed": 0
+    },
+    "existing_regression": [
+      {
+        "file": "acceptance/memory/test_knowledge_search_acceptance.py",
+        "returncode": 0,
+        "seconds": 85.79678721500022,
+        "summary": [
+          "3 passed in 85.04s (0:01:25)"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_knowledge_timeline_acceptance.py",
+        "returncode": 0,
+        "seconds": 67.87594404100128,
+        "summary": [
+          "2 passed in 67.17s (0:01:07)"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_knowledge_correction_acceptance.py",
+        "returncode": 0,
+        "seconds": 38.68518600899915,
+        "summary": [
+          "2 passed in 37.98s"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_knowledge_return_acceptance.py",
+        "returncode": 0,
+        "seconds": 33.7303046750003,
+        "summary": [
+          "1 passed in 33.04s"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_knowledge_index_acceptance.py",
+        "returncode": 0,
+        "seconds": 49.37717530200098,
+        "summary": [
+          "2 passed in 48.57s"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_forget_knowledge_acceptance.py",
+        "returncode": 0,
+        "seconds": 31.94019377499899,
+        "summary": [
+          "1 passed in 31.14s"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_held_out_knowledge_acceptance.py",
+        "returncode": 0,
+        "seconds": 45.682986156998595,
+        "summary": [
+          "1 passed in 45.04s"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_knowledge_contract.py",
+        "returncode": 0,
+        "seconds": 0.623563576999004,
+        "summary": [
+          "18 passed in 0.25s"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_knowledge_window_acceptance.py",
+        "returncode": 0,
+        "seconds": 41.717810557998746,
+        "summary": [
+          "5 passed in 41.06s"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_knowledge_order_acceptance.py",
+        "returncode": 0,
+        "seconds": 20.560082486001193,
+        "summary": [
+          "2 passed in 19.61s"
+        ]
+      },
+      {
+        "file": "acceptance/memory/test_forget_correction_window_acceptance.py",
+        "returncode": 0,
+        "seconds": 78.37701152999944,
+        "summary": [
+          "3 passed in 77.68s (0:01:17)"
+        ]
+      },
+      {
+        "file": "tests/test_memory_dependency_direction.py",
+        "returncode": 0,
+        "seconds": 2.001268247999178,
+        "summary": [
+          "2 passed in 1.59s"
+        ]
+      }
+    ],
+    "total_patched_passed": 101,
+    "pre_commit_gate": "Gate 1 passed: all 45 .syn files parse OK\nGate 2 passed: coverage 0.935620 >= 0.9332 (47/47 files)\npre-commit: all gates passed.",
+    "independent_review": "Production change and acceptance ownership/coverage approved without blocking findings; no test load overlapped performance samples."
+  }
+}

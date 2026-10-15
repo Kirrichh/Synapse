@@ -1,0 +1,59 @@
+{
+  "commit": "556624d39112076c87d6ccf3bf8b06a74d3913d8",
+  "dirty": true,
+  "platform": "Linux-6.18.44-fc-v80-x86_64-with-glibc2.39",
+  "python": "3.11.15",
+  "repeat": 5,
+  "rows": [
+    {
+      "claims": 0,
+      "order_bytes": 15634,
+      "order_bytes_per_reading": 156.3,
+      "readings": 100,
+      "report_added_bytes": 303,
+      "window_seconds_median": 0.0016
+    },
+    {
+      "claims": 100,
+      "order_bytes": 15634,
+      "order_bytes_per_reading": 156.3,
+      "readings": 100,
+      "report_added_bytes": 303,
+      "window_seconds_median": 0.0202
+    },
+    {
+      "claims": 0,
+      "order_bytes": 156035,
+      "order_bytes_per_reading": 156.0,
+      "readings": 1000,
+      "report_added_bytes": 303,
+      "window_seconds_median": 0.0123
+    },
+    {
+      "claims": 100,
+      "order_bytes": 156035,
+      "order_bytes_per_reading": 156.0,
+      "readings": 1000,
+      "report_added_bytes": 303,
+      "window_seconds_median": 0.0684
+    },
+    {
+      "claims": 0,
+      "order_bytes": 784035,
+      "order_bytes_per_reading": 156.8,
+      "readings": 5000,
+      "report_added_bytes": 303,
+      "window_seconds_median": 0.0899
+    },
+    {
+      "claims": 100,
+      "order_bytes": 784035,
+      "order_bytes_per_reading": 156.8,
+      "readings": 5000,
+      "report_added_bytes": 303,
+      "window_seconds_median": 0.3099
+    }
+  ],
+  "schema_version": "synapse.memory.knowledge-order-cost/v1",
+  "unit": "one more window reading a source whose order holds the given readings"
+}

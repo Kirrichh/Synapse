@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 import subprocess
 import sys
 
@@ -10,7 +11,6 @@ import pytest
 
 from synapse.experiments.swebench.baseline import run_baseline_task
 from synapse.experiments.swebench.contract import AttemptVerdict, BaselineTask, ExperimentArm
-from synapse.experiments.swebench.mini_config import MiniInvocationConfig
 from synapse.experiments.swebench.oracle import CommandOracleRunner
 from synapse.worker import (
     ExternalCodingWorkerResult,
@@ -19,6 +19,12 @@ from synapse.worker import (
     ExternalWorkerUsage,
     WorkerReport,
 )
+
+
+# The dispatch owner is replaced in these product-path tests; only the
+# admitted profile identity written to the Baseline manifest is read.
+FAKE_AGENT = SimpleNamespace(registry=SimpleNamespace(adapters=(SimpleNamespace(
+    profile=SimpleNamespace(provider_name="fake-agent", model_name="fake-model")),)))
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -60,13 +66,13 @@ def test_proposed_patch_alone_does_not_resolve_and_second_attempt_uses_raw_carry
     repo = _repo(tmp_path)
     prompts: list[str] = []
 
-    def fake_worker(worktree_path, task, allowed_scope, *, config):
-        prompts.append(task["task"])
-        value = "pass" if "oracle_stdout" in task["task"] else "bad"
-        Path(worktree_path, "allowed.py").write_text(f"value = '{value}'\n", encoding="utf-8")
+    def fake_worker(agent, *, worktree, prompt, **_):
+        prompts.append(prompt)
+        value = "pass" if "oracle_stdout" in prompt else "bad"
+        Path(worktree, "allowed.py").write_text(f"value = '{value}'\n", encoding="utf-8")
         return _worker_result(ExternalWorkerStatus.PROPOSED_PATCH, diff_text=f"allowed.py -> {value}")
 
-    monkeypatch.setattr("synapse.experiments.swebench.baseline.run_mini_worker", fake_worker)
+    monkeypatch.setattr("synapse.experiments.swebench.baseline._agent_candidate", fake_worker)
     oracle = CommandOracleRunner(
         (
             sys.executable,
@@ -84,7 +90,7 @@ def test_proposed_patch_alone_does_not_resolve_and_second_attempt_uses_raw_carry
         base_revision="HEAD",
         replicate_id=1,
         max_attempts=3,
-        mini=MiniInvocationConfig(),
+        agent=FAKE_AGENT,
         oracle=oracle,
         run_root=tmp_path / "runs",
     )
@@ -103,11 +109,11 @@ def test_proposed_patch_alone_does_not_resolve_and_second_attempt_uses_raw_carry
 def test_max_attempt_budget_k3_is_enforced_for_unresolved_candidates(tmp_path, monkeypatch):
     repo = _repo(tmp_path)
 
-    def fake_worker(worktree_path, task, allowed_scope, *, config):
-        Path(worktree_path, "allowed.py").write_text("value = 'bad'\n", encoding="utf-8")
+    def fake_worker(agent, *, worktree, prompt, **_):
+        Path(worktree, "allowed.py").write_text("value = 'bad'\n", encoding="utf-8")
         return _worker_result(ExternalWorkerStatus.PROPOSED_PATCH)
 
-    monkeypatch.setattr("synapse.experiments.swebench.baseline.run_mini_worker", fake_worker)
+    monkeypatch.setattr("synapse.experiments.swebench.baseline._agent_candidate", fake_worker)
     oracle = CommandOracleRunner((sys.executable, "-c", "print('still failing'); raise SystemExit(1)"))
 
     run = run_baseline_task(
@@ -116,7 +122,7 @@ def test_max_attempt_budget_k3_is_enforced_for_unresolved_candidates(tmp_path, m
         base_revision="HEAD",
         replicate_id=1,
         max_attempts=3,
-        mini=MiniInvocationConfig(),
+        agent=FAKE_AGENT,
         oracle=oracle,
         run_root=tmp_path / "runs",
     )
@@ -131,7 +137,7 @@ def test_no_patch_error_and_timeout_do_not_call_oracle_or_become_success(tmp_pat
     statuses = iter((ExternalWorkerStatus.NO_PATCH, ExternalWorkerStatus.ERROR, ExternalWorkerStatus.TIMEOUT))
     oracle_calls = 0
 
-    def fake_worker(worktree_path, task, allowed_scope, *, config):
+    def fake_worker(agent, *, worktree, prompt, **_):
         status = next(statuses)
         return _worker_result(status, diff_text=None, summary=status.value)
 
@@ -141,7 +147,7 @@ def test_no_patch_error_and_timeout_do_not_call_oracle_or_become_success(tmp_pat
             oracle_calls += 1
             raise AssertionError("oracle should not run without proposed patch")
 
-    monkeypatch.setattr("synapse.experiments.swebench.baseline.run_mini_worker", fake_worker)
+    monkeypatch.setattr("synapse.experiments.swebench.baseline._agent_candidate", fake_worker)
 
     run = run_baseline_task(
         BaselineTask("task", "instance", "statement", ("allowed.py",)),
@@ -149,7 +155,7 @@ def test_no_patch_error_and_timeout_do_not_call_oracle_or_become_success(tmp_pat
         base_revision="HEAD",
         replicate_id=1,
         max_attempts=3,
-        mini=MiniInvocationConfig(),
+        agent=FAKE_AGENT,
         oracle=CountingOracle(),
         run_root=tmp_path / "runs",
     )
@@ -170,7 +176,7 @@ def test_gold_arm_rejected_in_baseline_runner(tmp_path):
             repo_root=tmp_path,
             base_revision="HEAD",
             replicate_id=1,
-            mini=MiniInvocationConfig(),
+            agent=FAKE_AGENT,
             oracle=CommandOracleRunner((sys.executable, "-c", "raise SystemExit(0)")),
             run_root=tmp_path / "runs",
             arm=ExperimentArm.GOLD,

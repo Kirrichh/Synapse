@@ -218,6 +218,11 @@ def require_canonical_vm_state(
             field=f"state.{name}",
             program=program,
         )
+    # The core's exact-args send extension is not part of the frozen Gold E1
+    # profile. Do not widen its state contract or its retained profile digest.
+    # Like every exact type below, it is decided once the values are canonical.
+    if state.sender_id is not None:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "sender_id is outside the frozen E1 state profile")
 
     def natural(name: str, optional: bool = False) -> None:
         item = getattr(state, name)

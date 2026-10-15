@@ -56,6 +56,7 @@ def _make_host(agent_id="default_agent"):
     h = MagicMock()
     h.current_agent_id = agent_id
     h.execution_history = []
+    h.record_history_event.side_effect = lambda event: h.execution_history.append(event) or event
     h.current_trace_id.return_value = "guard-test-trace"
     h._llm_response_cache = {}
     return h

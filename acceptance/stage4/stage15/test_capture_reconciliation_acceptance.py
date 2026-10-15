@@ -2,7 +2,7 @@
 
 import pytest
 
-from acceptance.stage4.stage15.test_provider_capture_acceptance import provider_endpoint, run_actual_mini
+from acceptance.stage4.stage15.test_provider_capture_acceptance import provider_endpoint, run_actual_agent
 from synapse.experiments.gold.stage15.reconciliation import reconcile_telemetry, reconstruct_call_records, TelemetryStatus
 from synapse.experiments.gold.stage15.telemetry import TELEMETRY_SCHEMA, reference
 from synapse.experiments.gold.stage15.export import export_call_attributes
@@ -12,16 +12,16 @@ from synapse.experiments.gold.stage15.export import export_call_attributes
     ({"usage_total": 20}, TelemetryStatus.TOTAL_MISMATCH),
     ({"first_status": 429, "request_identity": "same-provider-request"}, TelemetryStatus.DOUBLE_COUNT_RISK),
 ])
-def test_actual_provider_discrepancy_never_becomes_complete(tmp_path, peer, status):
+def test_actual_provider_discrepancy_never_becomes_complete(tmp_path, monkeypatch, peer, status):
     with provider_endpoint(**peer) as (endpoint, _):
-        store, _ = run_actual_mini(tmp_path, endpoint)
+        store, _ = run_actual_agent(tmp_path, endpoint, monkeypatch=monkeypatch)
     report = reconcile_telemetry(store.cut())
     assert report.status is status, report.to_dict()
 
 
-def test_missing_call_and_corrupt_source_have_distinct_fail_closed_evidence(tmp_path):
+def test_missing_call_and_corrupt_source_have_distinct_fail_closed_evidence(tmp_path, monkeypatch):
     with provider_endpoint() as (endpoint, requests):
-        store, _ = run_actual_mini(tmp_path, endpoint)
+        store, _ = run_actual_agent(tmp_path, endpoint, monkeypatch=monkeypatch)
     cut = store.cut()
     call = reconstruct_call_records(cut)[0]
     exported = export_call_attributes(call)

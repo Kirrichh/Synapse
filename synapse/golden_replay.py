@@ -12,13 +12,14 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, TYPE_CHECKING
 
 from synapse.lexer import Lexer
 from synapse.parser import Parser
 from synapse.interpreter import Interpreter, RuntimeMode
 from synapse.builtins import LLMBackend
-from synapse.llm import LLMProviderStatus, LLMResult, LLMTokenStatus, LLMUsage
+if TYPE_CHECKING:
+    from synapse.llm import LLMResult
 from synapse.runtime.host_abi import HOST_ABI_VERSION
 from synapse.version import LANGUAGE_VERSION, RUNTIME_VERSION, SPEC_VERSION
 
@@ -116,42 +117,117 @@ def _history_chain_valid(history: list[dict[str, Any]], expected_hash: str) -> b
 
 
 def extract_llm_cache(history: Iterable[dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """Build a deterministic mock table from recorded llm_call events."""
+    """Build a deterministic mock table from recorded llm_call events.
+
+    Every key retains its recorded occurrences in execution order: repeated
+    requests with different answers stay distinguishable, so mock replay can
+    serve them one by one instead of collapsing them onto the last answer.
+    Each occurrence also records its position - the index of its llm_call
+    event in the execution history - so the merge with retained thought
+    requests can interleave both sources in true execution order.
+    """
     cache: Dict[str, Dict[str, Any]] = {}
-    for event in history:
+    for position, event in enumerate(history):
         if event.get("type") != "llm_call":
             continue
         prompt_hash = str(event.get("prompt_hash", ""))
         model = str(event.get("model") or "mock")
         key = f"{prompt_hash}:{model}"
-        cache[key] = {
-            "prompt_hash": prompt_hash,
-            "model": model,
-            "result": event.get("result"),
-        }
+        entry = cache.setdefault(key, {"prompt_hash": prompt_hash, "model": model,
+                                       "results": [], "positions": []})
+        entry["results"].append(event.get("result"))
+        entry["positions"].append(position)
     return cache
+
+
+def _merge_llm_cache(llm_cache: Dict[str, Dict[str, Any]],
+                     thought_history: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Merge retained thought requests into the recorded llm_call table.
+
+    Both sources keep per-key occurrence lists. When the recording carried
+    positions - every thought observation the history length it ran at, every
+    llm occurrence its llm_call event's index in the same history - the merge
+    orders each key's observations by true execution order: a thought step
+    that ran while the history held N events precedes the llm_call event
+    appended at index N, because that call's backend request happened before
+    its append. Artifacts recorded without positions (and backends never
+    wired to an interpreter) keep the previous contract: llm_call occurrences
+    first, thought occurrences after, each in source order. Legacy entries
+    carrying a plain ``result`` are wrapped as a single occurrence.
+    """
+    merged: Dict[str, Dict[str, Any]] = {}
+    for key, value in llm_cache.items():
+        results = list(value.get("results") or [value.get("result")])
+        positions = list(value.get("positions") or [])
+        merged[key] = {"prompt_hash": value.get("prompt_hash"), "model": value.get("model"),
+                       "results": results,
+                       "positions": [positions[i] if i < len(positions) else None
+                                     for i in range(len(results))],
+                       "sources": ["llm_call"] * len(results)}
+    for key, value in thought_history.items():
+        entry = merged.setdefault(key, {"prompt_hash": value.get("prompt_hash"),
+                                        "model": value.get("model"), "results": [],
+                                        "positions": [], "sources": []})
+        results = list(value.get("results") or [value.get("result")])
+        positions = list(value.get("positions") or [])
+        entry["results"].extend(results)
+        entry["positions"].extend(positions[i] if i < len(positions) else None
+                                   for i in range(len(results)))
+        entry["sources"].extend(["thought"] * len(results))
+    for entry in merged.values():
+        positions, sources = entry.pop("positions"), entry.pop("sources")
+        if positions and all(position is not None for position in positions):
+            order = sorted(range(len(entry["results"])),
+                           key=lambda i: (positions[i], 0 if sources[i] == "thought" else 1))
+            entry["positions"] = [positions[i] for i in order]
+        else:
+            # No interleaving information: keep the previous contract.
+            order = sorted(range(len(entry["results"])),
+                           key=lambda i: (0 if sources[i] == "llm_call" else 1, i))
+        entry["results"] = [entry["results"][i] for i in order]
+    return merged
 
 
 class CacheOnlyLLMBackend(LLMBackend):
     """LLM backend used by replay --mock.
 
     It has no provider fallback. Missing cache entries fail deterministically.
+    Each key recorded with an occurrence list is served one occurrence per
+    request in order, and a request occurring more often than recorded fails
+    instead of silently reusing the last answer. A legacy entry carrying a
+    plain ``result`` - the format every earlier recorder wrote - is reusable:
+    the previous replayer served that one answer to every matching request,
+    and an unchanged old artifact must keep replaying exactly as it did.
     """
 
     def __init__(self, cache: Dict[str, Dict[str, Any]]):
         super().__init__(default_model="mock", provider="mock", mode="mock")
-        self.cache = dict(cache)
+        self.cache: Dict[str, list] = {}
+        self.reusable: set = set()
+        for key, value in dict(cache).items():
+            results = value.get("results")
+            if results is None:  # legacy single-result artifact entry
+                self.reusable.add(key)
+                results = [value.get("result")]
+            self.cache[key] = list(results)
         self.provider_call_count = 0
 
     def _cached_entry(self, prompt: str, model: Optional[str]) -> tuple[str, Any]:
         prompt_hash = hashlib.sha256(str(prompt).encode("utf-8")).hexdigest()
         model_name = str(model or self.default_model)
         key = f"{prompt_hash}:{model_name}"
-        if key not in self.cache:
+        occurrences = self.cache.get(key)
+        if occurrences is None:
             raise DeterministicReplayError(
                 f"LLM_REQUEST unresolved in mock replay: missing cache entry {key}"
             )
-        return model_name, self.cache[key].get("result")
+        if key in self.reusable:
+            return model_name, occurrences[0] if occurrences else None
+        if not occurrences:
+            raise DeterministicReplayError(
+                f"LLM_REQUEST occurred more often than recorded: cache entry {key} is exhausted"
+            )
+        return model_name, occurrences.pop(0)
 
     def complete_result(
         self,
@@ -161,6 +237,8 @@ class CacheOnlyLLMBackend(LLMBackend):
         max_tokens: int = 100,
         privacy_context: Any = None,
     ) -> LLMResult:
+        from synapse.llm import LLMProviderStatus, LLMResult, LLMTokenStatus, LLMUsage
+
         model_name, cached_result = self._cached_entry(prompt, model)
         result = LLMResult(
             status=LLMProviderStatus.COMPLETED,
@@ -252,6 +330,40 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _read_artifact_bytes(root: Path, relative: str) -> bytes:
+    """Byte-level artifact read that fails closed with a typed error."""
+    try:
+        return (root / relative).read_bytes()
+    except OSError as exc:
+        raise ReplayArtifactError(f"artifact file unreadable: {relative}: {exc}") from exc
+
+
+def _decode_artifact_text(root: Path, relative: str) -> str:
+    raw = _read_artifact_bytes(root, relative)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ReplayArtifactError(f"artifact file is not valid UTF-8: {relative}: {exc}") from exc
+
+
+def _read_artifact_json(root: Path, relative: str) -> Any:
+    text = _decode_artifact_text(root, relative)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ReplayArtifactError(f"artifact file is not valid JSON: {relative}: {exc}") from exc
+
+
+def _artifact_file_entry(manifest: Dict[str, Any], name: str) -> str:
+    files = manifest.get("files")
+    if not isinstance(files, dict):
+        raise ReplayArtifactError("manifest is missing the files map")
+    value = files.get(name)
+    if not isinstance(value, str) or not value:
+        raise ReplayArtifactError(f"manifest files map is missing entry: {name}")
+    return value
+
+
 def _run_interpreter_from_source(source: str, *, llm_backend: Optional[LLMBackend] = None) -> Interpreter:
     interp = Interpreter()
     if llm_backend is not None:
@@ -263,8 +375,14 @@ def _run_interpreter_from_source(source: str, *, llm_backend: Optional[LLMBacken
 
 def record_source(source: str, output_dir: Path | str, *, source_path: str = "<memory>",
                   layer: str = "strict", virtual_clock_start: str = DEFAULT_VIRTUAL_CLOCK_START,
-                  clock_step: int = DEFAULT_CLOCK_STEP) -> Dict[str, Any]:
-    """Record a golden artifact directory for a source program."""
+                  clock_step: int = DEFAULT_CLOCK_STEP,
+                  llm_backend: Optional[LLMBackend] = None) -> Dict[str, Any]:
+    """Record a golden artifact directory for a source program.
+
+    ``llm_backend`` optionally pins the recording backend (acceptance tests
+    script it to make repeated identical prompts answer differently); the
+    default keeps the runtime's own backend.
+    """
     output = Path(output_dir)
     if output.exists():
         # Avoid stale files corrupting the artifact; keep implementation simple.
@@ -279,11 +397,19 @@ def record_source(source: str, output_dir: Path | str, *, source_path: str = "<m
     initial.source_code = source
     initial_snapshot = initial.snapshot()
 
-    interp = _run_interpreter_from_source(source)
+    interp = _run_interpreter_from_source(source, llm_backend=llm_backend)
     final_snapshot = interp.snapshot()
     history = list(interp.execution_history)
     final_history_hash = interp.compute_history_hash()
     llm_cache = extract_llm_cache(history)
+    # Thought-chain LLM requests are retained by the backend: multi-step
+    # reasoning emits no per-step llm_call history events, so the artifact
+    # cache is merged with the retained thought requests to keep the
+    # record -> replay --mock roundtrip complete. Both sides keep per-key
+    # occurrence lists, so repeated identical prompts replay in order.
+    thought_history = getattr(interp.llm_backend, "thought_history", None)
+    if thought_history:
+        llm_cache = _merge_llm_cache(llm_cache, thought_history)
 
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -358,14 +484,16 @@ def _diff_events(expected: list[dict[str, Any]], actual: list[dict[str, Any]]) -
 def replay_mock_artifact(artifact_dir: Path | str) -> ReplayResult:
     """Replay a golden artifact using only embedded mocks and stable validators."""
     root = Path(artifact_dir)
-    manifest = _read_json(root / "manifest.json")
+    manifest = _read_artifact_json(root, "manifest.json")
     # Fail closed on an unreadable schema before loading or executing anything
-    # the artifact describes.
+    # the artifact describes. Byte-level reads are guarded the same way: a
+    # corrupted artifact must surface as a typed integrity failure, never as
+    # an unhandled decode/parse traceback.
     schema_version = _artifact_schema_version(manifest)
-    source = (root / manifest["files"]["source"]).read_text(encoding="utf-8")
-    expected_history = _read_json(root / manifest["files"]["history"])
-    expected_snapshot = _read_json(root / manifest["files"]["vm_snapshot"])
-    llm_cache = _read_json(root / manifest["files"]["llm_cache"])
+    source = _decode_artifact_text(root, _artifact_file_entry(manifest, "source"))
+    expected_history = _read_artifact_json(root, _artifact_file_entry(manifest, "history"))
+    expected_snapshot = _read_artifact_json(root, _artifact_file_entry(manifest, "vm_snapshot"))
+    llm_cache = _read_artifact_json(root, _artifact_file_entry(manifest, "llm_cache"))
 
     expected_hash = manifest["metadata"]["program_hash"]
     actual_hash = program_hash_for_source(source)
@@ -382,7 +510,7 @@ def replay_mock_artifact(artifact_dir: Path | str) -> ReplayResult:
     # Replay from the recorded initial state. The replay environment uses a
     # cache-only LLM backend, so provider calls are impossible and missing cache
     # entries become deterministic failures.
-    initial_snapshot = _read_json(root / manifest["files"]["initial_vm_snapshot"])
+    initial_snapshot = _read_artifact_json(root, _artifact_file_entry(manifest, "initial_vm_snapshot"))
     replay_interp = Interpreter.restore_snapshot(initial_snapshot)
     replay_interp.source_code = source
     replay_interp.llm_backend = CacheOnlyLLMBackend(llm_cache)
@@ -468,6 +596,11 @@ def record_integrate_artifact(
     history = list(interp.execution_history)
     final_history_hash = interp.compute_history_hash()
     llm_cache = extract_llm_cache(history)
+    # Same thought-request merge as the strict record path: the integrate
+    # artifact must replay multi-step reasoning from its cache as well.
+    thought_history = getattr(interp.llm_backend, "thought_history", None)
+    if thought_history:
+        llm_cache = _merge_llm_cache(llm_cache, thought_history)
 
     manifest: Dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -530,14 +663,15 @@ def replay_integrate_artifact(artifact_dir: "Path | str") -> "ReplayResult":
     """
     import copy as _copy
     root = Path(artifact_dir)
-    manifest = _read_json(root / "manifest.json")
+    manifest = _read_artifact_json(root, "manifest.json")
     # Fail closed on an unreadable schema before loading or executing anything
-    # the artifact describes.
+    # the artifact describes. Byte-level reads share the typed integrity
+    # guards of the strict replay path.
     schema_version = _artifact_schema_version(manifest)
-    source = (root / manifest["files"]["source"]).read_text(encoding="utf-8")
-    expected_history = _read_json(root / manifest["files"]["history"])
-    expected_snapshot = _read_json(root / manifest["files"]["vm_snapshot"])
-    llm_cache = _read_json(root / manifest["files"]["llm_cache"])
+    source = _decode_artifact_text(root, _artifact_file_entry(manifest, "source"))
+    expected_history = _read_artifact_json(root, _artifact_file_entry(manifest, "history"))
+    expected_snapshot = _read_artifact_json(root, _artifact_file_entry(manifest, "vm_snapshot"))
+    llm_cache = _read_artifact_json(root, _artifact_file_entry(manifest, "llm_cache"))
 
     expected_hash = manifest["metadata"]["program_hash"]
     actual_hash = program_hash_for_source(source)
@@ -553,7 +687,7 @@ def replay_integrate_artifact(artifact_dir: "Path | str") -> "ReplayResult":
     if final_hash and not _history_chain_valid(expected_history, final_hash):
         raise DeterministicReplayError("execution_history chain broken in artifact")
 
-    initial_snapshot = _read_json(root / manifest["files"]["initial_vm_snapshot"])
+    initial_snapshot = _read_artifact_json(root, _artifact_file_entry(manifest, "initial_vm_snapshot"))
     replay_interp = Interpreter.restore_snapshot(initial_snapshot)
     replay_interp.integrate_i2_skeleton_enabled = True
     replay_interp.execution_history = _copy.deepcopy(expected_history)

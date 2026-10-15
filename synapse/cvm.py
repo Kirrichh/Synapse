@@ -22,7 +22,16 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Iterable
 
 from .bytecode import BytecodeProgram
+from .cvm_messaging import execute_send
+from .prompt_template import placeholders as prompt_placeholders
 from .runtime.host_abi import HOST_ABI_VERSION
+
+# These retain the existing two JSON wire forms, including the spaces in the
+# resume preimage. They are encoders, not caches of mutable VM state.
+_TRANSITION_JSON = json.JSONEncoder(sort_keys=True, separators=(",", ":"), default=str)
+_RESUME_JSON = json.JSONEncoder(sort_keys=True, default=str)
+_SCALAR_OPERAND_TYPES = (str, int, bool, type(None))
+_MISSING_OPERAND = object()
 
 # ---------------------------------------------------------------------------
 # HOST ABI — фиксированная таблица v2.1, расширяемая в v2.3+
@@ -68,7 +77,7 @@ GAS_COSTS: Dict[str, int] = {
     "IMPRINT": 5, "RECALL": 5, "AFFECT_EVENT": 3, "AFFECT_STATE": 3,
     "FRACTURE_SELF": 20, "DREAM": 20, "LLM_EVAL": 25,
     "METRICS": 2, "HOST_EVAL": 10, "SEND": 8, "RECEIVE": 8,
-    "MSG_SEND": 5, "MSG_RECEIVE": 5, "RECEIVE_ENTER": 1, "RECEIVE_EXIT": 1,
+    "MSG_SEND": 5, "MSG_SEND_ARGS": 5, "MSG_RECEIVE": 5, "RECEIVE_ENTER": 1, "RECEIVE_EXIT": 1,
     "HABIT_SUGGEST": 4, "THRESHOLD_CHECK": 3,
     "HALT": 0,
     # LLM/Prompt CVM Bridge (alpha3e Track A)
@@ -185,6 +194,14 @@ class VMStackUnderflow(RuntimeError): pass
 class VMCallStackOverflow(RuntimeError): pass
 class VMAssertionFailed(RuntimeError): pass
 class VMError(RuntimeError): pass
+
+
+class VMStepLimitExceeded(VMError):
+    """The application run stopped at its instruction ceiling, not at HALT."""
+
+    def __init__(self, steps: int):
+        self.steps = steps
+        super().__init__(f"STEP_LIMIT_REACHED after {steps} instructions")
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +384,9 @@ class VMState:
     pending_message_receive: Optional[Dict[str, Any]] = None
     # Security principal captured in snapshots. VM-local agent_id is trusted only after VMBridge trust gate.
     agent_id: Optional[str] = None
+    # Source-level caller identity for MSG_SEND_ARGS, separate from capability
+    # agent_id. Absent in legacy snapshots; the host binds it before execution.
+    sender_id: Optional[str] = None
     # Last terminal VM error payload, used when resume fails into HALTED.
     error: Optional[Dict[str, Any]] = None
     # --- Alpha3e Track B: Guard Blocks ---
@@ -387,7 +407,7 @@ class VMState:
     guard_violation_active: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "ip": self.ip,
             "stack": encode_vm_value(self.stack),
             "locals": encode_vm_value(self.locals),
@@ -412,9 +432,15 @@ class VMState:
             "guard_stack": [f.to_dict() if hasattr(f, "to_dict") else f for f in self.guard_stack],
             "guard_violation_active": self.guard_violation_active,
         }
+        if self.sender_id is not None:
+            result["sender_id"] = self.sender_id
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "VMState":
+        sender_id = data.get("sender_id")
+        if sender_id is not None and (type(sender_id) is not str or not sender_id):
+            raise VMSnapshotFormatError("VM sender_id must be non-empty text when present")
         call_stack = []
         for frame_data in data.get("call_stack", []):
             if isinstance(frame_data, dict):
@@ -451,6 +477,7 @@ class VMState:
             mailbox_outbound=decode_vm_value(data.get("mailbox_outbound", [])),
             pending_message_receive=decode_vm_value(data.get("pending_message_receive")),
             agent_id=data.get("agent_id"),
+            sender_id=sender_id,
             error=decode_vm_value(data.get("error")),
             guard_stack=[GuardFrame.from_dict(f) if isinstance(f, dict) else f for f in data.get("guard_stack", [])],
             guard_violation_active=bool(data.get("guard_violation_active", False)),
@@ -569,6 +596,9 @@ class CognitiveVM:
         self.host = host
         self.halted = False
         self._output: List[str] = []    # внутренний буфер для print
+        # Derived, per-machine encoding fragments only. Never snapshotted and
+        # never keyed by object identity or mutable values.
+        self._transition_fragments: Dict[tuple, tuple[str, str]] = {}
 
     def status(self) -> str:
         if self.state.pending_host_call:
@@ -657,10 +687,63 @@ class CognitiveVM:
 
     # --- transition hash ---
 
+    def _encode_transition_payload(self, payload: Dict[str, Any]) -> str:
+        """Encode the legacy preimage, reusing only immutable scalar fragments.
+
+        Nonempty mailboxes, composite operands and unusual runtime types use
+        the same general JSON encoder. Stack repr, previous hash and counters
+        are always fresh. This does not change the hash profile or skip a step.
+        """
+        if ("sender_id" in payload
+                or payload["mailbox_inbound"] != []
+                or payload["mailbox_outbound"] != []
+                or payload["pending_message_receive"] is not None
+                or type(payload["gas"]) is not int
+                or type(payload["ip"]) is not int):
+            return _TRANSITION_JSON.encode(payload)
+
+        bindings = (payload["actor_stack"], payload["context_stack"],
+                    tuple(payload["locals_keys"]), payload["policy_stack"])
+        op = payload["op"]
+        if type(op) is not dict:
+            return _TRANSITION_JSON.encode(payload)
+        operands = tuple(op.get(name, _MISSING_OPERAND) for name in ("a", "b", "c", "op"))
+        if (len(op) != 4 or sum(map(len, bindings)) > 128
+                or any(type(v) is not str for group in bindings for v in group)
+                or any(type(v) not in _SCALAR_OPERAND_TYPES for v in operands)):
+            return _TRANSITION_JSON.encode(payload)
+
+        # Include types: True and 1 compare equal but have different JSON bytes.
+        key = (bindings, tuple((type(v), v) for v in operands))
+        fragments = self._transition_fragments.get(key)
+        if fragments is None:
+            prefix = _TRANSITION_JSON.encode({
+                "actor_stack": bindings[0], "context_stack": bindings[1],
+            })[:-1] + ',"gas":'
+            middle = ',' + _TRANSITION_JSON.encode({
+                "locals_keys": bindings[2],
+                "mailbox_inbound": [], "mailbox_outbound": [],
+                "op": op, "pending_message_receive": None,
+                "policy_stack": bindings[3],
+            })[1:-1] + ',"prev":'
+            fragments = (prefix, middle)
+            # Bound both entry count and retained representation size. Larger
+            # inputs still encode correctly but are not retained by this cache.
+            if len(prefix) + len(middle) <= 16_384:
+                if len(self._transition_fragments) >= 128:
+                    self._transition_fragments.pop(next(iter(self._transition_fragments)))
+                self._transition_fragments[key] = fragments
+
+        prefix, middle = fragments
+        return (prefix + str(payload["gas"]) + ',"ip":' + str(payload["ip"])
+                + middle + _TRANSITION_JSON.encode(payload["prev"])
+                + ',"stack_len":' + str(payload["stack_len"])
+                + ',"stack_top":' + _TRANSITION_JSON.encode(payload["stack_top"]) + '}')
+
     def _hash_transition(self, ins) -> None:
         # Включаем top-of-stack значение для детерминированной привязки к данным
         stack_top = repr(self.state.stack[-1]) if self.state.stack else None
-        payload = json.dumps(
+        payload = self._encode_transition_payload(
             {
                 "prev": self.state.transition_hash,
                 "ip": self.state.ip,
@@ -675,10 +758,8 @@ class CognitiveVM:
                 "mailbox_inbound": encode_vm_value(self.state.mailbox_inbound),
                 "mailbox_outbound": encode_vm_value(self.state.mailbox_outbound),
                 "pending_message_receive": encode_vm_value(self.state.pending_message_receive),
+                **({"sender_id": self.state.sender_id} if self.state.sender_id is not None else {}),
             },
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
         )
         self.state.transition_hash = (
             "sha256:" + hashlib.sha256(payload.encode()).hexdigest()
@@ -692,7 +773,7 @@ class CognitiveVM:
         durable transition hash must move forward before the next checkpoint.
         """
         stack_top = repr(self.state.stack[-1]) if self.state.stack else None
-        payload = json.dumps(
+        payload = _RESUME_JSON.encode(
             {
                 "prev": self.state.transition_hash,
                 "resume_call_id": call_id,
@@ -708,9 +789,8 @@ class CognitiveVM:
                 "mailbox_inbound": encode_vm_value(self.state.mailbox_inbound),
                 "mailbox_outbound": encode_vm_value(self.state.mailbox_outbound),
                 "pending_message_receive": encode_vm_value(self.state.pending_message_receive),
+                **({"sender_id": self.state.sender_id} if self.state.sender_id is not None else {}),
             },
-            sort_keys=True,
-            default=str,
         )
         self.state.transition_hash = (
             "sha256:" + hashlib.sha256(payload.encode()).hexdigest()
@@ -837,29 +917,6 @@ class CognitiveVM:
             "payload_hash": payload_hash,
             "message": encode_vm_value(message),
         }
-
-    def _execute_msg_send(self, msg_type: str) -> None:
-        payload = self._pop()
-        target_id = self._pop()
-        sender_id = self._current_actor_id()
-        message = {
-            "msg_type": str(msg_type),
-            "method": str(msg_type),
-            "sender_id": sender_id,
-            "sender": sender_id,
-            "target_id": str(target_id),
-            "receiver": str(target_id),
-            "payload": payload,
-            "payload_hash": self._payload_hash(payload),
-        }
-        result = self._call_host(
-            "CALL_HOST",
-            {"symbol": "SYS_MSG_SEND", "args": [message]},
-            None,
-        )
-        self._raise_if_host_error_payload(result, "SYS_MSG_SEND")
-        self.state.mailbox_outbound.append(copy.deepcopy(message))
-        self._push(result)
 
     def _execute_receive_enter(self) -> None:
         # RAII marker reserved for D5 receive blocks. No host side effect.
@@ -1055,7 +1112,10 @@ class CognitiveVM:
             self._execute_receive_exit()
 
         elif op == "MSG_SEND":
-            self._execute_msg_send(str(ins.a))
+            execute_send(self, str(ins.a), VMHostError)
+
+        elif op == "MSG_SEND_ARGS":
+            execute_send(self, str(ins.a), VMHostError, exact_args=True)
 
         elif op == "MSG_RECEIVE":
             paused = self._execute_msg_receive(str(ins.a), str(ins.b))
@@ -1074,9 +1134,16 @@ class CognitiveVM:
             variables = {}
             for name in reversed(var_names):
                 variables[name] = self._pop()
+            template = ins.c if isinstance(ins.c, str) else None
+            if template is not None:
+                # A placeholder takes the value its name holds now; one without
+                # a value stays as written when the prompt is rendered.
+                for name in prompt_placeholders(template):
+                    if name not in variables and name in self.state.locals:
+                        variables[name] = self.state.locals[name]
             # Build deterministic variables_hash
             import hashlib, json as _json
-            canonical = _json.dumps(variables, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+            canonical = _json.dumps(variables, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
             variables_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
             envelope = {
                 "type":           "prompt_envelope",
@@ -1084,6 +1151,8 @@ class CognitiveVM:
                 "variables":      variables,
                 "variables_hash": variables_hash,
             }
+            if template is not None:
+                envelope["template"] = template
             self._push(envelope)
 
         elif op == "LLM_REQUEST":
@@ -1879,7 +1948,8 @@ class CognitiveVM:
         steps = 0
         last = None
 
-        while not self.halted and steps < max_steps:
+        # A paused host call stops the run: nothing steps until the host resumes it.
+        while not self.halted and self.state.pending_host_call is None and steps < max_steps:
             if checkpoint_trigger and checkpoint_trigger(self):
                 if checkpoint_callback:
                     checkpoint_callback(self)

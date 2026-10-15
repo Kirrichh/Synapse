@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+.hypothesis/
 .venv/
 .tmp_postgres/
 *.log
@@ -10,3 +11,5 @@ __pycache__/
 __MACOSX/
 .DS_Store
 ._*
+
+*.egg-info/

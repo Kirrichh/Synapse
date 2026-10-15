@@ -346,7 +346,7 @@ def _retrieve_all(*, retriever, context, query, frozen=None):
         persistence=persistence,
     )
     controller, requested = _gate_controller()
-    subjects = enumeration.subject_refs
+    subjects = enumeration.gate_subject_refs
     if not subjects:
         return select_and_load_durably(
             retriever=retriever, context=context, query=query,

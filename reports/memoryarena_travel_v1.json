@@ -1,0 +1,497 @@
+{
+  "battery": {
+    "long_context": {
+      "by_memory_entries": {
+        "2": {
+          "cases": 266,
+          "context_tokens_mean": 1573.3,
+          "dependency_recall": 1.0,
+          "recall_all": 1.0
+        },
+        "3": {
+          "cases": 263,
+          "context_tokens_mean": 2372.8,
+          "dependency_recall": 1.0,
+          "recall_all": 1.0
+        },
+        "4": {
+          "cases": 257,
+          "context_tokens_mean": 3214.5,
+          "dependency_recall": 1.0,
+          "recall_all": 1.0
+        },
+        "5": {
+          "cases": 267,
+          "context_tokens_mean": 3941.6,
+          "dependency_recall": 1.0,
+          "recall_all": 1.0
+        },
+        "6": {
+          "cases": 229,
+          "context_tokens_mean": 4674.7,
+          "dependency_recall": 1.0,
+          "recall_all": 1.0
+        },
+        "7": {
+          "cases": 183,
+          "context_tokens_mean": 5359.9,
+          "dependency_recall": 1.0,
+          "recall_all": 1.0
+        },
+        "8": {
+          "cases": 97,
+          "context_tokens_mean": 5769.0,
+          "dependency_recall": 1.0,
+          "recall_all": 1.0
+        }
+      },
+      "overall": {
+        "cases": 1562,
+        "context_tokens_mean": 3541.6,
+        "dependency_recall": 1.0,
+        "recall_all": 1.0
+      }
+    },
+    "memoryarena-bm25@3": {
+      "by_memory_entries": {
+        "2": {
+          "cases": 266,
+          "context_tokens_mean": 1573.3,
+          "dependency_recall": 1.0,
+          "recall_all": 1.0
+        },
+        "3": {
+          "cases": 263,
+          "context_tokens_mean": 2372.8,
+          "dependency_recall": 1.0,
+          "recall_all": 1.0
+        },
+        "4": {
+          "cases": 257,
+          "context_tokens_mean": 2335.0,
+          "dependency_recall": 0.7795,
+          "recall_all": 0.4436
+        },
+        "5": {
+          "cases": 267,
+          "context_tokens_mean": 2291.1,
+          "dependency_recall": 0.703,
+          "recall_all": 0.367
+        },
+        "6": {
+          "cases": 229,
+          "context_tokens_mean": 2282.4,
+          "dependency_recall": 0.6393,
+          "recall_all": 0.3057
+        },
+        "7": {
+          "cases": 183,
+          "context_tokens_mean": 2288.8,
+          "dependency_recall": 0.6768,
+          "recall_all": 0.3443
+        },
+        "8": {
+          "cases": 97,
+          "context_tokens_mean": 2164.1,
+          "dependency_recall": 0.7529,
+          "recall_all": 0.4742
+        }
+      },
+      "overall": {
+        "cases": 1562,
+        "context_tokens_mean": 2180.4,
+        "dependency_recall": 0.8069,
+        "recall_all": 0.589
+      }
+    },
+    "memoryarena-bm25@5": {
+      "by_memory_entries": {
+        "2": {
+          "cases": 266,
+          "context_tokens_mean": 1573.3,
+          "dependency_recall": 1.0,
+          "recall_all": 1.0
+        },
+        "3": {
+          "cases": 263,
+          "context_tokens_mean": 2372.8,
+          "dependency_recall": 1.0,
+          "recall_all": 1.0
+        },
+        "4": {
+          "cases": 257,
+          "context_tokens_mean": 3214.5,
+          "dependency_recall": 1.0,
+          "recall_all": 1.0
+        },
+        "5": {
+          "cases": 267,
+          "context_tokens_mean": 3941.6,
+          "dependency_recall": 1.0,
+          "recall_all": 1.0
+        },
+        "6": {
+          "cases": 229,
+          "context_tokens_mean": 3858.9,
+          "dependency_recall": 0.8966,
+          "recall_all": 0.7424
+        },
+        "7": {
+          "cases": 183,
+          "context_tokens_mean": 3806.7,
+          "dependency_recall": 0.8831,
+          "recall_all": 0.7377
+        },
+        "8": {
+          "cases": 97,
+          "context_tokens_mean": 3608.8,
+          "dependency_recall": 0.9184,
+          "recall_all": 0.7732
+        }
+      },
+      "overall": {
+        "cases": 1562,
+        "context_tokens_mean": 3105.9,
+        "dependency_recall": 0.9661,
+        "recall_all": 0.9174
+      }
+    },
+    "synapse-lexical@3": {
+      "by_memory_entries": {
+        "2": {
+          "cases": 266,
+          "context_tokens_mean": 1573.3,
+          "dependency_recall": 1.0,
+          "recall_all": 1.0
+        },
+        "3": {
+          "cases": 263,
+          "context_tokens_mean": 2372.8,
+          "dependency_recall": 1.0,
+          "recall_all": 1.0
+        },
+        "4": {
+          "cases": 257,
+          "context_tokens_mean": 2553.9,
+          "dependency_recall": 0.9669,
+          "recall_all": 0.8949
+        },
+        "5": {
+          "cases": 267,
+          "context_tokens_mean": 2455.8,
+          "dependency_recall": 0.8587,
+          "recall_all": 0.6442
+        },
+        "6": {
+          "cases": 229,
+          "context_tokens_mean": 2430.6,
+          "dependency_recall": 0.724,
+          "recall_all": 0.4105
+        },
+        "7": {
+          "cases": 183,
+          "context_tokens_mean": 2406.9,
+          "dependency_recall": 0.6757,
+          "recall_all": 0.3661
+        },
+        "8": {
+          "cases": 97,
+          "context_tokens_mean": 2276.8,
+          "dependency_recall": 0.6062,
+          "recall_all": 0.3093
+        }
+      },
+      "overall": {
+        "cases": 1562,
+        "context_tokens_mean": 2287.1,
+        "dependency_recall": 0.8675,
+        "recall_all": 0.7183
+      }
+    },
+    "synapse-lexical@5": {
+      "by_memory_entries": {
+        "2": {
+          "cases": 266,
+          "context_tokens_mean": 1573.3,
+          "dependency_recall": 1.0,
+          "recall_all": 1.0
+        },
+        "3": {
+          "cases": 263,
+          "context_tokens_mean": 2372.8,
+          "dependency_recall": 1.0,
+          "recall_all": 1.0
+        },
+        "4": {
+          "cases": 257,
+          "context_tokens_mean": 3214.5,
+          "dependency_recall": 1.0,
+          "recall_all": 1.0
+        },
+        "5": {
+          "cases": 267,
+          "context_tokens_mean": 3941.6,
+          "dependency_recall": 1.0,
+          "recall_all": 1.0
+        },
+        "6": {
+          "cases": 229,
+          "context_tokens_mean": 4032.9,
+          "dependency_recall": 0.9956,
+          "recall_all": 0.9956
+        },
+        "7": {
+          "cases": 183,
+          "context_tokens_mean": 3948.2,
+          "dependency_recall": 0.9336,
+          "recall_all": 0.8415
+        },
+        "8": {
+          "cases": 97,
+          "context_tokens_mean": 3716.2,
+          "dependency_recall": 0.8756,
+          "recall_all": 0.701
+        }
+      },
+      "overall": {
+        "cases": 1562,
+        "context_tokens_mean": 3154.7,
+        "dependency_recall": 0.9839,
+        "recall_all": 0.9622
+      }
+    }
+  },
+  "channel": "lexical (palace-lexical/v2)",
+  "commit": "821899f194467deaf964a21fcb31852f475eac91",
+  "dataset": {
+    "file": "group_travel_planner/data.jsonl",
+    "groups": 270,
+    "name": "ZexueHe/memoryarena",
+    "revision": "da1a37c8b19280e18627ca01cf368195a5e1d92e",
+    "sha256": "2f955d444f6f3ad3c5da2064359ab19f8fc1f90621ff9d00723a450a009c3732"
+  },
+  "dirty": false,
+  "dry_run": {
+    "bm25": {
+      "by_round": {
+        "2": {
+          "cases": 266,
+          "dependency_recall": 0.7519,
+          "memory_chars_mean": 19922.2,
+          "recall_all": 0.7519
+        },
+        "3": {
+          "cases": 263,
+          "dependency_recall": 0.2497,
+          "memory_chars_mean": 20437.3,
+          "recall_all": 0.0228
+        },
+        "4": {
+          "cases": 257,
+          "dependency_recall": 0.0,
+          "memory_chars_mean": 26921.0,
+          "recall_all": 0.0
+        },
+        "5": {
+          "cases": 267,
+          "dependency_recall": 0.0012,
+          "memory_chars_mean": 27201.9,
+          "recall_all": 0.0
+        },
+        "6": {
+          "cases": 229,
+          "dependency_recall": 0.0,
+          "memory_chars_mean": 27354.9,
+          "recall_all": 0.0
+        },
+        "7": {
+          "cases": 183,
+          "dependency_recall": 0.0,
+          "memory_chars_mean": 27456.6,
+          "recall_all": 0.0
+        },
+        "8": {
+          "cases": 97,
+          "dependency_recall": 0.0,
+          "memory_chars_mean": 27736.8,
+          "recall_all": 0.0
+        }
+      },
+      "overall": {
+        "cases": 1562,
+        "dependency_recall": 0.1703,
+        "memory_chars_mean": 24862.5,
+        "recall_all": 0.1319
+      },
+      "travelers": 1869
+    },
+    "long_context": {
+      "by_round": {
+        "2": {
+          "cases": 266,
+          "dependency_recall": 1.0,
+          "memory_chars_mean": 26644.2,
+          "recall_all": 1.0
+        },
+        "3": {
+          "cases": 263,
+          "dependency_recall": 1.0,
+          "memory_chars_mean": 50339.2,
+          "recall_all": 1.0
+        },
+        "4": {
+          "cases": 257,
+          "dependency_recall": 1.0,
+          "memory_chars_mean": 73773.7,
+          "recall_all": 1.0
+        },
+        "5": {
+          "cases": 267,
+          "dependency_recall": 1.0,
+          "memory_chars_mean": 98048.8,
+          "recall_all": 1.0
+        },
+        "6": {
+          "cases": 229,
+          "dependency_recall": 1.0,
+          "memory_chars_mean": 122686.4,
+          "recall_all": 1.0
+        },
+        "7": {
+          "cases": 183,
+          "dependency_recall": 1.0,
+          "memory_chars_mean": 147829.7,
+          "recall_all": 1.0
+        },
+        "8": {
+          "cases": 97,
+          "dependency_recall": 1.0,
+          "memory_chars_mean": 173576.4,
+          "recall_all": 1.0
+        }
+      },
+      "overall": {
+        "cases": 1562,
+        "dependency_recall": 1.0,
+        "memory_chars_mean": 87996.4,
+        "recall_all": 1.0
+      },
+      "travelers": 1869
+    },
+    "synapse-lexical": {
+      "by_round": {
+        "2": {
+          "cases": 266,
+          "dependency_recall": 0.6992,
+          "memory_chars_mean": 20581.9,
+          "recall_all": 0.6992
+        },
+        "3": {
+          "cases": 263,
+          "dependency_recall": 0.2003,
+          "memory_chars_mean": 23357.2,
+          "recall_all": 0.0114
+        },
+        "4": {
+          "cases": 257,
+          "dependency_recall": 0.0,
+          "memory_chars_mean": 26989.8,
+          "recall_all": 0.0
+        },
+        "5": {
+          "cases": 267,
+          "dependency_recall": 0.0,
+          "memory_chars_mean": 27343.8,
+          "recall_all": 0.0
+        },
+        "6": {
+          "cases": 229,
+          "dependency_recall": 0.0,
+          "memory_chars_mean": 27446.1,
+          "recall_all": 0.0
+        },
+        "7": {
+          "cases": 183,
+          "dependency_recall": 0.0,
+          "memory_chars_mean": 27525.9,
+          "recall_all": 0.0
+        },
+        "8": {
+          "cases": 97,
+          "dependency_recall": 0.0,
+          "memory_chars_mean": 27802.1,
+          "recall_all": 0.0
+        }
+      },
+      "overall": {
+        "cases": 1562,
+        "dependency_recall": 0.1528,
+        "memory_chars_mean": 25527.6,
+        "recall_all": 0.121
+      },
+      "travelers": 1869
+    },
+    "synapse-lexical-5": {
+      "by_round": {
+        "2": {
+          "cases": 266,
+          "dependency_recall": 1.0,
+          "memory_chars_mean": 26669.9,
+          "recall_all": 1.0
+        },
+        "3": {
+          "cases": 263,
+          "dependency_recall": 0.6825,
+          "memory_chars_mean": 38047.2,
+          "recall_all": 0.5475
+        },
+        "4": {
+          "cases": 257,
+          "dependency_recall": 0.2724,
+          "memory_chars_mean": 40958.8,
+          "recall_all": 0.0506
+        },
+        "5": {
+          "cases": 267,
+          "dependency_recall": 0.0315,
+          "memory_chars_mean": 41312.4,
+          "recall_all": 0.0037
+        },
+        "6": {
+          "cases": 229,
+          "dependency_recall": 0.0,
+          "memory_chars_mean": 45482.0,
+          "recall_all": 0.0
+        },
+        "7": {
+          "cases": 183,
+          "dependency_recall": 0.0,
+          "memory_chars_mean": 45843.0,
+          "recall_all": 0.0
+        },
+        "8": {
+          "cases": 97,
+          "dependency_recall": 0.0,
+          "memory_chars_mean": 46316.1,
+          "recall_all": 0.0
+        }
+      },
+      "overall": {
+        "cases": 1562,
+        "dependency_recall": 0.3354,
+        "memory_chars_mean": 39663.7,
+        "recall_all": 0.2714
+      },
+      "travelers": 1869
+    }
+  },
+  "not_measured": [
+    "plan quality: PS, SPS and SR of a planning model (no model available)",
+    "semantic channel (no external embedding model available)",
+    "bundled shopping, progressive search and formal reasoning domains"
+  ],
+  "python": "3.11.15",
+  "relevant": "earlier travelers named in constraint sentences",
+  "schema_version": "synapse.memory.memoryarena-travel/v1",
+  "tokenizer": "gpt-4o-mini"
+}

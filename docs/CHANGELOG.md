@@ -1,5 +1,26 @@
 # Synapse Changelog
 
+## MemoryArena travel harness and LongMemEval script repair — 2026-10-15
+
+- `scripts/memoryarena_memory_server.py` serves MemoryArena's memory API
+  from the `palace-lexical/v2` ranking `knowledge.search` uses, in the
+  benchmark's 2048-token pieces; with a MemoryArena checkout it also serves
+  the benchmark's own BM25 and long-context systems as baselines.
+- `scripts/benchmark_memoryarena_travel.py` measures, on the pinned Group
+  Travel Planner release, whether the earlier travelers a question names
+  reach the context: top 3 recall_all 0.718 against BM25's 0.589 when memory
+  holds plans. A dry run of MemoryArena's own pipeline on all 270 groups,
+  with `scripts/memoryarena_oracle_endpoint.py` in place of a model, scores
+  100% PS/SPS/SR for every memory system (the wiring holds). When entries
+  carry the agent's tool-call scratchpad, piece retrieval misses the named
+  plans (0.121 Synapse, 0.132 BM25), and long context reaches 173,576
+  characters by the eighth traveler. Plan quality needs a provider key and was
+  not measured (`reports/memoryarena_travel_v1.json`,
+  `docs/MEMORY_PERFORMANCE.md`).
+- `scripts/benchmark_longmemeval_retrieval.py` stopped importing when
+  `lexical_ranking` left `knowledge.search` in `93cf0c9`. It now ranks through
+  `PreparedKnowledgeIndex.rank`, and the recorded report reproduces unchanged.
+
 ## PR108 storage reader and review follow-up — 2026-10-15
 
 - D6 now preserves a durable gate refusal when no resolved candidate is

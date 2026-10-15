@@ -6,7 +6,8 @@ information memory; its retrieval evaluation asks whether the evidence
 sessions of a question are among the top-k candidates of its haystack. This
 adapter runs that part on the cleaned release (``longmemeval_s_cleaned.json``,
 dataset ``xiaowu0162/longmemeval-cleaned``) with Synapse's lexical candidate
-channel (``palace-lexical/v2``, the channel ``search_knowledge`` ranks with):
+channel (``palace-lexical/v2`` through ``PreparedKnowledgeIndex.rank``, the
+ranking ``knowledge.search`` uses):
 
 * every haystack session is one candidate, its text the session's turns;
 * the query is the question; abstention questions (``_abs``) are excluded, as
@@ -50,7 +51,7 @@ def _ndcg(ranked, relevant, k) -> float:
 
 
 def evaluate(questions) -> dict:
-    from synapse.memory_consolidation.knowledge.search import lexical_ranking
+    from synapse.memory_consolidation.knowledge.prepared import PreparedKnowledgeIndex
 
     rows = []
     for question in questions:
@@ -59,7 +60,8 @@ def evaluate(questions) -> dict:
         entries = [{"record": {"id": session_id, "subject": "", "property": "", "value": "", "conditions": {},
                                "text": "\n".join(turn["content"] for turn in session)}}
                    for session_id, session in zip(question["haystack_session_ids"], question["haystack_sessions"])]
-        ranked = lexical_ranking(question["question"], entries, max(KS))
+        versions = {entry["record"]["id"]: entry for entry in entries}
+        ranked = PreparedKnowledgeIndex(versions).rank(question["question"], entries, max(KS))
         relevant = set(question["answer_session_ids"])
         row = {"question_id": question["question_id"], "type": question["question_type"]}
         for k in KS:

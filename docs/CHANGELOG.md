@@ -38,6 +38,12 @@
   until the key's free-tier quota (15 requests a minute) refused it, so the
   workflow now runs REST only, one job at a time, with calls 4.5 s apart, and
   a 429 naming a per-day quota ends the run instead of waiting.
+- The free-tier pilot runs in daily portions: a `memoryarena:pilot:A-B` label
+  runs groups A..B (at most ten) with all four memory systems on the same
+  groups. A per-day quota refusal ends a job as `quota_exhausted` with its
+  finished groups kept, not as a failure, and `memoryarena_live_run.py merge`
+  scores the union of several days' artifacts with MemoryArena's own
+  combination and evaluation.
 - `scripts/benchmark_longmemeval_retrieval.py` stopped importing when
   `lexical_ranking` left `knowledge.search` in `93cf0c9`. It now ranks through
   `PreparedKnowledgeIndex.rank`, and the recorded report reproduces unchanged.

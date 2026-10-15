@@ -14,7 +14,13 @@ kept) and writes ``summary.json``: the benchmark's PS, SPS and SR, the
 provider's token counts, the agent's steps, and whether the plans a question's
 constraint sentences name reached the agent through memory.
 
-``report`` joins summaries into one Markdown table and JSON file.
+A per-day quota refusal ends the run as ``quota_exhausted``: the groups it
+finished are kept and summarized, and the job is not marked as failed, since
+the next day's run continues with the remaining groups.
+
+``report`` joins summaries into one Markdown table and JSON file. ``merge``
+joins runs of the same memory system made on different days and scores their
+union with MemoryArena's own combination and evaluation.
 
 The provider key is read from the environment by the transport; nothing here
 prints or stores it. Plans are scored by the benchmark's string comparison; no
@@ -172,6 +178,19 @@ def _reach(log: Path) -> dict:
             "context_chars_mean": round(statistics.fmean(item[2] for item in found), 1)}
 
 
+def _quota(log: Path) -> dict | None:
+    """The per-day quota a provider refusal named in the runner's output, if one did."""
+    tail = log.read_text(errors="replace")[-20000:] if log.exists() else ""
+    if "PerDay" not in tail:
+        return None
+    limit = re.findall(r'"quotaValue":\s*"?(\d+)', tail)
+    return {"exhausted": "per-day", "limit": int(limit[-1]) if limit else None}
+
+
+def _plans(directory: Path) -> list[Path]:
+    return sorted(directory.glob("generated_plan_*.json"), key=lambda path: int(path.stem.rsplit("_", 1)[1]))
+
+
 def summarize(out: Path, *, memory: str, client: str, model: str, selection: str, attempts: int,
               exit_code: int, seconds: float) -> dict:
     scores = {}
@@ -181,7 +200,7 @@ def summarize(out: Path, *, memory: str, client: str, model: str, selection: str
         if rows:
             scores = {key: rows[-1][key] for key in ("total_groups", "PS", "SPS", "SR")}
     steps, failures, persons = [], 0, 0
-    for plan in sorted((out / "run").glob("generated_plan_*.json")):
+    for plan in _plans(out / "run"):
         for pad in json.loads(plan.read_text(encoding="utf-8")).get("scratchpads", []):
             persons += 1
             steps.append(pad.get("total_steps") or 0)
@@ -200,7 +219,10 @@ def summarize(out: Path, *, memory: str, client: str, model: str, selection: str
         if stats.exists():
             recorded = json.loads(stats.read_text())
             usage.update(input=recorded.get("total_input_tokens", 0), output=recorded.get("total_output_tokens", 0))
+    quota = _quota(out / "run_travel.log") if exit_code else None
     summary = {"memory": memory, "client": client, "model": model, "groups": selection, "attempts": attempts,
+               "status": "complete" if exit_code == 0 else "quota_exhausted" if quota else "failed",
+               "groups_done": [int(path.stem.rsplit("_", 1)[1]) for path in _plans(out / "run")], "quota": quota,
                "exit_code": exit_code, "seconds": round(seconds, 1), "scores": scores, "persons": persons,
                "steps_mean": round(statistics.fmean(steps), 2) if steps else None,
                "persons_without_final_plan": failures, "usage": usage, "memory_reach": _reach(out / "retrieval.jsonl")}
@@ -242,7 +264,7 @@ def run(root: Path, out: Path, *, memory: str, client: str, model: str, first: i
                 code = subprocess.call([sys.executable, str(SCRIPTS / "memoryarena_run_travel.py"), str(checkout),
                                         str(config), *selection, "--client", client],
                                        cwd=out, stdout=log, stderr=subprocess.STDOUT, env=environment)
-                if code == 0:
+                if code == 0 or _quota(out / "run_travel.log"):
                     break
     finally:
         for process, stream in servers:
@@ -255,6 +277,10 @@ def run(root: Path, out: Path, *, memory: str, client: str, model: str, first: i
     summary = summarize(out, memory=memory, client=client, model=model, selection=" ".join(selection),
                         attempts=attempt, exit_code=code, seconds=time.monotonic() - started)
     print(json.dumps(summary, indent=2))
+    if summary["status"] == "quota_exhausted":
+        print(f"::warning title=MemoryArena::{memory}: the provider's per-day quota ended the run after groups "
+              f"{summary['groups_done']}; the next run continues with the rest")
+        return 0
     if code != 0:
         tail = (out / "run_travel.log").read_text(errors="replace")[-6000:]
         print(f"the runner failed with exit code {code}; last output:\n{tail}", file=sys.stderr)
@@ -265,16 +291,17 @@ def report(inputs: list[Path], output: Path) -> None:
     summaries = sorted((json.loads(path.read_text()) for directory in inputs
                         for path in directory.rglob("summary.json")),
                        key=lambda item: (item["client"], item["memory"]))
-    header = ("| memory | client | model | groups | persons | PS | SPS | SR | reach recall_all | calls | "
-              "input tokens | output tokens | thought tokens | steps | no final plan | exit |")
+    header = ("| memory | client | model | groups | done | persons | PS | SPS | SR | reach recall_all | calls | "
+              "input tokens | output tokens | thought tokens | steps | no final plan | status |")
     lines = [header, "|" + "---|" * (header.count("|") - 1)]
     for item in summaries:
         scores, usage, reach = item["scores"], item["usage"], item["memory_reach"]
         lines.append(f"| {item['memory']} | {item['client']} | {item['model']} | {item['groups']} | "
-                     f"{item['persons']} | {scores.get('PS', '-')} | {scores.get('SPS', '-')} | "
-                     f"{scores.get('SR', '-')} | {reach.get('recall_all', '-')} | {usage['calls']} | "
-                     f"{usage['input']} | {usage['output']} | {usage['thoughts']} | {item['steps_mean']} | "
-                     f"{item['persons_without_final_plan']} | {item['exit_code']} |")
+                     f"{len(item.get('groups_done', []))} | {item['persons']} | {scores.get('PS', '-')} | "
+                     f"{scores.get('SPS', '-')} | {scores.get('SR', '-')} | {reach.get('recall_all', '-')} | "
+                     f"{usage['calls']} | {usage['input']} | {usage['output']} | {usage['thoughts']} | "
+                     f"{item['steps_mean']} | {item['persons_without_final_plan']} | "
+                     f"{item.get('status', item['exit_code'])} |")
     text = "## MemoryArena Group Travel Planner\n\n" + "\n".join(lines) + "\n"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.with_suffix(".json").write_text(json.dumps(summaries, indent=2) + "\n")
@@ -283,6 +310,44 @@ def report(inputs: list[Path], output: Path) -> None:
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
             summary.write(text)
     print(text)
+
+
+def merge(checkout: Path, inputs: list[Path], output: Path) -> None:
+    """Score the union of several runs per memory system with MemoryArena's own combination and evaluation."""
+    sys.path.insert(0, str(checkout.resolve()))
+    from env.env_systems.travel_planner_env.combination import combine
+    from env.env_systems.travel_planner_env.eval import evaluate
+
+    runs: dict[tuple, list[Path]] = {}
+    for directory in inputs:
+        for path in sorted(directory.rglob("summary.json")):
+            item = json.loads(path.read_text())
+            runs.setdefault((item["memory"], item["client"], item["model"]), []).append(path.parent)
+    for (memory, client, model), directories in sorted(runs.items()):
+        work = output.parent / f"merged-{memory}-{client}"
+        shutil.rmtree(work, ignore_errors=True)
+        (work / "run").mkdir(parents=True)
+        for directory in directories:
+            for plan in _plans(directory / "run"):
+                if (work / "run" / plan.name).exists():
+                    raise SystemExit(f"group {plan.stem} of {memory} ran twice; keep one run of each group")
+                shutil.copy2(plan, work / "run" / plan.name)
+        with (work / "usage.jsonl").open("w") as usage, (work / "retrieval.jsonl").open("w") as retrieval:
+            for directory in directories:
+                for name, stream in (("usage.jsonl", usage), ("retrieval.jsonl", retrieval)):
+                    if (directory / name).exists():
+                        stream.write((directory / name).read_text())
+        submission = combine(model_name=model, output_dir=str(work / "run"),
+                             submission_file_dir=str(work / "submission"), mode="sole_planning")
+        scores = evaluate(submission_path=submission, model_name=model, memory_system=memory, global_csv=None)
+        with (work / "results.csv").open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=["total_groups", "PS", "SPS", "SR"])
+            writer.writeheader()
+            writer.writerow({"total_groups": len(_plans(work / "run")), "PS": f"{scores['ps']:.2f}",
+                             "SPS": f"{scores['sps']:.2f}", "SR": f"{scores['sr']:.2f}"})
+        summarize(work, memory=memory, client=client, model=model, selection=f"{len(directories)} runs",
+                  attempts=0, exit_code=0, seconds=0.0)
+    report([output.parent / f"merged-{memory}-{client}" for memory, client, _ in sorted(runs)], output)
 
 
 def main() -> None:
@@ -305,6 +370,10 @@ def main() -> None:
     reporting = commands.add_parser("report")
     reporting.add_argument("inputs", type=Path, nargs="+")
     reporting.add_argument("--output", type=Path, required=True)
+    merging = commands.add_parser("merge")
+    merging.add_argument("inputs", type=Path, nargs="+", help="downloaded run artifacts, any number of days")
+    merging.add_argument("--checkout", type=Path, required=True, help="the pinned MemoryArena checkout")
+    merging.add_argument("--output", type=Path, required=True)
     options = parser.parse_args()
     if options.command == "prepare":
         prepare(options.root, options.cache)
@@ -312,6 +381,8 @@ def main() -> None:
         raise SystemExit(run(options.root, options.out, memory=options.memory, client=options.client,
                              model=options.model, first=options.first, ids=options.ids, endpoint=options.endpoint,
                              attempts=options.attempts))
+    elif options.command == "merge":
+        merge(options.checkout, options.inputs, options.output)
     else:
         report(options.inputs, options.output)
 

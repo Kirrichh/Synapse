@@ -758,6 +758,10 @@ jobs:
             file: acceptance/stage4/stage16/test_memory_coordinator_validation_acceptance.py
           - shard: memory-physical-member-bounds
             file: acceptance/stage4/stage16/test_memory_physical_member_bounds_acceptance.py
+          - shard: memory-event-budget
+            file: acceptance/stage4/stage16/test_project_memory_event_budget.py
+          - shard: memory-event-amplification
+            file: acceptance/stage4/stage16/test_project_memory_event_amplification.py
           - shard: compact-frame-contract
             file: acceptance/stage4/stage16/test_compact_frame_contract.py
           - shard: compact-frame-publication
@@ -792,6 +796,10 @@ jobs:
             file: acceptance/stage4/stage16/test_source_delivery_observation_acceptance.py
           - shard: source-consumer-refusal
             file: acceptance/stage4/stage16/test_source_consumer_refusal_acceptance.py
+          - shard: retrieval-object-admission
+            file: acceptance/stage4/stage16/test_retrieval_object_admission.py
+          - shard: run-retrieval-object-admission
+            file: acceptance/stage4/stage16/test_run_retrieval_object_admission.py
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -1126,10 +1134,20 @@ jobs:
         run: python -m pytest -q -p no:randomly '${{ matrix.file }}'
 
   repository-tests:
-    # Every tests/ suite that no dedicated shard above runs. Together they take
-    # about two minutes, so one job keeps them all in CI without a local full run.
-    name: repository-tests
+    # Review regressions run independently of the remaining repository suites,
+    # so their larger owner-history scenarios can be scheduled in parallel.
+    name: repository-tests-${{ matrix.shard }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: remaining
+            file: ''
+          - shard: pr108-review
+            file: tests/test_pr108_review_hardening.py
+          - shard: pr108-review2
+            file: tests/test_pr108_review2_hardening.py
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1145,6 +1163,7 @@ jobs:
           git config --global user.email "ci@example.invalid"
           git config --global user.name "Stage 4 Gold CI"
       - name: Run the remaining repository suites
+        if: matrix.shard == 'remaining'
         run: >
           python -m pytest -q --tb=short -p no:randomly
           tests/test_affective_memory.py
@@ -1245,6 +1264,9 @@ jobs:
           tests/test_v1_4_1_replay_safe_integrate.py
           tests/test_v1_4_transactional_identity.py
           tests/test_worker_candidate_materializer.py
+      - name: Run one external-review regression suite
+        if: matrix.file != ''
+        run: python -m pytest -q --tb=short -p no:randomly '${{ matrix.file }}'
 
   gold-slow:
     name: gold-slow

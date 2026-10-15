@@ -1508,20 +1508,36 @@ class RetrievalEnumeration:
     def __new__(cls, *args: object, **kwargs: object) -> RetrievalEnumeration:
         raise TypeError("RetrievalEnumeration is produced only by enumerate_retrieval_candidates")
 
+    def require_resolved_conflicts(self) -> None:
+        """Refuse run admission while this enumeration's conflict scan is blocked."""
+
+        _enumeration_seal_check(self)
+        scan = self._conflict_scan
+        validate_compatibility_conflict_scan(scan, evaluator=self._context._evaluator)
+        if scan.decision_kind is not ConflictDecisionKind.NO_CONFLICT_FOUND:
+            code = (
+                RetrievalFailureCode.CONFLICT_SCAN_INCOMPLETE
+                if scan.decision_kind is ConflictDecisionKind.SCAN_INCOMPLETE
+                else RetrievalFailureCode.CONFLICT_UNRESOLVED
+            )
+            raise _fail(code, "this retrieval's conflict scan cannot authorize run admission")
+
     @property
-    def eligible_subject_refs(self) -> tuple[HashBoundRef, ...]:
-        """Subjects the enumeration itself found compatible, canonically ordered.
+    def gate_subject_refs(self) -> tuple[HashBoundRef, ...]:
+        """The canonical subject set requiring this enumeration's gate verdict.
 
         §20 admits an object to ranking and use per object. A candidate the
         enumeration classified REJECTED already lost its eligibility and keeps
         its full audit trace in ``candidates``; handing it to the §22 gates as a
         subject would let one incompatible object block every compatible one
         from consumption — the all-or-nothing poisoning this accessor exists
-        to prevent. Only ELIGIBLE audits become gate subjects.
+        to prevent. A run first requires a resolved conflict scan. If that scan
+        passed but none qualify, resolved subjects still require a recorded
+        compatibility refusal. Absent or unresolved subjects create no verdict.
         """
 
         _enumeration_seal_check(self)
-        return tuple(
+        eligible = tuple(
             sorted(
                 (
                     candidate_subject_ref(item._descriptor)
@@ -1532,6 +1548,7 @@ class RetrievalEnumeration:
                 key=_ref_key,
             )
         )
+        return eligible or self.subject_refs
 
 
 def _enumeration_seal_check(value: RetrievalEnumeration) -> RetrievalEnumeration:
@@ -2125,8 +2142,8 @@ def _select_and_load(
     through, encoding the bypass as the normal way to call this.
 
     A candidate outside the admitted set is never ranked into the selectable set
-    and its bytes are never read. The verdict must also cover exactly what this
-    query enumerated and name this consumer context, so a genuine admission for
+    and its bytes are never read. The verdict must cover the enumeration's exact
+    canonical gate subject set and name this consumer context, so an admission for
     a different query or a different consumer is refused as firmly as a forged
     one.
 
@@ -2165,22 +2182,22 @@ def _select_and_load(
             RetrievalFailureCode.CONTEXT_SUBSTITUTION,
             "the retrieval verdict was given for another frozen candidate set",
         )
-    enumerated = {_ref_key(item) for item in enumeration.subject_refs}
+    gate_subjects = {_ref_key(item) for item in enumeration.gate_subject_refs}
     decided = (
         set()
         if admission.decision is None
         else {_ref_key(item) for item in admission.decision.subject_refs}
     )
-    if decided != enumerated:
+    if decided != gate_subjects:
         raise _fail(
             RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE,
-            "the retrieval verdict does not cover exactly what this query enumerated",
+            "the retrieval verdict does not cover exactly this enumeration's gate subjects",
         )
     admitted = {_ref_key(item) for item in admission.admitted_refs}
-    if not admitted <= enumerated:
+    if not admitted <= gate_subjects:
         raise _fail(
             RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE,
-            "admitted refs include a candidate this enumeration never found",
+            "admitted refs include a candidate outside this enumeration's gate subjects",
         )
     conflict_scan = enumeration._conflict_scan
     audits = list(enumeration.candidates)

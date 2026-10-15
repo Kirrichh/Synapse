@@ -1,0 +1,530 @@
+{
+  "schema_version": "synapse.acceptance.pr108-memory-review-followup/v1",
+  "observed_date_utc": "2026-10-15",
+  "base_commit": "93cd83e696c348172d7b0912ab4e2896eb43d989",
+  "branch": "codex/stage4-stage16-acceptance",
+  "scope": "PR108 review follow-up: memory-event resource budget, repeated-case physical probes, D6 admission scope, CI coverage and documentation. Evidence phases are identified separately.",
+  "block_tree_amplification": {
+    "threat": "A substituted store with a structurally valid repeated-reference tree; not ordinary duplication from four memory layers.",
+    "layout": {
+      "leaf_bytes": 65536,
+      "fanout": 256,
+      "index_levels": 2,
+      "unique_blocks": 3,
+      "unique_block_bytes": 136598,
+      "root_manifest_bytes": 327,
+      "declared_logical_bytes": 4294967296
+    },
+    "conditions": {
+      "platform": "Linux",
+      "subprocess_address_space_limit_bytes": 402653184,
+      "subprocess_cpu_limit_seconds": 20,
+      "parent_timeout_seconds": 30,
+      "logical_hash_deliberately_invalid": true,
+      "interpretation": "Measure bounded rejection before attempted reconstruction; no valid 4 GiB JSON event was decoded and no unrestricted host OOM was attempted."
+    },
+    "before": [
+      {
+        "exception": "MemoryError",
+        "detail": "",
+        "entry": "read_tree",
+        "limit_bytes": 402653184,
+        "elapsed_seconds": 0.49801232999971035,
+        "peak_rss_kib": 367436
+      },
+      {
+        "exception": "MemoryError",
+        "detail": "",
+        "entry": "owner_session",
+        "limit_bytes": 402653184,
+        "elapsed_seconds": 0.49848795399975643,
+        "peak_rss_kib": 367428
+      }
+    ],
+    "after": [
+      {
+        "exception": "MemoryEventBudgetExceeded",
+        "detail": "memory event logical size 4294967296 bytes exceeds materialization budget 268435456 bytes; configure SYNAPSE_MEMORY_EVENT_MAX_BYTES for the host's capacity",
+        "entry": "read_tree",
+        "limit_bytes": 402653184,
+        "elapsed_seconds": 0.00023375699993266608,
+        "peak_rss_kib": 36296
+      },
+      {
+        "exception": "MemoryEventBudgetExceeded",
+        "detail": "memory event logical size 4294967296 bytes exceeds materialization budget 268435456 bytes; configure SYNAPSE_MEMORY_EVENT_MAX_BYTES for the host's capacity",
+        "entry": "owner_session",
+        "limit_bytes": 402653184,
+        "elapsed_seconds": 0.000749940999867249,
+        "peak_rss_kib": 36296
+      }
+    ],
+    "default_event_budget_bytes": 268435456,
+    "operator_configuration": "SYNAPSE_MEMORY_EVENT_MAX_BYTES",
+    "operator_cli": {
+      "route": "python -B -m synapse memory reassess",
+      "configured_event_budget_bytes": 1024,
+      "small_budget_exit_code": 2,
+      "small_budget_status": "REFUSED",
+      "normal_budget_exit_code": 0,
+      "physical_files_unchanged_after_refusal": true,
+      "physical_files_unchanged_after_normal_recheck": true
+    }
+  },
+  "cognitive_repetition": {
+    "route": "Canonical durable cognitive CLI run/resume/memory reassess with actual MemorySession, owner court, Gateway, stdio MCP scenario service. Connected project prepared via acceptance prepare/connect_gold_project, not a full Gold project run.",
+    "case": "32 routing shards with 64 range records each; BUSY recovery checked by separate replica service; three alpha copies followed by beta/gamma",
+    "repeated_observation": {
+      "external_executions": 3,
+      "distinct_episodes": 1,
+      "copies": 2,
+      "learned_habits": 0
+    },
+    "learned_control": {
+      "distinct_episodes": 3,
+      "learned_habits": 1,
+      "quanta": 6,
+      "knowledge_versions": 32
+    },
+    "terminal_resume": {
+      "attempts": 8,
+      "exit_code": 23,
+      "code": "STALE_OR_UNKNOWN_SUSPENSION",
+      "project_state_bytes_before_after": 1602488,
+      "store_d_bytes_before_after": 417781,
+      "state_sha256": "53bf6aeaa69c78576651dbc7978b9d1f25b6da6a4819ceb3d96cc275becd4000",
+      "tool_calls_before_after": 21,
+      "interpretation": "Eight public cognitive resume refusals, not successful replay or completed continuations."
+    },
+    "empty_consolidations": {
+      "explicit_commands": 32,
+      "new_maintenance_sessions": 4,
+      "new_reports": 0,
+      "new_cases": 0,
+      "new_witnesses": 0,
+      "state_sha256": "53bf6aeaa69c78576651dbc7978b9d1f25b6da6a4819ceb3d96cc275becd4000",
+      "project_bytes_delta": 4672,
+      "bytes_per_SESSION_OPENED": 1168,
+      "store_d_bytes_delta": 0,
+      "external_calls_delta": 0
+    },
+    "same_topology_new_read": {
+      "new_tool_calls": 1,
+      "knowledge_versions_before_after": 32,
+      "new_execution_quanta": 1,
+      "new_replay_data": 1,
+      "new_raw_trace": 1
+    },
+    "reassessment": {
+      "first_adds_decision": true,
+      "second_third_add_nothing": true,
+      "retention_store_D_bytes": {
+        "before": 609100,
+        "after": 419775
+      }
+    },
+    "runtime_port_replay": {
+      "verified_prefixes": 4,
+      "route": "MemoryFactory.ports().replay, NOT a public CLI/full Gold replay run",
+      "project_bytes_before_after": 1989549,
+      "external_calls_before_after": 22
+    },
+    "replay_program_custody": {
+      "records": 7,
+      "program_sizes": [
+        368,
+        851
+      ],
+      "program_copies": "Two small executed DSL programs, bound per run; no full Synapse source tree in store D"
+    }
+  },
+  "gold_terminal_resume": {
+    "phase": "After budget ownership correction; before D6 retrieval/gate correction.",
+    "route": "real project CLI with admitted acceptance provider; C1 and separately executing oracle; no live LLM",
+    "acceptance_file": "acceptance/stage4/stage16/test_episode_outcome_acceptance.py",
+    "canonical_test": {
+      "passed": 1,
+      "seconds": 262.02,
+      "outcomes": [
+        "INFRA_ERROR",
+        "FULL"
+      ]
+    },
+    "additional_resume": {
+      "repeat": 1,
+      "returncode": 0,
+      "seconds": 24.78170679899995,
+      "outcome_status": "FULL",
+      "snapshot_identical": true
+    },
+    "unchanged_event_count": 23,
+    "unchanged_physical_bytes": 418044,
+    "unchanged_event_kind_counts": {
+      "STARTED": 5,
+      "CONSOLIDATED": 2,
+      "OBSERVED": 2,
+      "OUTCOME_RECORDED": 2,
+      "REQUESTED": 5,
+      "FRAME_COMPLETED": 5,
+      "JUDGED": 2
+    },
+    "unchanged_pinned_frames": 5,
+    "read_all_frame": {
+      "bytes": 49338,
+      "sha256": "0ee05bb7be547a4ea195115a6c1183b17fa739c3fe6568046e3db48df4370ea6",
+      "layer_counts": {
+        "declared": 0,
+        "learned": 1,
+        "episodic": 2
+      },
+      "working_status": "AWAITING_FRESH_VERIFICATION",
+      "learned_statuses": [
+        "CONFIRMED"
+      ],
+      "generalizations": [
+        "NOT_ESTABLISHED"
+      ]
+    },
+    "all_memory_files_oracle_files_and_frozen_experiment_unchanged": true,
+    "frozen_runtime_sha256": "1963cdbca9a7c7bf43427bae852faa415502f5306ba83632b5d9d7639e7b6b4f",
+    "runtime_source_manifest_sha256": "7794cce0cb40e86ca7cc8ac1911a390486fa49b3bd7b0b8741968cf98e266f8e",
+    "acceptance_source_sha256": "25373cf81241532d593447bf25c509a6bfef5ec91ad6e93f36967bfcc3c97de7",
+    "earlier_phase_not_added_to_test_totals": "The same canonical file also passed in 271.01 s before the pure budget-parser ownership correction; three further CLI resumes then returned FULL with identical physical state."
+  },
+  "verification": {
+    "phase": "Final event-budget implementation, before D6 correction; targeted local acceptance, not the entire repository suite or a CI run.",
+    "budget_and_architecture": {
+      "passed": 226,
+      "files": {
+        "acceptance/stage4/stage16/test_project_memory_event_amplification.py": 6,
+        "acceptance/stage4/stage16/test_project_memory_event_budget.py": 18,
+        "tests/test_stage4_gold_architecture.py": 202
+      }
+    },
+    "compatibility_and_review": {
+      "passed": 563,
+      "files": {
+        "tests/test_memory_dependency_direction.py": 2,
+        "acceptance/stage4/stage16/test_memory_physical_member_bounds_acceptance.py": 4,
+        "tests/test_pr108_review2_hardening.py": 20,
+        "tests/test_pr108_review_hardening.py": 18,
+        "tests/test_production_hardening.py": 6,
+        "acceptance/stage4/stage16/test_project_memory_inventory_selection_contract.py": 30,
+        "acceptance/stage4/stage16/test_project_memory_large_event_growth_acceptance.py": 14,
+        "acceptance/stage4/stage16/test_project_memory_session_inventory_contract.py": 10,
+        "acceptance/stage4/stage16/test_project_memory_shared_event_contract.py": 8,
+        "acceptance/stage4/stage16/test_project_memory_shared_event_corruption.py": 36,
+        "acceptance/stage4/stage16/test_project_memory_shared_event_recovery.py": 14,
+        "acceptance/stage4/stage16/test_project_memory_store_contract.py": 8,
+        "tests/test_stage4_gold_dependency_direction.py": 371,
+        "tests/test_stage4_gold_ownership_dag.py": 22
+      }
+    },
+    "non_overlapping_test_count": 789,
+    "gold_canonical_test_count_separate": 1,
+    "counting": "226 + 563 distinct test cases; one distinct Gold canonical case is recorded separately. Earlier reruns and external probe iterations are not added.",
+    "commands_from_repository_root": [
+      "PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_stage4_gold_architecture.py acceptance/stage4/stage16/test_project_memory_event_budget.py acceptance/stage4/stage16/test_project_memory_event_amplification.py",
+      "Run each compatibility_and_review.files entry in its own pytest process with the same flags; heavy files remain independent shards.",
+      "PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B -m pytest -q -p no:cacheprovider --tb=short acceptance/stage4/stage16/test_episode_outcome_acceptance.py"
+    ]
+  },
+  "limitations": [
+    "256 MiB is the default logical-byte budget for one materialized event, configurable by the operator. It is neither a lifetime memory cap nor an aggregate process RAM bound; decoded objects, copies and multiple events also consume RAM.",
+    "A permitted event larger than the configured budget is refused rather than truncated. Raising the budget requires adequate host capacity.",
+    "No repeated-case self-amplification was observed in these finite probes. This is not proof of unlimited session scale or every possible execution path.",
+    "All four semantic memory layers were not simultaneously populated. Complete isolation with nonempty declared habits and content hypotheses is not established by these probes.",
+    "Actual new sessions and observations retain legitimate audit history. Four new maintenance sessions added 4672 bytes even though 32 empty consolidation commands created no reports, cases or witnesses.",
+    "The cognitive terminal-resume refusals and the successful Gold terminal resume establish different contracts. Runtime-port replay was a component-entry check, not full public CLI replay.",
+    "No live language model was used. The Gold case uses an admitted acceptance provider and separately executed oracle.",
+    "Gold terminal-resume measurements precede the D6 correction. D6 is validated separately below; historical record-reader compatibility was reviewed in code, not established by a full cross-version Gold resume."
+  ],
+  "d6_gate_coverage": {
+    "status": "TARGETED_ACCEPTANCE_PASSED",
+    "changes": [
+      "When no declared object is compatible, the original run subjects reach the existing gates for a committed refusal. The changed-consumer-environment CLI reports NOT_ADMITTED without worker delivery.",
+      "The sealed enumeration derives gate_subject_refs once per use from eligible subjects, falling back to resolved subjects. Canonical run admission first requires a resolved retrieval conflict scan.",
+      "The loader requires exact verdict coverage of those subjects, preserving context, boundary, committed receipt and mutation-fence checks; full candidate audit remains retained.",
+      "A later retrieval conflict is refused by the retrieval owner before the retrieval gate; the earlier run scan cannot override it.",
+      "The exact-subject predecessor contract and serialized historical record readers remain unchanged."
+    ],
+    "regression_observations": {
+      "mixed_loader_baseline": {
+        "failed": 2,
+        "passed": 2,
+        "failures": [
+          "mixed compatible/rejected set hit CANDIDATE_SET_INCOMPLETE",
+          "verdict with extra subjects was accepted instead of refused before loading"
+        ],
+        "evidence": "Observed tool output; no separate baseline raw log was retained."
+      },
+      "intermediate_conflict_regression": "A real canonical composition admitted all four gates with CONFLICT_BLOCKED, SCAN_INCOMPLETE and zero loads. No external worker ran in the probe.",
+      "same_conflict_probe_after_fix": "CONFLICT_SCAN_INCOMPLETE before retrieval gate; one durable negative scan, zero retrieval gate records; no external worker ran."
+    },
+    "gold_fast": {
+      "files": 60,
+      "passed": 2261,
+      "seconds": 368.04,
+      "note": "Workflow file selection; conflict guard was added near the end of this batch. Final architecture and canonical integration were checked separately."
+    },
+    "final_architecture": {
+      "passed": 202,
+      "seconds": 14.17
+    },
+    "canonical_cases": "Five loader-owner checks, three canonical environment/retrieval checks, one changed-consumer-environment CLI refusal; all passed. Stage11 run and resume also passed.",
+    "source_sha256": {
+      "synapse/experiments/gold/retrieval.py": "660d3dedd5b7134186bff48153327ef53822b1c51ab2d7cd2f19d6769a614823",
+      "synapse/experiments/gold/run_retrieval.py": "197f1f4b173e085a43ef867f4e2e368f0c873884d16503ffe8288f15df17cdd0",
+      "synapse/experiments/gold/run_environment.py": "fea7fe959e2a3a3e02d371d40ccd5307805473eaf9c7e99e34a09d1d7be2bbd7"
+    },
+    "per_file_results": [
+      {
+        "file": "tests/test_stage4_gold_compatibility.py",
+        "passed": 30,
+        "seconds": 88.98,
+        "log_sha256": "fe8a7bffc16b91fce8ee0ba637ffdccbb259fe28b8fc5b50d6f4445945a94453"
+      },
+      {
+        "file": "tests/test_stage4_gold_consumption_evidence.py",
+        "passed": 25,
+        "seconds": 78.5,
+        "log_sha256": "ea664123454ffabd798b2a7a5ed313246459fddb52f26919976e1d48bba83c5a"
+      },
+      {
+        "file": "acceptance/stage4/stage11/test_project_gold_run_acceptance.py",
+        "passed": 1,
+        "seconds": 42.11,
+        "log_sha256": "ba21209ff5a3fbb4a761fffc381da1792b6d26fd053ab4d3898fce4c6d5f1fec"
+      },
+      {
+        "file": "acceptance/stage4/stage11/test_project_gold_resume_acceptance.py",
+        "passed": 1,
+        "seconds": 48.05,
+        "log_sha256": "956040cfe9c5cee4d72b11b4d4f9537e53febff47883c8c4790692f9a6f2eefd"
+      },
+      {
+        "file": "acceptance/stage4/stage16/test_source_consumer_refusal_acceptance.py",
+        "passed": 1,
+        "seconds": 37.2,
+        "log_sha256": "f6d7d23c9bc6f2aafa9fa4f1148210144a2023405fc83c4ba6d84cb1ad7cbba0"
+      },
+      {
+        "file": "acceptance/stage4/stage16/test_retrieval_object_admission.py",
+        "passed": 5,
+        "seconds": 67.69,
+        "log_sha256": "92ceb304885e8a423ec76331a05b491939e1f24daa85260a5550d2ea96c300ef"
+      },
+      {
+        "file": "acceptance/stage4/stage16/test_run_retrieval_object_admission.py",
+        "passed": 3,
+        "seconds": 38.65,
+        "log_sha256": "a7fb78c60b674262590a6e9236b6a3f302207c5395c09eff8d141de34e19682c"
+      },
+      {
+        "file": "tests/test_stage4_gold_retrieval.py",
+        "passed": 70,
+        "failed": 1,
+        "seconds": 608.5,
+        "log_sha256": "83354c1a9c14418bb4dd4f77eb08d78f53627b6f60f0fc7337f78049f9d9e431"
+      },
+      {
+        "file": "tests/test_stage4_gold_retrieval.py::test_a_verdict_over_only_part_of_the_enumeration_is_refused",
+        "passed": 1,
+        "failed": 0,
+        "seconds": 11.34,
+        "log_sha256": "ef5fc1682e9490eca7922691367cdf5df54d9d501d1f954564765245881af378"
+      }
+    ],
+    "notes": [
+      "Canonical mixed/blocked conflict and CLI refusal passed with the new resolved-conflict guard.",
+      "Compatibility and general consumption plus Stage11 run/resume passed before the no-op-for-those-inputs guard was added.",
+      "Consumption fixture optional custom conflict assessor was exercised by the final canonical blocked-conflict cases.",
+      "Historical format compatibility is a code-level finding; no cross-version Gold resume is claimed.",
+      "Full retrieval suite: 70 passed, 1 failed only because existing diagnostic contract expected the words cover exactly. The product message preserves those words; the one failing test then passed. The 608-second full suite was not repeated after the string-only correction."
+    ],
+    "non_overlapping_targeted_cases": 137,
+    "counting": "137 D6 cases; repeated runs of the same cases are not added. Gold-fast and the memory-budget phase are recorded as separate batches; their shared cases are not summed into a grand total."
+  },
+  "evidence_local": {
+    "root": "/workspace/pr108-review-followup-20261015",
+    "availability": "Ephemeral execution-workspace artifacts, not repository links or self-contained reproducibility assets. Hashes identify the exact observed evidence; runnable repository acceptance files are listed above.",
+    "files": {
+      "tree-amplification/before-results.json": {
+        "sha256": "d3e63f73d7a9b2c85717f0f7f73fb96d74df6aa9a6bda5db56c35b3817f8cf2c",
+        "bytes": 801
+      },
+      "tree-amplification/after-results.json": {
+        "sha256": "b7ff951c2ce50394e64f7712ac2156dc9c7483f84f0d9c718ca5ac03ce06c4d7",
+        "bytes": 1141
+      },
+      "repetition/summary.json": {
+        "sha256": "334fc57d9a4882cd7713358c3b126ec8284d0e1c8f0e3ec8f33f602f87a369da",
+        "bytes": 3519
+      },
+      "repetition/results.json": {
+        "sha256": "c34e9adf66f2651f9b45d625bb938a9e12506b37e3a7fd7583208eb7c75f4c40",
+        "bytes": 165688
+      },
+      "repetition/operator-budget-cli-recheck.json": {
+        "sha256": "7b0c37de506557e9bbc841c9a92f1e3faa5202e683ce3fdb859d8e23a8d42d1a",
+        "bytes": 178932
+      },
+      "gold-repeat/fresh-summary.json": {
+        "sha256": "58fd19c100237bd8130e0a0805a9cbe29529432ec02f9b0e8c5b84cb12707449",
+        "bytes": 3086
+      },
+      "gold-repeat/final/fresh-summary.json": {
+        "sha256": "2c81353994074295646b5f945f11ecb798ccfe97ba5ef1f4927248c39aca24f3",
+        "bytes": 2877
+      },
+      "gold-repeat/final/source-identity.json": {
+        "sha256": "dddb22f8a770f47c99f4f1589f798712bc2fcf93e5ec0780db76035dc4e3e13f",
+        "bytes": 40462
+      },
+      "final-validation/results.json": {
+        "sha256": "2549ab19310c786238523f9220900b298a5f7659cca49d2d444c7de797db340a",
+        "bytes": 1914
+      },
+      "final-budget-architecture.xml": {
+        "sha256": "e33175b1257d4976b5e74532bb2c0e230ba9a854cf89999b62465bc3b6cc9e06",
+        "bytes": 36371
+      },
+      "gold-repeat/final/episode-outcome.xml": {
+        "sha256": "26d3539a8764fab30409c767d86ab2607cd9b7aeef8cd9e48f4d7226cc8f0c1b",
+        "bytes": 425
+      },
+      "final-validation/test_memory_dependency_direction.xml": {
+        "sha256": "dc84e63bf3007fd3f04f9fb19a3aa0efde521b3fd0ab4b44bfd2f350ce712167",
+        "bytes": 527
+      },
+      "final-validation/test_memory_physical_member_bounds_acceptance.xml": {
+        "sha256": "1c0fa14db7497b3acee9982f0c0e5b3a70ac485adc666f789fe683156003bfd6",
+        "bytes": 971
+      },
+      "final-validation/test_pr108_review2_hardening.xml": {
+        "sha256": "07684be3090a2a233936dfcf53c3837ed7239522a59d3ad1c07ba1d4df3ccb40",
+        "bytes": 3010
+      },
+      "final-validation/test_pr108_review_hardening.xml": {
+        "sha256": "1161416387105ac6aa5b60dc7892b5a6db3bf1ecf07bbfbeb87124a14b70f511",
+        "bytes": 2931
+      },
+      "final-validation/test_production_hardening.xml": {
+        "sha256": "f0e16a7ba8ce05f234fb5fe0bdc90a1f9a6f87abb23ab23e4afe6ba46dfa7fe1",
+        "bytes": 949
+      },
+      "final-validation/test_project_memory_inventory_selection_contract.xml": {
+        "sha256": "08bdc6ec5a95944bab16ce6989c9d7012bf5e190bc5719ee398e4730614bf6c4",
+        "bytes": 5776
+      },
+      "final-validation/test_project_memory_large_event_growth_acceptance.xml": {
+        "sha256": "49b771351fc59cba4551c63a1469379e320985c853a891d75ff509681871029e",
+        "bytes": 3032
+      },
+      "final-validation/test_project_memory_session_inventory_contract.xml": {
+        "sha256": "07d8dce005456353e34a0325411294a6c5fab760ed32e5d676b662dc4b0e40d0",
+        "bytes": 2194
+      },
+      "final-validation/test_project_memory_shared_event_contract.xml": {
+        "sha256": "183a0e4167edda32e65c8731f5a19c2f0ea735b1de496329bb56563892143324",
+        "bytes": 1844
+      },
+      "final-validation/test_project_memory_shared_event_corruption.xml": {
+        "sha256": "f5fdf076691fe9cf0309aa67455346e34ab72ebef30e3b9150eafe4a847981b6",
+        "bytes": 7997
+      },
+      "final-validation/test_project_memory_shared_event_recovery.xml": {
+        "sha256": "d03812812e4d97d25c20b5fead7a5142270d25afe0c3949057aeb0109f545400",
+        "bytes": 2993
+      },
+      "final-validation/test_project_memory_store_contract.xml": {
+        "sha256": "df25d88a12e76ac37fd3eb0b14da3d0275b8dfbfc8ef4b7e90a8c63bb00533a0",
+        "bytes": 1745
+      },
+      "final-validation/test_stage4_gold_dependency_direction.xml": {
+        "sha256": "dfdd6e5ce490b89a99c344dfc193ec1a9a012cfa2e768a8f0bc36d1eec7d61ef",
+        "bytes": 58831
+      },
+      "final-validation/test_stage4_gold_ownership_dag.xml": {
+        "sha256": "71d43920bf3b26b7b28108057e176471b318c15eb2978229fe71d74f5cfe1d9b",
+        "bytes": 4274
+      },
+      "d6-validation/gold-fast.xml": {
+        "sha256": "74594dbd6b876eb796be710d417a7256cf4ae84eb2ff35dad6c299591ba5fde5",
+        "bytes": 356430
+      },
+      "d6-validation/gold-fast-command.json": {
+        "sha256": "0daf7beb25698268803f19ba07cac2659f38e166c34c1746e955d6ac33cdd3ef",
+        "bytes": 3439
+      },
+      "d6-validation/final-architecture.xml": {
+        "sha256": "219806bf03d6de1944b95618a0dbfc48ec64f60035057f1a9a7bb9cb5bf2bfaa",
+        "bytes": 32185
+      },
+      "d6-validation/conflict-before-probe.py": {
+        "sha256": "df6306565c759684ac1acfa15fa767cf308507f830314c75a99a13d89c2d22ee",
+        "bytes": 2011
+      },
+      "d6-validation/conflict-before-result.json": {
+        "sha256": "126ede8f65b414dac21dfa724e585fbd5aefe950cb9c4c446eb35a3ed2a61b06",
+        "bytes": 777
+      },
+      "d6-validation/conflict-after-result.json": {
+        "sha256": "6e1851dada14d42abfd7b559c89c025709d81b11d3c334901228b51ecd4a47e0",
+        "bytes": 802
+      },
+      "d6-validation/d6-test-summary.json": {
+        "sha256": "842156f34262f061915fe24c58135f283e12148a4c30ca23fe9e44a987e28751",
+        "bytes": 4799
+      },
+      "d6-validation/final-architecture.log": {
+        "sha256": "09e2195000207f174d871c20eb8f3b22a87dfa26e554bd82be0d3e7ad36a9fe0",
+        "bytes": 261
+      },
+      "d6-validation/gold-fast.log": {
+        "sha256": "b896180842635b33fece03a4ceff8f5e4c7abcda61ebe48e586f039996acd0c2",
+        "bytes": 2593
+      },
+      "d6-validation/pr108-d6-compatibility-tests.log": {
+        "sha256": "fe8a7bffc16b91fce8ee0ba637ffdccbb259fe28b8fc5b50d6f4445945a94453",
+        "bytes": 110
+      },
+      "d6-validation/pr108-d6-conflict-before.log": {
+        "sha256": "ecdb07b83623826aa5ee5f549875b6381977c18752cdeb7cd17f9c6aab27dba2",
+        "bytes": 794
+      },
+      "d6-validation/pr108-d6-consumption-tests.log": {
+        "sha256": "ea664123454ffabd798b2a7a5ed313246459fddb52f26919976e1d48bba83c5a",
+        "bytes": 110
+      },
+      "d6-validation/pr108-d6-object-admission-tests.log": {
+        "sha256": "92ceb304885e8a423ec76331a05b491939e1f24daa85260a5550d2ea96c300ef",
+        "bytes": 109
+      },
+      "d6-validation/pr108-d6-project-resume-tests.log": {
+        "sha256": "956040cfe9c5cee4d72b11b4d4f9537e53febff47883c8c4790692f9a6f2eefd",
+        "bytes": 99
+      },
+      "d6-validation/pr108-d6-project-run-tests.log": {
+        "sha256": "ba21209ff5a3fbb4a761fffc381da1792b6d26fd053ab4d3898fce4c6d5f1fec",
+        "bytes": 99
+      },
+      "d6-validation/pr108-d6-retrieval-diagnostic-recheck.log": {
+        "sha256": "ef5fc1682e9490eca7922691367cdf5df54d9d501d1f954564765245881af378",
+        "bytes": 99
+      },
+      "d6-validation/pr108-d6-retrieval-tests.log": {
+        "sha256": "83354c1a9c14418bb4dd4f77eb08d78f53627b6f60f0fc7337f78049f9d9e431",
+        "bytes": 1301
+      },
+      "d6-validation/pr108-d6-run-retrieval-acceptance.log": {
+        "sha256": "a7fb78c60b674262590a6e9236b6a3f302207c5395c09eff8d141de34e19682c",
+        "bytes": 99
+      },
+      "d6-validation/pr108-d6-source-refusal-tests.log": {
+        "sha256": "f6d7d23c9bc6f2aafa9fa4f1148210144a2023405fc83c4ba6d84cb1ad7cbba0",
+        "bytes": 99
+      }
+    }
+  }
+}

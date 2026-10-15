@@ -129,8 +129,8 @@ def assemble_run_environment(
     #: revalidation record in the append-only history — and the subjects the
     #: run actually commits, gates and consumes are the objects that passed.
     #: An incompatible object is excluded with its trace intact instead of
-    #: blocking every compatible one (Д6); only a universe where nothing passed
-    #: is a refusal.
+    #: blocking every compatible one (Д6). If nothing passed, the original
+    #: subjects reach the gates so their refusal remains a durable decision.
     evidence = mint_compatibility_evidence(
         authority_handle=authority_handle,
         bindings=compatibility,
@@ -153,11 +153,7 @@ def assemble_run_environment(
         if decision.decision_kind is CompatibilityDecisionKind.COMPATIBLE
         and decision.evidence.completeness is EvidenceCompleteness.COMPLETE
     )
-    if not admitted_candidates:
-        raise _fail(
-            GoldRunFailureCode.AUTHORITY_MISMATCH,
-            "no retained subject is compatible with this consumption",
-        )
+    admitted_candidates = admitted_candidates or candidates
 
     snapshot = commit_run_snapshot(
         snapshot_root=snapshot_root,

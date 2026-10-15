@@ -274,7 +274,7 @@ def _admission_for(enumeration, context, *, admit=True, refs=None, journal=None)
 
     from synapse.experiments.gold import admission as A
     controller, requested = _gate_controller(admit=admit)
-    subjects = enumeration.subject_refs if refs is None else refs
+    subjects = enumeration.gate_subject_refs if refs is None else refs
     ingestion = A.evaluate_ingestion_gate(controller, subject_refs=subjects)
     publication = A.evaluate_publication_gate(
         controller, subject_refs=subjects, requested=requested, predecessor=ingestion
@@ -320,7 +320,7 @@ def _retrieve_all(*, retriever, context, query, frozen=None):
         persistence=persistence,
     )
     controller, requested = _gate_controller()
-    subjects = enumeration.subject_refs
+    subjects = enumeration.gate_subject_refs
     if not subjects:
         return select_and_load_durably(
             retriever=retriever, context=context, query=query,

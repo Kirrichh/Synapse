@@ -1,5 +1,82 @@
 # Synapse Changelog
 
+## PR108 storage reader and review follow-up — 2026-10-15
+
+- D6 now preserves a durable gate refusal when no resolved candidate is
+  compatible: the original subjects reach the gates and the run reports
+  `NOT_ADMITTED` before invoking an executor. For a mixed retrieval, the
+  loader requires the verdict to cover exactly the compatible gate subjects;
+  missing or extra subjects refuse before any candidate bytes are loaded.
+  The complete enumeration and rejection evidence remain in the causal audit.
+  A conflict found during retrieval stops the run before the retrieval gate;
+  the earlier compatibility scan cannot override the newly recorded finding.
+  A truly empty enumeration still produces no gate decision. Historical
+  record formats and readers are unchanged.
+- A physical reproduction confirmed that 136,598 bytes of retained blocks
+  can describe a 4 GiB logical event through repeated tree references. The
+  reader now checks the logical materialization budget before expanding a
+  tree, then enforces the bound while reconstructing its bytes. This is a
+  storage amplification defect; it does not by itself establish a cycle
+  between the four memory layers.
+- `memory_event_budget.py` owns the per-event resource contract. The default
+  is 256 MiB; operators may declare another positive byte count through
+  `SYNAPSE_MEMORY_EVENT_MAX_BYTES` or
+  `ProjectMemoryStore(maximum_event_bytes=...)`. A larger event produces
+  `MemoryEventBudgetExceeded` instead of beginning an unbounded expansion.
+  The owner applies the same budget before publishing an event.
+- This is neither a lifetime transaction limit nor a cumulative storage
+  quota. An individual full-state event can still outgrow the configured
+  budget and refuse explicitly; total session RAM is not bounded by this
+  per-event limit. Raising it requires corresponding host capacity.
+- The two external-review suites (38 tests) now have separate parallel CI
+  shards. The event-budget and physical-amplification acceptance files also
+  have separate shards; scheduling them is not a claim that CI has run.
+- `examples/production_hardening.py` now labels its four monitoring formulas
+  as scripted demonstrations. Their constants and printed verdicts are not
+  observations of actual runtime health or memory retention.
+- Physical repetition probes, the bounded expansion reproduction and phased
+  local acceptance results are recorded in
+  [`pr108_memory_review_followup_v1.json`](../reports/pr108_memory_review_followup_v1.json).
+  The completed Gold case did not grow on terminal resume; this is not a proof
+  of unlimited history size or isolation of every populated memory layer.
+
+## PR108 archive contracts documented — 2026-10-15
+
+This entry documents the existing archive changes through `d258ef5`; it does
+not claim a new live Gold run or a new performance result.
+
+- D4 binds a `PATH_CREATED` target to the exact absence of its path in the
+  frozen Git revision. The project model represents it as a path-level
+  `CREATION` element. Declared modify/create effects pass through the existing
+  agent selection, exact scope checks and C1 boundary; a target declaration
+  alone does not give an agent protocol the ability to produce that edit.
+- D5 retains the worker's summary, failure reason and diagnostics with the
+  materialized attempt, including `NO_PATCH`. These are reported observations,
+  not independent verification or permission to publish knowledge.
+- D6 records compatibility evidence for every declared candidate, then gates
+  and consumes the compatible complete subset. A rejected object retains its
+  audit trail without excluding unrelated compatible objects. The follow-up
+  above corrects verdict coverage and the all-incompatible refusal path.
+- D7 permits contextual keyword names except `true`, `false`, `null`, `and`,
+  `or` and `not`. Dedicated syntax retains precedence. Declarations and their
+  reference positions, including policy references, use the same name rules.
+- D8/D9 introduce owner lifecycle v4, Active Memory Frame v4 and the derived
+  path-owner registry v1. The registry reads the complete history of the
+  pinned court decision; the working episode window stays at 128. Published
+  owner history can degrade to counts with its decision reference, subject to
+  the separate registry/frame budgets. Historical v1–v3 jobs keep their
+  interpretation. An unjudged proposed patch is not an established defect.
+- Golden replay retains repeated model answers in per-prompt/model `results`
+  lists, merging ordinary calls and thought steps in execution order when
+  positions exist. Legacy single `result` entries remain reusable. The artifact
+  manifest remains schema 2, with schema 1 still readable; missing/exhausted
+  entries never call a provider. Invalid artifact text or unsupported manifest
+  versions produce a typed artifact error.
+- `GOLD_KNOWLEDGE_INGESTION.md` now distinguishes these current contracts from
+  historical descriptions and removes the obsolete 4096-transaction lifetime
+  limit. Four logical layers and eight element views do not grant additional
+  admission authority or establish bounded total storage/RAM.
+
 ## Task-scoped source delivery preserves historical evidence — 2026-10-14
 
 - A source operation that studied several files now delivers only the source

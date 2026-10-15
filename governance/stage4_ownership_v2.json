@@ -112,6 +112,7 @@
   },
   "owner_components": {
     "memory_blocks.py": "memory_event_storage.py",
+    "memory_event_budget.py": "memory_event_storage.py",
     "memory_event_encoding.py": "memory_event_storage.py",
     "project_frame_storage.py": "project_agents.py",
     "owner_profiles.py": "project_agents.py",

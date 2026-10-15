@@ -42,13 +42,13 @@ class _OwnerSession:
 
 
 class ProjectMemoryStore:
-    def __init__(self, state_root, *, read_only=False):
+    def __init__(self, state_root, *, read_only=False, maximum_event_bytes=None):
         self.root = state_root / "project-memory"
         self.events = self.root / "events"
+        self.storage = MemoryEventStorage(self.root, maximum_event_bytes=maximum_event_bytes)
         for path in (self.root, self.events):
             (require_directory if read_only else ensure_directory)(path)
         self.fence = FileSnapshotFence(self.root / "coordinator", read_only=read_only)
-        self.storage = MemoryEventStorage(self.root)
         self.read_only = read_only
         self._owner_session = None
         # transaction id -> (sha256 of its bytes, the event those bytes were validated as)
@@ -157,6 +157,7 @@ class ProjectMemoryStore:
                 raise
             return deepcopy(receipt)
         raw = canonical(event)
+        self.storage.event_budget.require(len(raw))
         transaction = new_operation_id()
         try:
             with store_transaction(self.fence, guard=guard) as ticket:

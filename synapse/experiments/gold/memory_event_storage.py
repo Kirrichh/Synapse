@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import os
 
 from .memory_blocks import MemoryBlockStore
+from .memory_event_budget import EVENT_BUDGET_ENV, resolve_event_budget
 from .memory_event_encoding import (MAX_BLOCK_BYTES, MAX_LEGACY_EVENT_BYTES,
                                     decode_manifest, decode_tree_manifest, encode_event)
 from .persistence import (committed_transaction_exists, read_committed_snapshot_transaction,
@@ -13,13 +15,15 @@ MAX_EVENT_MEMBER_BYTES = MAX_BLOCK_BYTES
 
 
 class MemoryEventStorage:
-    def __init__(self, root):
+    def __init__(self, root, *, maximum_event_bytes=None):
         self.events = root / "events"
-        self.blocks = MemoryBlockStore(root / "blocks")
+        self.event_budget = resolve_event_budget(maximum_event_bytes, configured=os.environ.get(EVENT_BUDGET_ENV))
+        self.blocks = MemoryBlockStore(root / "blocks", maximum_event_bytes=self.event_budget.maximum_bytes)
 
     def prepare(self, raw, *, ticket):
         """Publish shared payload bytes before the caller stages the terminal event transaction."""
         require_open_mutation_ticket(ticket)
+        self.event_budget.require(len(raw))
         if len(raw) <= MAX_EVENT_MEMBER_BYTES:
             return {"event.json": raw}
         manifest, blocks = encode_event(raw)
@@ -29,10 +33,12 @@ class MemoryEventStorage:
     def _restore(self, members):
         if set(members) == {"event-manifest.json"}:
             manifest = decode_manifest(members["event-manifest.json"])
+            self.event_budget.require(manifest["logical_byte_length"])
             raw = self.blocks.read(manifest["chunks"])
             retained = frozenset(entry["sha256"] for entry in manifest["chunks"])
         elif set(members) == {"event-tree.json"}:
             manifest = decode_tree_manifest(members["event-tree.json"])
+            self.event_budget.require(manifest["logical_byte_length"])
             raw, retained = self.blocks.read_tree(manifest["root"])
         else:
             raise ValueError("memory event has undeclared members")
@@ -44,6 +50,7 @@ class MemoryEventStorage:
         if set(members) == {"event.json"}:
             if not 0 < len(members["event.json"]) <= MAX_LEGACY_EVENT_BYTES:
                 raise ValueError("legacy memory event exceeds its retained byte budget")
+            self.event_budget.require(len(members["event.json"]))
             return marker, members["event.json"], frozenset()
         raw, manifest, retained = self._restore(members)
         digest = hashlib.sha256(raw).hexdigest()

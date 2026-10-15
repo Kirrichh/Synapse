@@ -116,6 +116,9 @@ def production_point_of_use_case(
     extra_behavior_cores: tuple[dict, ...] = (),
     program_artifacts: tuple[tuple[HashBoundRef, bytes], ...] = (),
     governing_task_ref: HashBoundRef | None = None,
+    primary_lifecycle_state=None,
+    extra_resolved: int = 0,
+    conflict_assessor=None,
 ):
     """Build the real, single-coordinator point-of-use authority graph.
 
@@ -143,6 +146,8 @@ def production_point_of_use_case(
         extra_resolved_cores=extra_behavior_cores,
         program_artifacts=program_artifacts,
         governing_task_ref=governing_task_ref,
+        lifecycle_state=primary_lifecycle_state,
+        extra_resolved=extra_resolved,
         **({"producer_repository_revision": RepositoryRevision.git_commit(repository_revision),
             "producer_base_revision": RepositoryRevision.git_commit(repository_revision)} if governing_task_ref is not None else {}),
     )
@@ -297,7 +302,7 @@ def production_point_of_use_case(
             observation=world.observation,
             observation_provider=current_platform_observation,
             evidence_resolver=lambda descriptor: world.catalog[descriptor.descriptor_id.value],
-            conflict_assessor=world.evaluator._conflict_assessor,
+            conflict_assessor=conflict_assessor or world.evaluator._conflict_assessor,
             binding_repo_root=world.root,
             retriever_actor=world.evaluator.retriever_actor,
             consumer_actor=world.evaluator.consumer_actor,

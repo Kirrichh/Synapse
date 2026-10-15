@@ -300,14 +300,18 @@ class RunRetrieval:
             frozen=frozen,
             persistence=persistence,
         )
+        # This scan includes retrieval-time proposals absent from the run's
+        # earlier compatibility evidence. That earlier evidence cannot clear
+        # a newly unresolved conflict; the durable scan owns this refusal.
+        enumeration.require_resolved_conflicts()
         # §20 decides per object: candidates the enumeration itself classified
         # REJECTED (e.g. INCOMPATIBLE_TASK_CONTRACT) keep their audit trace but
         # do not become gate subjects. Gating them anyway would let one
-        # incompatible library object block the whole run — the poisoning this
-        # prevents — while an empty eligible set still fails honestly below.
+        # incompatible library object block the whole run. If none qualify,
+        # the gate decides the refusal over the resolved subjects durably.
         admission = gate_selectable_candidates(
             controller=controller,
-            candidates=enumeration.eligible_subject_refs,
+            candidates=enumeration.gate_subject_refs,
             consumer_context_ref=consumer_context_ref,
             boundary_ref=boundary_ref,
             frozen=frozen,

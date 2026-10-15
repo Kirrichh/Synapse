@@ -17,6 +17,19 @@
   characters by the eighth traveler. Plan quality needs a provider key and was
   not measured (`reports/memoryarena_travel_v1.json`,
   `docs/MEMORY_PERFORMANCE.md`).
+- `.github/workflows/memoryarena-travel.yml` runs the benchmark live in
+  GitHub Actions with the `GEMINI_API_KEY` repository secret. Pushes never
+  start it; a maintainer's `memoryarena:smoke` or `memoryarena:pilot` label on
+  a pull request of this repository does. `scripts/memoryarena_live_run.py`
+  pins the MemoryArena commit, the flights table and the dataset revision,
+  runs one memory system per job and reports scores, provider tokens, agent
+  steps and memory reach.
+- MemoryArena's own `GeminiClient` drops the model's function-call turns when
+  it rebuilds the conversation. The `gemini-rest` transport in
+  `scripts/memoryarena_run_travel.py` returns each model turn as the API
+  produced it, with its thought signatures; the agent, prompts, tools, memory
+  and evaluation remain MemoryArena's. The dry-run endpoint answers the Gemini
+  REST protocol too and refuses the histories the API refuses.
 - `scripts/benchmark_longmemeval_retrieval.py` stopped importing when
   `lexical_ranking` left `knowledge.search` in `93cf0c9`. It now ranks through
   `PreparedKnowledgeIndex.rank`, and the recorded report reproduces unchanged.

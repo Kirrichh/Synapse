@@ -1,0 +1,136 @@
+name: MemoryArena Travel
+
+# Paid live runs of MemoryArena's Group Travel Planner with the GEMINI_API_KEY
+# repository secret. Pushes never start them: a run starts when a maintainer
+# adds one of these labels to a pull request of this repository.
+#   memoryarena:smoke  one five-traveler group (id 8) with Synapse memory, over
+#                      the REST transport and over MemoryArena's own client
+#   memoryarena:pilot  the first twenty groups over the REST transport with
+#                      the benchmark's no-memory mode (earlier plans in the
+#                      prompt), long context, BM25 and Synapse memory
+# Plans are scored by the benchmark's string comparison; no model judges them.
+"on":
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: memoryarena-travel-${{ github.event.pull_request.number }}-${{ github.event.label.name }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Choose the run
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.label.name, 'memoryarena:')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      groups: ${{ steps.plan.outputs.groups }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - id: plan
+        env:
+          LABEL: ${{ github.event.label.name }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          model = "gemini-3.1-flash-lite"
+          plans = {
+              "memoryarena:smoke": ("--ids 8", [("synapse-lexical", "gemini-rest"),
+                                                ("synapse-lexical", "benchmark")]),
+              "memoryarena:pilot": ("--first 20", [("none", "gemini-rest"), ("long_context", "gemini-rest"),
+                                                   ("bm25", "gemini-rest"), ("synapse-lexical", "gemini-rest")]),
+          }
+          if os.environ["LABEL"] not in plans:
+              raise SystemExit(f"unknown MemoryArena label {os.environ['LABEL']!r}; known: {sorted(plans)}")
+          groups, runs = plans[os.environ["LABEL"]]
+          matrix = [{"memory": memory, "client": client, "model": model} for memory, client in runs]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"groups={groups}\n")
+              output.write(f"matrix={json.dumps(matrix)}\n")
+          print(groups, matrix)
+          PY
+
+  travel:
+    name: ${{ matrix.memory }} over ${{ matrix.client }}
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install the pinned harness
+        run: >
+          python -m pip install -e .
+          'tiktoken==0.8.0' 'rank-bm25==0.2.2' 'fastapi==0.115.12' 'starlette==0.46.2' 'uvicorn==0.53.0'
+          'pydantic==2.13.5' 'pandas==3.0.6' 'numpy==2.4.6' 'datasets==5.0.1' 'huggingface_hub==1.33.0'
+          'openai==2.54.0' 'requests==2.34.2' 'tqdm==4.70.1' 'python-dotenv==1.2.3'
+          'google-generativeai==0.8.5'
+      - name: Restore the flights table
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/memoryarena-cache
+          key: memoryarena-flights-8dafdb0e3f8b79ce599a1e612a772865
+      - name: Prepare the pinned benchmark
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: >
+          python scripts/memoryarena_live_run.py prepare
+          --root "$RUNNER_TEMP/memoryarena" --cache "$RUNNER_TEMP/memoryarena-cache"
+      - name: Run the travel planner
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: >
+          python scripts/memoryarena_live_run.py run
+          --root "$RUNNER_TEMP/memoryarena"
+          --out "$RUNNER_TEMP/memoryarena-out/${{ matrix.memory }}-${{ matrix.client }}"
+          --memory "${{ matrix.memory }}" --client "${{ matrix.client }}" --model "${{ matrix.model }}"
+          ${{ needs.plan.outputs.groups }}
+      - name: Preserve the run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memoryarena-${{ matrix.memory }}-${{ matrix.client }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/memoryarena-out
+          if-no-files-found: warn
+          retention-days: 30
+
+  report:
+    name: Report
+    needs: [plan, travel]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: memoryarena-*-${{ github.run_id }}
+          path: ${{ runner.temp }}/memoryarena-artifacts
+      - name: Join the summaries
+        run: >
+          python scripts/memoryarena_live_run.py report "$RUNNER_TEMP/memoryarena-artifacts"
+          --output "$RUNNER_TEMP/memoryarena-report/memoryarena-travel.md"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: memoryarena-report-${{ github.run_id }}
+          path: ${{ runner.temp }}/memoryarena-report
+          retention-days: 30

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A scripted OpenAI-compatible chat endpoint for a MemoryArena dry run.
+"""A scripted model endpoint for a MemoryArena dry run, OpenAI- and Gemini-shaped.
 
 It stands in for the agent's model so the benchmark's pipeline can be checked
 without a provider: for each traveler it first asks for the destination
@@ -9,6 +9,13 @@ ground-truth plan. Plan quality is therefore not measured — the run proves the
 wiring (environment, memory server, parsing, combination, evaluation) and
 measures, end to end, whether the earlier travelers a question names reached
 the agent's prompt through memory, and how large that memory context was.
+
+``/v1/chat/completions`` answers the benchmark's OpenAI client.
+``/v1beta/models/<model>:generateContent`` answers the Gemini REST transport of
+``scripts/memoryarena_run_travel.py`` and refuses, with HTTP 400, the histories
+the Gemini API refuses: a function-response turn that does not follow a
+function-call turn with as many calls, and a call turn returned without the
+thought signature issued with it.
 """
 from __future__ import annotations
 
@@ -20,6 +27,9 @@ import re
 import threading
 import time
 import uuid
+
+MEMORY_PREFIX = "Here is relevant context from memory"
+TOOLS = ("RestaurantSearch", "AccommodationSearch", "AttractionSearch")
 
 
 def format_person_plan(name, daily_plans):
@@ -66,46 +76,98 @@ def cities(plans):
     return found
 
 
-def completion(model, content=None, tool_calls=None):
-    message = {"role": "assistant", "content": content}
-    if tool_calls:
-        message["tool_calls"] = tool_calls
-    return {"id": f"chatcmpl-{uuid.uuid4().hex}", "object": "chat.completion", "created": int(time.time()),
-            "model": model, "choices": [{"index": 0, "message": message,
-                                         "finish_reason": "tool_calls" if tool_calls else "stop"}],
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
+def tool_requests(case):
+    return [(tool, {"city": city}) for city in cities(case["plans"]) for tool in TOOLS]
 
 
-def handler_for(by_query, log_path: Path):
-    lock = threading.Lock()
+def case_of(prompt, by_query):
+    match = re.search(r"Query: (.*?)\n\nInstructions:", prompt or "", re.DOTALL)
+    return by_query.get(match.group(1).strip()) if match else None
 
+
+class Oracle:
+    def __init__(self, by_query, log_path: Path) -> None:
+        self.by_query = by_query
+        self.log_path = log_path
+        self.lock = threading.Lock()
+        self.signatures: set[str] = set()
+
+    def log(self, case, memory: str) -> None:
+        reached = [name for name in case["relevant"] if f"=== {name}'s Plan ===" in memory]
+        with self.lock, self.log_path.open("a", encoding="utf-8") as log:
+            log.write(json.dumps({"group": case["group"], "round": case["round"], "relevant": case["relevant"],
+                                  "reached": reached, "memory_chars": len(memory)}) + "\n")
+
+    def openai(self, body):
+        messages = body["messages"]
+        last_user = max(i for i, m in enumerate(messages) if m["role"] == "user")
+        case = case_of(messages[last_user]["content"], self.by_query)
+        message = {"role": "assistant", "content": ""}
+        if case is not None and not any(m["role"] == "tool" for m in messages[last_user:]):
+            self.log(case, next((m["content"] for m in messages
+                                 if m["role"] == "user" and m["content"].startswith(MEMORY_PREFIX)), ""))
+            message = {"role": "assistant", "content": None, "tool_calls": [
+                {"id": f"call_{uuid.uuid4().hex[:12]}", "type": "function",
+                 "function": {"name": tool, "arguments": json.dumps(args)}} for tool, args in tool_requests(case)]}
+        elif case is not None:
+            message["content"] = format_person_plan(case["name"], case["plans"])
+        return 200, {"id": f"chatcmpl-{uuid.uuid4().hex}", "object": "chat.completion",
+                     "created": int(time.time()), "model": body["model"],
+                     "choices": [{"index": 0, "message": message,
+                                  "finish_reason": "tool_calls" if message.get("tool_calls") else "stop"}],
+                     "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
+
+    def refusal(self, body):
+        """Why the Gemini API would refuse this history, or ``None``."""
+        contents = body.get("contents") or []
+        for position, turn in enumerate(contents):
+            responses = [part for part in turn["parts"] if "functionResponse" in part]
+            calls = [part for part in turn["parts"] if "functionCall" in part]
+            if responses:
+                previous = contents[position - 1] if position else {"role": None, "parts": []}
+                issued = [part for part in previous["parts"] if "functionCall" in part]
+                if previous["role"] != "model" or len(issued) != len(responses):
+                    return ("Please ensure that function response turn comes immediately after a function call "
+                            "turn. And the number of function response parts should be equal to number of "
+                            "function call parts of the function call turn.")
+            if calls and calls[0].get("thoughtSignature") not in self.signatures:
+                return "Function call is missing a thought_signature in functionCall parts."
+        return None
+
+    def gemini(self, body):
+        refused = self.refusal(body)
+        if refused:
+            return 400, {"error": {"code": 400, "message": refused, "status": "INVALID_ARGUMENT"}}
+        contents = body["contents"]
+        texts = [(position, part["text"]) for position, turn in enumerate(contents) if turn["role"] == "user"
+                 for part in turn["parts"] if "text" in part]
+        prompt_at, prompt = texts[-1] if texts else (0, "")
+        case = case_of(prompt, self.by_query)
+        if case is None:
+            parts = [{"text": ""}]
+        elif not any(turn["role"] == "model" for turn in contents[prompt_at:]):
+            self.log(case, next((text for _, text in texts if text.startswith(MEMORY_PREFIX)), ""))
+            signature = uuid.uuid4().hex
+            with self.lock:
+                self.signatures.add(signature)
+            parts = [{"functionCall": {"name": tool, "args": args}} for tool, args in tool_requests(case)]
+            parts[0]["thoughtSignature"] = signature
+        else:
+            parts = [{"text": format_person_plan(case["name"], case["plans"])}]
+        return 200, {"candidates": [{"content": {"role": "model", "parts": parts}, "finishReason": "STOP"}],
+                     "usageMetadata": {"promptTokenCount": 0, "candidatesTokenCount": 0, "totalTokenCount": 0}}
+
+
+def handler_for(oracle: Oracle):
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
-            messages = body["messages"]
-            last_user = max(i for i, m in enumerate(messages) if m["role"] == "user")
-            prompt = messages[last_user]["content"]
-            match = re.search(r"Query: (.*?)\n\nInstructions:", prompt, re.DOTALL)
-            case = by_query.get(match.group(1).strip()) if match else None
-            if case is None:
-                payload = completion(body["model"], content="")
-            elif not any(m["role"] == "tool" for m in messages[last_user:]):
-                memory = next((m["content"] for m in messages
-                               if m["role"] == "user" and m["content"].startswith("Here is relevant context")), "")
-                reached = [name for name in case["relevant"] if f"=== {name}'s Plan ===" in memory]
-                with lock, log_path.open("a", encoding="utf-8") as log:
-                    log.write(json.dumps({"group": case["group"], "round": case["round"],
-                                          "relevant": case["relevant"], "reached": reached,
-                                          "memory_chars": len(memory)}) + "\n")
-                calls = [{"id": f"call_{uuid.uuid4().hex[:12]}", "type": "function",
-                          "function": {"name": tool, "arguments": json.dumps({"city": city})}}
-                         for city in cities(case["plans"])
-                         for tool in ("RestaurantSearch", "AccommodationSearch", "AttractionSearch")]
-                payload = completion(body["model"], tool_calls=calls)
+            if re.fullmatch(r"/v1beta/models/[^/:]+:generateContent", self.path):
+                status, payload = oracle.gemini(body)
             else:
-                payload = completion(body["model"], content=format_person_plan(case["name"], case["plans"]))
+                status, payload = oracle.openai(body)
             data = json.dumps(payload).encode("utf-8")
-            self.send_response(200)
+            self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
@@ -123,7 +185,7 @@ def main():
     parser.add_argument("--log", type=Path, required=True)
     parser.add_argument("--port", type=int, default=8020)
     args = parser.parse_args()
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), handler_for(index(args.dataset), args.log))
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), handler_for(Oracle(index(args.dataset), args.log)))
     print(f"oracle endpoint on 127.0.0.1:{args.port}", flush=True)
     server.serve_forever()
 

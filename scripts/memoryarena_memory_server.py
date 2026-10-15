@@ -15,6 +15,10 @@ With ``--memoryarena PATH`` the server also answers ``bm25`` and
 ``LongContextMemorySystem``, loaded from that checkout, so baselines run the
 benchmark's code without its other memory systems' dependencies.
 
+With ``--log PATH`` every ``wrap_user_prompt`` appends one JSON line: the
+user, the question, the size of the memory context and the travelers whose
+plan headers (``=== Name's Plan ===``) it carries.
+
 Retrieval proposes context; it admits nothing. No model is called here.
 """
 from __future__ import annotations
@@ -24,6 +28,7 @@ import importlib.util
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import re
 import sys
 import threading
 
@@ -77,8 +82,9 @@ def memoryarena_factories(checkout: Path) -> dict:
 
 
 class Store:
-    def __init__(self, tokenizer, baselines: dict) -> None:
+    def __init__(self, tokenizer, baselines: dict, log: Path | None = None) -> None:
         self.tokenizer = tokenizer
+        self.log = log
         self.lock = threading.Lock()
         self.users: dict[str, tuple[str, object]] = {}
         self.factories = {name: (lambda k=k: SynapseLexicalMemory(k, tokenizer)) for name, k in SYSTEMS.items()}
@@ -114,6 +120,13 @@ class Store:
             return error
         with self.lock:
             prompt = memory.wrap_user_prompt(body["question"])
+            if self.log is not None:
+                context = prompt.split("</memory_context>")[0]
+                with self.log.open("a", encoding="utf-8") as log:
+                    log.write(json.dumps({"user_id": body["user_id"], "question": body["question"],
+                                          "context_chars": len(context),
+                                          "plans": sorted(set(re.findall(r"=== (\w+)'s Plan ===", context)))},
+                                         ensure_ascii=False) + "\n")
         return 200, {"status": "ok", "user_id": body["user_id"], "prompt": prompt}
 
 
@@ -150,11 +163,12 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--memoryarena", type=Path)
+    parser.add_argument("--log", type=Path)
     args = parser.parse_args()
     import tiktoken
 
     baselines = memoryarena_factories(args.memoryarena) if args.memoryarena else {}
-    store = Store(tiktoken.encoding_for_model("gpt-4o-mini"), baselines)
+    store = Store(tiktoken.encoding_for_model("gpt-4o-mini"), baselines, args.log)
     server = ThreadingHTTPServer((args.host, args.port), handler_for(store))
     print(f"synapse memory server on {args.host}:{args.port}", flush=True)
     server.serve_forever()

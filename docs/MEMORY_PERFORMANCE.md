@@ -249,7 +249,7 @@ git clone https://github.com/ZexueHe/MemoryArena ../MemoryArena
 python ../MemoryArena/env/env_server.py            # порт 8001, хотя setup_travel.md пишет 8005
 python scripts/memoryarena_memory_server.py --port 8010 --memoryarena ../MemoryArena
 python scripts/memoryarena_oracle_endpoint.py data.jsonl --log dry/oracle_synapse-lexical.jsonl --port 8020
-python scripts/memoryarena_run_travel.py ../MemoryArena synapse-lexical.json 270
+python scripts/memoryarena_run_travel.py ../MemoryArena synapse-lexical.json --first 270
 python scripts/benchmark_memoryarena_travel.py data.jsonl --memoryarena ../MemoryArena \
   --dry-run dry --output reports/memoryarena_travel_v1.json
 ```
@@ -258,10 +258,34 @@ python scripts/benchmark_memoryarena_travel.py data.jsonl --memoryarena ../Memor
 (`synapse-lexical`, `synapse-lexical-5`, `bm25`, `long_context`),
 `server_url` `http://127.0.0.1:8010`, `env_server_url`
 `http://127.0.0.1:8001` и агентом `oracle-mock` с `base_url`
-`http://127.0.0.1:8020/v1`. Для живого прогона агентом становится модель
-провайдера (`gpt-5-mini`, `gemini-3-flash`, …) со своим ключом, оракул не нужен.
-Оракул запускается на каждую систему со своим журналом
-`dry/oracle_<система>.jsonl`.
+`http://127.0.0.1:8020/v1`. Оракул запускается на каждую систему со своим
+журналом `dry/oracle_<система>.jsonl`.
+
+**Живой прогон** идёт в GitHub Actions (`.github/workflows/memoryarena-travel.yml`)
+с секретом репозитория `GEMINI_API_KEY`. Пуши его не запускают: прогон
+начинается, когда сопровождающий ставит на PR этого репозитория метку
+`memoryarena:smoke` (группа 8, пять путешественников, память Synapse, два
+транспорта) или `memoryarena:pilot` (первые двадцать групп; режим бенчмарка без
+памяти, где прежние планы стоят в запросе, long context, BM25 и Synapse). `scripts/memoryarena_live_run.py prepare` закрепляет коммит
+MemoryArena `6cd9de14…`, таблицу перелётов (SHA-256 `8dafdb0e…`) и ревизию
+данных и отказывает, если ревизия на Hugging Face сдвинулась.
+`scripts/memoryarena_live_run.py run` поднимает оба сервера, пишет конфиг и
+сводку `summary.json`: PS, SPS, SR бенчмарка, токены провайдера по вызовам,
+шаги агента и долю вопросов, в которые память донесла планы упомянутых
+путешественников. Итог всех заданий — таблица в сводке прогона и артефакт
+`memoryarena-report`.
+
+Клиент Gemini самого MemoryArena (`GeminiClient`) пересобирает разговор из
+сообщений агента и выбрасывает ходы модели с вызовами функций. Результаты
+инструментов приходят модели без вызовов, на которые они отвечают, а подписи
+мыслей, которых требуют модели Gemini 3, теряются. Транспорт `gemini-rest` в
+`scripts/memoryarena_run_travel.py` возвращает каждый ход модели в том виде, в
+каком его выдал API, и отвечает на вызовы хода одним ходом ответов функций.
+Агент, его промпты и инструменты, память и оценка остаются кодом MemoryArena.
+Smoke-прогон проверяет оба клиента. Оракул сухого прогона отвечает и
+по REST-протоколу Gemini и отказывает с HTTP 400 в историях, которые отклоняет
+API: ответ функций не сразу после хода с тем же числом вызовов или ход вызовов
+без выданной подписи.
 
 ## Группировка версий за запрос — 11 октября 2026
 

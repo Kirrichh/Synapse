@@ -37,7 +37,7 @@ from synapse.experiments.gold.owner_profiles import (
     build_owner_registry,
 )
 from synapse.experiments.gold.project_agents import _frame_byte_budget
-from synapse.experiments.gold.project_memory_store import MAX_MEMORY_EVENT_BYTES
+from synapse.experiments.gold.project_frame_storage import MAX_FRAME_PUBLICATION_BYTES
 from synapse.experiments.gold.source_verification import canonical
 from synapse.experiments.gold.stage10.intent import EffectDisposition, EffectKind
 from synapse.golden_replay import (
@@ -304,7 +304,7 @@ def test_foreign_history_volume_never_breaks_the_frame_event_budget():
     event; the publication must degrade instead of failing the frame."""
     registry = build_owner_registry(project_identity="proj1", court=court_of(_heavy_judged()),
                                     task=_Task([ELEMENT]), active_paths=[ELEMENT])
-    assert len(canonical(registry)) > MAX_MEMORY_EVENT_BYTES  # the derived registry is heavy
+    assert len(canonical(registry)) > MAX_FRAME_PUBLICATION_BYTES  # the derived registry is heavy
     published = bound_owner_registry(registry, active_paths=[ELEMENT])
     assert published["publication"]["mode"] == "COMPACT_HISTORY"
     assert len(canonical(published)) <= MAX_REGISTRY_PUBLICATION_BYTES

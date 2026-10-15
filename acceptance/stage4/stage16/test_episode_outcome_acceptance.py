@@ -16,13 +16,14 @@ from acceptance.stage4.stage16._executing_oracle import create_executing_oracle
 from acceptance.stage4.stage16._source_inputs import consumer_case
 from synapse.experiments.gold.admission_journal import FileSnapshotFence
 from synapse.experiments.gold.knowledge_environment import open_gold_project
-from synapse.experiments.gold.project_agents import OWNER_LIFECYCLE_V3, read_active_memory
+from synapse.experiments.gold.project_agents import OWNER_LIFECYCLE_V4, read_active_memory
 from synapse.experiments.gold.project_memory_selection import PROJECT_KNOWLEDGE_INPUT_V4
 from synapse.experiments.gold.project_memory_store import ProjectMemoryStore
 from synapse.experiments.gold.run_inputs import freeze_gold_inputs
 from synapse.experiments.gold.runner.records import RunRecordStore
 from synapse.experiments.gold.runner.state_machine import load_run_state
-from synapse.experiments.gold.source_snapshot import memory_source_basis, source_experience_delivery
+from synapse.experiments.gold.source_snapshot import memory_source_basis
+from synapse.experiments.gold.source_delivery import source_experience_delivery
 from synapse.memory_consolidation.project_port import ProjectMemoryCourt
 from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V6, LOCAL_EDIT_PROPOSAL_V1
 from acceptance.agents.coding_agents import use_model_agent
@@ -103,7 +104,7 @@ def test_unknown_effect_and_verified_fulfilment_stay_separate_memory_facts(tmp_p
         frozen = freeze_gold_inputs(declaration_path=path, project=project, run_root=tmp_path / (name + "-run"),
                                     court=ProjectMemoryCourt())
         snapshot = frozen.data["source_snapshot"]
-        assert snapshot["project_memory"]["profile"] == OWNER_LIFECYCLE_V3
+        assert snapshot["project_memory"]["profile"] == OWNER_LIFECYCLE_V4
         frame = read_active_memory(snapshot["project_memory"], source_snapshot=memory_source_basis(snapshot),
                                    run_memory_selection=selection)["active_memory_frame"]
         # The module and its symbols are separate elements sharing one path history.

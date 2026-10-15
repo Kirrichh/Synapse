@@ -30,7 +30,7 @@ the registry by path.
 import hashlib
 
 from .project_episode_outcome import FULFILLED, NOT_FULFILLED, PARTIAL
-from .project_memory_store import MAX_MEMORY_EVENT_BYTES
+from .project_frame_storage import MAX_FRAME_PUBLICATION_BYTES
 from .source_verification import canonical
 from .stage10.intent import EffectDisposition
 
@@ -43,7 +43,7 @@ MAX_REGISTRY_OWNERS = 1024
 # accumulated. The bound applies to the *publication* only - the derived
 # registry itself keeps complete owner profiles, and every compacted owner
 # still names the pinned court decision its full profile rebuilds from.
-MAX_REGISTRY_PUBLICATION_BYTES = MAX_MEMORY_EVENT_BYTES // 2
+MAX_REGISTRY_PUBLICATION_BYTES = MAX_FRAME_PUBLICATION_BYTES // 2
 # Delta categories. A verified entry is a historical fact bound to its revision;
 # it is never a claim about the current tree, which only a fresh verified run
 # can establish (the frame's AWAITING_FRESH_VERIFICATION doctrine).

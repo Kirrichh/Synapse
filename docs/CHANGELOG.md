@@ -1,5 +1,48 @@
 # Synapse Changelog
 
+## Task-scoped source delivery preserves historical evidence — 2026-10-14
+
+- A source operation that studied several files now delivers only the source
+  bodies and path metadata selected for the current task. Dependencies remain
+  available when their paths are included in the task scope. Full evidence
+  stays with its existing owner and remains physically verified.
+- An operation-wide recipe or command result is omitted from partial source
+  selections, with an explicit omission reason. This prevents unrelated source
+  text from returning through command output. Complete selections retain the
+  exact observations; historical outcomes grant no new execution authority.
+- New worker contexts require the versioned scoped-delivery profile. Retained
+  legacy envelopes remain verifiable under their original byte projection;
+  new delivery from an old frozen snapshot uses the current scoped profile.
+  Neutral projection moves to `source_delivery.py`; snapshot capture keeps
+  its existing owner. Scope, shared-observation and format acceptance have
+  independent CI shards.
+
+## Memory storage continues across cumulative growth — 2026-10-14
+
+- Remove the lifetime limit of 4096 project-memory transactions. Large events
+  of every supported kind now use a versioned tree of immutable blocks;
+  physical blocks and index nodes remain bounded at 64 KiB without imposing
+  the old 16 MiB limit on the logical event. Existing raw and flat-v1 records
+  remain readable, with their original receipts and bytes.
+- Preserve the existing owner, mutation tickets, publication order and full
+  inventory verification. GC validates every committed root before deleting
+  unreachable blocks, including the new index nodes. The physical reader
+  rejects oversized or additional transaction members before loading them.
+- The snapshot fence validates its epoch history incrementally without the
+  million-frame lifetime stop. Historical recovery intents remain available;
+  torn or corrupt journals still prevent a new mutation.
+- Agent publication retains its separate 16 MiB frame envelope and 8 MiB
+  registry budget. The existing owner-profile projection is declared as an
+  internal component of the frame owner in the ownership manifest.
+- Heavy acceptance scenarios have separate CI shards: events over 16 MiB,
+  more than 4096 actual publications, a coordinator history exceeding one
+  million frames, and large public-runtime sessions with crash recovery.
+  The old archive baseline reproduces the large-event refusal.
+- This fixes storage stops without rolling back the memory design. Full
+  logical events and owner state still materialize in RAM; inventory and
+  epoch validation still scan retained history. Bounded process memory and
+  constant-time opening are not claimed. See `docs/MEMORY_STORAGE.md`.
+
 ## Shared memory event bytes and compact active frames — 2026-10-11
 
 - Large new snapshot boundaries, materialized states, consolidation reports,

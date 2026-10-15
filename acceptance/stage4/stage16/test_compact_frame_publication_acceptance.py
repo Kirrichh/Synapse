@@ -7,10 +7,11 @@ import pytest
 from acceptance.stage4.stage16._source_inputs import consumer_case
 from synapse.experiments.gold import project_agents
 from synapse.experiments.gold.knowledge_environment import open_gold_project
-from synapse.experiments.gold.project_frame_storage import COMPACT_FRAME_V1, compact_frame, restore_frame
-from synapse.experiments.gold.project_memory_store import MAX_MEMORY_EVENT_BYTES, ProjectMemoryStore, memory_job_identity
+from synapse.experiments.gold.project_frame_storage import COMPACT_FRAME_V1, MAX_FRAME_PUBLICATION_BYTES, compact_frame, restore_frame
+from synapse.experiments.gold.project_memory_store import ProjectMemoryStore, memory_job_identity
 from synapse.experiments.gold.run_inputs import freeze_gold_inputs
-from synapse.experiments.gold.source_snapshot import SOURCE_SNAPSHOT_V3, _memory_information, capture_project_source_snapshot, memory_source_basis, source_experience_delivery
+from synapse.experiments.gold.source_snapshot import SOURCE_SNAPSHOT_V3, capture_project_source_snapshot, memory_source_basis
+from synapse.experiments.gold.source_delivery import _memory_information, source_experience_delivery
 from synapse.experiments.gold.source_verification import canonical
 from synapse.experiments.gold.stage10.task_contract import GoverningTaskContract
 from synapse.experiments.gold.task_targets import resolve_task_targets
@@ -33,7 +34,7 @@ def _world(root):
 def _publish(store, request, *, profile, compact=False, alter=None):
     request = deepcopy(request)
     request["profile"] = profile
-    if profile == project_agents.OWNER_LIFECYCLE_V3:
+    if profile in {project_agents.OWNER_LIFECYCLE_V3, project_agents.OWNER_LIFECYCLE_V4}:
         request["court"] = None
     else:
         request.update(prior_outcomes=[], prior_learning=[])
@@ -45,9 +46,9 @@ def _publish(store, request, *, profile, compact=False, alter=None):
         started = store.put(kind="STARTED", job_key=job, payload={"request_ref": requested}, guard=guard)
         payload = project_agents._frame_payload(request, requested, started, store)
         if alter is not None:
-            frame = restore_frame(payload["active_memory_frame"], max_bytes=MAX_MEMORY_EVENT_BYTES)
+            frame = restore_frame(payload["active_memory_frame"], max_bytes=MAX_FRAME_PUBLICATION_BYTES)
             alter(frame)
-            payload["active_memory_frame"] = compact_frame(frame, max_bytes=MAX_MEMORY_EVENT_BYTES)
+            payload["active_memory_frame"] = compact_frame(frame, max_bytes=MAX_FRAME_PUBLICATION_BYTES)
         receipt = store.put(kind="FRAME_COMPLETED", job_key=job, payload=payload, guard=guard)
     return {"profile": profile, "job_key": job, "frame_event": receipt}, payload
 
@@ -124,7 +125,7 @@ def test_self_consistent_neighbor_substitution_is_refused_before_worker_delivery
         frame["elements"][0]["memory"]["Context"]["allowed_scope"]["entries"].append(neighbor["private_neighbor"])
 
     binding, payload = _publish(store, request, profile=project_agents.OWNER_LIFECYCLE_V3, compact=True, alter=substitute)
-    forged = restore_frame(payload["active_memory_frame"], max_bytes=MAX_MEMORY_EVENT_BYTES)
+    forged = restore_frame(payload["active_memory_frame"], max_bytes=MAX_FRAME_PUBLICATION_BYTES)
     assert neighbor["private_neighbor"].encode() in canonical(_memory_information(forged))
     with pytest.raises(ValueError, match="retained project evidence"):
         project_agents.read_active_memory(binding, source_snapshot=source, run_memory_selection="ALL")

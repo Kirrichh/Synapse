@@ -17,7 +17,7 @@ def test_large_event_restores_exact_canonical_bytes_under_its_original_receipt(t
         receipt = E.put(store, guard, value)
         assert E.put(store, guard, value) == receipt
     layout = E.manifest(store, receipt)
-    assert layout["schema_version"] == "synapse.stage4.gold.memory-event-blocks/v1"
+    assert layout["schema_version"] == "synapse.stage4.gold.memory-event-tree/v2"
     assert layout["logical_sha256"] == hashlib.sha256(expected).hexdigest()
     assert layout["logical_byte_length"] == len(expected)
     assert receipt["ref"] == M.source_ref(expected, M.MEMORY_EVENT_V1).to_dict()
@@ -49,13 +49,15 @@ def test_shared_content_keeps_independent_provenance_status_and_publication_iden
 
 def test_legacy_and_shared_events_keep_one_inventory_with_detached_public_values(tmp_path):
     store = M.ProjectMemoryStore(tmp_path)
-    legacy, shared = E.event(job="a"), E.event(job="b")
+    legacy, flat, shared = E.event(job="a"), E.event(job="b"), E.event(job="c")
     with store.session() as guard:
         old_receipt = E.commit_legacy(store, guard, legacy)
+        flat_receipt = E.commit_legacy_shared(store, guard, flat)
     old_bytes = E.physical_files(store.events / old_receipt["transaction_id"])
+    old_bytes.update(E.physical_files(store.events / flat_receipt["transaction_id"]))
     with store.session() as guard:
         new_receipt = E.put(store, guard, shared)
-        expected = sorted([(legacy, old_receipt), (deepcopy(shared), deepcopy(new_receipt))],
+        expected = sorted([(legacy, old_receipt), (flat, flat_receipt), (deepcopy(shared), deepcopy(new_receipt))],
                           key=lambda item: item[1]["transaction_id"])
         exposed = store.inventory(guard=guard)
         shared["payload"]["versions"][0]["statement"]["free"] = -1
@@ -65,13 +67,16 @@ def test_legacy_and_shared_events_keep_one_inventory_with_detached_public_values
     assert M.ProjectMemoryStore(tmp_path, read_only=True).inventory() == expected
     assert {path: path.read_bytes() for path in old_bytes} == old_bytes
     assert M.canonical(store.read(old_receipt)) == M.canonical(legacy)
+    assert M.canonical(store.read(flat_receipt)) == M.canonical(flat)
 
 
-def test_shared_form_does_not_widen_the_logical_event_budget(tmp_path, monkeypatch):
+def test_equal_shared_bytes_remain_readable_after_collecting_only_unreferenced_blocks(tmp_path):
     store, value = M.ProjectMemoryStore(tmp_path), E.event()
-    monkeypatch.setattr(M, "MAX_MEMORY_EVENT_BYTES", len(M.canonical(value)) - 1)
     with store.session() as guard:
-        with pytest.raises(ValueError, match="byte budget"):
-            E.put(store, guard, value)
-        assert store.inventory(guard=guard) == []
-    assert not list((store.root / "blocks").glob("*.bin"))
+        legacy = E.commit_legacy_shared(store, guard, E.event(job="f"))
+    with store.session() as guard:
+        current = E.put(store, guard, value)
+        assert E.blocks(store, legacy) & E.blocks(store, current)
+        assert store.collect_unreferenced_blocks(guard=guard)["removed_bytes"] == 0
+        assert store.read(legacy) == E.event(job="f")
+        assert store.read(current) == value

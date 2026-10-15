@@ -116,7 +116,7 @@ def test_caught_mutation_failure_invalidates_session_until_a_fresh_recovery(tmp_
     assert store.fence.current_epoch() % 2 == 0
 
 
-def test_unpublished_preparation_still_consumes_the_transaction_budget(tmp_path, monkeypatch):
+def test_unpublished_preparation_does_not_block_a_fresh_committed_transition(tmp_path, monkeypatch):
     store = M.ProjectMemoryStore(tmp_path)
 
     def interrupted(*args, **kwargs):
@@ -127,13 +127,12 @@ def test_unpublished_preparation_still_consumes_the_transaction_budget(tmp_path,
         with pytest.raises(JournalAdapterViolation):
             with store.session() as guard:
                 _put(store, guard)
-    monkeypatch.setattr(M, "MAX_MEMORY_EVENTS", 1)
     before = {path: path.read_bytes() for path in store.events.rglob("*") if path.is_file()}
     with store.session() as guard:
         assert store.inventory(guard=guard) == []
-        with pytest.raises(ValueError, match="event budget"):
-            _put(store, guard)
-    assert store.inventory() == []
+        receipt = _put(store, guard)
+    reader = M.ProjectMemoryStore(tmp_path, read_only=True)
+    assert reader.inventory() == [(reader.read(receipt), receipt)]
     assert {path: path.read_bytes() for path in before} == before
 
 

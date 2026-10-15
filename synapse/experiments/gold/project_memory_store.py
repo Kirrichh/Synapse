@@ -11,7 +11,7 @@ import hashlib
 import re
 
 from .admission_journal import FileSnapshotFence, require_live_guard
-from .memory_event_storage import MemoryEventStorage
+from .memory_event_storage import MAX_EVENT_MEMBER_BYTES, MemoryEventStorage
 from .persistence import (commit_snapshot_transaction, committed_transaction_exists,
     ensure_directory, ensure_durable_directory, new_operation_id,
     require_directory, stage_snapshot_transaction, store_transaction)
@@ -19,8 +19,6 @@ from .source_verification import canonical, source_ref
 from .stage10.context_codec import decode_canonical
 
 MEMORY_EVENT_V1 = "synapse.stage4.gold.element-owner-event/v1"
-MAX_MEMORY_EVENT_BYTES = 16 * 1024 * 1024
-MAX_MEMORY_EVENTS = 4096
 # Memory consolidation records share this journal and its owner session: the
 # owner's bound memory configuration, each durable session's opening, a
 # consolidation report (written before its JUDGED decision), the snapshot
@@ -41,7 +39,6 @@ def memory_job_identity(project_identity, run_root, run_id):
 class _OwnerSession:
     guard: object
     entries: dict[tuple[str, str], tuple[dict, dict]]
-    transaction_count: int
 
 
 class ProjectMemoryStore:
@@ -67,8 +64,7 @@ class ProjectMemoryStore:
             event = deepcopy(known[1])
         else:
             event = decode_canonical(raw)
-            if (len(raw) > MAX_MEMORY_EVENT_BYTES
-                    or set(event) != {"schema_version", "kind", "job_key", "payload"}
+            if (type(event) is not dict or set(event) != {"schema_version", "kind", "job_key", "payload"}
                     or event["schema_version"] != MEMORY_EVENT_V1 or event["kind"] not in EVENT_KINDS
                     or type(event["job_key"]) is not str or re.fullmatch(r"[0-9a-f]{64}", event["job_key"]) is None
                     or type(event["payload"]) is not dict):
@@ -88,8 +84,6 @@ class ProjectMemoryStore:
 
     def _scan_inventory(self):
         paths = sorted(self.events.iterdir())
-        if len(paths) > MAX_MEMORY_EVENTS:
-            raise ValueError("project memory exceeds its explicit event budget")
         result, unique = [], {}
         for path in paths:
             require_directory(path)
@@ -102,7 +96,7 @@ class ProjectMemoryStore:
             if key not in unique:
                 result.append((event, receipt))
                 unique[key] = event
-        return result, len(paths)
+        return result
 
     def _held_inventory(self, guard):
         require_live_guard(guard, coordinator_id=self.fence.coordinator_id())
@@ -116,7 +110,7 @@ class ProjectMemoryStore:
         if kind is not None and (type(kind) is not str or kind not in EVENT_KINDS):
             raise ValueError("unknown memory inventory event kind")
         if guard is None:
-            entries = self._scan_inventory()[0]
+            entries = self._scan_inventory()
             return entries if kind is None else [item for item in entries if item[0]["kind"] == kind]
         session = self._held_inventory(guard)
         # Only the owner holding exclusion can reuse this view. Callers receive
@@ -132,12 +126,11 @@ class ProjectMemoryStore:
             # This dedicated coordinator has no other mutable stores or index.
             # Every visible object must validate before closing an abandoned
             # interval. Uncommitted snapshot transactions remain unpublished.
-            events, transaction_count = self._scan_inventory()
+            events = self._scan_inventory()
             if self.fence.current_epoch() % 2:
                 self.fence.recover_abandoned_interval(guard=guard)
             self._owner_session = _OwnerSession(guard,
-                {(event["job_key"], event["kind"]): (event, receipt) for event, receipt in events},
-                transaction_count)
+                {(event["job_key"], event["kind"]): (event, receipt) for event, receipt in events})
             try:
                 yield guard
             finally:
@@ -163,19 +156,15 @@ class ProjectMemoryStore:
                 self._owner_session = None
                 raise
             return deepcopy(receipt)
-        if session.transaction_count >= MAX_MEMORY_EVENTS:
-            raise ValueError("project memory exceeds its explicit event budget")
         raw = canonical(event)
-        if len(raw) > MAX_MEMORY_EVENT_BYTES:
-            raise ValueError("memory event exceeds its retained byte budget")
         transaction = new_operation_id()
         try:
             with store_transaction(self.fence, guard=guard) as ticket:
                 ensure_durable_directory(self.root, ticket=ticket)
                 ensure_durable_directory(self.events, ticket=ticket)
-                physical = self.storage.prepare(raw, kind=kind, ticket=ticket)
+                physical = self.storage.prepare(raw, ticket=ticket)
                 members = stage_snapshot_transaction(self.events, transaction_id=transaction,
-                    members=physical, maximum_bytes=MAX_MEMORY_EVENT_BYTES, ticket=ticket)
+                    members=physical, maximum_bytes=MAX_EVENT_MEMBER_BYTES, ticket=ticket)
                 commit_snapshot_transaction(self.events, transaction_id=transaction, members=members,
                     boundary_id=job_key, marker_sha256=hashlib.sha256(raw).hexdigest(), ticket=ticket)
             saved, receipt = self._read(transaction)
@@ -185,7 +174,6 @@ class ProjectMemoryStore:
             self._owner_session = None
             raise
         session.entries[key] = saved, receipt
-        session.transaction_count += 1
         return deepcopy(receipt)
 
     def collect_unreferenced_blocks(self, *, guard):

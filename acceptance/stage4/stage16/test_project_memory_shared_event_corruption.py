@@ -1,10 +1,13 @@
 """Physical sharing cannot conceal invalid bytes from any trusted journal read."""
 from copy import deepcopy
+import hashlib
+import json
 
 import pytest
 
 from acceptance.stage4.stage16 import _shared_memory_events as E
 from synapse.experiments.gold import project_memory_store as M
+from synapse.experiments.gold.memory_blocks import MemoryBlockStore
 from synapse.experiments.gold.persistence import PersistenceViolation
 from synapse.experiments.gold.stage10.context_codec import ContextCodecViolation
 
@@ -20,14 +23,27 @@ def _damage(path, mode, outside):
             path.symlink_to(outside)
 
 
+def _tree_block(store, receipt, part):
+    entry = E.manifest(store, receipt)["root"]
+    path = store.root / "blocks" / (entry["sha256"] + ".bin")
+    if part == "leaf":
+        while entry["height"]:
+            entry = json.loads(path.read_bytes())["children"][0]
+            path = store.root / "blocks" / (entry["sha256"] + ".bin")
+    else:
+        assert entry["height"] > 0
+    return path
+
+
+@pytest.mark.parametrize("part", ["leaf", "index"])
 @pytest.mark.parametrize("damage", ["changed", "missing", "symlink"])
 @pytest.mark.parametrize("entry", ["cached_receipt", "excluded_selection", "new_owner_session"])
-def test_damaged_shared_block_is_rejected_even_when_its_event_was_cached_or_excluded(tmp_path, damage, entry):
+def test_damaged_shared_block_is_rejected_even_when_its_event_was_cached_or_excluded(tmp_path, damage, entry, part):
     store, value = M.ProjectMemoryStore(tmp_path), E.event()
     with store.session() as guard:
         receipt = E.put(store, guard, value)
     assert store.read(receipt) == value
-    path = sorted(E.blocks(store, receipt))[0]
+    path = _tree_block(store, receipt, part)
     _damage(path, damage, tmp_path / "external-copy.bin")
     with pytest.raises((PersistenceViolation, ValueError)):
         if entry == "cached_receipt":
@@ -45,12 +61,12 @@ def _change_manifest(layout, violation):
         changed["logical_sha256"] = "0" * 64
     elif violation == "logical_length":
         changed["logical_byte_length"] += 1
-    elif violation == "chunk_length":
-        changed["chunks"][0]["byte_length"] += 1
-    elif violation == "chunk_address":
-        changed["chunks"][0]["sha256"] = "../outside"
-    elif violation == "reordered":
-        changed["chunks"] = list(reversed(changed["chunks"]))
+    elif violation == "root_length":
+        changed["root"]["byte_length"] += 1
+    elif violation == "root_address":
+        changed["root"]["sha256"] = "../outside"
+    elif violation == "root_height":
+        changed["root"]["height"] += 1
     elif violation == "unknown_schema":
         changed["schema_version"] = "synapse.stage4.gold.memory-event-blocks/v0"
     elif violation == "extra_field":
@@ -58,15 +74,59 @@ def _change_manifest(layout, violation):
     return changed
 
 
-@pytest.mark.parametrize("violation", ["logical_digest", "logical_length", "chunk_length", "chunk_address",
-                                      "reordered", "unknown_schema", "extra_field"])
+@pytest.mark.parametrize("violation", ["logical_digest", "logical_length", "root_length", "root_address",
+                                      "root_height", "unknown_schema", "extra_field"])
 def test_a_valid_physical_commit_marker_does_not_make_an_invalid_manifest_trusted(tmp_path, violation):
     store, value = M.ProjectMemoryStore(tmp_path), E.event()
     with store.session() as guard:
         receipt = E.put(store, guard, value)
         changed = _change_manifest(E.manifest(store, receipt), violation)
-        forged = E.commit_members(store, guard, {"event-manifest.json": M.canonical(changed)},
+        forged = E.commit_members(store, guard, {"event-tree.json": M.canonical(changed)},
                                   logical=M.canonical(value), job_key=value["job_key"])
+    with pytest.raises((PersistenceViolation, ValueError)):
+        M.ProjectMemoryStore(tmp_path, read_only=True).read(forged)
+
+
+def test_honestly_addressed_reordered_children_cannot_change_the_logical_receipt(tmp_path):
+    store, value = M.ProjectMemoryStore(tmp_path), E.event()
+    with store.session() as guard:
+        receipt = E.put(store, guard, value)
+        layout = E.manifest(store, receipt)
+        path = _tree_block(store, receipt, "index")
+        node = json.loads(path.read_bytes())
+        node["children"].reverse()
+        changed = M.canonical(node)
+        digest = hashlib.sha256(changed).hexdigest()
+        assert digest != layout["root"]["sha256"]
+        layout["root"].update(sha256=digest, byte_length=len(changed))
+        with M.store_transaction(store.fence, guard=guard) as ticket:
+            MemoryBlockStore(store.root / "blocks").publish({digest: changed}, ticket=ticket)
+        forged = E.commit_members(store, guard, {"event-tree.json": M.canonical(layout)},
+                                  logical=M.canonical(value), job_key=value["job_key"])
+    with pytest.raises((PersistenceViolation, ValueError)):
+        M.ProjectMemoryStore(tmp_path, read_only=True).read(forged)
+
+
+@pytest.mark.parametrize("violation", ["digest", "length", "chunk_address", "chunk_length", "reordered"])
+def test_legacy_flat_manifest_remains_checked_after_tree_publication_is_enabled(tmp_path, violation):
+    store, value = M.ProjectMemoryStore(tmp_path), E.event()
+    raw = M.canonical(value)
+    with store.session() as guard:
+        receipt = E.commit_legacy_shared(store, guard, value)
+        assert store.read(receipt) == value
+        layout, _ = E.legacy_blocks(raw)
+        if violation == "digest":
+            layout["logical_sha256"] = "0" * 64
+        elif violation == "length":
+            layout["logical_byte_length"] += 1
+        elif violation == "chunk_address":
+            layout["chunks"][0]["sha256"] = "../outside"
+        elif violation == "chunk_length":
+            layout["chunks"][0]["byte_length"] += 1
+        else:
+            layout["chunks"].reverse()
+        forged = E.commit_members(store, guard, {"event-manifest.json": M.canonical(layout)},
+                                  logical=raw, job_key=value["job_key"])
     with pytest.raises((PersistenceViolation, ValueError)):
         M.ProjectMemoryStore(tmp_path, read_only=True).read(forged)
 
@@ -95,7 +155,7 @@ def test_shared_block_membership_does_not_allow_a_different_logical_publication(
     with store.session() as guard:
         receipt = E.put(store, guard, original)
         forged = E.commit_members(store, guard,
-            {"event-manifest.json": M.canonical(E.manifest(store, receipt))},
+            {"event-tree.json": M.canonical(E.manifest(store, receipt))},
             logical=M.canonical(replacement), job_key=replacement["job_key"])
     with pytest.raises((PersistenceViolation, ValueError)):
         M.ProjectMemoryStore(tmp_path, read_only=True).read(forged)

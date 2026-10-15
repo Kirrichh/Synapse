@@ -364,6 +364,8 @@ jobs:
             file: acceptance/stage4/stage10/test_context_admission_boundary.py
           - shard: context-codec
             file: acceptance/stage4/stage10/test_context_codec_acceptance.py
+          - shard: source-delivery-version
+            file: acceptance/stage4/stage10/test_source_delivery_version_acceptance.py
           - shard: delivery-influence
             file: acceptance/stage4/stage10/test_delivery_influence_authority.py
           - shard: replay-context
@@ -746,6 +748,16 @@ jobs:
             file: acceptance/stage4/stage16/test_project_memory_shared_event_corruption.py
           - shard: shared-memory-recovery
             file: acceptance/stage4/stage16/test_project_memory_shared_event_recovery.py
+          - shard: memory-journal-growth
+            file: acceptance/stage4/stage16/test_project_memory_journal_growth_acceptance.py
+          - shard: memory-large-event-growth
+            file: acceptance/stage4/stage16/test_project_memory_large_event_growth_acceptance.py
+          - shard: memory-coordinator-growth
+            file: acceptance/stage4/stage16/test_memory_coordinator_growth_acceptance.py
+          - shard: memory-coordinator-validation
+            file: acceptance/stage4/stage16/test_memory_coordinator_validation_acceptance.py
+          - shard: memory-physical-member-bounds
+            file: acceptance/stage4/stage16/test_memory_physical_member_bounds_acceptance.py
           - shard: compact-frame-contract
             file: acceptance/stage4/stage16/test_compact_frame_contract.py
           - shard: compact-frame-publication
@@ -774,6 +786,10 @@ jobs:
             file: acceptance/stage4/stage16/test_source_snapshot_acceptance.py
           - shard: source-experience-consumer
             file: acceptance/stage4/stage16/test_source_experience_consumer_acceptance.py
+          - shard: source-delivery-scope
+            file: acceptance/stage4/stage16/test_source_delivery_scope_acceptance.py
+          - shard: source-delivery-observation
+            file: acceptance/stage4/stage16/test_source_delivery_observation_acceptance.py
           - shard: source-consumer-refusal
             file: acceptance/stage4/stage16/test_source_consumer_refusal_acceptance.py
     steps:
@@ -1037,6 +1053,10 @@ jobs:
             file: acceptance/memory/test_generalization_explanation_acceptance.py
           - shard: state-snapshot
             file: acceptance/memory/test_state_snapshot_acceptance.py
+          - shard: storage-growth
+            file: acceptance/memory/test_storage_growth_acceptance.py
+          - shard: storage-growth-recovery
+            file: acceptance/memory/test_storage_growth_recovery_acceptance.py
           - shard: memory-lifecycles
             file: acceptance/memory/test_memory_lifecycle_sequence_acceptance.py
           - shard: stand-trial-contract

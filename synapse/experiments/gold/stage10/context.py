@@ -24,6 +24,7 @@ from .context_codec import (
     encode_base64url,
     encode_canonical,
     render_worker_prompt,
+    validate_source_experience,
     validate_worker_delivery_envelope,
 )
 from .intent import IntentCandidate, validate_intent_candidate
@@ -574,6 +575,8 @@ def build_worker_context(
     budget: ContextSizeBudget = ContextSizeBudget(),
     source_experience_bytes: bytes | None = None,
 ) -> WorkerContextRecord:
+    if source_experience_bytes is not None:
+        validate_source_experience(decode_canonical(source_experience_bytes), current=True)
     validate_intent_candidate(intent)
     validate_accepted_operation_plan(accepted_plan)
     if type(attempt_id) is not AttemptId:

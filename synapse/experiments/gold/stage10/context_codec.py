@@ -31,6 +31,7 @@ WORKER_DELIVERY_BODY_SCHEMA_V5 = "synapse.stage4.gold.stage10.worker-delivery-bo
 PROMPT_RENDERING_PROFILE_V1 = "synapse.stage4.gold.stage10.worker-prompt/v1"
 PROMPT_RENDERING_PROFILE_V2 = "synapse.stage4.gold.stage10.worker-task/v2"
 INFORMATION_RENDERING_PROFILE_V1 = "synapse.stage4.gold.stage10.worker-local-information/v1"
+SOURCE_DELIVERY_PROFILE_V2 = "synapse.stage4.gold.source-delivery/matched-paths-v2"
 _CONTEXT_ID = re.compile(r"ctx_[0-9a-f]{64}\Z")
 _PROMPT_PREFIX = (
     "SYNAPSE STAGE 4 TYPED WORKER CONTEXT v1\n"
@@ -150,6 +151,26 @@ def _validate_operation_shape(value: object) -> None:
         _validate_ref_shape(item["condition_ref"], "verification condition ref")
 
 
+def validate_source_experience(value: object, *, current: bool = False) -> None:
+    """Validate source delivery while keeping old envelopes readable."""
+    fields = {"snapshot_ref", "information"}
+    profiled = type(value) is dict and "projection_profile" in value
+    experience = _exact_dict(value, fields | ({"projection_profile"} if profiled else set()),
+                             "source experience")
+    if ((current and not profiled)
+            or profiled and experience["projection_profile"] != SOURCE_DELIVERY_PROFILE_V2):
+        raise _fail(CodecFailureCode.NON_CANONICAL, "source experience requires the current projection profile")
+    _validate_ref_shape(experience["snapshot_ref"], "source snapshot ref")
+    reference = HashBoundRef.from_dict(experience["snapshot_ref"])
+    if (reference.kind is not RefKind.SOURCE_EVIDENCE
+            or reference.schema_id not in {"synapse.stage4.gold.source-experience-snapshot/v1",
+                                           "synapse.stage4.gold.source-experience-snapshot/v2",
+                                           "synapse.stage4.gold.source-experience-snapshot/v3"}
+            or reference.ref_id != reference.sha256 or reference.media_type != "application/json"):
+        raise _fail(CodecFailureCode.NON_CANONICAL, "source experience requires its exact snapshot identity")
+    LocalInformationInput(encode_canonical(experience["information"]))
+
+
 def _decode_worker_delivery_body(value: object) -> dict[str, object]:
     decoded = decode_canonical(value)
     split = type(decoded) is dict and decoded.get("schema_version") in {WORKER_DELIVERY_BODY_SCHEMA_V5, WORKER_DELIVERY_BODY_SCHEMA_V6}
@@ -170,16 +191,7 @@ def _decode_worker_delivery_body(value: object) -> dict[str, object]:
     if body["schema_version"] not in {WORKER_DELIVERY_BODY_SCHEMA_V3, WORKER_DELIVERY_BODY_SCHEMA_V4, WORKER_DELIVERY_BODY_SCHEMA_V5, WORKER_DELIVERY_BODY_SCHEMA_V6}:
         raise _fail(CodecFailureCode.NON_CANONICAL, "worker delivery body schema is unknown")
     if source:
-        experience = _exact_dict(body["source_experience"], {"snapshot_ref", "information"}, "source experience")
-        _validate_ref_shape(experience["snapshot_ref"], "source snapshot ref")
-        reference = HashBoundRef.from_dict(experience["snapshot_ref"])
-        if (reference.kind is not RefKind.SOURCE_EVIDENCE
-                or reference.schema_id not in {"synapse.stage4.gold.source-experience-snapshot/v1",
-                                               "synapse.stage4.gold.source-experience-snapshot/v2",
-                                               "synapse.stage4.gold.source-experience-snapshot/v3"}
-                or reference.ref_id != reference.sha256 or reference.media_type != "application/json"):
-            raise _fail(CodecFailureCode.NON_CANONICAL, "source experience requires its exact snapshot identity")
-        LocalInformationInput(encode_canonical(experience["information"]))
+        validate_source_experience(body["source_experience"])
     if split:
         WorkerTaskInput(encode_canonical(body["task_input"]))
     feedback = _list(body["execution_feedback"], "execution feedback")

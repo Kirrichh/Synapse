@@ -11,8 +11,8 @@ from pathlib import Path
 
 from .project_court import outcome_judgement, read_court, task_subjects
 from .project_episode_outcome import reopen_completed_run
-from .project_memory_store import MAX_MEMORY_EVENT_BYTES, MEMORY_EVENT_V1, ProjectMemoryStore, memory_job_identity
-from .project_frame_storage import COMPACT_FRAME_V1, compact_frame, restore_frame
+from .project_memory_store import MEMORY_EVENT_V1, ProjectMemoryStore, memory_job_identity
+from .project_frame_storage import COMPACT_FRAME_V1, MAX_FRAME_PUBLICATION_BYTES, compact_frame, restore_frame
 from .project_memory_selection import require_run_memory_selection, selected_episode, selected_episode_outcome
 from .project_model import build_active_memory_frame, build_project_model
 from .owner_profiles import (ACTIVE_MEMORY_FRAME_V4, apply_owner_profiles, bound_owner_registry,
@@ -142,26 +142,26 @@ def _frame_payload(request, request_ref, started_ref, store):
     if registry is not None:
         # The published registry is byte-bounded inside the same memory event
         # as the frame: unrelated history degrades to counts-only publication
-        # instead of squeezing the frame out of the event budget, while every
+        # instead of squeezing the frame out of its publication budget, while every
         # compacted owner keeps the decision ref its full grounds rebuild from.
         payload["owner_registry"] = bound_owner_registry(registry, active_paths=model["active_paths"])
     return _retained_frame_payload(payload, request)
 
 
 def _frame_byte_budget(payload):
-    """Byte budget left for the frame inside one memory event.
+    """Byte budget left for the frame inside its bounded agent publication.
 
     The owner registry travels in the same FRAME_COMPLETED event as the
     frame, so its canonical bytes are part of the envelope this budget
     subtracts: a larger registry leaves a smaller frame budget, and the
-    published event as a whole stays inside the memory event budget. The
+    published frame and registry stay inside the agent publication budget. The
     registry itself is byte-bounded before it reaches this accounting, so
     the subtraction can never drive the frame budget negative through
     unrelated history.
     """
     envelope = {"schema_version": MEMORY_EVENT_V1, "kind": "FRAME_COMPLETED", "job_key": "0" * 64,
                 "payload": {**payload, "active_memory_frame": None}}
-    return MAX_MEMORY_EVENT_BYTES - len(canonical(envelope)) + 4
+    return MAX_FRAME_PUBLICATION_BYTES - len(canonical(envelope)) + 4
 
 
 def _retained_frame_payload(payload, request):

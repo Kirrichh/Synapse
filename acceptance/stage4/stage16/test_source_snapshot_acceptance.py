@@ -12,7 +12,8 @@ from synapse.experiments.gold import source_verification as verifier
 from synapse.experiments.gold.canonicalization import RefKind
 from synapse.experiments.gold.knowledge_environment import open_gold_project
 from synapse.experiments.gold.source_ingestion import execute_source_ingestion
-from synapse.experiments.gold.source_snapshot import capture_project_source_snapshot, read_source_snapshot, source_experience_delivery
+from synapse.experiments.gold.source_snapshot import capture_project_source_snapshot, read_source_snapshot
+from synapse.experiments.gold.source_delivery import source_experience_delivery
 from synapse.experiments.gold.stage10.context_codec import decode_base64url
 from synapse.experiments.gold.stage10.intent import AcceptanceCriterion, AcceptanceKind, EffectConstraint, EffectDisposition, EffectKind
 from synapse.experiments.gold.stage10.repository_scope import create_repository_scope

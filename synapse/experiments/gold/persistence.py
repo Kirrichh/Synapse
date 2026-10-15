@@ -1227,9 +1227,13 @@ def _read_exact_or_eof(stream: BinaryIO, size: int) -> bytes:
     return b"".join(chunks)
 
 
-def iter_journal_frames(path: Path, *, prefix_length: int | None = None) -> Iterator[JournalFrame]:
+def iter_journal_frames(path: Path, *, prefix_length: int | None = None,
+                        maximum_frames: int | None = MAX_JOURNAL_FRAMES_V1) -> Iterator[JournalFrame]:
+    """Validate frames incrementally; a coordinator may retain an unbounded history."""
     if prefix_length is not None and (type(prefix_length) is not int or prefix_length < len(JOURNAL_FRAME_MAGIC_V1)):
         raise _fail(PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED, "invalid journal prefix boundary")
+    if maximum_frames is not None and (type(maximum_frames) is not int or maximum_frames < 0):
+        raise _fail(PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED, "invalid journal frame budget")
     try:
         stream = os.fdopen(_open_no_follow_read(path), "rb", buffering=0)
     except PersistenceViolation:
@@ -1262,7 +1266,7 @@ def iter_journal_frames(path: Path, *, prefix_length: int | None = None) -> Iter
             if hashlib.sha256(payload).digest() != checksum:
                 raise _fail(PersistenceFailureCode.JOURNAL_CHECKSUM_MISMATCH, "journal frame checksum mismatch")
             count += 1
-            if count > MAX_JOURNAL_FRAMES_V1:
+            if maximum_frames is not None and count > maximum_frames:
                 raise _fail(PersistenceFailureCode.JOURNAL_FRAME_LIMIT_EXCEEDED, "journal frame count exceeds limit")
             yield JournalFrame(payload, start, stream.tell())
 
@@ -1476,20 +1480,8 @@ def commit_snapshot_transaction(
     publish_immutable(file, directory / _COMMIT_MARKER_NAME, ticket=ticket)
 
 
-def read_committed_snapshot_transaction(
-    root: Path,
-    *,
-    transaction_id: str,
-) -> tuple[dict[str, object], dict[str, bytes]]:
-    """Return the commit marker and verified member bytes, or fail closed.
-
-    A staged transaction without a terminal marker does not exist: recovery
-    reports an absent commit marker instead of assembling a snapshot from the
-    partial records it can still see on disk.
-    """
-
-    directory = _transaction_directory(root, transaction_id)
-    require_directory(directory)
+def _read_snapshot_marker(directory: Path, *, transaction_id: str, maximum_members: int | None):
+    """Validate a committed publication descriptor before loading its members."""
     marker_path = directory / _COMMIT_MARKER_NAME
     if not marker_path.exists():
         raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "commit marker is absent")
@@ -1511,12 +1503,39 @@ def read_committed_snapshot_transaction(
     raw_members = marker["members"]
     if type(raw_members) is not list or not raw_members:
         raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "commit marker members are invalid")
+    if maximum_members is not None and len(raw_members) > maximum_members:
+        raise _fail(PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED, "snapshot exceeds its member count budget")
     members = tuple(SnapshotTransactionMember.from_payload(item) for item in raw_members)
     names = [member.member_name for member in members]
     if names != sorted(names) or len(set(names)) != len(names):
         raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "commit marker members are unordered")
+    return marker, members
+
+
+def read_committed_snapshot_transaction(
+    root: Path,
+    *,
+    transaction_id: str,
+    maximum_member_bytes: int | None = None,
+    maximum_members: int | None = None,
+) -> tuple[dict[str, object], dict[str, bytes]]:
+    """Return the committed marker with verified members within the reader's bounds.
+
+    A staged transaction without a terminal marker does not exist: recovery
+    refuses instead of assembling a snapshot from partially staged records.
+    """
+    if maximum_member_bytes is not None and (type(maximum_member_bytes) is not int or maximum_member_bytes < 0):
+        raise _fail(PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED, "invalid snapshot member byte budget")
+    if maximum_members is not None and (type(maximum_members) is not int or maximum_members < 0):
+        raise _fail(PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED, "invalid snapshot member count budget")
+    directory = _transaction_directory(root, transaction_id)
+    require_directory(directory)
+    marker, members = _read_snapshot_marker(directory, transaction_id=transaction_id,
+                                             maximum_members=maximum_members)
     observed: dict[str, bytes] = {}
     for member in members:
+        if maximum_member_bytes is not None and member.byte_length > maximum_member_bytes:
+            raise _fail(PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED, "snapshot member exceeds byte budget")
         value = read_regular_bytes(directory / member.member_name, maximum_bytes=member.byte_length)
         if len(value) != member.byte_length or hashlib.sha256(value).hexdigest() != member.sha256:
             raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "committed member bytes do not match")

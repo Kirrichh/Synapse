@@ -65,15 +65,16 @@ def test_read_only_memory_has_no_write_operation(tmp_path):
             put(reader, guard)
 
 
-def test_event_budget_refuses_new_work_before_writing_and_keeps_idempotent_reads(tmp_path, monkeypatch):
-    monkeypatch.setattr(M, "MAX_MEMORY_EVENTS", 1)
+def test_new_work_preserves_the_receipt_of_an_earlier_transition(tmp_path):
     store = M.ProjectMemoryStore(tmp_path)
     with store.session() as guard:
         receipt = put(store, guard)
         assert put(store, guard) == receipt
-        with pytest.raises(ValueError, match="event budget"):
-            store.put(kind="STARTED", job_key="a" * 64, payload={"request_ref": receipt}, guard=guard)
-    assert len(store.inventory()) == 1
+        started = store.put(kind="STARTED", job_key="a" * 64, payload={"request_ref": receipt}, guard=guard)
+        assert put(store, guard) == receipt
+    reader = M.ProjectMemoryStore(tmp_path, read_only=True)
+    assert reader.read(started)["payload"]["request_ref"] == receipt
+    assert reader.read(receipt)["payload"] == {"task": "maintain-frame"}
 
 
 def test_an_event_read_before_is_still_checked_and_detached(tmp_path):

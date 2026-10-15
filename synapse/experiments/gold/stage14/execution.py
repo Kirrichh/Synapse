@@ -154,13 +154,13 @@ def _require_replay_delivery(builder, catalog, *, audit, delivery, retained_publ
     """Establish the data edge from the exact retained replay to its delivery."""
     evidence = decode_canonical(audit.payload)["payload"]
     selection = evidence["knowledge_selection"]
-    experience = None
+    snapshot = None
     if "source_experience" in catalog:
-        from ..source_snapshot import read_frozen_source_experience, source_experience_delivery
+        from ..source_snapshot import read_frozen_source_experience, source_snapshot_reference
+        from ..source_delivery import source_experience_matches_recorded
         from ..stage10.task_contract import GoverningTaskContract
         snapshot = read_frozen_source_experience(catalog["source_experience"], run_id=catalog["run_id"])
-        experience = source_experience_delivery(snapshot)
-        if (evidence.get("source_snapshot_ref") != experience["snapshot_ref"]
+        if (evidence.get("source_snapshot_ref") != source_snapshot_reference(snapshot).to_dict()
                 or evidence["task_policy"]["task_contract_ref"] != GoverningTaskContract.from_dict(snapshot["task_contract"]).reference.to_dict()):
             raise LineageViolation(Failure.PHYSICAL_MISMATCH, "source experience belongs to another worker task")
     elif "source_snapshot_ref" in evidence:
@@ -179,7 +179,11 @@ def _require_replay_delivery(builder, catalog, *, audit, delivery, retained_publ
     if delivery is not None:
         envelope = decode_worker_delivery_envelope(delivery.payload)
         body = decode_canonical(envelope.body_bytes)
-        if body.get("source_experience") != experience:
+        recorded_source = body.get("source_experience")
+        matches_source = recorded_source is None
+        if snapshot is not None:
+            matches_source = source_experience_matches_recorded(snapshot, recorded_source)
+        if not matches_source:
             raise LineageViolation(Failure.PHYSICAL_MISMATCH, "delivered source information differs from frozen history")
         if (body["replay_observations"] != [replay_observation_delivery(item) for item in replay.observations]
                 or body["admission"]["policy_version"] != evidence["consumption_policy_version"]):

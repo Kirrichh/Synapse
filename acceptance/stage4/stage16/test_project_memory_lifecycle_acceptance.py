@@ -11,7 +11,8 @@ from synapse.experiments.gold.project_memory_store import ProjectMemoryStore
 from synapse.experiments.gold.project_model import MEMORY_KINDS
 from synapse.experiments.gold.run_inputs import (EXPERIMENT_INPUT_SCHEMA_V3, FROZEN_INPUT_SCHEMA_V5, FrozenGoldInputs,
     freeze_gold_inputs)
-from synapse.experiments.gold.source_snapshot import memory_source_basis, source_experience_delivery
+from synapse.experiments.gold.source_snapshot import memory_source_basis
+from synapse.experiments.gold.source_delivery import source_experience_delivery
 from synapse.experiments.gold.source_verification import canonical
 from synapse.memory_consolidation.project_port import ProjectMemoryCourt
 

@@ -163,25 +163,18 @@ def _commit_conflicting_event(store, guard):
     raw, transaction = records.canonical(event), M.new_operation_id()
     with M.store_transaction(store.fence, guard=guard) as ticket:
         members = M.stage_snapshot_transaction(store.events, transaction_id=transaction,
-            members={"event.json": raw}, maximum_bytes=M.MAX_MEMORY_EVENT_BYTES, ticket=ticket)
+            members={"event.json": raw}, maximum_bytes=len(raw), ticket=ticket)
         M.commit_snapshot_transaction(store.events, transaction_id=transaction, members=members,
             boundary_id=event["job_key"], marker_sha256=M.hashlib.sha256(raw).hexdigest(), ticket=ticket)
 
 
 @pytest.mark.parametrize("mode", ["unguarded", "read_only", "fresh_session"])
-@pytest.mark.parametrize("violation", ["conflict", "event_budget"])
-def test_selection_preserves_global_inventory_limits(tmp_path, monkeypatch, mode, violation):
+def test_selection_preserves_global_inventory_conflict_checks(tmp_path, mode):
     store = M.ProjectMemoryStore(tmp_path)
     with store.session() as guard:
         _put(store, guard)
-        if violation == "conflict":
-            _commit_conflicting_event(store, guard)
-        else:
-            _put(store, guard, job="b")
-    if violation == "event_budget":
-        monkeypatch.setattr(M, "MAX_MEMORY_EVENTS", 1)
-    message = "conflicting immutable results" if violation == "conflict" else "event budget"
-    with pytest.raises(ValueError, match=message):
+        _commit_conflicting_event(store, guard)
+    with pytest.raises(ValueError, match="conflicting immutable results"):
         if mode == "fresh_session":
             with store.session() as guard:
                 store.inventory(kind="STARTED", guard=guard)

@@ -6,7 +6,8 @@ import pytest
 
 from acceptance.stage4.stage16._source_inputs import consumer_case, learn
 from synapse.experiments.gold.run_inputs import reopen_frozen_inputs
-from synapse.experiments.gold.source_snapshot import read_source_snapshot, source_experience_delivery
+from synapse.experiments.gold.source_snapshot import read_source_snapshot
+from synapse.experiments.gold.source_delivery import source_experience_delivery
 from synapse.experiments.gold.stage10.context_codec import decode_base64url
 
 

@@ -62,7 +62,7 @@ def test_interruption_never_exposes_an_event_without_its_complete_blocks(tmp_pat
 def _publish_unreferenced(store, guard):
     value = E.event(job="f", body=E.payload(source="abandoned-observer", generation=99))
     with M.store_transaction(store.fence, guard=guard) as ticket:
-        MemoryEventStorage(store.root).prepare(M.canonical(value), kind=value["kind"], ticket=ticket)
+        MemoryEventStorage(store.root).prepare(M.canonical(value), ticket=ticket)
 
 
 def test_collection_marks_all_historical_committed_events_before_removing_only_orphans(tmp_path):
@@ -121,8 +121,8 @@ def test_collection_requires_the_live_writing_owner(tmp_path):
     assert store.read(receipt) == E.event()
 
 
-@pytest.mark.parametrize("damage", ["broken_symlink", "directory", "conflict", "event_budget"])
-def test_collection_does_not_delete_before_rejecting_an_invalid_global_inventory(tmp_path, monkeypatch, damage):
+@pytest.mark.parametrize("damage", ["broken_symlink", "directory", "conflict"])
+def test_collection_does_not_delete_before_rejecting_an_invalid_global_inventory(tmp_path, damage):
     store = M.ProjectMemoryStore(tmp_path)
     with store.session() as guard:
         receipt = E.put(store, guard, E.event())
@@ -136,8 +136,6 @@ def test_collection_does_not_delete_before_rejecting_an_invalid_global_inventory
                 marker.symlink_to(tmp_path / "missing-marker")
         elif damage == "conflict":
             E.commit_legacy(store, guard, E.event(body={"conflicting": True}))
-        else:
-            monkeypatch.setattr(M, "MAX_MEMORY_EVENTS", 0)
         before = E.physical_files(store.root / "blocks")
         with pytest.raises((JournalAdapterViolation, ValueError, P.PersistenceViolation)):
             store.collect_unreferenced_blocks(guard=guard)

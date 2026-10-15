@@ -36,7 +36,7 @@ from synapse.experiments.gold.owner_profiles import (
     build_owner_registry,
 )
 from synapse.experiments.gold.project_agents import MAX_PRIOR_EPISODES, _frame_byte_budget
-from synapse.experiments.gold.project_memory_store import MAX_MEMORY_EVENT_BYTES
+from synapse.experiments.gold.project_frame_storage import MAX_FRAME_PUBLICATION_BYTES
 from synapse.experiments.gold.source_verification import canonical
 from synapse.experiments.gold.stage10.intent import EffectDisposition, EffectKind
 from synapse.golden_replay import (
@@ -230,7 +230,7 @@ def test_registry_bytes_are_subtracted_from_the_frame_event_budget():
     loaded = _frame_byte_budget({"profile": "v4", "owner_registry": registry})
     assert loaded < plain
     assert plain - loaded >= len(canonical(registry))
-    assert loaded < MAX_MEMORY_EVENT_BYTES
+    assert loaded < MAX_FRAME_PUBLICATION_BYTES
 
 
 # --------------------------------------------------------------------------

@@ -463,7 +463,8 @@ def _build_and_persist_worker_context(
     )
     source_experience_bytes = None
     if inputs.lineage_sources is not None and "source_experience" in inputs.lineage_sources:
-        from ..source_snapshot import read_frozen_source_experience, source_experience_delivery
+        from ..source_snapshot import read_frozen_source_experience
+        from ..source_delivery import source_experience_delivery
         from ..stage10.context_codec import encode_canonical
         snapshot = read_frozen_source_experience(inputs.lineage_sources["source_experience"],
             run_id=inputs.lineage_sources["run_id"], intent=inputs.intent)

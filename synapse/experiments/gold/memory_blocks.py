@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import re
 
-from .memory_event_encoding import MAX_BLOCK_BYTES, block_digest
+from .memory_event_encoding import MAX_BLOCK_BYTES, block_digest, decode_tree_node
 from .persistence import (ensure_durable_directory, new_operation_id, publish_immutable,
                           read_regular_bytes, remove_immutable, require_directory,
                           require_open_mutation_ticket, require_regular_file, write_staged_bytes)
@@ -28,6 +28,24 @@ class MemoryBlockStore:
     def read(self, entries):
         """Recheck every referenced file on each reconstruction, including repeated blocks."""
         return b"".join(self._read(entry["sha256"], entry["byte_length"]) for entry in entries)
+
+    def read_tree(self, root):
+        """Restore ordered leaves after checking every physical tree reference."""
+        stack, leaves, retained = [(root, frozenset())], [], set()
+        while stack:
+            descriptor, ancestors = stack.pop()
+            digest = descriptor["sha256"]
+            if digest in ancestors:
+                raise ValueError("memory tree contains an ancestral cycle")
+            raw = self._read(digest, descriptor["byte_length"])
+            retained.add(digest)
+            if descriptor["height"] == 0:
+                leaves.append(raw)
+            else:
+                children = decode_tree_node(raw, descriptor)
+                ancestry = ancestors | {digest}
+                stack.extend((child, ancestry) for child in reversed(children))
+        return b"".join(leaves), frozenset(retained)
 
     def publish(self, blocks, *, ticket):
         """Make every block durable before its event manifest may be published."""

@@ -30,6 +30,14 @@
   produced it, with its thought signatures; the agent, prompts, tools, memory
   and evaluation remain MemoryArena's. The dry-run endpoint answers the Gemini
   REST protocol too and refuses the histories the API refuses.
+- The first live smoke run (group 8, five travelers, `gemini-3.1-flash-lite`,
+  Synapse memory) completed over the REST transport: PS 0/5, SPS 11.19%,
+  SR 0/1, 13 calls, 107,435 input and 1,972 output tokens. Memory brought all
+  named plans to none of the four travelers whose constraints name earlier
+  ones. Over MemoryArena's own client the agent repeated the same tool call
+  until the key's free-tier quota (15 requests a minute) refused it, so the
+  workflow now runs REST only, one job at a time, with calls 4.5 s apart, and
+  a 429 naming a per-day quota ends the run instead of waiting.
 - `scripts/benchmark_longmemeval_retrieval.py` stopped importing when
   `lexical_ranking` left `knowledge.search` in `93cf0c9`. It now ranks through
   `PreparedKnowledgeIndex.rank`, and the recorded report reproduces unchanged.

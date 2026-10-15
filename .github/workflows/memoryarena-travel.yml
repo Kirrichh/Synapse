@@ -1,13 +1,15 @@
 name: MemoryArena Travel
 
-# Paid live runs of MemoryArena's Group Travel Planner with the GEMINI_API_KEY
+# Live runs of MemoryArena's Group Travel Planner with the GEMINI_API_KEY
 # repository secret. Pushes never start them: a run starts when a maintainer
 # adds one of these labels to a pull request of this repository.
-#   memoryarena:smoke  one five-traveler group (id 8) with Synapse memory, over
-#                      the REST transport and over MemoryArena's own client
-#   memoryarena:pilot  the first twenty groups over the REST transport with
-#                      the benchmark's no-memory mode (earlier plans in the
-#                      prompt), long context, BM25 and Synapse memory
+#   memoryarena:smoke  one five-traveler group (id 8) with Synapse memory
+#   memoryarena:pilot  the first twenty groups with the benchmark's no-memory
+#                      mode (earlier plans in the prompt), long context, BM25
+#                      and Synapse memory
+# Jobs run one at a time and space their calls: the key's free-tier quota is
+# 15 requests a minute per model. Every job uses the REST transport; the
+# benchmark's own GeminiClient loses the model's calls and repeats them.
 # Plans are scored by the benchmark's string comparison; no model judges them.
 "on":
   pull_request:
@@ -42,8 +44,7 @@ jobs:
 
           model = "gemini-3.1-flash-lite"
           plans = {
-              "memoryarena:smoke": ("--ids 8", [("synapse-lexical", "gemini-rest"),
-                                                ("synapse-lexical", "benchmark")]),
+              "memoryarena:smoke": ("--ids 8", [("synapse-lexical", "gemini-rest")]),
               "memoryarena:pilot": ("--first 20", [("none", "gemini-rest"), ("long_context", "gemini-rest"),
                                                    ("bm25", "gemini-rest"), ("synapse-lexical", "gemini-rest")]),
           }
@@ -64,6 +65,7 @@ jobs:
     timeout-minutes: 330
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
@@ -95,6 +97,7 @@ jobs:
       - name: Run the travel planner
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          MEMORYARENA_MIN_INTERVAL: '4.5'
         run: >
           python scripts/memoryarena_live_run.py run
           --root "$RUNNER_TEMP/memoryarena"

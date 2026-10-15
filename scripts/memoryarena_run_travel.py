@@ -18,6 +18,9 @@ The agent, its prompts and tools, memory and evaluation stay MemoryArena's.
 (``scripts/memoryarena_oracle_endpoint.py``); the key travels in a header only.
 ``MEMORYARENA_USAGE_LOG`` names a file that receives one JSON line per call
 with the provider's token counts, so usage survives a runner that stops early.
+``MEMORYARENA_MIN_INTERVAL`` spaces the starts of calls by that many seconds,
+for a key whose per-minute quota is small; a 429 that names a per-day quota is
+final, since waiting minutes cannot clear it.
 """
 from __future__ import annotations
 
@@ -49,6 +52,8 @@ def gemini_rest_client(base):
             self.calls = 0
             self.retries = 0
             self.last_retries = 0
+            self.interval = float(os.environ.get("MEMORYARENA_MIN_INTERVAL") or 0)
+            self._last_start = 0.0
             self._turns: dict[str, list] = {}
             self._provider_ids: dict[str, str] = {}
 
@@ -57,6 +62,8 @@ def gemini_rest_client(base):
             url = os.environ.get("MEMORYARENA_GEMINI_ENDPOINT", GEMINI_ENDPOINT).format(model=self.model_name)
             self.last_retries = 0
             for delay in (*RETRY_DELAYS, None):
+                time.sleep(max(0.0, self._last_start + self.interval - time.monotonic()))
+                self._last_start = time.monotonic()
                 exchange = urllib.request.Request(url, data=request, method="POST", headers={
                     "Content-Type": "application/json", "x-goog-api-key": self.api_key})
                 try:
@@ -64,7 +71,8 @@ def gemini_rest_client(base):
                         return json.loads(response.read().decode("utf-8"))
                 except urllib.error.HTTPError as error:
                     detail = error.read().decode("utf-8", "replace")[:2000]
-                    if error.code not in RETRIED_STATUSES or delay is None:
+                    daily = error.code == 429 and "PerDay" in detail
+                    if error.code not in RETRIED_STATUSES or delay is None or daily:
                         raise RuntimeError(f"Gemini HTTP {error.code}: {detail}") from None
                 except (urllib.error.URLError, TimeoutError) as error:
                     if delay is None:

@@ -1,103 +1,110 @@
-# Stage 16: внешняя тестовая платформа
+# Stage 16: external test platform
 
-Стенд запускает существующие Baseline и Gold, сохраняет полный план эксперимента,
-повторно открывает физические доказательства и проверяет устойчивость защит к
-заранее заданным мутациям. Это сопровождаемый инструмент приёмки.
+The test bench runs the existing Baseline and Gold, retains the full experiment
+plan, reopens the physical evidence and checks the robustness of the safeguards
+against predefined mutations. It is a maintained acceptance tool.
 
-Практическая цель — видеть, решена ли задача, сколько попыток и ресурсов она
-потребовала и как меняется результат при повторении. Продукт уже выполняет
-задачу и собирает исходные измерения; стенд организует повторные испытания и
-проверяет их отчёты. Дополнительного контрольного Gold или отдельного runtime нет.
+The practical goal is to see whether a task is solved, how many attempts and
+resources it took and how the result changes on repetition. The product already
+executes the task and collects the source measurements; the bench organizes
+repeated trials and checks their reports. There is no additional control Gold
+and no separate runtime.
 
-По согласованному изменению плана Stage 16 экспериментальный диспетчер находится
-в `acceptance/`, а не в продуктовом `gold/paired.py`. Продуктовый Gold запускается
-через `python -m synapse → synapse.cli.main`. Baseline использует существующий
-`run_baseline_task`, который исполняет тот же допущенный профиль агента через
-универсальный порт исполнения, без контекста, памяти и локальной информации
-Synapse. C2 evaluator и writer Stage 3A остаются прежними.
+Under the agreed change to the Stage 16 plan, the experiment dispatcher lives
+in `acceptance/`, not in the product's `gold/paired.py`. The product Gold is
+launched through `python -m synapse → synapse.cli.main`. Baseline uses the
+existing `run_baseline_task`, which executes the same admitted agent profile
+through the universal execution port, without Synapse context, memory or local
+information. The C2 evaluator and the Stage 3A writer remain unchanged.
 
-Состояние целевого Gold: локальная информация доставляется агенту отдельно от
-задачи; модельный брокер Synapse пропускает к провайдеру только публичную беседу
-протокола, а предложение агента интерпретирует Synapse. Исторические прогоны
-ниже выполнялись прежним встроенным исполнителем и не подтверждают этот контур.
-Точная граница описана в [инструкции наполнения](../../../../docs/GOLD_KNOWLEDGE_INGESTION.md#что-получает-исполнитель).
+State of the target Gold: local information is delivered to the agent
+separately from the task; the Synapse model broker lets only the protocol's
+public conversation through to the provider, and Synapse interprets the agent's
+proposal. The historical runs below were executed by the former built-in worker
+and do not confirm this loop.
+The exact boundary is described in the [ingestion instruction](../../../docs/GOLD_KNOWLEDGE_INGESTION.md#what-the-worker-receives).
 
-## Что означает результат
+## What the result means
 
-`DIAGNOSTIC_COMPLETE` означает, что оба фактических запуска закончились, их
-измерения и источники доступны, а параметры диагностической пары совпали. Это ещё не
-контрфактическое доказательство экономии от reuse. Старый Baseline и Gold имеют
-различные execution policies: Gold дополнительно проходит accepted plan и
-Controlled Change. Отчёт явно возвращает `EXECUTION_POLICIES_DIFFER` и запрещает
-экономический claim. C2 получает настоящий `GOLD_WITH_CARRY` и сохраняет свой
-`INVALID_GOLD_WITH_CARRY`; переименование arm ради принятия C2 запрещено.
-Все проверенные оси, включая различие execution policies, присутствуют в
-`parameter_alignment`; `execution_policies_comparable` остаётся `false` при
-любом несовпадении. Полнота диагностики не объявляет эти политики одинаковыми.
+`DIAGNOSTIC_COMPLETE` means that both actual runs finished, their measurements
+and sources are available, and the parameters of the diagnostic pair matched.
+This is not yet counterfactual evidence of savings from reuse. The old Baseline
+and Gold have different execution policies: Gold additionally passes through an
+accepted plan and Controlled Change. The report explicitly returns
+`EXECUTION_POLICIES_DIFFER` and forbids an economic claim. C2 receives the real
+`GOLD_WITH_CARRY` and keeps its `INVALID_GOLD_WITH_CARRY`; renaming the arm so
+that C2 accepts it is forbidden. All checked axes, including the difference in
+execution policies, are present in `parameter_alignment`;
+`execution_policies_comparable` stays `false` on any mismatch. Diagnostic
+completeness does not declare these policies identical.
 
-В отчёте v2 `runs` содержит строку для каждого запланированного запуска:
-состояние исполнения, исходный outcome и его ссылку, число попыток, токены,
-известную стоимость, длительность и статус измерений. `task_results` группирует
-повторения по задаче и arm: число запрошенных/завершённых запусков, решённых,
-нерешённых и неизвестных исходов, среднее, разброс и диапазон измерений.
-Неисполненная реплика остаётся в знаменателе; несовпадающие параметры реплик
-блокируют их общее среднее. Исходные attempts, calls и reconciliation reports
-сохранены в подробных данных.
+In the v2 report, `runs` contains a row for every planned run: the execution
+state, the original outcome and its reference, the number of attempts, tokens,
+known cost, duration and measurement status. `task_results` groups repetitions
+by task and arm: the number of requested/finished runs, of resolved, unresolved
+and unknown outcomes, and the mean, spread and range of the measurements. An
+unexecuted replicate stays in the denominator; mismatched replicate parameters
+block their common mean. The original attempts, calls and reconciliation
+reports are kept in the detailed data.
 
-Статус задачи и полнота измерений независимы. Например, `FULL` с потерянным
-resource report остаётся исходным подтверждённым `FULL`, а учёт получает
-`INCOMPLETE`. Отсутствующее доказательство самого результата не даёт нового
-подтверждения успешности. Зелёное завершение процесса не заменяет эти поля.
+Task status and measurement completeness are independent. For example, a
+`FULL` with a lost resource report remains the originally confirmed `FULL`,
+while the accounting gets `INCOMPLETE`. Missing evidence of the result itself
+gives no new confirmation of success. A green process exit does not replace
+these fields.
 
-Разность считается как **Baseline минус Gold**. Токены, внешняя длительность,
-деньги и инфраструктурные измерения приведены отдельно. Отрицательные разности
-сохраняются. Пропущенный запуск остаётся в выборке с неизвестным значением;
-среднее неполной выборки не вычисляется. Для полной выборки публикуются размер,
-среднее, выборочное стандартное отклонение и диапазон. Единица наблюдения —
-парный запуск; принадлежность задаче сохраняется. Доверительные интервалы и
-выводы о генеральной совокупности этот диагностический профиль не строит.
-Параметры реплик одной задачи тоже должны совпадать; другой base/model/budget
-не маскируется номером реплики. Отчёт отдельно фиксирует код и среду текущего
-evaluator, сохраняя прежние execution identities из preregistration.
+The difference is computed as **Baseline minus Gold**. Tokens, external
+duration, money and infrastructure measurements are given separately. Negative
+differences are kept. A missed run stays in the sample with an unknown value;
+the mean of an incomplete sample is not computed. For a complete sample, the
+size, mean, sample standard deviation and range are published. The unit of
+observation is a paired run; task membership is retained. This diagnostic
+profile builds no confidence intervals and no inferences about the population.
+The replicate parameters of one task must match too; a different
+base/model/budget is not masked by a replicate number. The report separately
+records the code and environment of the current evaluator, keeping the earlier
+execution identities from preregistration.
 
-Provider cache виден в исходных `LLMCallRecord` и не создаёт semantic reuse.
-Activation проверяется отдельно по Stage 14/15: публикация производителя,
-retrieval, snapshot, replay, admission перед consumption, context, worker result,
-MechanismUseRecord, promotion, verification и outcome. Ссылки на outcome попытки
-производителя и на итог всего его запуска различаются; они не переписываются.
-Только полная сравнимая диагностическая пара с такой цепочкой учитывается в
-пороге activation. Недостаточный порог даёт
+The provider cache is visible in the original `LLMCallRecord`s and does not
+create semantic reuse. Activation is checked separately per Stage 14/15: the
+producer's publication, retrieval, snapshot, replay, admission before
+consumption, context, worker result, MechanismUseRecord, promotion,
+verification and outcome. The references to the outcome of the producer's
+attempt and to the result of its whole run are distinct; they are not
+rewritten. Only a complete comparable diagnostic pair with such a chain counts
+toward the activation threshold. An unmet threshold gives
 `MECHANISM_NOT_ACTIVATED / INCONCLUSIVE`.
 
-Infrastructure reports сохраняют исходные ограничения Stage 15: CPU относится
-к измеренным потокам владельца, дочерние процессы исключены; I/O относится к
-измеренным примитивам persistence, а не ко всему диску; интервалы разных buckets
-нельзя механически складывать. Внешняя длительность — сумма наблюдавшихся
-вызовов стенда, без ожидания оператора между ними. Цены не выдумываются;
-отсутствующая стоимость остаётся неизвестной. Учёт Baseline не превращает его
-неизмеренные файловые операции в измеренный Gold I/O.
+Infrastructure reports keep the original Stage 15 limitations: CPU refers to
+the measured owner threads, and child processes are excluded; I/O refers to the
+measured persistence primitives, not to the whole disk; intervals of different
+buckets cannot be summed mechanically. External duration is the sum of the
+bench's observed invocations, without the operator's waiting time between
+them. Prices are not invented; a missing cost stays unknown. Baseline
+accounting does not turn its unmeasured file operations into measured Gold I/O.
 
-## Подготовка и запуск
+## Preparing and running
 
-Установите зависимости из зафиксированного профиля репозитория:
+Install the dependencies from the repository's pinned profile:
 
 ```bash
 python -m pip install -e . pytest
 ```
 
-Кодирующий агент в продукт не входит. Оператор допускает свой профиль
-(`docs/UNIVERSAL_AGENT_EXECUTION.md`); приёмочные сценарии используют
-приёмочного модельного агента из `acceptance/agents/coding_agents.py`.
+The coding agent is not part of the product. The operator admits their own
+profile (`docs/UNIVERSAL_AGENT_EXECUTION.md`); the acceptance scenarios use the
+acceptance model agent from `acceptance/agents/coding_agents.py`.
 
-Для каждого arm каждой реплики нужны отдельные чистые Git repositories, run
-directories и, для Gold, отдельный project state. Используйте независимые clones,
-например `git clone --no-local`; общие worktrees и Git alternates не допускаются.
-Run directory до запуска не существует. Данные и результаты эксперимента храните
-вне рабочего checkout кода. Сохраните исходные stores вместе с экспериментом.
-Это разделение экспериментальных данных; оно не создаёт security sandbox
-для процессов worker и не изолирует общую нагрузку хоста.
+Each arm of each replicate needs separate clean Git repositories, run
+directories and, for Gold, a separate project state. Use independent clones,
+for example `git clone --no-local`; shared worktrees and Git alternates are not
+allowed. The run directory does not exist before the run. Store the
+experiment's data and results outside the working checkout of the code. Keep
+the original stores together with the experiment. This is a separation of
+experimental data; it does not create a security sandbox for worker processes
+and does not isolate the shared load of the host.
 
-Gold definition указывает на обычные, уже подготовленные входы продукта:
+The Gold definition points to the ordinary, already prepared product inputs:
 
 ```json
 {
@@ -107,52 +114,55 @@ Gold definition указывает на обычные, уже подготов�
   "state_root": "/experiments/r0/gold/project",
   "declaration_ref": {
     "path": "/experiments/r0/gold/input.json",
-    "sha256": "<SHA-256 фактических байтов input.json>",
+    "sha256": "<SHA-256 of the actual bytes of input.json>",
     "bytes": 1234
   }
 }
 ```
 
-`declaration_ref` создаётся функцией `source(path)` из `protocol.py`;
-`bytes` и hash выше — обозначения, их нужно заменить фактическими значениями.
-Gold input использует схему v4 и конфигурацию `agents` с одним допущенным профилем.
-`cli_timeout_seconds` в definition необязателен; по умолчанию 600 секунд.
+`declaration_ref` is created by the `source(path)` function from `protocol.py`;
+`bytes` and the hash above are placeholders and must be replaced with the
+actual values. The Gold input uses schema v4 and an `agents` configuration
+with one admitted profile. `cli_timeout_seconds` in the definition is optional;
+the default is 600 seconds.
 
-Baseline definition содержит существующие контракты без нового исполнения:
+The Baseline definition contains existing contracts without new execution:
 
-| Поле | Содержание |
+| Field | Contents |
 | --- | --- |
 | `arm` | `BASELINE` |
-| `repo_root`, `run_root` | Абсолютные независимые пути |
-| `base_revision`, `max_attempts` | Точный base и лимит попыток |
-| `task` | Поля `BaselineTask`: task_id, instance_id, statement, allowed_scope |
-| `agents` | Та же конфигурация `synapse.agent.configuration/v1`, что и в Gold input |
-| `oracle` | Поля `SWEbenchHarnessOracleConfig`, со своим swebench_work_dir |
+| `repo_root`, `run_root` | Absolute independent paths |
+| `base_revision`, `max_attempts` | Exact base and attempt limit |
+| `task` | `BaselineTask` fields: task_id, instance_id, statement, allowed_scope |
+| `agents` | The same `synapse.agent.configuration/v1` configuration as in the Gold input |
+| `oracle` | `SWEbenchHarnessOracleConfig` fields, with its own swebench_work_dir |
 
-Credentials передаются через переменную окружения, названную в `model_access`
-профиля. Значение секрета не входит в протокол. Identity агента — его
-`runtime_identity` из допущенного профиля; оба arm обязаны совпадать по ней.
-Host profile измеряется непосредственно и содержит только явно перечисленные
-несекретные настройки; contention и provider cache не объявляются управляемыми.
+Credentials are passed through the environment variable named in the profile's
+`model_access`. The secret's value is not part of the protocol. The agent's
+identity is its `runtime_identity` from the admitted profile; both arms must
+match on it. The host profile is measured directly and contains only
+explicitly listed non-secret settings; contention and the provider cache are
+not declared controlled.
 
-Для Gemini модельный брокер Synapse принимает официальный endpoint
-`https://generativelanguage.googleapis.com/v1beta/openai/chat/completions` и имя
-модели без routing prefix, например `gemini-3.1-flash-lite`. Credential environment
-может быть `GEMINI_API_KEY`. В capture сохраняются provider `gemini` и профиль
-`gemini-openai-chat-usage/v1`; OpenAI-совместимый wire format не меняет identity
-провайдера. Prompt/completion totals не складываются повторно с cache/thinking.
-Если Gemini не прислал подробности subsets, они остаются неизвестными.
-См. [официальный совместимый API](https://ai.google.dev/gemini-api/docs/openai).
-Оплаченный ответ, который не стал предложением, также учитывается: он входит
-в публичную беседу и в перечень ответов агента.
+For Gemini, the Synapse model broker accepts the official endpoint
+`https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`
+and a model name without a routing prefix, for example
+`gemini-3.1-flash-lite`. The credential environment can be `GEMINI_API_KEY`.
+The capture records the provider `gemini` and the profile
+`gemini-openai-chat-usage/v1`; the OpenAI-compatible wire format does not
+change the provider's identity. Prompt/completion totals are not added again
+with cache/thinking. If Gemini sent no subset details, they stay unknown.
+See the [official compatible API](https://ai.google.dev/gemini-api/docs/openai).
+A paid response that did not become a proposal is also accounted for: it is
+part of the public conversation and of the agent's response inventory.
 
-### Подготовка первого живого сценария
+### Preparing the first live scenario
 
-`astropy__astropy-12907` зафиксирован на base
-`d16bfe05a744909de4b27f5875fe0d4ed41ce607`. Команда подготовки проверяет SHA-256
-конкретной ревизии SWE-bench Verified, сохраняет исходную задачу отдельно от
-evaluator data и создаёт чистый checkout. Данные эксперимента находятся снаружи
-репозитория Synapse.
+`astropy__astropy-12907` is pinned to base
+`d16bfe05a744909de4b27f5875fe0d4ed41ce607`. The preparation command checks the
+SHA-256 of a specific SWE-bench Verified revision, stores the original task
+separately from the evaluator data and creates a clean checkout. The
+experiment data lives outside the Synapse repository.
 
 ```bash
 python -m pip install 'swebench==4.1.0' 'pyarrow==21.0.0'
@@ -160,67 +170,74 @@ python -m acceptance.stage4.stage16 prepare-astropy --root /experiments/astropy-
 python -m acceptance.stage4.stage16 calibrate-astropy --root /experiments/astropy-01
 ```
 
-Команда `calibrate-astropy` требует Docker. Она фиксирует фактический image ID и выполняет
-существующий `SWEbenchHarnessOracleRunner` для двух калибровок: изменение только
-комментария сохраняет ошибку, эталонный патч SWE-bench должен её исправить.
-Проверяются реальные исходы и отсутствие инфраструктурной ошибки; сохраняются
-candidate patches, reports и логи. Ответов модели в этой калибровке нет.
-Workflow `Astropy Pilot Preparation` выполняет её перед подготовкой живой пары.
-В проверке PR workflow также готовит входы пары и проверяет короткий обмен с
-Gemini. Полный платный прогон запускается отдельно: Actions → Astropy Pilot
-Preparation → Run workflow, нужная ветка и `run_pair: true`. По умолчанию этот
-флаг выключен: правка документации не должна повторно оплачивать эксперимент.
-Короткая проверка связи допускает три обращения по 30 секунд и 120 секунд на
-весь процесс с сохранением результатов. Она не проверяет решение Astropy.
-Pin SWE-bench 4.1.0 соответствует существующему CLI-контракту oracle, включая
-`env_image_tag`: в 3.0.15 этого аргумента ещё нет, а версия 5 изменила CLI.
-Проверка использует существующий oracle adapter без дополнительных запускателей.
+The `calibrate-astropy` command requires Docker. It records the actual image
+ID and runs the existing `SWEbenchHarnessOracleRunner` for two calibrations: a
+comment-only change keeps the bug, and the SWE-bench reference patch must fix
+it. The real outcomes and the absence of an infrastructure error are checked;
+candidate patches, reports and logs are kept. This calibration has no model
+responses. The `Astropy Pilot Preparation` workflow runs it before the live
+pair is prepared. In a PR check, the workflow also prepares the pair's inputs
+and checks a short exchange with Gemini. The full paid run is started
+separately: Actions → Astropy Pilot Preparation → Run workflow, the required
+branch and `run_pair: true`. This flag is off by default: a documentation edit
+must not pay for the experiment again. The short connectivity check allows
+three requests of 30 seconds each and 120 seconds for the whole process,
+including saving the results. It does not check the Astropy solution.
+The SWE-bench 4.1.0 pin matches the oracle's existing CLI contract, including
+`env_image_tag`: 3.0.15 does not have this argument yet, and version 5 changed
+the CLI. The check uses the existing oracle adapter without additional
+launchers.
 
-### Наблюдения первого живого испытания
+### Observations from the first live trial
 
-Это диагностические наблюдения, а не доказательство полезности памяти.
-Исходные неудачи не удаляются при исправлении стенда или новом запуске.
+These are diagnostic observations, not evidence that memory is useful.
+The original failures are not deleted when the bench is fixed or on a new run.
 
-В [первом прогоне](https://github.com/Kirrichh/Synapse/actions/runs/34158843317)
-Gold остановился до обращения к модели: подготовка передала лишний аргумент
-прежнему встроенному исполнителю, запрещённый зафиксированным профилем. Baseline решил задачу со второй
-попытки, потратив 201 490 токенов. Исправление подготовки убрало этот аргумент
-у обоих режимов; ограничение продуктового профиля осталось прежним.
+In the [first run](https://github.com/Kirrichh/Synapse/actions/runs/34158843317)
+Gold stopped before calling the model: the preparation passed the former
+built-in worker an extra argument that the pinned profile forbids. Baseline
+solved the task on the second attempt, spending 201 490 tokens. The
+preparation fix removed this argument for both modes; the product profile's
+restriction stayed unchanged.
 
-В [следующем прогоне](https://github.com/Kirrichh/Synapse/actions/runs/34159761879)
-оба режима действительно исполнились:
+In the [next run](https://github.com/Kirrichh/Synapse/actions/runs/34159761879)
+both modes actually executed:
 
-| Режим | Результат задачи | Попытки | Токены | Внешняя длительность |
+| Mode | Task result | Attempts | Tokens | External duration |
 | --- | --- | ---: | ---: | ---: |
-| Baseline | Подтверждён независимой проверкой | 1 | 87 789 | 111,97 с |
-| Gold | Кандидат отклонён: лишний файл вне разрешённой области | 1 | 146 403 | 493,66 с |
+| Baseline | Confirmed by an independent check | 1 | 87 789 | 111.97 s |
+| Gold | Candidate rejected: an extra file outside the permitted scope | 1 | 146 403 | 493.66 s |
 
-Подготовка второй пары заняла отдельно 33,31 с. Подтверждённая денежная
-стоимость неизвестна. Настройка модели, исходный commit, описание задачи и
-лимиты рабочего агента совпадали; политики исполнения режимов различались.
-У Gold лимит токенов проверяется между попытками: заданные 100 000 не являются
-жёстким ограничением потребления внутри одной попытки. Превышение сохранено в
-фактическом учёте.
+Preparing the second pair took a separate 33.31 s. The confirmed monetary cost
+is unknown. The model configuration, the starting commit, the task description
+and the worker agent's limits matched; the modes' execution policies differed.
+In Gold, the token limit is checked between attempts: the configured 100 000
+is not a hard limit on consumption within one attempt. The overrun is kept in
+the actual accounting.
 
-Траектория Gold показывает исправление `astropy/modeling/separable.py`, успешное
-воспроизведение после правки и 11 пройденных доступных агенту тестов. Но агент
-также создал `reproduce_issue.py`, хотя задача разрешала менять только исходный
-файл, и исчерпал 12 шагов без команды завершения. Адаптер сохранил предложенную
-правку; материализация отвергла её по `REJECTED_SCOPE_VIOLATION`. Именно этот
-отказ, а не число шагов, дал итоговый `NO_CANDIDATE`. Независимый итоговый
-проверяющий для Gold не запускался. Самостоятельно удалить лишний файл из
-кандидата и зачесть успех означало бы изменить наблюдавшийся результат.
+The Gold trajectory shows a fix to `astropy/modeling/separable.py`, a
+successful reproduction after the edit and 11 passed tests available to the
+agent. But the agent also created `reproduce_issue.py`, although the task
+allowed changing only the source file, and exhausted 12 steps without a
+completion command. The adapter kept the proposed edit; materialization
+rejected it with `REJECTED_SCOPE_VIOLATION`. It was this refusal, not the
+number of steps, that produced the final `NO_CANDIDATE`. The independent final
+checking tool was not run for Gold. Removing the extra file from the candidate
+unilaterally and counting a success would have meant changing the observed
+result.
 
-Публикации исходных знаний, их передача через replay, контекст и физическая
-сверка подтверждены. Полезное использование памяти не подтверждено. Статус
-`DIAGNOSTIC_COMPLETE` относится к полноте диагностики; исход задачи Gold
-остаётся неуспешным. Отдельная короткая проверка Gemini в том же workflow
-достигла двух обращений, но превысила прежний общий предел 45 секунд и не
-завершила сохранение источников. Увеличение её предела до 120 секунд не меняет
-эту историческую неудачу или бюджеты задачи Astropy.
+The publications of source knowledge, their delivery through replay, the
+context and the physical reconciliation are confirmed. Beneficial use of
+memory is not confirmed. The `DIAGNOSTIC_COMPLETE` status refers to diagnostic
+completeness; the outcome of the Gold task remains unsuccessful. The separate
+short Gemini check in the same workflow reached two requests, but exceeded the
+earlier overall limit of 45 seconds and did not finish saving the sources.
+Raising its limit to 120 seconds does not change this historical failure or
+the budgets of the Astropy task.
 
-`CALIBRATED` подтверждает только окружение oracle. Следующая команда проверяет
-настоящие команды рабочего агента, наполняет память и фиксирует одну живую пару:
+`CALIBRATED` confirms only the oracle environment. The following command
+checks the worker agent's real commands, populates memory and freezes one live
+pair:
 
 ```bash
 python -m acceptance.stage4.stage16 prepare-astropy-pair --root /experiments/astropy-01
@@ -228,43 +245,47 @@ python -m acceptance.stage4.stage16 run --protocol /experiments/astropy-01/pair/
 python -m acceptance.stage4.stage16 report --experiment /experiments/astropy-01/experiment --format table
 ```
 
-Оба режима получают отдельные чистые clones, одну задачу, модель
-`gemini-3.1-flash-lite`, лимит трёх попыток и одинаковые команды проверки.
-Агент использует 12 шагов и 600 секунд на попытку.
-Ключ `GEMINI_API_KEY` нужен на шаге `run`; подготовка не обращается к модели.
-Workflow выполняет эти шаги для ветки того же репозитория; внешние forks
-не получают секрет и не запускают живую пару.
+Both modes get separate clean clones, the same task, the model
+`gemini-3.1-flash-lite`, a limit of three attempts and identical verification
+commands. The agent uses 12 steps and 600 seconds per attempt.
+The `GEMINI_API_KEY` key is needed at the `run` step; the preparation does not
+call the model. The workflow runs these steps for a branch of the same
+repository; external forks do not get the secret and do not run the live pair.
 
-Команда проверки монтирует только разрешённый `separable.py` из текущего
-checkout в неизменяемый Docker image калибровки. Python и зависимости Astropy
-берутся из этого image. До обучения в обоих clones реально воспроизводится
-публичная ошибка и проходят прежние тесты. Неработающая команда блокирует
-подготовку до вызова модели. Эталонное исправление и закрытые проверки evaluator
-не включаются в задачу, память или монтируемые файлы.
+The verification command mounts only the permitted `separable.py` from the
+current checkout into the immutable Docker image of the calibration. Python
+and the Astropy dependencies come from this image. Before learning, the public
+bug is actually reproduced in both clones and the pre-existing tests pass. A
+broken command blocks the preparation before the model is called. The
+reference fix and the evaluator's hidden checks are not included in the task,
+the memory or the mounted files.
 
-Gold получает две записи через настоящий `python -m synapse project learn`:
-проверенный факт о структуре исходника и исторически проверенную процедуру
-воспроизведения. Новая задача имеет собственный контракт и наблюдение;
-источник знания не выдаётся за прошлый успешный Gold run. Полный протокол
-создаётся после этих операций, с seed 17 и одной парой. Фикстурных публикаций
-или разрешающих тестовых probes в этом пути нет.
+Gold receives two records through the real `python -m synapse project learn`:
+a verified fact about the structure of the source file and a historically
+verified reproduction procedure. The new task has its own contract and
+observation; the knowledge source is not passed off as a past successful Gold
+run. The full protocol is created after these operations, with seed 17 and one
+pair. There are no fixture publications or permissive test probes on this
+path.
 
-`pair/preparation-result.json` хранит ссылки на результаты проверки среды,
-квитанции обучения и общую длительность подготовки. В `learn-*-result.json`
-сохраняются код процесса, исходный ответ, stderr и полная длительность вызова
-CLI. Внутренний `elapsed_ns` verifier измеряет только проверку, без публикации;
-его нельзя выдавать за полную цену наполнения памяти. Расходы самой пары
-содержатся отдельно в обычном отчёте стенда. Неудачи сохраняются; готовность
-пары нельзя выводить из одного успешного предыдущего шага.
+`pair/preparation-result.json` holds references to the environment check
+results, the learning receipts and the total duration of the preparation. The
+`learn-*-result.json` files keep the process exit code, the original response,
+stderr and the full duration of the CLI call. The verifier's internal
+`elapsed_ns` measures only the check, without publication; it must not be
+passed off as the full cost of populating memory. The costs of the pair itself
+are kept separately in the bench's ordinary report. Failures are kept; the
+pair's readiness must not be inferred from one successful previous step.
 
-Этот пилот проверяет связность реального исполнения. Обоим режимам заранее
-дан один публичный способ воспроизведения ошибки; различия их execution policies
-сохраняются. Доставка источников после replay не доказывает, что они помогли
-модели, и не создаёт `MechanismUseRecord`. Для вывода о переносе опыта нужны
-отдельные контрольные задачи; этот запуск их не заменяет. Команда наполнения и
-её границы описаны в [инструкции Gold](../../../../docs/GOLD_KNOWLEDGE_INGESTION.md).
+This pilot checks the connectedness of real execution. Both modes are given
+the same public way of reproducing the bug in advance; the differences in
+their execution policies are kept. Delivery of the sources after replay does
+not prove that they helped the model and does not create a
+`MechanismUseRecord`. A conclusion about transfer of experience needs separate
+control tasks; this run does not replace them. The ingestion command and its
+boundaries are described in the [Gold instruction](../../../docs/GOLD_KNOWLEDGE_INGESTION.md).
 
-Файл design перечисляет **все** задачи, реплики и оба arm заранее:
+The design file lists **all** tasks, replicates and both arms in advance:
 
 ```json
 {
@@ -295,116 +316,132 @@ python -B -m acceptance.stage4.stage16 report --experiment /experiments/journal 
 python -B -m acceptance.stage4.stage16 report --experiment /experiments/journal --format table
 ```
 
-Таблица — краткое представление того же физически проверенного отчёта. Она
-показывает задачу, реплику, arm, завершение, outcome, попытки, токены, секунды и
-полноту учёта. JSON сохраняет подробные доказательства и ограничения измерений.
+The table is a short view of the same physically checked report. It shows the
+task, replicate, arm, completion, outcome, attempts, tokens, seconds and
+accounting completeness. The JSON keeps the detailed evidence and the
+measurement limitations.
 
-Freeze связывает actual specification bytes, code revision, product/verifier
-source hashes, host profile, полный schedule, вложенные входы и начальные
-repository/knowledge states. Порядок arms чередуется внутри каждой задачи,
-начальная ориентация и порядок пар определяются seed. Для одной или нечётного
-числа реплик идеальный баланс невозможен и не заявляется.
+Freeze binds the actual specification bytes, code revision, product/verifier
+source hashes, host profile, the full schedule, the nested inputs and the
+initial repository/knowledge states. The order of arms alternates within each
+task; the initial orientation and the order of pairs are determined by the
+seed. For one replicate or an odd number of replicates, perfect balance is
+impossible and is not claimed.
 
-Без `--approve-pending` стенд останавливается на обычном запросе Gold approval
-с exit code 3. Флаг выполняет стандартное действие оператора через canonical
-CLI. Неудачный/прерванный arm даёт exit code 2; завершённый dispatch inventory — 0.
-Команда `report` возвращает 0 при успешном построении отчёта, включая отчёт
-`INCOMPLETE`; интерпретируйте его поля, а не код процесса как acceptance verdict.
+Without `--approve-pending`, the bench stops at the ordinary Gold approval
+request with exit code 3. The flag performs the standard operator action
+through the canonical CLI. A failed/interrupted arm gives exit code 2; a
+completed dispatch inventory gives 0. The `report` command returns 0 when the
+report is built successfully, including an `INCOMPLETE` report; interpret its
+fields, not the process exit code, as the acceptance verdict.
 
-## Восстановление и владение
+## Recovery and ownership
 
-SQLite journal использует WAL и `synchronous=FULL`. Durable STARTED предшествует
-эффектам; OS lock исключает двух диспетчеров. История связывает protocol identity,
-slot, порядок и предыдущий event hash. Проверка не является защитой от полного
-злонамеренного переписывания trusted local operator: это существующая локальная
-граница доверия проекта.
+The SQLite journal uses WAL and `synchronous=FULL`. A durable STARTED precedes
+the effects; an OS lock rules out two dispatchers. The history binds the
+protocol identity, slot, order and previous event hash. The check is not a
+protection against a complete malicious rewrite by a trusted local operator:
+this is the project's existing local trust boundary.
 
-Повторная команда `run` продолжает прежний Gold через `project resume`.
-У legacy Baseline нет durable resume: потеря процесса после STARTED оставляет
-`INTERRUPTED`, неизвестный расход и сохранённые источники; повторные эффекты
-не запускаются. Завершённые arms не исполняются снова. Подмена входов, начального
-состояния, кода, среды, порядка или общей repository allocation блокирует запуск.
-Если потеряна квитанция внешнего вызова, его длительность неизвестна:
-`duration.total_ns = null`. Сумма сохранившихся квитанций остаётся отдельно в
-`observed_subtotal_ns`. Восстановление Gold не превращает эту сумму в полное
-время и не создаёт отсутствующее измерение. Такое сравнение получает `INCOMPLETE`.
+A repeated `run` command continues the earlier Gold run through
+`project resume`. The legacy Baseline has no durable resume: losing the
+process after STARTED leaves `INTERRUPTED`, unknown usage and the retained
+sources; repeated effects are not started. Completed arms are not executed
+again. Substituting the inputs, initial state, code, environment, order or
+shared repository allocation blocks the run. If the receipt of an external
+call is lost, its duration is unknown: `duration.total_ns = null`. The sum of
+the surviving receipts stays separately in `observed_subtotal_ns`. Gold
+recovery does not turn this sum into the full time and does not create the
+missing measurement. Such a comparison gets `INCOMPLETE`.
 
-Отчёт строится под тем же lock и перечитывает retained sources через существующие
-reconciliation owners. Потеря файла блокирует новое полное сравнение, сохраняя
-исторические receipts и domain outcomes. Standalone JSON не заменяет stores.
+The report is built under the same lock and rereads the retained sources
+through the existing reconciliation owners. Losing a file blocks a new
+complete comparison while keeping the historical receipts and domain outcomes.
+A standalone JSON does not replace the stores.
 
-| Модуль | Ответственность |
+| Module | Responsibility |
 | --- | --- |
-| protocol.py | Неизменяемый дизайн и физические предусловия |
-| harness.py | Durable scheduling, исключение одновременного dispatch и recovery |
-| execution.py | Граница существующих Baseline API и Gold CLI |
-| run_evidence.py | Перевод и повторная проверка физических доказательств arms |
-| assessment.py | Внешняя диагностическая оценка полного набора |
-| mutations.py | Изолированное ослабление, killer и restoration evidence |
-| __main__.py | Операторский интерфейс внешнего стенда |
+| protocol.py | Immutable design and physical preconditions |
+| harness.py | Durable scheduling, exclusion of concurrent dispatch, and recovery |
+| execution.py | Boundary of the existing Baseline API and Gold CLI |
+| run_evidence.py | Translation and rechecking of the arms' physical evidence |
+| assessment.py | External diagnostic assessment of the full set |
+| mutations.py | Isolated weakening, killer and restoration evidence |
+| __main__.py | Operator interface of the external bench |
 
-## Приёмка и мутации
+## Acceptance and mutations
 
-Тяжёлые сценарии находятся в отдельных `test_*_acceptance.py` и отдельных CI
-shards. Сохраняются предыдущие Stage 4 suites, C2 regression, dependency direction,
-ownership и canonical entrypoint checks. Здесь добавлены actual paired execution,
-полные реплики, реальные mismatches, два разных recovery contracts и activation
-через реальный процесс агента и модельный брокер с контролируемым HTTP provider
-и внешним oracle.
-Отдельный сценарий `test_task_result_acceptance.py` исполняет реальное исправление
-в обоих arms и проверяет независимый oracle, Gold `FULL`, расходы, табличный
-отчёт и сохранение outcome при физической потере измерений.
-Управляемые ответы проверяют архитектуру; они не измеряют качество коммерческой
-модели и не заменяют технический пилот.
+Heavy scenarios live in separate `test_*_acceptance.py` files and separate CI
+shards. The earlier Stage 4 suites, C2 regression, dependency direction,
+ownership and canonical entrypoint checks are kept. Added here are actual
+paired execution, full replicates, real mismatches, two different recovery
+contracts and activation through a real agent process and the model broker
+with a controlled HTTP provider and an external oracle.
+The separate scenario `test_task_result_acceptance.py` executes a real fix in
+both arms and checks the independent oracle, Gold `FULL`, costs, the table
+report and the preservation of the outcome when measurements are physically
+lost.
+Controlled responses check the architecture; they do not measure the quality
+of a commercial model and do not replace the technical pilot.
 
-`mutations.json` задаёт шесть ослаблений Stage 16, включая потерянный интервал
-времени, ошибочно учтённый как нулевой расход. Это добавление к прежней
-adversarial suite, не заявление, что выполнена вся матрица Приложения F.
-Каждый CI shard сначала запускает неизменённый killer, меняет один указанный
-участок в изолированном checkout, требует ожидаемое падение и проверяет возврат
-исходных bytes/code identity и чистого Git status. Ошибка окружения не считается
-KILLED. JSON, JUnit и logs сохраняются как CI artifacts с revision и patch identity.
+`mutations.json` defines six Stage 16 weakenings, including a lost time
+interval wrongly counted as zero usage. This is an addition to the earlier
+adversarial suite, not a claim that the whole Appendix F matrix has been done.
+Each CI shard first runs the unmodified killer, changes one specified region
+in an isolated checkout, requires the expected failure and checks the return
+of the original bytes/code identity and of a clean Git status. An environment
+error does not count as KILLED. JSON, JUnit and logs are kept as CI artifacts
+with the revision and patch identity.
 
 ```bash
 python -B -m acceptance.stage4.stage16.mutations --case S16-MUT-FINGERPRINT --output /experiments/mutant-fingerprint
 ```
 
-Для mutation runner нужен чистый commit. Любой SURVIVED, неожиданная ошибка или
-провал restoration делает соответствующий CI check красным. Зелёный стенд не
-закрывает Stage 4: полная нормативная traceability, пилот, экономический дизайн
-с достаточной причинной изоляцией и human acceptance требуют отдельных данных.
+The mutation runner needs a clean commit. Any SURVIVED, an unexpected error or
+a failed restoration turns the corresponding CI check red. A green bench does
+not close Stage 4: full normative traceability, the pilot, an economic design
+with sufficient causal isolation and human acceptance require separate data.
 
-Дизайн блоков и парных разностей опирается на
+The design of blocks and paired differences relies on
 [NIST: randomized block designs](https://www.itl.nist.gov/div898/handbook/pri/section3/pri332.htm)
-и [NIST: paired observations](https://www.itl.nist.gov/div898/handbook/prc/section3/prc311.htm).
-Граница durability следует
-[SQLite synchronous](https://www.sqlite.org/pragma.html#pragma_synchronous) и
+and [NIST: paired observations](https://www.itl.nist.gov/div898/handbook/prc/section3/prc311.htm).
+The durability boundary follows
+[SQLite synchronous](https://www.sqlite.org/pragma.html#pragma_synchronous) and
 [SQLite transactions](https://www.sqlite.org/lang_transaction.html).
 
 
-## Первичное знание из реальных источников
+## Initial knowledge from real sources
 
-`project learn` реализован в каноничном продуктовом CLI. Порядок входов,
-ограничения процедур и перенос результата в `knowledge_path` описаны в
-[сопровождаемой инструкции](../../../../docs/GOLD_KNOWLEDGE_INGESTION.md).
-Приёмочные файлы `test_source_*` разделены по публикации, процедурам, восстановлению,
-удержанию, потреблению и отказу при изменённой среде; CI запускает их отдельно.
-Они используют реальные stores и отдельные процессы, без заранее допущенного
-тестового corpus. Детерминированный внешний worker проверяет доставку и не
-служит результатом живого эксперимента.
+`project learn` is implemented in the canonical product CLI. The order of
+inputs, the restrictions on procedures and the transfer of the result into
+`knowledge_path` are described in the
+[maintained instruction](../../../docs/GOLD_KNOWLEDGE_INGESTION.md).
+The `test_source_*` acceptance files are split by publication, procedures,
+recovery, retention, consumption and refusal under a changed environment; CI
+runs them separately. The `test_src_layout_*` files check a project with
+declared import roots (binding contract v2): learning, refusals, study and
+freezing of the Gold inputs — each heavy scenario in its own file.
+`source_recall_profile_measure.py` is a reproducible measurement of the recall
+profiles v1 and v2 on pallets/flask and Synapse
+(`reports/source_recall_profile_v1.json`); it is a measurement, not a test.
+They use real stores and separate processes, without a test corpus admitted in
+advance. A deterministic external worker checks the delivery and does not
+serve as the result of a live experiment.
 
-Доставка source knowledge не удовлетворяет прежнему порогу activation,
-который требует независимо подтверждённого предотвращения повторного C1 dispatch.
-Отсутствующий `MechanismUseRecord` нельзя выдумывать для повышения оценки.
-Новый профиль требует отдельно измерить практическую пользу полученного содержания.
+Delivery of source knowledge does not satisfy the earlier activation
+threshold, which requires an independently confirmed prevention of a repeated
+C1 dispatch. A missing `MechanismUseRecord` must not be invented to raise the
+assessment. The new profile requires a separate measurement of the practical
+benefit of the received content.
 
-Практическая последовательность испытания: сначала одна живая диагностическая
-пара с проверенной средой worker, затем заранее зафиксированная серия.
-Предлагаемая серия содержит две подготовительные задачи и четыре контрольные:
-две на полезный перенос, одну со сменой условий и одну с нерелевантным опытом.
-По три повторения двух режимов дают 24 запуска. Корпус для каждой контрольной
-реплики берётся из одного исходного состояния; ответы контрольных задач не
-попадают в другие реплики. Сценарии и критерии должны быть зафиксированы до
-первого ответа модели. Это план выборки, а не сообщение, что эти задачи уже
-подготовлены или выполнены. Текущий профиль точного commit ограничивает перенос
-между версиями; сравнение с Baseline сохраняет различия execution policies.
+The practical sequence of the trial: first one live diagnostic pair with a
+verified worker environment, then a series fixed in advance. The proposed
+series contains two preparatory tasks and four control tasks: two for useful
+transfer, one with a change of conditions and one with irrelevant experience.
+Three repetitions of each of the two modes give 24 runs. The corpus for each
+control replicate is taken from one initial state; the answers of the control
+tasks do not reach other replicates. The scenarios and criteria must be fixed
+before the first model response. This is a sampling plan, not a statement that
+these tasks have already been prepared or executed. The current exact-commit
+profile limits transfer between versions; the comparison with Baseline keeps
+the differences in execution policies.

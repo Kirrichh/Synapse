@@ -48,3 +48,31 @@ def test_qualified_symbols_keep_their_known_owner_without_a_module_binding():
     nodes = {item["name"]: item for item in value["nodes"]}
     assert nodes["Box.method"]["parent_id"] == nodes["Box"]["element_id"]
     assert nodes["Box"]["parent_id"] != nodes["Box"]["element_id"]
+
+
+def test_absolute_imports_resolve_against_the_import_names_of_a_rooted_project():
+    # Binding contract v2 names ``src/shapes/__init__.py`` ``shapes`` under the root ``src``; contract v1
+    # names it ``src.shapes``, and the tests' ``import shapes`` then resolves to nothing.
+    sources = {"src/shapes/__init__.py": b"", "tests/test_area.py": b"import shapes\n"}
+    refs = {path: source_ref(raw, "project-model-source/v1").to_dict() for path, raw in sources.items()}
+
+    def build(package):
+        experience = {
+            "bindings": [
+                {"path": "src/shapes/__init__.py", "qualname": package, "symbol_kind": "MODULE", "module": package},
+                {"path": "tests/test_area.py", "qualname": "tests.test_area", "symbol_kind": "MODULE",
+                 "module": "tests.test_area"},
+            ],
+            "sources": [{"path": path, "ref": refs[path]} for path in sources],
+            "retained": [{"ref": refs[path], "content_base64url": base64.urlsafe_b64encode(raw).decode().rstrip("=")}
+                         for path, raw in sources.items()],
+        }
+        value = build_project_model(project_identity="a" * 64,
+            resolution={"elements": [], "effect_paths": [], "repository_revision": "b" * 40},
+            source_snapshot={"recall": {"selected": [{"experience": experience}]}})
+        names = {item["element_id"]: item["name"] for item in value["nodes"]}
+        imports = {(names[edge["source"]], names[edge["target"]]) for edge in value["edges"] if edge["kind"] == "IMPORTS"}
+        return imports, [item["module"] for item in value["unresolved_dependencies"]]
+
+    assert build("shapes") == ({("tests.test_area", "shapes")}, [])
+    assert build("src.shapes") == (set(), ["shapes"])

@@ -658,3 +658,200 @@ def test_s4_p3_acc_transport_01_unknown_fields_kind_hash_and_revision_substituti
         with pytest.raises(bindings.BindingViolation) as exc:
             bindings.binding_from_dict(transport, repo_root=repo, consumer_revision=revision)
         assert exc.value.failure_code is code
+
+
+def test_binding_contract_v1_names_a_src_layout_module_by_its_repository_path(tmp_path: Path) -> None:
+    # Contract v1 derives a module from its path below the repository root. A src layout module
+    # (``src/pkg/symbols.py``, imported as ``pkg.symbols``) is therefore ``src.pkg.symbols``, and its
+    # import name is refused rather than trusted. Declared import roots are contract v2 (below).
+    repo, _ = _base_repo(tmp_path)
+    revision = _write_and_commit(repo, "src/pkg/symbols.py", (_CASES / "python_symbols.py").read_bytes())
+
+    binding = _python(repo, revision, path="src/pkg/symbols.py", module="src.pkg.symbols")
+    assert (binding.path, binding.module, binding.qualname) == ("src/pkg/symbols.py", "src.pkg.symbols", "top_level")
+
+    with pytest.raises(bindings.BindingViolation) as exc:
+        _python(repo, revision, path="src/pkg/symbols.py", module="pkg.symbols")
+    assert exc.value.failure_code is bindings.BindingFailureCode.MODULE_MISMATCH
+
+
+def _layout_repo(tmp_path: Path, files: dict[str, bytes]) -> tuple[Path, RepositoryRevision]:
+    repo = tmp_path / "layout"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "core.autocrlf", "false")
+    for path, raw in files.items():
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_bytes(raw)
+    return repo, RepositoryRevision.git_commit(_commit(repo, "layout fixture", 4))
+
+
+def _python_v2(
+    repo: Path,
+    revision: RepositoryRevision,
+    roots: tuple[str, ...],
+    *,
+    path: str,
+    module: str,
+    qualname: str | None = None,
+    kind: bindings.PythonSymbolKind = bindings.PythonSymbolKind.MODULE,
+) -> bindings.PythonBinding:
+    return bindings.resolve_python_binding(
+        repo,
+        repository_revision=revision,
+        path=path,
+        module=module,
+        qualname=module if qualname is None else qualname,
+        symbol_kind=kind,
+        contract_version=bindings.BINDING_CONTRACT_VERSION_V2,
+        resolver_version=bindings.PYTHON_BINDING_RESOLVER_V1,
+        python_roots=roots,
+    )
+
+
+def test_binding_contract_v2_names_a_module_from_its_longest_declared_root(tmp_path: Path) -> None:
+    symbols = (_CASES / "python_symbols.py").read_bytes()
+    repo, revision = _layout_repo(tmp_path, {
+        "src/flaskish/__init__.py": b"",
+        "src/flaskish/app.py": symbols,
+        "src/vendor/six.py": b"",
+        "src2/extra.py": b"",
+        "tests/test_app.py": b"import flaskish.app\n",
+    })
+    roots = ("src/vendor", "src")
+
+    binding = _python_v2(repo, revision, roots, path="src/flaskish/app.py", module="flaskish.app",
+                         qualname="top_level", kind=bindings.PythonSymbolKind.FUNCTION)
+    assert (binding.contract_version, binding.module, binding.python_root, binding.python_roots) == (
+        bindings.BINDING_CONTRACT_VERSION_V2, "flaskish.app", "src", ("src", "src/vendor"))
+    assert {key: binding.to_dict()[key] for key in ("python_root", "python_roots")} == {
+        "python_root": "src", "python_roots": ["src", "src/vendor"]}
+    assert _python_v2(repo, revision, roots, path="src/flaskish/__init__.py", module="flaskish").python_root == "src"
+    # The deeper of two nested roots names its files; the repository root names every other path, and a
+    # root matches whole path components only.
+    assert _python_v2(repo, revision, roots, path="src/vendor/six.py", module="six").python_root == "src/vendor"
+    assert _python_v2(repo, revision, roots, path="tests/test_app.py", module="tests.test_app").python_root == ""
+    assert _python_v2(repo, revision, roots, path="src2/extra.py", module="src2.extra").python_root == ""
+    # The order roots are declared in never changes an identity.
+    assert _python_v2(repo, revision, ("src", "src/vendor"), path="src/flaskish/app.py", module="flaskish.app",
+                      qualname="top_level", kind=bindings.PythonSymbolKind.FUNCTION).binding_id == binding.binding_id
+    with pytest.raises(bindings.BindingViolation) as exc:
+        _python_v2(repo, revision, roots, path="src/flaskish/app.py", module="src.flaskish.app")
+    assert exc.value.failure_code is bindings.BindingFailureCode.MODULE_MISMATCH
+
+    # A v2 binding describes itself: transport, consumption and retained bytes reproduce it with its roots.
+    assert bindings.binding_from_dict(binding.to_dict(), repo_root=repo, consumer_revision=revision) == binding
+    assert bindings.consume_python_binding(repo, binding, repository_revision=revision).binding_id == binding.binding_id
+    raw = (repo / "src/flaskish/app.py").read_bytes()
+    assert bindings.inspect_retained_python_binding(binding.to_dict(), raw).binding_id == binding.binding_id
+    with pytest.raises(bindings.BindingViolation):
+        bindings.inspect_retained_python_binding({**binding.to_dict(), "python_roots": ["src"]}, raw)
+
+    discovered = bindings.discover_python_bindings(repo, repository_revision=revision, path="src/flaskish/app.py",
+                                                   python_roots=roots)
+    assert discovered[0].qualname == "flaskish.app"
+    assert {(item.contract_version, item.module) for item in discovered} == {
+        (bindings.BINDING_CONTRACT_VERSION_V2, "flaskish.app")}
+    # A project without roots keeps contract v1, byte for byte.
+    assert bindings.discover_python_bindings(repo, repository_revision=revision, path="src/flaskish/app.py")[0].to_dict() == (
+        _python(repo, revision, path="src/flaskish/app.py", module="src.flaskish.app", qualname="src.flaskish.app",
+                kind=bindings.PythonSymbolKind.MODULE).to_dict())
+    assert "python_roots" not in _python(repo, revision, path="src/flaskish/app.py", module="src.flaskish.app").to_dict()
+
+
+@pytest.mark.parametrize("roots", [(), ("src", "src"), ("/src",), ("src/",), ("../src",), ("src/*",), ("src/app.py",)])
+def test_binding_contract_v2_refuses_malformed_import_roots(roots: tuple[str, ...]) -> None:
+    with pytest.raises(bindings.BindingViolation) as exc:
+        bindings.canonical_python_roots(roots)
+    assert exc.value.failure_code is bindings.BindingFailureCode.IMPORT_ROOT_INVALID
+
+
+def test_binding_contract_versions_and_import_roots_never_mix(tmp_path: Path) -> None:
+    repo, revision = _layout_repo(tmp_path, {"src/flaskish/__init__.py": b""})
+    with pytest.raises(bindings.BindingViolation) as exc:
+        bindings.resolve_python_binding(
+            repo, repository_revision=revision, path="src/flaskish/__init__.py", module="src.flaskish",
+            qualname="src.flaskish", symbol_kind=bindings.PythonSymbolKind.MODULE,
+            contract_version=bindings.BINDING_CONTRACT_VERSION_V1,
+            resolver_version=bindings.PYTHON_BINDING_RESOLVER_V1, python_roots=("src",))
+    assert exc.value.failure_code is bindings.BindingFailureCode.CONTRACT_VERSION_MISMATCH
+    with pytest.raises(bindings.BindingViolation) as exc:
+        _python_v2(repo, revision, (), path="src/flaskish/__init__.py", module="flaskish")
+    assert exc.value.failure_code is bindings.BindingFailureCode.CONTRACT_VERSION_MISMATCH
+
+
+@pytest.mark.parametrize(
+    ("files", "roots", "path", "module", "failure"),
+    [
+        # The root is a package: its modules would also be importable as ``app.mod``.
+        ({"app/__init__.py": b"", "app/mod.py": b""}, ("app",), "app/mod.py", "mod", "IMPORT_ROOT_INVALID"),
+        # The root lies inside a package.
+        ({"lib/__init__.py": b"", "lib/src/pkg/mod.py": b""}, ("lib/src",), "lib/src/pkg/mod.py", "pkg.mod",
+         "IMPORT_ROOT_INVALID"),
+        # The same package under the declared root and under the repository root.
+        ({"src/pkg/__init__.py": b"", "pkg/__init__.py": b""}, ("src",), "src/pkg/__init__.py", "pkg",
+         "MODULE_AMBIGUOUS"),
+        # A module beside a package of the same name.
+        ({"src/tools.py": b"", "src/tools/__init__.py": b""}, ("src",), "src/tools.py", "tools", "MODULE_AMBIGUOUS"),
+    ],
+)
+def test_binding_contract_v2_refuses_layouts_that_name_a_module_twice(
+    tmp_path: Path, files: dict[str, bytes], roots: tuple[str, ...], path: str, module: str, failure: str
+) -> None:
+    repo, revision = _layout_repo(tmp_path, files)
+    with pytest.raises(bindings.BindingViolation) as exc:
+        _python_v2(repo, revision, roots, path=path, module=module)
+    assert exc.value.failure_code is bindings.BindingFailureCode(failure)
+    with pytest.raises(bindings.BindingViolation) as exc:
+        bindings.discover_python_bindings(repo, repository_revision=revision, path=path, python_roots=roots)
+    assert exc.value.failure_code is bindings.BindingFailureCode(failure)
+
+
+def test_binding_contract_v2_refuses_a_root_that_names_no_directory_or_package_module(tmp_path: Path) -> None:
+    repo, revision = _layout_repo(tmp_path, {"src/__init__.py": b"", "lib": b"a file, not a directory\n",
+                                             "tools/app.py": b""})
+    # The root's own init file would name the root itself as a module.
+    with pytest.raises(bindings.BindingViolation) as exc:
+        _python_v2(repo, revision, ("src",), path="src/__init__.py", module="src")
+    assert exc.value.failure_code is bindings.BindingFailureCode.IMPORT_ROOT_INVALID
+    for roots in (("lib",), ("missing",)):
+        with pytest.raises(bindings.BindingViolation) as exc:
+            bindings.check_python_roots(repo, revision, roots)
+        assert exc.value.failure_code is bindings.BindingFailureCode.IMPORT_ROOT_INVALID
+    assert bindings.check_python_roots(repo, revision, ["tools"]) == ("tools",)
+    for value in ("tools", [f"root{index}" for index in range(bindings.MAX_PYTHON_ROOTS_V2 + 1)], [1]):
+        with pytest.raises(bindings.BindingViolation) as exc:
+            bindings.canonical_python_roots(value)
+        assert exc.value.failure_code is bindings.BindingFailureCode.IMPORT_ROOT_INVALID
+
+
+def test_sealed_python_bindings_keep_their_contract_roots_and_module(tmp_path: Path) -> None:
+    repo, revision = _layout_repo(tmp_path, {"src/flaskish/__init__.py": b"", "src/flaskish/app.py": b""})
+    v1 = _python(repo, revision, path="src/flaskish/app.py", module="src.flaskish.app", qualname="src.flaskish.app",
+                 kind=bindings.PythonSymbolKind.MODULE)
+    v2 = _python_v2(repo, revision, ("src",), path="src/flaskish/app.py", module="flaskish.app")
+    forged = [(v1, "python_root", "src", "CONTRACT_VERSION_MISMATCH"),
+              (v1, "python_roots", ("src",), "CONTRACT_VERSION_MISMATCH"),
+              (v2, "python_roots", ("src", "lib"), "IMPORT_ROOT_INVALID"),
+              (v2, "python_roots", ["src"], "IMPORT_ROOT_INVALID"),
+              (v2, "python_root", "", "MODULE_MISMATCH"),
+              (v2, "module", "src.flaskish.app", "MODULE_MISMATCH")]
+    for binding, field, value, failure in forged:
+        original = getattr(binding, field)
+        object.__setattr__(binding, field, value)
+        try:
+            with pytest.raises(bindings.BindingViolation) as exc:
+                binding.to_dict()
+            assert exc.value.failure_code is bindings.BindingFailureCode(failure), (field, value)
+        finally:
+            object.__setattr__(binding, field, original)
+
+
+def test_document_bindings_have_no_contract_v2(tmp_path: Path) -> None:
+    repo, revision = _base_repo(tmp_path)
+    with pytest.raises(bindings.BindingViolation) as exc:
+        bindings.resolve_document_binding(
+            repo, repository_revision=revision, path="governance/stage4.binding.json", document_id="stage4-spec",
+            document_revision="v2.2", section_id="binding-core", contract_version=bindings.BINDING_CONTRACT_VERSION_V2,
+            resolver_version=bindings.DOCUMENT_BINDING_RESOLVER_V1)
+    assert exc.value.failure_code is bindings.BindingFailureCode.CONTRACT_VERSION_MISMATCH

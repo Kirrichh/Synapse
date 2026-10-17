@@ -31,7 +31,7 @@ from synapse.change.workspace import (
 from .bindings import (
     PYTHON_BINDING_RESOLVER_V1, PythonSymbolKind, binding_to_ref, binding_canonical_payload_bytes,
     resolve_python_binding, inspect_retained_python_binding,
-    discover_retained_python_bindings, BindingViolation,
+    discover_retained_python_bindings, BindingViolation, check_python_layout,
 )
 from .canonicalization import (
     HashBoundRef, RefKind, canonicalize_stage4_payload,
@@ -293,11 +293,13 @@ def inspect_source_verification(value, *, evidence):
 
 
 def verify_source_claim(*, repo_root: Path, claim, external_evidence, attempt_id: AttemptId,
-                        observation_sink: Callable | None = None):
+                        observation_sink: Callable | None = None, python_roots: tuple[str, ...] = ()):
     """Execute an explicit source claim against committed inputs.
 
     An unsuccessful command is returned as a failure with its observations;
-    it cannot be converted to a sealed successful knowledge record.
+    it cannot be converted to a sealed successful knowledge record. A project
+    that declares Python import roots binds its symbols under binding contract
+    v2 only; one that declares none, under v1 only.
     """
     claim = json.loads(canonical(inspect_source_claim(claim)))
     AttemptId.from_dict(attempt_id.to_dict())
@@ -344,7 +346,8 @@ def verify_source_claim(*, repo_root: Path, claim, external_evidence, attempt_id
                 continue
             try:
                 discovered = discover_retained_python_bindings(evidence[HashBoundRef.from_dict(item["ref"])],
-                    repository_revision=revision, path=item["path"])
+                    repository_revision=revision, path=item["path"], python_roots=python_roots)
+                check_python_layout(repo_root, discovered[0])
             except BindingViolation as exc:
                 observe("SOURCE_UNINTERPRETED", {"path": item["path"], "reason": exc.failure_code.value})
                 continue
@@ -356,7 +359,8 @@ def verify_source_claim(*, repo_root: Path, claim, external_evidence, attempt_id
     for symbol in claim["symbols"]:
         binding = resolve_python_binding(repo_root, repository_revision=revision,
             **{k: v for k, v in symbol.items() if k != "symbol_kind"},
-            symbol_kind=PythonSymbolKind(symbol["symbol_kind"]), resolver_version=PYTHON_BINDING_RESOLVER_V1)
+            symbol_kind=PythonSymbolKind(symbol["symbol_kind"]), resolver_version=PYTHON_BINDING_RESOLVER_V1,
+            python_roots=python_roots)
         bindings.append(binding.to_dict())
         evidence[binding_to_ref(binding)] = binding_canonical_payload_bytes(binding)
         observe("BINDING_RESOLVED", {"binding": binding.to_dict()},

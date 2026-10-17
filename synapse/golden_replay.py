@@ -21,6 +21,7 @@ from synapse.builtins import LLMBackend
 if TYPE_CHECKING:
     from synapse.llm import LLMResult
 from synapse.runtime.host_abi import HOST_ABI_VERSION
+from synapse.runtime.vm_routing import RECORDED_SIDE_EFFECT_HOST_SYMBOLS
 from synapse.version import LANGUAGE_VERSION, RUNTIME_VERSION, SPEC_VERSION
 
 SCHEMA_VERSION = 2
@@ -65,6 +66,15 @@ def comparable_state_sanity(sanity: Dict[str, Any], *, schema_version: int) -> D
 
 class DeterministicReplayError(RuntimeError):
     """Raised when a golden replay artifact cannot be replayed exactly."""
+
+
+class ArtifactIntegrityError(DeterministicReplayError):
+    """The artifact does not hold together: its source or its history chain differs from its manifest.
+
+    Still a determinism failure for every caller that handles one; the CLI
+    reports it with the artifact integrity exit code, as ``debug compare``
+    reports the same broken chain, instead of the code of a replay that drifted.
+    """
 
 
 class ReplayArtifactError(RuntimeError):
@@ -263,6 +273,40 @@ class CacheOnlyLLMBackend(LLMBackend):
         return cached_result
 
 
+class RecordedSideEffects:
+    """The values replay --mock serves the recorded nondeterministic builtins (``time``, ``random``, ``uuid``).
+
+    A recording appends every value one of these builtins drew as a
+    ``side_effect`` event. Mock replay serves each builtin its recorded values
+    in order and never draws a live one: the record is the authority, as the
+    determinism contract requires of a recorded value (section 8.2, rule 1) and
+    the golden replay contract requires of the clock. A builtin called more
+    often than recorded fails like an exhausted LLM cache entry.
+    """
+
+    def __init__(self, history: Iterable[dict[str, Any]]):
+        self.results: Dict[str, list] = {name: [] for name in sorted(RECORDED_SIDE_EFFECT_HOST_SYMBOLS)}
+        for event in history:
+            if event.get("type") == "side_effect" and event.get("name") in self.results:
+                self.results[event["name"]].append(event.get("result"))
+
+    def registry(self, builtins: Dict[str, Any]) -> Dict[str, Any]:
+        """``builtins`` with every recorded builtin served from the record instead of drawn live."""
+        served = dict(builtins)
+        for name in self.results:
+            served[name] = self._served(name)
+        return served
+
+    def _served(self, name: str):
+        def recorded(*_args: Any) -> Any:
+            if not self.results[name]:
+                raise DeterministicReplayError(
+                    f"SIDE_EFFECT unresolved in mock replay: {name} occurred more often than recorded"
+                )
+            return self.results[name].pop(0)
+        return recorded
+
+
 BOOTSTRAP_SYMBOLS = {
     "print", "trust_at_least",
     "untrusted", "low", "medium", "high", "critical",
@@ -423,6 +467,9 @@ def record_source(source: str, output_dir: Path | str, *, source_path: str = "<m
             "spec_version": SPEC_VERSION,
             "generated_by": "synapse.golden_replay",
             "generated_at": datetime.now(timezone.utc).isoformat(),
+            # Identities the run derived from its run id (fallback trace ids of
+            # VM and memory events) are reproduced only under the same run id.
+            "run_id": interp.run_id,
         },
         "environment": {
             "virtual_clock_start": virtual_clock_start,
@@ -498,22 +545,32 @@ def replay_mock_artifact(artifact_dir: Path | str) -> ReplayResult:
     expected_hash = manifest["metadata"]["program_hash"]
     actual_hash = program_hash_for_source(source)
     if actual_hash != expected_hash:
-        raise DeterministicReplayError(f"program_hash mismatch: expected {expected_hash}, got {actual_hash}")
+        raise ArtifactIntegrityError(f"program_hash mismatch: expected {expected_hash}, got {actual_hash}")
     if manifest["metadata"].get("host_abi_version") != HOST_ABI_VERSION:
         raise DeterministicReplayError(
             f"host_abi_version mismatch: artifact={manifest['metadata'].get('host_abi_version')} runtime={HOST_ABI_VERSION}"
         )
     final_hash = manifest["final"]["final_history_hash"]
     if not _history_chain_valid(expected_history, final_hash):
-        raise DeterministicReplayError("execution_history chain broken in artifact")
+        raise ArtifactIntegrityError("execution_history chain broken in artifact")
 
     # Replay from the recorded initial state. The replay environment uses a
     # cache-only LLM backend, so provider calls are impossible and missing cache
-    # entries become deterministic failures.
+    # entries become deterministic failures. The recorded time/random/uuid
+    # values are served the same way: a live draw is impossible.
     initial_snapshot = _read_artifact_json(root, _artifact_file_entry(manifest, "initial_vm_snapshot"))
     replay_interp = Interpreter.restore_snapshot(initial_snapshot)
+    recorded_run_id = manifest["metadata"].get("run_id")
+    if recorded_run_id is not None:
+        if not isinstance(recorded_run_id, str) or not recorded_run_id:
+            raise ReplayArtifactError("manifest metadata run_id must be a non-empty string")
+        # Artifacts recorded before the run id was kept replay under a fresh one, as they always did.
+        replay_interp.run_id = recorded_run_id
     replay_interp.source_code = source
     replay_interp.llm_backend = CacheOnlyLLMBackend(llm_cache)
+    replay_interp.runtime.replay.builtins = RecordedSideEffects(expected_history).registry(
+        replay_interp.runtime.replay.builtins
+    )
     replay_interp.interpret(compile_source(source))
     replay_snapshot = replay_interp.snapshot()
 
@@ -676,7 +733,7 @@ def replay_integrate_artifact(artifact_dir: "Path | str") -> "ReplayResult":
     expected_hash = manifest["metadata"]["program_hash"]
     actual_hash = program_hash_for_source(source)
     if actual_hash != expected_hash:
-        raise DeterministicReplayError(
+        raise ArtifactIntegrityError(
             f"program_hash mismatch: expected {expected_hash}, got {actual_hash}"
         )
     if manifest["metadata"].get("host_abi_version") != HOST_ABI_VERSION:
@@ -685,7 +742,7 @@ def replay_integrate_artifact(artifact_dir: "Path | str") -> "ReplayResult":
         )
     final_hash = manifest["final"]["final_history_hash"]
     if final_hash and not _history_chain_valid(expected_history, final_hash):
-        raise DeterministicReplayError("execution_history chain broken in artifact")
+        raise ArtifactIntegrityError("execution_history chain broken in artifact")
 
     initial_snapshot = _read_artifact_json(root, _artifact_file_entry(manifest, "initial_vm_snapshot"))
     replay_interp = Interpreter.restore_snapshot(initial_snapshot)

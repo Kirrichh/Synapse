@@ -30,7 +30,7 @@ from typing import Any, Iterable, Mapping
 
 from ..records import canonical, digest
 from .contracts import ToolConfiguration
-from .semantics import compensation_confirmed, corroborating, environmental_refusal, resolve_uncertainty
+from .semantics import compensation_confirmed, environmental_refusal, resolve_uncertainty, witness_exclusions
 
 REQUIREMENT_KINDS = ("execute", "reach_state", "probe_refusal", "attempt_report")
 LOCAL_OUTCOMES = ("success", "failure", "uncertain", "unclear")
@@ -219,24 +219,36 @@ def _other_successes(attempt, later, configuration) -> tuple[list, list]:
     return compensations, foreign
 
 
-def _attestations(attempt, later, configuration, earlier=()) -> list[dict[str, Any]]:
-    """Outside answers that attest this operation's effect: its own successful repeat, or a
-    state check of its tool that establishes the effect applied. An answer about anything
-    else attests another claim and never witnesses this one."""
-    found = []
+def _attesting(attempt, later, configuration, earlier=()):
+    """Every later successful answer that attests this operation's effect, with how: its own repeat, or a
+    state check of its tool that establishes the effect applied. An answer about anything else attests
+    another claim and never witnesses this one."""
     for item in later:
-        if item["op_result"] != "ok" or not corroborating(item["role"], item["source"]):
+        if item["op_result"] != "ok":
             continue
         if item["op"] == attempt["op"]:
-            found.append({"gw_seq": item["gw_seq"], "source": item["source"], "by": "retry_of_same_operation"})
+            yield item, "retry_of_same_operation"
             continue
         contract = configuration.tools.get(item["tool"])
         if (contract is not None and contract.state_check_for == attempt["tool"]
                 and check_binding(contract, item, attempt) is None
                 and attests_operation(contract, item, attempt, earlier)
                 and resolve_uncertainty(contract, item["payload"]) == "applied"):
-            found.append({"gw_seq": item["gw_seq"], "source": item["source"], "by": "state_check"})
-    return found
+            yield item, "state_check"
+
+
+def _attestations(attempt, later, configuration, earlier=()) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The outside answers that attest this operation's effect, and the attesting answers that cannot
+    witness it with why (``witness_exclusions``): those explain a report and decide nothing."""
+    found, excluded = [], []
+    for item, by in _attesting(attempt, later, configuration, earlier):
+        reasons = witness_exclusions(configuration, item["role"], item["source"])
+        if reasons:
+            excluded.append({"gw_seq": item["gw_seq"], "tool": item["tool"], "source": item["source"], "by": by,
+                             "reasons": reasons})
+        else:
+            found.append({"gw_seq": item["gw_seq"], "source": item["source"], "by": by})
+    return found, excluded
 
 
 def _failure(attempt, later, configuration, earlier=()) -> dict[str, Any]:
@@ -249,13 +261,14 @@ def _failure(attempt, later, configuration, earlier=()) -> dict[str, Any]:
     # check says what the world is in, and the operation's effect stays what its answer left it.
     effect_now = resolution["effect"] if operation_check else attempt["effect"]
     contract = configuration.tools.get(attempt["tool"])
+    attestations, excluded = _attestations(attempt, later, configuration, earlier)
     return {"gw_seq": attempt["gw_seq"], "episode": attempt["episode"], "tool": attempt["tool"],
             "op": attempt["op"], "source": attempt["source"], "transport": attempt["transport"],
             "op_result": attempt["op_result"], "op_err": attempt["op_err"], "effect": effect_now,
             "environmental": contract is not None and environmental_refusal(
                 contract, attempt["transport"], attempt["op_err"]),
             "resolution": resolution, "settled": settled,
-            "attestations": _attestations(attempt, later, configuration, earlier),
+            "attestations": attestations, "excluded_attestations": excluded,
             "unbound_checks": [{"gw_seq": item["gw_seq"], "tool": item["tool"], "reason": reason}
                                for _, item, reason in _checks_of(attempt, later, configuration, earlier)
                                if reason is not None],

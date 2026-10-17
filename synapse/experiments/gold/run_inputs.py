@@ -293,7 +293,8 @@ def freeze_gold_inputs(*, declaration_path: Path, project, run_root: Path, court
     target_resolution = None
     if task.schema_version == TASK_CONTRACT_SCHEMA_V3:
         from .task_targets import resolve_task_targets
-        target_resolution = decode_canonical(resolve_task_targets(task=task, repository_root=project.declaration.repo_root))
+        target_resolution = decode_canonical(resolve_task_targets(task=task, repository_root=project.declaration.repo_root,
+                                                                  python_roots=project.declaration.python_roots))
     knowledge_path = Path(declaration["knowledge_path"])
     if not knowledge_path.is_absolute():
         knowledge_path = declaration_path.parent / knowledge_path

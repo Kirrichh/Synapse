@@ -41,6 +41,9 @@ _DEFAULT_PALACE_BACKENDS = frozenset({"sqlite", "memory", ""})
 class CognitiveProfileViolation(ValueError):
     """The program uses a construct outside the durable cognitive profile."""
 
+    #: The source line of the innermost statement the violation was found in, once located.
+    line: int | None = None
+
 
 @dataclass(frozen=True)
 class _Scope:
@@ -145,6 +148,16 @@ def _block(statements: list[Any], scope: _Scope) -> None:
 
 
 def _statement(node: Any, scope: _Scope) -> None:
+    """Classify one statement; a violation inside it is placed at the innermost statement's line."""
+    try:
+        _statement_construct(node, scope)
+    except CognitiveProfileViolation as violation:
+        if violation.line is None and node.line > 0:
+            violation.line = node.line
+        raise
+
+
+def _statement_construct(node: Any, scope: _Scope) -> None:
     if isinstance(node, synapse_ast.ExprStmt):
         if isinstance(node.expr, _EXPRESSIONS):
             _expression(node.expr, scope)

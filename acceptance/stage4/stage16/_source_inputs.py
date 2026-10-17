@@ -12,7 +12,7 @@ import sys
 from synapse.experiments.gold.contracts import ActorIdentity, AuthorityIdentity
 from synapse.experiments.gold.compatibility import COMPATIBILITY_POLICY_V1
 from synapse.experiments.gold.canonicalization import RefKind
-from synapse.experiments.gold.bindings import BINDING_CONTRACT_VERSION_V1
+from synapse.experiments.gold.bindings import BINDING_CONTRACT_VERSION_V1, BINDING_CONTRACT_VERSION_V2
 from synapse.experiments.gold.knowledge_environment import (
     GoldProjectDeclaration, GoldProjectEntitlements, GoldProjectIdentities, connect_gold_project, open_gold_project,
 )
@@ -21,12 +21,16 @@ from synapse.experiments.gold.source_verification import SOURCE_CLAIM_V1, canoni
 from synapse.experiments.gold.source_ingestion import SOURCE_INGESTION_V1
 
 
-def prepare(root, *, candidate_repo=False, execute=False, extra_sources=None):
+def prepare(root, *, candidate_repo=False, execute=False, extra_sources=None, python_roots=()):
+    """A connected project and the learn input of one fact check; ``python_roots`` (candidate repository only)
+    declares import roots, so ``src/calc.py`` is the module ``calc`` under binding contract v2."""
     repo, state = root / "repo", root / "state"
+    if python_roots and not candidate_repo:
+        raise ValueError("import roots are declared for the candidate repository's src layout only")
     if candidate_repo:
         from tests.test_swebench_gold_runner import build_candidate_repo
         revision, _ = build_candidate_repo(repo)
-        source_path, module, qualname = "src/calc.py", "src.calc", "add"
+        source_path, module, qualname = "src/calc.py", "calc" if python_roots else "src.calc", "add"
         if extra_sources:
             for name, content in extra_sources.items():
                 path = repo / name
@@ -54,11 +58,18 @@ def prepare(root, *, candidate_repo=False, execute=False, extra_sources=None):
         AuthorityIdentity("source-revocation"), ActorIdentity("source-lifecycle"), AuthorityIdentity("source-operator"))
     connect_gold_project(GoldProjectDeclaration(repo, state, "source-policy/v1", "source-env", identities,
         GoldProjectEntitlements(tuple(sorted((source_path, *(extra_sources or {})))),
-            ("execute", "read") if execute else ("read",), ("source-verifier", "swebench"))))
+            ("execute", "read") if execute else ("read",), ("source-verifier", "swebench")),
+        python_roots=tuple(python_roots)))
     claim = {"schema_version": SOURCE_CLAIM_V1, "operation_id": "learn-calculation", "revision": revision,
         "kind": "REPOSITORY_FACT_CHECK", "sources": [source_path], "replay_gas_budget": 10_000,
-        "symbols": [{"path": source_path, "module": module, "qualname": qualname,
-                     "symbol_kind": "FUNCTION", "contract_version": BINDING_CONTRACT_VERSION_V1}], "recipe": None}
+        "symbols": [{"path": source_path, "module": module, "qualname": qualname, "symbol_kind": "FUNCTION",
+                     "contract_version": BINDING_CONTRACT_VERSION_V2 if python_roots else BINDING_CONTRACT_VERSION_V1}],
+        "recipe": None}
+    return repo, state, write_learn_input(root, claim)
+
+
+def write_learn_input(root, claim):
+    """Attach the observed policy, environment and tool inputs to a claim and write the learn declaration."""
     files = []
     for field, kind, name, version, details in (
         ("policy_inputs", ExternalInputKind.POLICY, "compatibility-policy", COMPATIBILITY_POLICY_V1, {"read_only": True}),
@@ -75,7 +86,7 @@ def prepare(root, *, candidate_repo=False, execute=False, extra_sources=None):
                                               version, ref).to_dict())
     input_path = root / "learn.json"
     input_path.write_text(json.dumps({"schema_version": SOURCE_INGESTION_V1, "claim": claim, "files": files}), encoding="utf-8")
-    return repo, state, input_path
+    return input_path
 
 
 def learn(state, input_path):
@@ -86,11 +97,14 @@ def learn(state, input_path):
     return result.returncode, json.loads(result.stdout.splitlines()[-1])
 
 
-def recall(state, root, claim, *, statement="calculate double value", scope=None, limit=64):
-    from synapse.experiments.gold.source_experience import SOURCE_RECALL_QUERY_V1
+def recall(state, root, claim, *, statement="calculate double value", scope=None, limit=64, profile=None):
+    from synapse.experiments.gold.source_experience import SOURCE_RECALL_QUERY_V1, SOURCE_RECALL_QUERY_V2
+    query = {"schema_version": SOURCE_RECALL_QUERY_V1, "statement": statement,
+             "revision": claim["revision"], "scope": sorted(scope or claim["sources"]), "limit": limit}
+    if profile is not None:
+        query.update(schema_version=SOURCE_RECALL_QUERY_V2, profile=profile)
     query_path = root / "recall.json"
-    query_path.write_text(json.dumps({"schema_version": SOURCE_RECALL_QUERY_V1, "statement": statement,
-        "revision": claim["revision"], "scope": sorted(scope or claim["sources"]), "limit": limit}))
+    query_path.write_text(json.dumps(query))
     result = subprocess.run([sys.executable, "-B", "-m", "synapse", "project", "recall",
         "--state-dir", str(state), "--input", str(query_path)],
         cwd=Path(__file__).resolve().parents[3], text=True, capture_output=True, timeout=180)
@@ -100,7 +114,7 @@ def recall(state, root, claim, *, statement="calculate double value", scope=None
 
 
 def consumer_case(root, *, learn_recipe=False, include_fact=False, automatic_targets=False,
-                  extra_sources=None, task_statement=None, verification_commands=False):
+                  extra_sources=None, task_statement=None, verification_commands=False, python_roots=()):
     """Create task evidence after CLI publication, with no seeded task history."""
     from dataclasses import asdict, replace
     from acceptance.stage4.stage11._project_inputs import ProjectInputCase
@@ -122,7 +136,8 @@ def consumer_case(root, *, learn_recipe=False, include_fact=False, automatic_tar
 
     if extra_sources and not automatic_targets:
         raise ValueError("multi-target acceptance requires automatic governing tasks")
-    repo, state, source_input = prepare(root, candidate_repo=True, execute=learn_recipe, extra_sources=extra_sources)
+    repo, state, source_input = prepare(root, candidate_repo=True, execute=learn_recipe, extra_sources=extra_sources,
+                                        python_roots=python_roots)
     source = json.loads(source_input.read_text())
     if extra_sources:
         source['claim']['sources'] = sorted((*source['claim']['sources'], *extra_sources))

@@ -771,6 +771,8 @@ Supported consensus strategies:
 
 The base agent is suspended while sub-agents execute in isolated ephemeral contexts with shadow soulprints. The base mailbox is frozen and restored after integration. Sub-agent state is purged after termination.
 
+`reason <expr>` inside the `integrate` clause is audit metadata, as in a transactional `integrate`: it is evaluated where `consensus`, `positions` and `deaths` are bound and recorded as `reason` in the `identity_integrated` event. An integration without a reason records no such field.
+
 Death types:
 
 | Type | Meaning | Effect |

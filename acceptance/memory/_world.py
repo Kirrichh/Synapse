@@ -69,7 +69,8 @@ class MemoryWorld:
     """One project, its tool server and its runs."""
 
     def __init__(self, root: Path, tools, *, provenance, parameters=None, decision_rule="threshold",
-                 state: Path | None = None, advisor: str | None = None, knowledge: dict | None = None) -> None:
+                 state: Path | None = None, advisor: str | None = None, knowledge: dict | None = None,
+                 tool_schema: str = "synapse.memory.tool-configuration/v2") -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         # A world connects its own project, or joins the state of one another stream already uses.
@@ -100,7 +101,7 @@ class MemoryWorld:
         self.configuration_path = self.root / "memory.json"
         configuration = {
             "schema_version": "synapse.memory.configuration/v1",
-            "tools": {"schema_version": "synapse.memory.tool-configuration/v2", "servers": servers,
+            "tools": {"schema_version": tool_schema, "servers": servers,
                       "tools": admitted, "provenance": provenance},
             "court": {"decision_rule": decision_rule, "parameters": parameters or {}},
             # The advisor, when a scenario has one, is one of its admitted reason tools.

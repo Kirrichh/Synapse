@@ -1,0 +1,999 @@
+{
+  "schema_version": "synapse.stage4.gold.source-recall-profile-evaluation/v1",
+  "profiles": {
+    "v1": "exact-revision-path-and-term-overlap/v1",
+    "v2": "exact-revision-path-and-tiered-term-overlap/v2"
+  },
+  "repositories": {
+    "flask": {
+      "revision": "d086db856be187255b8ec61ef409357393020f32",
+      "python_roots": [
+        "src"
+      ],
+      "operations": 19
+    },
+    "synapse": {
+      "revision": "957b1ee8182dc650a2dfb4879a75d914908c7871",
+      "python_roots": [],
+      "operations": 17
+    }
+  },
+  "source_experience_sha256": "ab4e8d633f491e0993458bda4734209239940f03be9bb09cc4c69b3fcc3a2b16",
+  "python": "3.13.16",
+  "platform": "Linux-6.18.44-fc-v139-x86_64-with-glibc2.39",
+  "method": {
+    "ties": "tie-aware: every order inside a group of equal keys is equally likely",
+    "test": "two-sided paired randomization on reciprocal ranks, 20000 sign flips, seed 20261016, add-one estimate",
+    "labels": "one relevant operation per query"
+  },
+  "limitations": [
+    "36 queries over 36 operations in two repositories: a small set",
+    "the queries and their labels were written by the profile's author after the profile; the named-other queries were written to probe its known weakness",
+    "every operation is a fact check without a command, so the output tier is zero throughout",
+    "the eligible sets are small (2 to 19 operations), so Success@3 is near its ceiling for both profiles"
+  ],
+  "summary": {
+    "all": {
+      "queries": 36,
+      "v1_success@1": 0.3007,
+      "v1_success@3": 0.8744,
+      "v1_reciprocal_rank": 0.5663,
+      "v2_success@1": 0.6782,
+      "v2_success@3": 0.9792,
+      "v2_reciprocal_rank": 0.8181,
+      "v2_wins": 25,
+      "ties": 7,
+      "v2_losses": 4,
+      "paired_randomization_p": 4.999750012499375e-05,
+      "success@1_losses": 4,
+      "success@3_losses": 1
+    },
+    "named": {
+      "queries": 14,
+      "v1_success@1": 0.2495,
+      "v1_success@3": 0.7128,
+      "v1_reciprocal_rank": 0.4987,
+      "v2_success@1": 0.9643,
+      "v2_success@3": 1.0,
+      "v2_reciprocal_rank": 0.9821,
+      "v2_wins": 14,
+      "ties": 0,
+      "v2_losses": 0,
+      "paired_randomization_p": 0.00044997750112494374,
+      "success@1_losses": 0,
+      "success@3_losses": 0
+    },
+    "described": {
+      "queries": 15,
+      "v1_success@1": 0.3389,
+      "v1_success@3": 0.9833,
+      "v1_reciprocal_rank": 0.6144,
+      "v2_success@1": 0.5611,
+      "v2_success@3": 0.9833,
+      "v2_reciprocal_rank": 0.7495,
+      "v2_wins": 7,
+      "ties": 7,
+      "v2_losses": 1,
+      "paired_randomization_p": 0.032648367581620916,
+      "success@1_losses": 1,
+      "success@3_losses": 0
+    },
+    "named-other": {
+      "queries": 7,
+      "v1_success@1": 0.3214,
+      "v1_success@3": 0.9643,
+      "v1_reciprocal_rank": 0.5982,
+      "v2_success@1": 0.3571,
+      "v2_success@3": 0.9286,
+      "v2_reciprocal_rank": 0.6369,
+      "v2_wins": 4,
+      "ties": 0,
+      "v2_losses": 3,
+      "paired_randomization_p": 0.6990650467476626,
+      "success@1_losses": 3,
+      "success@3_losses": 1
+    }
+  },
+  "queries": [
+    {
+      "relevant": "helpers-url-for",
+      "repository": "flask",
+      "style": "named",
+      "scope": "src/flask",
+      "statement": "url_for builds an external URL with the wrong scheme behind a proxy",
+      "v1": {
+        "rank_from": 4,
+        "rank_to": 10,
+        "tie_group": 7,
+        "eligible": 19,
+        "reciprocal_rank": 0.15651927437641724,
+        "success@1": 0.0,
+        "success@3": 0.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 1,
+        "tie_group": 1,
+        "eligible": 19,
+        "reciprocal_rank": 1.0,
+        "success@1": 1.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "helpers-send-file",
+      "repository": "flask",
+      "style": "described",
+      "scope": "src/flask/helpers.py",
+      "statement": "a downloaded attachment gets the wrong content type and no cache headers",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 4,
+        "tie_group": 4,
+        "eligible": 4,
+        "reciprocal_rank": 0.5208333333333334,
+        "success@1": 0.25,
+        "success@3": 0.75
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 4,
+        "tie_group": 4,
+        "eligible": 4,
+        "reciprocal_rank": 0.5208333333333334,
+        "success@1": 0.25,
+        "success@3": 0.75
+      }
+    },
+    {
+      "relevant": "helpers-get-flashed",
+      "repository": "flask",
+      "style": "named",
+      "scope": "src/flask/helpers.py",
+      "statement": "get_flashed_messages returns categories in the wrong order when a filter is given",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 4,
+        "tie_group": 4,
+        "eligible": 4,
+        "reciprocal_rank": 0.5208333333333334,
+        "success@1": 0.25,
+        "success@3": 0.75
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 1,
+        "tie_group": 1,
+        "eligible": 4,
+        "reciprocal_rank": 1.0,
+        "success@1": 1.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "helpers-flash",
+      "repository": "flask",
+      "style": "named-other",
+      "scope": "src/flask/helpers.py",
+      "statement": "a message stored for the next request loses its category before get_flashed_messages reads it",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 4,
+        "tie_group": 4,
+        "eligible": 4,
+        "reciprocal_rank": 0.5208333333333334,
+        "success@1": 0.25,
+        "success@3": 0.75
+      },
+      "v2": {
+        "rank_from": 3,
+        "rank_to": 4,
+        "tie_group": 2,
+        "eligible": 4,
+        "reciprocal_rank": 0.29166666666666663,
+        "success@1": 0.0,
+        "success@3": 0.5
+      }
+    },
+    {
+      "relevant": "ctx-after-request",
+      "repository": "flask",
+      "style": "described",
+      "scope": "src/flask/ctx.py",
+      "statement": "a callback registered during a view never runs on the response",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "ctx-copy-context",
+      "repository": "flask",
+      "style": "named",
+      "scope": "src/flask",
+      "statement": "copy_current_request_context fails inside a greenlet started from a view",
+      "v1": {
+        "rank_from": 4,
+        "rank_to": 6,
+        "tie_group": 3,
+        "eligible": 19,
+        "reciprocal_rank": 0.20555555555555557,
+        "success@1": 0.0,
+        "success@3": 0.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 1,
+        "tie_group": 1,
+        "eligible": 19,
+        "reciprocal_rank": 1.0,
+        "success@1": 1.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "ctx-has-request",
+      "repository": "flask",
+      "style": "described",
+      "scope": "src/flask/ctx.py",
+      "statement": "checking for an active request inside a background thread raises instead of returning false",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "cli-find-best-app",
+      "repository": "flask",
+      "style": "described",
+      "scope": "src/flask/cli.py",
+      "statement": "the command line cannot discover the application when the module only defines a factory taking arguments",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "cli-prepare-import",
+      "repository": "flask",
+      "style": "named",
+      "scope": "src/flask/cli.py",
+      "statement": "prepare_import adds the wrong directory to sys.path for a package with an init file",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 1,
+        "tie_group": 1,
+        "eligible": 3,
+        "reciprocal_rank": 1.0,
+        "success@1": 1.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "cli-load-dotenv",
+      "repository": "flask",
+      "style": "named",
+      "scope": "src/flask",
+      "statement": "load_dotenv overrides variables already set in the environment",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 6,
+        "tie_group": 6,
+        "eligible": 19,
+        "reciprocal_rank": 0.4083333333333334,
+        "success@1": 0.16666666666666666,
+        "success@3": 0.5
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 1,
+        "tie_group": 1,
+        "eligible": 19,
+        "reciprocal_rank": 1.0,
+        "success@1": 1.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "sessions-signing",
+      "repository": "flask",
+      "style": "described",
+      "scope": "src/flask/sessions.py",
+      "statement": "sessions cannot be signed without a secret key and the serializer should then be missing",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 2,
+        "tie_group": 2,
+        "eligible": 3,
+        "reciprocal_rank": 0.75,
+        "success@1": 0.5,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "sessions-cookie-domain",
+      "repository": "flask",
+      "style": "named",
+      "scope": "src/flask",
+      "statement": "get_cookie_domain ignores a session cookie domain set to localhost",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 10,
+        "tie_group": 10,
+        "eligible": 19,
+        "reciprocal_rank": 0.2928968253968254,
+        "success@1": 0.1,
+        "success@3": 0.3
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 1,
+        "tie_group": 1,
+        "eligible": 19,
+        "reciprocal_rank": 1.0,
+        "success@1": 1.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "sessions-should-set",
+      "repository": "flask",
+      "style": "described",
+      "scope": "src/flask/sessions.py",
+      "statement": "the session cookie is refreshed on every request even though it was not modified",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 2,
+        "tie_group": 2,
+        "eligible": 3,
+        "reciprocal_rank": 0.75,
+        "success@1": 0.5,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "json-dumps",
+      "repository": "flask",
+      "style": "named",
+      "scope": "src/flask/json/provider.py",
+      "statement": "dumps sorts keys even when sorting is disabled in the provider",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 1,
+        "tie_group": 1,
+        "eligible": 3,
+        "reciprocal_rank": 1.0,
+        "success@1": 1.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "json-default",
+      "repository": "flask",
+      "style": "described",
+      "scope": "src/flask/json/provider.py",
+      "statement": "dataclasses and decimals cannot be serialized to JSON in a response",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 2,
+        "rank_to": 3,
+        "tie_group": 2,
+        "eligible": 3,
+        "reciprocal_rank": 0.41666666666666663,
+        "success@1": 0.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "json-response",
+      "repository": "flask",
+      "style": "named-other",
+      "scope": "src/flask/json/provider.py",
+      "statement": "jsonify returns a response with the wrong mimetype when dumps is customized",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 2,
+        "tie_group": 2,
+        "eligible": 3,
+        "reciprocal_rank": 0.75,
+        "success@1": 0.5,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "app-make-response",
+      "repository": "flask",
+      "style": "named",
+      "scope": "src/flask",
+      "statement": "make_response rejects a tuple of body, status and headers in that order",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 7,
+        "tie_group": 7,
+        "eligible": 19,
+        "reciprocal_rank": 0.3704081632653061,
+        "success@1": 0.14285714285714285,
+        "success@3": 0.42857142857142855
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 1,
+        "tie_group": 1,
+        "eligible": 19,
+        "reciprocal_rank": 1.0,
+        "success@1": 1.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "app-handle-exception",
+      "repository": "flask",
+      "style": "described",
+      "scope": "src/flask/app.py",
+      "statement": "an unhandled error in a view is not logged before the internal server error page is returned",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "app-url-adapter",
+      "repository": "flask",
+      "style": "named-other",
+      "scope": "src/flask/app.py",
+      "statement": "url_for outside a request builds URLs without the configured server name",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 1,
+        "tie_group": 1,
+        "eligible": 3,
+        "reciprocal_rank": 1.0,
+        "success@1": 1.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "replay-record-source",
+      "repository": "synapse",
+      "style": "named",
+      "scope": "synapse/golden_replay.py",
+      "statement": "record_source writes the manifest without the run identity, so replay of VM programs drifts",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 1,
+        "tie_group": 1,
+        "eligible": 3,
+        "reciprocal_rank": 1.0,
+        "success@1": 1.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "replay-mock",
+      "repository": "synapse",
+      "style": "described",
+      "scope": "synapse",
+      "statement": "mock replay draws random values again instead of serving the recorded ones",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 17,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 1,
+        "tie_group": 1,
+        "eligible": 17,
+        "reciprocal_rank": 1.0,
+        "success@1": 1.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "replay-llm-cache",
+      "repository": "synapse",
+      "style": "named-other",
+      "scope": "synapse/golden_replay.py",
+      "statement": "replay_mock_artifact misses the cache because only the last answer of a repeated prompt is kept",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 2,
+        "rank_to": 2,
+        "tie_group": 1,
+        "eligible": 3,
+        "reciprocal_rank": 0.5,
+        "success@1": 0.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "experience-recall",
+      "repository": "synapse",
+      "style": "described",
+      "scope": "synapse/experiments/gold",
+      "statement": "recall ranks operations over one large file alphabetically and cuts off the relevant one",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 5,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 1,
+        "tie_group": 1,
+        "eligible": 5,
+        "reciprocal_rank": 1.0,
+        "success@1": 1.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "experience-export",
+      "repository": "synapse",
+      "style": "named",
+      "scope": "synapse/experiments/gold/source_experience.py",
+      "statement": "export_source_knowledge includes retired publications in the exported candidates",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 1,
+        "tie_group": 1,
+        "eligible": 3,
+        "reciprocal_rank": 1.0,
+        "success@1": 1.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "experience-publications",
+      "repository": "synapse",
+      "style": "named-other",
+      "scope": "synapse/experiments/gold/source_experience.py",
+      "statement": "recall_source_experience reads publications whose request schema was retired",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 2,
+        "tie_group": 2,
+        "eligible": 3,
+        "reciprocal_rank": 0.75,
+        "success@1": 0.5,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "pool-assess",
+      "repository": "synapse",
+      "style": "named",
+      "scope": "synapse/memory_consolidation",
+      "statement": "assess counts copies of one observation as distinct episodes for a birth",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 6,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 2,
+        "tie_group": 2,
+        "eligible": 6,
+        "reciprocal_rank": 0.75,
+        "success@1": 0.5,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "pool-independence",
+      "repository": "synapse",
+      "style": "described",
+      "scope": "synapse/memory_consolidation/court/pool.py",
+      "statement": "witnesses of different claims are paired when deciding whether sources are independent",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 1,
+        "tie_group": 1,
+        "eligible": 3,
+        "reciprocal_rank": 1.0,
+        "success@1": 1.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "pool-merge",
+      "repository": "synapse",
+      "style": "named-other",
+      "scope": "synapse/memory_consolidation/court/pool.py",
+      "statement": "assess never sees this window's episodes because the pool keeps an expired candidate",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 2,
+        "rank_to": 3,
+        "tie_group": 2,
+        "eligible": 3,
+        "reciprocal_rank": 0.41666666666666663,
+        "success@1": 0.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "targets-resolve",
+      "repository": "synapse",
+      "style": "named",
+      "scope": "synapse/experiments/gold",
+      "statement": "resolve_task_targets misses a symbol the task names with its module path",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 2,
+        "tie_group": 2,
+        "eligible": 5,
+        "reciprocal_rank": 0.75,
+        "success@1": 0.5,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 1,
+        "tie_group": 1,
+        "eligible": 5,
+        "reciprocal_rank": 1.0,
+        "success@1": 1.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "targets-read",
+      "repository": "synapse",
+      "style": "described",
+      "scope": "synapse/experiments/gold/task_targets.py",
+      "statement": "a target resolution whose elements were edited and rehashed is accepted when reopened",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 2,
+        "tie_group": 2,
+        "eligible": 2,
+        "reciprocal_rank": 0.75,
+        "success@1": 0.5,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 2,
+        "tie_group": 2,
+        "eligible": 2,
+        "reciprocal_rank": 0.75,
+        "success@1": 0.5,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "provenance-closure",
+      "repository": "synapse",
+      "style": "described",
+      "scope": "synapse/memory_consolidation/learning/provenance.py",
+      "statement": "the ancestry of a source loops forever on a cycle in the declared graph",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "provenance-relation",
+      "repository": "synapse",
+      "style": "named",
+      "scope": "synapse/memory_consolidation",
+      "statement": "relation treats an unknown source as dependent instead of not established",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 6,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 1,
+        "tie_group": 1,
+        "eligible": 6,
+        "reciprocal_rank": 1.0,
+        "success@1": 1.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "provenance-witnesses",
+      "repository": "synapse",
+      "style": "named-other",
+      "scope": "synapse/memory_consolidation/learning/provenance.py",
+      "statement": "the closure of two sources is right but the search for a pairwise independent group picks a dependent pair",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 2,
+        "tie_group": 2,
+        "eligible": 3,
+        "reciprocal_rank": 0.75,
+        "success@1": 0.5,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "profile-validate",
+      "repository": "synapse",
+      "style": "named",
+      "scope": "synapse/durable_profile.py",
+      "statement": "validate_cognitive_program accepts a palace with a file backend",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 1,
+        "tie_group": 1,
+        "eligible": 3,
+        "reciprocal_rank": 1.0,
+        "success@1": 1.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "profile-prepare",
+      "repository": "synapse",
+      "style": "described",
+      "scope": "synapse/durable_profile.py",
+      "statement": "the interpreter of a durable cognitive run is not prepared with the run identity before execution",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 3,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 1,
+        "tie_group": 1,
+        "eligible": 3,
+        "reciprocal_rank": 1.0,
+        "success@1": 1.0,
+        "success@3": 1.0
+      }
+    },
+    {
+      "relevant": "profile-call",
+      "repository": "synapse",
+      "style": "described",
+      "scope": "synapse",
+      "statement": "a call to an unknown function inside dream is accepted by the durable profile",
+      "v1": {
+        "rank_from": 1,
+        "rank_to": 3,
+        "tie_group": 3,
+        "eligible": 17,
+        "reciprocal_rank": 0.611111111111111,
+        "success@1": 0.3333333333333333,
+        "success@3": 1.0
+      },
+      "v2": {
+        "rank_from": 1,
+        "rank_to": 1,
+        "tie_group": 1,
+        "eligible": 17,
+        "reciprocal_rank": 1.0,
+        "success@1": 1.0,
+        "success@3": 1.0
+      }
+    }
+  ]
+}

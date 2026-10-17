@@ -25,6 +25,7 @@ from .application import (
 )
 from .golden_replay import (
     replay_mock_artifact,
+    ArtifactIntegrityError,
     DeterministicReplayError,
     ReplayArtifactError,
 )
@@ -344,6 +345,8 @@ def _render_status_result(result: ProjectStatusResult) -> None:
             print("Revision drift: the repository has moved since it was connected")
         print(f"Policy version: {status.policy_version}")
         print(f"Environment profile: {status.environment_profile_id}")
+        if status.python_roots:
+            print(f"Python import roots: {', '.join(status.python_roots)}")
         print(f"Entitlements declared: {status.entitlements_declared}")
         print(f"Library candidates: {status.library_candidates}")
         print(f"Gold available: {status.gold_available}")
@@ -495,7 +498,8 @@ def _durable_invalid_input() -> DurableRunResult:
 
 def main(argv=None) -> int:
     ap = ARGUMENT_PARSER(prog="synapse")
-    sub = ap.add_subparsers(dest="cmd", metavar="{run,repl,replay,project,memory,debug,metrics,change}")
+    sub = ap.add_subparsers(
+        dest="cmd", metavar="{run,repl,replay,resume,project,memory,debug,metrics,change,approve,revoke-approval}")
 
     run = sub.add_parser("run")
     run.add_argument("file", nargs="?")
@@ -570,7 +574,8 @@ def main(argv=None) -> int:
             act.add_argument("--scope", required=True,
                              help='transfer scope JSON: {"fields": {name: [values the stand reproduces]}}')
             continue
-        act.add_argument("--quantum", required=True, help="case quantum id (qnt_...)")
+        act.add_argument("--quantum", required=True,
+                         help="case quantum id (sha256:..., as a court report's quantization names it)")
         if name == "forget":
             act.add_argument("--reason", required=True, help="why the case is forgotten (recorded in the tombstone)")
             act.add_argument("--operator", required=True, help="the operator holding the authority")
@@ -681,6 +686,10 @@ def main(argv=None) -> int:
             result = replay_mock_artifact(args.mock)
         except ReplayArtifactError as exc:
             print(f"ReplayArtifactError: {exc}", file=sys.stderr)
+            return 8
+        except ArtifactIntegrityError as exc:
+            # The integrity exit code, as ``debug compare`` reports the same broken artifact.
+            print(f"ArtifactIntegrityError: {exc}", file=sys.stderr)
             return 8
         except DeterministicReplayError as exc:
             print(f"DeterministicReplayError: {exc}", file=sys.stderr)

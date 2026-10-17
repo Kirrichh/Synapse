@@ -10,7 +10,9 @@ from synapse.experiments.gold.stage10.context_codec import decode_canonical, enc
 from synapse.experiments.gold.stage10.repository_scope import create_repository_scope
 from synapse.experiments.gold.stage10.task_contract import GoverningTaskContract, TASK_CONTRACT_SCHEMA_V3
 from synapse.experiments.gold.stage10.plan_authority import configure_plan_authority
-from synapse.experiments.gold.task_targets import resolve_task_targets, read_task_targets
+from synapse.experiments.gold.task_targets import (
+    TASK_TARGET_RESOLUTION_V2, read_task_targets, resolve_task_targets,
+)
 
 
 @pytest.fixture
@@ -148,3 +150,63 @@ def test_automatic_target_approval_keeps_targets_fixed_across_knowledge_selectio
     assert requests[0] == requests[1]
     assert requests[0]['schema_version'] == APPROVAL_REQUEST_SCHEMA_V3
     assert requests[0]['intent_contract']['target_bindings']
+
+
+@pytest.fixture
+def src_layout_project(tmp_path):
+    repo = tmp_path / 'repo'
+    for name, content in (('src/shapes/__init__.py', ''),
+                          ('src/shapes/area.py', 'def circle(radius):\n    return 3 * radius * radius\n'
+                                                 'def square(side):\n    return side * side\n')):
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text(content, encoding='utf-8')
+    for argv in (('init', '-q'), ('config', 'user.name', 'Acceptance'),
+                 ('config', 'user.email', 'acceptance@example.invalid'), ('add', '.'), ('commit', '-qm', 'source')):
+        subprocess.run(['git', *argv], cwd=repo, check=True, capture_output=True)
+    revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
+    _, _, _, authority, _, _ = plan_world()
+    task = replace(authority.task_contract, schema_version=TASK_CONTRACT_SCHEMA_V3,
+        behavior_refs=(), target_bindings=(), task_statement='shapes.area.circle returns the wrong area.',
+        repository_revision_sha256=revision, allowed_scope=create_repository_scope(('src/shapes/area.py',)),
+        effects=(replace(authority.task_contract.effects[0], subject_path='src/shapes/area.py'),))
+    return repo, task, authority
+
+
+def _reasons(raw):
+    return {item['binding']['qualname']: item['selection_reasons'] for item in decode_canonical(raw)['elements']}
+
+
+def test_a_rooted_project_selects_a_symbol_its_task_names_by_import_name(src_layout_project):
+    repo, task, authority = src_layout_project
+    # Under contract v1 the module is ``src.shapes.area``: the task's ``shapes.area.circle`` names nothing.
+    assert _reasons(resolve_task_targets(task=task, repository_root=repo)) == {
+        'src.shapes.area': ['EXPECTED_EFFECT_PATH'], 'circle': [], 'square': []}
+
+    raw = resolve_task_targets(task=task, repository_root=repo, python_roots=('src',))
+
+    assert decode_canonical(raw)['schema_version'] == TASK_TARGET_RESOLUTION_V2
+    assert decode_canonical(raw)['python_roots'] == ['src']
+    assert _reasons(raw) == {'shapes.area': ['EXPECTED_EFFECT_PATH'], 'circle': ['TASK_MENTIONS_SYMBOL'], 'square': []}
+    # A reader without the project reproduces the selection under the recorded roots.
+    targets = read_task_targets(raw, task=task, repository_root=repo)
+    assert {(item.module, item.qualname, item.python_root) for item in targets} == {
+        ('shapes.area', 'shapes.area', 'src'), ('shapes.area', 'circle', 'src')}
+    configure_plan_authority(task_contract=task, policy=authority.policy,
+        reviewer_authority=authority.reviewer_authority,
+        governing_human_authority=authority.governing_human_authority,
+        compatibility_validator=authority.compatibility_validator, target_resolution=raw, repository_root=repo)
+
+
+@pytest.mark.parametrize('damage', ['drop-roots', 'other-roots', 'v1-without-roots'])
+def test_a_resolution_never_reproduces_under_roots_other_than_it_recorded(src_layout_project, damage):
+    repo, task, _ = src_layout_project
+    value = decode_canonical(resolve_task_targets(task=task, repository_root=repo, python_roots=('src',)))
+    if damage == 'drop-roots':
+        value.pop('python_roots')
+    elif damage == 'other-roots':
+        value['python_roots'] = ['src/shapes']
+    else:
+        value.pop('python_roots')
+        value['schema_version'] = 'synapse.stage4.gold.task-target-resolution/v1'
+    with pytest.raises(ValueError):
+        read_task_targets(encode_canonical(value), task=task, repository_root=repo)

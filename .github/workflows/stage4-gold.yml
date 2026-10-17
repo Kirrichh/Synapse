@@ -708,6 +708,20 @@ jobs:
             file: acceptance/stage4/stage16/test_fingerprint_acceptance.py
           - shard: source-ingestion
             file: acceptance/stage4/stage16/test_source_ingestion_acceptance.py
+          - shard: src-layout-project
+            file: acceptance/stage4/stage16/test_src_layout_project_acceptance.py
+          - shard: src-layout-project-refusal
+            file: acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py
+          - shard: src-layout-study
+            file: acceptance/stage4/stage16/test_src_layout_study_acceptance.py
+          - shard: src-layout-gold-inputs
+            file: acceptance/stage4/stage16/test_src_layout_gold_inputs_acceptance.py
+          - shard: source-recall-profile
+            file: acceptance/stage4/stage16/test_source_recall_profile_acceptance.py
+          - shard: source-recall-query
+            file: acceptance/stage4/stage16/test_source_recall_query_contract.py
+          - shard: source-recall-scope
+            file: acceptance/stage4/stage16/test_source_recall_scope_acceptance.py
           - shard: source-recipe-refusal
             file: acceptance/stage4/stage16/test_source_recipe_refusal_acceptance.py
           - shard: source-runtime-outcome
@@ -1117,6 +1131,24 @@ jobs:
             file: acceptance/memory/test_crash_closed_segment_acceptance.py
           - shard: conflict-decision-execution
             file: acceptance/memory/test_conflict_decision_execution_acceptance.py
+          - shard: witness-exclusion-contract
+            file: acceptance/memory/test_witness_exclusion_contract.py
+          - shard: agent-own-witness
+            file: acceptance/memory/test_agent_own_witness_acceptance.py
+          - shard: outside-service-witness
+            file: acceptance/memory/test_outside_service_witness_acceptance.py
+          - shard: own-record-settles-effect
+            file: acceptance/memory/test_own_record_settles_effect_acceptance.py
+          - shard: outside-witness-declaration-contract
+            file: acceptance/memory/test_outside_witness_declaration_contract.py
+          - shard: outside-witness-declaration
+            file: acceptance/memory/test_outside_witness_declaration_acceptance.py
+          - shard: undeclared-source-witness
+            file: acceptance/memory/test_undeclared_source_witness_acceptance.py
+          - shard: one-operator-witness
+            file: acceptance/memory/test_one_operator_witness_acceptance.py
+          - shard: outside-declaration-adoption
+            file: acceptance/memory/test_outside_declaration_adoption_acceptance.py
           - shard: dependency-direction
             file: tests/test_memory_dependency_direction.py
     steps:

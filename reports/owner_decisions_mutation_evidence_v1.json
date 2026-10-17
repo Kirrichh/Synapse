@@ -1,0 +1,2780 @@
+{
+ "schema_version": "synapse.owner-decisions.mutation-evidence/v1",
+ "review": "Owner decisions on 957b1ee: named durable refusals, binding contract v2 for src layouts, witness exclusions explained, outside witnesses declared (tool configuration v3), recall profile v2; with the same package's earlier local fixes",
+ "source_sha": "957b1ee8182dc650a2dfb4879a75d914908c7871",
+ "tree": "the uncommitted working tree on 957b1ee",
+ "method": "one mutation at a time in a fresh copy of the working tree, four copies in parallel; its killer files run alone, in order, the contracts first, each in its own pytest process with -x, until one fails; the file restored byte for byte (sha256 verified) before the next mutation; every kill was checked to be a failing test of the mutated behavior",
+ "mutation_identity": "sha256 of the production file's bytes with the mutation applied",
+ "python": "3.13.16",
+ "scopes": {
+  "durable_refusal_diagnostics": "item 1: a refused durable run names the refusal on one escaped, bounded stderr line",
+  "src_layout_binding_contract_v2": "item 4: python_roots, binding contract v2, project record v2, task targets v2",
+  "witness_exclusions_report": "item 2A: the consolidation report explains every answer that could not witness",
+  "outside_witness_declaration_v3": "item 2B: tool configuration v3 declares outside sources; recorded witnesses are judged again under the configuration in force",
+  "recall_profile_v2": "item 3: recall query v2 and the tiered profile",
+  "earlier_local_fixes": "the same package's earlier fixes: recorded draws served in mock replay, the recorded run id, the integrity exit code, a failed run's output, integrate reason"
+ },
+ "first_round": {
+  "mutants": 131,
+  "killed": 117,
+  "survivors": [
+   "EF-04",
+   "EF-17",
+   "OD1-01",
+   "OD1-06",
+   "OD1-07",
+   "OD2A-08",
+   "OD3-07",
+   "OD3-11",
+   "OD3-12",
+   "OD4-33",
+   "OD4-37",
+   "OD4-47",
+   "OD4-48",
+   "OD4-55"
+  ],
+  "false_kills": "OD1-01, OD1-06 and OD1-07 were reported killed by the whole durable file, but the failing tests were its two process races, which lose their timing when four copies run at once; they are counted as survivors, and the final round's durable fallback runs the file without those two races",
+  "weak_kills": {
+   "OD2A-09": "killed by a KeyError of a synthetic assessment without witnesses, not by the count"
+  },
+  "closed_by_contract_cases": {
+   "EF-04": "tests/test_golden_replay_recorded_side_effects.py::test_a_draw_beyond_the_record_fails_closed (an event of another type named random)",
+   "EF-17": "tests/test_fracture_self.py::test_an_integration_of_only_a_reason_records_it",
+   "OD1-01": "tests/test_durable_execution.py::test_a_refusal_outside_the_allowlist_names_nothing_on_stderr",
+   "OD1-06": "tests/test_durable_execution.py::test_a_refusal_line_escapes_the_program_path_and_bounds_its_reason",
+   "OD1-07": "tests/test_durable_execution.py::test_a_refusal_line_escapes_the_program_path_and_bounds_its_reason",
+   "OD2A-08": "acceptance/memory/test_witness_exclusion_contract.py::test_a_candidate_is_explained_by_its_own_held_episodes_only (two answers of one reason)",
+   "OD2A-09": "acceptance/memory/test_witness_exclusion_contract.py::test_a_candidate_is_explained_by_its_own_held_episodes_only (a dependent assessment)",
+   "OD3-07": "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py (a command printing on both streams)",
+   "OD3-11": "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py (an operation over both files of the scope)",
+   "OD3-12": "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py (v1 counts a command's output)",
+   "OD4-33": "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py::test_a_declaration_holds_its_import_roots_canonical",
+   "OD4-37": "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py::test_a_project_record_that_lost_its_import_roots_is_refused",
+   "OD4-47": "acceptance/stage4/stage16/test_src_layout_study_acceptance.py",
+   "OD4-48": "acceptance/stage4/stage16/test_src_layout_study_acceptance.py",
+   "OD4-55": "acceptance/stage4/stage16/test_src_layout_gold_inputs_acceptance.py"
+  }
+ },
+ "final_round": {
+  "mutants": 131,
+  "killed": 131,
+  "survivors": [],
+  "restored": true
+ },
+ "campaign_result": "KILLED",
+ "items": [
+  {
+   "mutant_id": "EF-01",
+   "item": "earlier_local_fixes",
+   "production_file": "synapse/golden_replay.py",
+   "original": "            return self.results[name].pop(0)",
+   "mutation": "            return self.results[name][0]",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "321c90430689e7e01d94389008ddd20942bd5424537d73cfc3aa57025aca3b0f"
+   },
+   "killer_files": [
+    "tests/test_golden_replay_recorded_side_effects.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_golden_replay_recorded_side_effects.py::test_a_draw_beyond_the_record_fails_closed"
+  },
+  {
+   "mutant_id": "EF-02",
+   "item": "earlier_local_fixes",
+   "production_file": "synapse/golden_replay.py",
+   "original": "            if not self.results[name]:",
+   "mutation": "            if False:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "ece32d7159768503df03031bbbaf4da5f4f11795406340f59226cbf976ae2ac9"
+   },
+   "killer_files": [
+    "tests/test_golden_replay_recorded_side_effects.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_golden_replay_recorded_side_effects.py::test_a_draw_beyond_the_record_fails_closed"
+  },
+  {
+   "mutant_id": "EF-03",
+   "item": "earlier_local_fixes",
+   "production_file": "synapse/golden_replay.py",
+   "original": "            served[name] = self._served(name)",
+   "mutation": "            pass",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "59c7d41f16168b9049bea839bc9fe3c5504739247e2c3d9cd1609ecb92059ab0"
+   },
+   "killer_files": [
+    "tests/test_golden_replay_recorded_side_effects.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_golden_replay_recorded_side_effects.py::test_recorded_time_random_and_uuid_are_served_not_drawn"
+  },
+  {
+   "mutant_id": "EF-04",
+   "item": "earlier_local_fixes",
+   "production_file": "synapse/golden_replay.py",
+   "original": "            if event.get(\"type\") == \"side_effect\" and event.get(\"name\") in self.results:",
+   "mutation": "            if event.get(\"name\") in self.results:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "cf480ffe5b002df36abfdd9c7f2a7e1d9f82157e24ed185eaff1e9d649099e23"
+   },
+   "killer_files": [
+    "tests/test_golden_replay_recorded_side_effects.py"
+   ],
+   "first_round": {
+    "status": "SURVIVED",
+    "closed_by": "tests/test_golden_replay_recorded_side_effects.py::test_a_draw_beyond_the_record_fails_closed (an event of another type named random)"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_golden_replay_recorded_side_effects.py::test_a_draw_beyond_the_record_fails_closed"
+  },
+  {
+   "mutant_id": "EF-05",
+   "item": "earlier_local_fixes",
+   "production_file": "synapse/golden_replay.py",
+   "original": "            \"run_id\": interp.run_id,",
+   "mutation": "",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "0af38e71a722683bebc7250325f33e8fccf16bec7e08bf66d833a389b1f40bb6"
+   },
+   "killer_files": [
+    "tests/test_golden_replay_recorded_side_effects.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_golden_replay_recorded_side_effects.py::test_a_vm_program_replays_under_the_recorded_run_id"
+  },
+  {
+   "mutant_id": "EF-06",
+   "item": "earlier_local_fixes",
+   "production_file": "synapse/golden_replay.py",
+   "original": "        replay_interp.run_id = recorded_run_id",
+   "mutation": "        pass",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "a013d020d9fe02028e8d606be468d3cea54394e522a3dfc6c30fb58c006da424"
+   },
+   "killer_files": [
+    "tests/test_golden_replay_recorded_side_effects.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_golden_replay_recorded_side_effects.py::test_a_vm_program_replays_under_the_recorded_run_id"
+  },
+  {
+   "mutant_id": "EF-07",
+   "item": "earlier_local_fixes",
+   "production_file": "synapse/golden_replay.py",
+   "original": "        if not isinstance(recorded_run_id, str) or not recorded_run_id:",
+   "mutation": "        if False:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "b2a340f331d60b92b6553a4d0fe2e501ffc93e856daa38d6483f71ceb4582a3a"
+   },
+   "killer_files": [
+    "tests/test_golden_replay_recorded_side_effects.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_golden_replay_recorded_side_effects.py::test_a_malformed_run_id_is_an_artifact_error[42]"
+  },
+  {
+   "mutant_id": "EF-08",
+   "item": "earlier_local_fixes",
+   "production_file": "synapse/golden_replay.py",
+   "original": "    if not _history_chain_valid(expected_history, final_hash):\n        raise ArtifactIntegrityError(",
+   "mutation": "    if not _history_chain_valid(expected_history, final_hash):\n        raise DeterministicReplayError(",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "2c244824e6f332e48a9583ee4d33de6a9221a9c25e565ba1dc519d522458fd2c"
+   },
+   "killer_files": [
+    "tests/test_golden_replay_integrity_boundary.py",
+    "tests/test_system_execution_path.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_system_execution_path.py::test_replay_and_compare_report_a_broken_chain_with_one_integrity_code"
+  },
+  {
+   "mutant_id": "EF-09",
+   "item": "earlier_local_fixes",
+   "production_file": "synapse/golden_replay.py",
+   "original": "        raise ArtifactIntegrityError(f\"program_hash mismatch: expected {expected_hash}, got {actual_hash}\")",
+   "mutation": "        raise DeterministicReplayError(f\"program_hash mismatch: expected {expected_hash}, got {actual_hash}\")",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "fffe15cc2c1e9c1038189dab27620961eff46b3a0ff2c9ad441a15fdf8249d73"
+   },
+   "killer_files": [
+    "tests/test_golden_replay_integrity_boundary.py",
+    "tests/test_system_execution_path.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_system_execution_path.py::test_replay_and_compare_report_a_broken_chain_with_one_integrity_code"
+  },
+  {
+   "mutant_id": "EF-10",
+   "item": "earlier_local_fixes",
+   "production_file": "synapse/cli.py",
+   "original": "            print(f\"ArtifactIntegrityError: {exc}\", file=sys.stderr)\n            return 8",
+   "mutation": "            print(f\"ArtifactIntegrityError: {exc}\", file=sys.stderr)\n            return 1",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "ea88505dc356497281efbe20a6c13b562910498071210d352ee32b213ffddf4c"
+   },
+   "killer_files": [
+    "tests/test_system_execution_path.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_system_execution_path.py::test_replay_and_compare_report_a_broken_chain_with_one_integrity_code"
+  },
+  {
+   "mutant_id": "EF-11",
+   "item": "earlier_local_fixes",
+   "production_file": "synapse/application.py",
+   "original": "    start = len(interpreter.output_buffer)",
+   "mutation": "    start = 0",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "9b7091e8fdebb27da78ba007e48973cd6594965ef7ef2accb47fe99434643895"
+   },
+   "killer_files": [
+    "tests/test_system_execution_path.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_system_execution_path.py::test_repl_prints_each_command_output_once"
+  },
+  {
+   "mutant_id": "EF-12",
+   "item": "earlier_local_fixes",
+   "production_file": "synapse/application.py",
+   "original": "            output=\"\\n\".join(interpreter.output_buffer[start:]),\n            diagnostics=(str(exc),),",
+   "mutation": "            output=\"\",\n            diagnostics=(str(exc),),",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "51a20373301c7a9753dd1eb81b894aee74e1672285e4cfda3120a41914ec1545"
+   },
+   "killer_files": [
+    "tests/test_system_execution_path.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_system_execution_path.py::test_a_failed_run_keeps_the_output_printed_before_the_failure"
+  },
+  {
+   "mutant_id": "EF-13",
+   "item": "earlier_local_fixes",
+   "production_file": "synapse/interpreter.py",
+   "original": "                if key in {\"line\", \"column\"} or (key in _IDENTITY_FIELDS_OMITTED_WHEN_UNSET and val is None):",
+   "mutation": "                if key in {\"line\", \"column\"}:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "d6d6dd5ba14a1b6a4b823a6e6f49714c853b0fd9fb0adc16cf6358e7cc453768"
+   },
+   "killer_files": [
+    "tests/test_fracture_self.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_fracture_self.py::test_without_a_reason_the_integration_record_and_identity_are_unchanged"
+  },
+  {
+   "mutant_id": "EF-14",
+   "item": "earlier_local_fixes",
+   "production_file": "synapse/interpreter.py",
+   "original": "        if self.fracture_depth > 0 and (node.integration_clause or node.integration_reason is not None):",
+   "mutation": "        if self.fracture_depth > 0 and node.integration_clause:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "bcdceba1e2f65faf60bf57733cb436bac9ac1ea64422154b177b36d904900066"
+   },
+   "killer_files": [
+    "tests/test_fracture_self.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_fracture_self.py::test_a_nested_fracture_cannot_integrate_even_with_only_a_reason"
+  },
+  {
+   "mutant_id": "EF-15",
+   "item": "earlier_local_fixes",
+   "production_file": "synapse/interpreter.py",
+   "original": "                integrated_event[\"reason\"] = self.global_env._json_safe(reason_value)",
+   "mutation": "                pass",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "1be3004aa1c48c1149c2d10eb8155669c30d1cf1b3c082eb21150c8097e4d988"
+   },
+   "killer_files": [
+    "tests/test_fracture_self.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_fracture_self.py::test_integrate_reason_of_the_spec_example_is_audit_metadata"
+  },
+  {
+   "mutant_id": "EF-16",
+   "item": "earlier_local_fixes",
+   "production_file": "synapse/interpreter.py",
+   "original": "                    reason_value = self.evaluate(node.integration_reason, integrate_env)",
+   "mutation": "                    reason_value = None",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "9588ee666ea802339b81cc15af22fa780415d1938a03f9faefe739cc4d2fcaff"
+   },
+   "killer_files": [
+    "tests/test_fracture_self.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_fracture_self.py::test_integrate_reason_of_the_spec_example_is_audit_metadata"
+  },
+  {
+   "mutant_id": "EF-17",
+   "item": "earlier_local_fixes",
+   "production_file": "synapse/interpreter.py",
+   "original": "            if node.integration_clause or node.integration_reason is not None:\n                integrate_env",
+   "mutation": "            if node.integration_clause:\n                integrate_env",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "fe3cb88aa4e90f10ed9e2b5c6c00eb0f225e8db1936af7037fc8025e63b68f3e"
+   },
+   "killer_files": [
+    "tests/test_fracture_self.py"
+   ],
+   "first_round": {
+    "status": "SURVIVED",
+    "closed_by": "tests/test_fracture_self.py::test_an_integration_of_only_a_reason_records_it"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_fracture_self.py::test_an_integration_of_only_a_reason_records_it"
+  },
+  {
+   "mutant_id": "EF-18",
+   "item": "earlier_local_fixes",
+   "production_file": "synapse/parser.py",
+   "original": "                if self.match(TokenType.REASON):\n                    integration_reason = self.expression()",
+   "mutation": "                if False:\n                    integration_reason = self.expression()",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "acb74abb1c9e74f9380c0eecf11fbd7b192e7ac9f1b5ba0218fc0bcc2cf9ac35"
+   },
+   "killer_files": [
+    "tests/test_fracture_self.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_fracture_self.py::test_integrate_reason_of_the_spec_example_is_audit_metadata"
+  },
+  {
+   "mutant_id": "OD1-01",
+   "item": "durable_refusal_diagnostics",
+   "production_file": "synapse/application.py",
+   "original": "        binding's name. A refusal that could carry anything else names nothing.\n        \"\"\"\n        return None",
+   "mutation": "        binding's name. A refusal that could carry anything else names nothing.\n        \"\"\"\n        return f\"synapse: {self.error_code}: {self}\"",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "f87b171f1843f3f38ab6a51158cc9d2a57719d8dba393f6c177540ab606cd17d"
+   },
+   "killer_files": [
+    "tests/test_durable_execution.py -k innermost or control_characters or never_echo or no_construct or line_zero or bounded or escapes_the_program_path or outside_the_allowlist or refuse_reserved or collisions_are_rejected or ordinary_name",
+    "tests/test_durable_execution.py -k not race"
+   ],
+   "first_round": {
+    "status": "SURVIVED (killed only by a process race under load)",
+    "closed_by": "tests/test_durable_execution.py::test_a_refusal_outside_the_allowlist_names_nothing_on_stderr"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_durable_execution.py::test_a_refusal_outside_the_allowlist_names_nothing_on_stderr"
+  },
+  {
+   "mutant_id": "OD1-02",
+   "item": "durable_refusal_diagnostics",
+   "production_file": "synapse/application.py",
+   "original": "        if self.line is None and not isinstance(node, synapse_ast.Program) and node.line > 0:",
+   "mutation": "        if not isinstance(node, synapse_ast.Program) and node.line > 0:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "77b8646cbbab339347a861f26d9d275cade30350727dba891815ff4ffe6d1111"
+   },
+   "killer_files": [
+    "tests/test_durable_execution.py -k innermost or control_characters or never_echo or no_construct or line_zero or bounded or escapes_the_program_path or outside_the_allowlist or refuse_reserved or collisions_are_rejected or ordinary_name",
+    "tests/test_durable_execution.py -k not race"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_durable_execution.py::test_a_refusal_inside_a_block_names_the_innermost_line_and_never_a_value"
+  },
+  {
+   "mutant_id": "OD1-03",
+   "item": "durable_refusal_diagnostics",
+   "production_file": "synapse/application.py",
+   "original": "        if self.line is None and not isinstance(node, synapse_ast.Program) and node.line > 0:",
+   "mutation": "        if self.line is None and node.line > 0:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "3abd1c5e006cdea8d66e2eb8db3e5fd985421fba72683188a947a3827bf0c104"
+   },
+   "killer_files": [
+    "tests/test_durable_execution.py -k innermost or control_characters or never_echo or no_construct or line_zero or bounded or escapes_the_program_path or outside_the_allowlist or refuse_reserved or collisions_are_rejected or ordinary_name",
+    "tests/test_durable_execution.py -k not race"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_durable_execution.py::test_a_construct_without_a_source_position_is_never_reported_at_line_zero"
+  },
+  {
+   "mutant_id": "OD1-04",
+   "item": "durable_refusal_diagnostics",
+   "production_file": "synapse/application.py",
+   "original": "        if self.line is None and not isinstance(node, synapse_ast.Program) and node.line > 0:",
+   "mutation": "        if self.line is None and not isinstance(node, synapse_ast.Program) and node.line >= 0:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "512c70aef577436ece71bd4fab7f72782c9404493b7d117653e232c6a6ec7199"
+   },
+   "killer_files": [
+    "tests/test_durable_execution.py -k innermost or control_characters or never_echo or no_construct or line_zero or bounded or escapes_the_program_path or outside_the_allowlist or refuse_reserved or collisions_are_rejected or ordinary_name",
+    "tests/test_durable_execution.py -k not race"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_durable_execution.py::test_a_construct_without_a_source_position_is_never_reported_at_line_zero"
+  },
+  {
+   "mutant_id": "OD1-05",
+   "item": "durable_refusal_diagnostics",
+   "production_file": "synapse/application.py",
+   "original": "        where = _diagnostic_text(str(source_path)) + (\"\" if self.line is None else f\":{self.line}\")",
+   "mutation": "        where = _diagnostic_text(str(source_path))",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "f02175638a2e67e8e316a650a7e6c05b91dc922bd203136d519f47c685f9f96b"
+   },
+   "killer_files": [
+    "tests/test_durable_execution.py -k innermost or control_characters or never_echo or no_construct or line_zero or bounded or escapes_the_program_path or outside_the_allowlist or refuse_reserved or collisions_are_rejected or ordinary_name",
+    "tests/test_durable_execution.py -k not race"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_durable_execution.py::test_a_refusal_inside_a_block_names_the_innermost_line_and_never_a_value"
+  },
+  {
+   "mutant_id": "OD1-06",
+   "item": "durable_refusal_diagnostics",
+   "production_file": "synapse/application.py",
+   "original": "        where = _diagnostic_text(str(source_path)) + (\"\" if self.line is None else f\":{self.line}\")",
+   "mutation": "        where = str(source_path) + (\"\" if self.line is None else f\":{self.line}\")",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "9a61f645f8e95d36f71293b919b3ec25af4ab3bf95e67dd9ca58775f3f796109"
+   },
+   "killer_files": [
+    "tests/test_durable_execution.py -k innermost or control_characters or never_echo or no_construct or line_zero or bounded or escapes_the_program_path or outside_the_allowlist or refuse_reserved or collisions_are_rejected or ordinary_name",
+    "tests/test_durable_execution.py -k not race"
+   ],
+   "first_round": {
+    "status": "SURVIVED (killed only by a process race under load)",
+    "closed_by": "tests/test_durable_execution.py::test_a_refusal_line_escapes_the_program_path_and_bounds_its_reason"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_durable_execution.py::test_a_refusal_line_escapes_the_program_path_and_bounds_its_reason"
+  },
+  {
+   "mutant_id": "OD1-07",
+   "item": "durable_refusal_diagnostics",
+   "production_file": "synapse/application.py",
+   "original": "        return f\"synapse: {where}: {self.error_code}: {_diagnostic_text(str(self))}\"",
+   "mutation": "        return f\"synapse: {where}: {self.error_code}: {str(self)}\"",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "3985e4130160e9f42842f42615ea927eccf353c63f3f6d6431d3c8a7ab3ac231"
+   },
+   "killer_files": [
+    "tests/test_durable_execution.py -k innermost or control_characters or never_echo or no_construct or line_zero or bounded or escapes_the_program_path or outside_the_allowlist or refuse_reserved or collisions_are_rejected or ordinary_name",
+    "tests/test_durable_execution.py -k not race"
+   ],
+   "first_round": {
+    "status": "SURVIVED (killed only by a process race under load)",
+    "closed_by": "tests/test_durable_execution.py::test_a_refusal_line_escapes_the_program_path_and_bounds_its_reason"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_durable_execution.py::test_a_refusal_line_escapes_the_program_path_and_bounds_its_reason"
+  },
+  {
+   "mutant_id": "OD1-08",
+   "item": "durable_refusal_diagnostics",
+   "production_file": "synapse/application.py",
+   "original": "        name = self.binding if len(self.binding) <= 64 else self.binding[:63] + \"…\"",
+   "mutation": "        name = self.binding",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "78f36b338a92e44e3e1f2f4aba1a3558f50602a603af44d851c14ee956d53554"
+   },
+   "killer_files": [
+    "tests/test_durable_execution.py -k innermost or control_characters or never_echo or no_construct or line_zero or bounded or escapes_the_program_path or outside_the_allowlist or refuse_reserved or collisions_are_rejected or ordinary_name",
+    "tests/test_durable_execution.py -k not race"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_durable_execution.py::test_diagnostics_are_bounded_lines"
+  },
+  {
+   "mutant_id": "OD1-09",
+   "item": "durable_refusal_diagnostics",
+   "production_file": "synapse/application.py",
+   "original": "        return f\"synapse: {self.error_code}: initial binding {_diagnostic_text(repr(name))} {self.reason}\"",
+   "mutation": "        return f\"synapse: {self.error_code}: initial binding {name} {self.reason}\"",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "67afa6279009df9041f6e772534b1f9260389d75606b253bc75f556596a191bf"
+   },
+   "killer_files": [
+    "tests/test_durable_execution.py -k innermost or control_characters or never_echo or no_construct or line_zero or bounded or escapes_the_program_path or outside_the_allowlist or refuse_reserved or collisions_are_rejected or ordinary_name",
+    "tests/test_durable_execution.py -k not race"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_durable_execution.py::test_initial_bindings_refuse_reserved_and_source_owned_names_before_any_effect[version-collides"
+  },
+  {
+   "mutant_id": "OD1-10",
+   "item": "durable_refusal_diagnostics",
+   "production_file": "synapse/application.py",
+   "original": "    escaped = \"\".join(char if char.isprintable() else repr(char)[1:-1] for char in text)",
+   "mutation": "    escaped = text",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "699fbb32424c9f6fc2460550deee53f4c52d4b4fcd68caeec42c18c6ff05149f"
+   },
+   "killer_files": [
+    "tests/test_durable_execution.py -k innermost or control_characters or never_echo or no_construct or line_zero or bounded or escapes_the_program_path or outside_the_allowlist or refuse_reserved or collisions_are_rejected or ordinary_name",
+    "tests/test_durable_execution.py -k not race"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_durable_execution.py::test_a_refusal_line_escapes_the_program_path_and_bounds_its_reason"
+  },
+  {
+   "mutant_id": "OD1-11",
+   "item": "durable_refusal_diagnostics",
+   "production_file": "synapse/application.py",
+   "original": "    return escaped if len(escaped) <= limit else escaped[: limit - 1] + \"…\"",
+   "mutation": "    return escaped if len(escaped) <= limit else escaped[:limit] + \"…\"",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "a20cd377aca679ca4d396913d0262931fdcf6d6af592a7c9f79edbd24b3b76fc"
+   },
+   "killer_files": [
+    "tests/test_durable_execution.py -k innermost or control_characters or never_echo or no_construct or line_zero or bounded or escapes_the_program_path or outside_the_allowlist or refuse_reserved or collisions_are_rejected or ordinary_name",
+    "tests/test_durable_execution.py -k not race"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_durable_execution.py::test_a_refusal_line_escapes_the_program_path_and_bounds_its_reason"
+  },
+  {
+   "mutant_id": "OD1-12",
+   "item": "durable_refusal_diagnostics",
+   "production_file": "synapse/application.py",
+   "original": "            raise _DurableBindingRefusal(key, \"collides with a keyword\")",
+   "mutation": "            raise _DurableBindingRefusal(key, \"collides with a builtin\")",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "aa370fb769ba91ca35628528a4a968a037a509f53c010a90be99ed318fabf5f5"
+   },
+   "killer_files": [
+    "tests/test_durable_execution.py -k innermost or control_characters or never_echo or no_construct or line_zero or bounded or escapes_the_program_path or outside_the_allowlist or refuse_reserved or collisions_are_rejected or ordinary_name",
+    "tests/test_durable_execution.py -k not race"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_durable_execution.py::test_initial_bindings_refuse_reserved_and_source_owned_names_before_any_effect[version-collides"
+  },
+  {
+   "mutant_id": "OD1-13",
+   "item": "durable_refusal_diagnostics",
+   "production_file": "synapse/application.py",
+   "original": "            diagnostics=() if diagnostic is None else (diagnostic,),",
+   "mutation": "            diagnostics=(),",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "790ffaa5ff41980cb7f2d894d3b8f100cfa25d530f9309ab396d3fd7d2258ecc"
+   },
+   "killer_files": [
+    "tests/test_durable_execution.py -k innermost or control_characters or never_echo or no_construct or line_zero or bounded or escapes_the_program_path or outside_the_allowlist or refuse_reserved or collisions_are_rejected or ordinary_name",
+    "tests/test_durable_execution.py -k not race"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_durable_execution.py::test_initial_bindings_refuse_reserved_and_source_owned_names_before_any_effect[version-collides"
+  },
+  {
+   "mutant_id": "OD1-14",
+   "item": "durable_refusal_diagnostics",
+   "production_file": "synapse/application.py",
+   "original": "                raise _DurableUnsupportedError(str(exc), line=exc.line) from exc",
+   "mutation": "                raise _DurableUnsupportedError(str(exc)) from exc",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "1fe1aff1dcb20d76a3f5bd1903ed9a5e19bfb66dab2e479ad112aa4fb4522407"
+   },
+   "killer_files": [
+    "tests/test_durable_cognitive_diagnostics.py",
+    "tests/test_durable_execution.py -k innermost or control_characters or never_echo or no_construct or line_zero or bounded or escapes_the_program_path or outside_the_allowlist or refuse_reserved or collisions_are_rejected or ordinary_name",
+    "tests/test_durable_execution.py -k not race"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_durable_cognitive_diagnostics.py::test_a_cognitive_profile_refusal_names_the_innermost_statement_line"
+  },
+  {
+   "mutant_id": "OD1-15",
+   "item": "durable_refusal_diagnostics",
+   "production_file": "synapse/application.py",
+   "original": "        exc.locate(node)\n        raise",
+   "mutation": "        raise",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "2e090408c2a84d519394499e8411c2a3b77477c9afb09cd62e58ffd3dc33c721"
+   },
+   "killer_files": [
+    "tests/test_durable_execution.py -k innermost or control_characters or never_echo or no_construct or line_zero or bounded or escapes_the_program_path or outside_the_allowlist or refuse_reserved or collisions_are_rejected or ordinary_name",
+    "tests/test_durable_execution.py -k not race"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_durable_execution.py::test_a_refusal_inside_a_block_names_the_innermost_line_and_never_a_value"
+  },
+  {
+   "mutant_id": "OD1-16",
+   "item": "durable_refusal_diagnostics",
+   "production_file": "synapse/durable_profile.py",
+   "original": "        if violation.line is None and node.line > 0:",
+   "mutation": "        if node.line > 0:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "ffca81ab6c27456c44e7302a66ec86d75655f4027137072f0ddfbe65e350e0ce"
+   },
+   "killer_files": [
+    "tests/test_durable_cognitive_diagnostics.py",
+    "tests/test_durable_execution.py -k innermost or control_characters or never_echo or no_construct or line_zero or bounded or escapes_the_program_path or outside_the_allowlist or refuse_reserved or collisions_are_rejected or ordinary_name",
+    "tests/test_durable_execution.py -k not race"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_durable_cognitive_diagnostics.py::test_a_cognitive_profile_refusal_names_the_innermost_statement_line"
+  },
+  {
+   "mutant_id": "OD1-17",
+   "item": "durable_refusal_diagnostics",
+   "production_file": "synapse/durable_profile.py",
+   "original": "        if violation.line is None and node.line > 0:",
+   "mutation": "        if violation.line is None and node.line >= 0:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "d5d5dc858ce86947db456391fb7b7aaf7ef228205346e9a0b3dae728c4436260"
+   },
+   "killer_files": [
+    "tests/test_durable_execution.py -k innermost or control_characters or never_echo or no_construct or line_zero or bounded or escapes_the_program_path or outside_the_allowlist or refuse_reserved or collisions_are_rejected or ordinary_name",
+    "tests/test_durable_execution.py -k not race"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_durable_execution.py::test_a_construct_without_a_source_position_is_never_reported_at_line_zero"
+  },
+  {
+   "mutant_id": "OD2A-01",
+   "item": "witness_exclusions_report",
+   "production_file": "synapse/memory_consolidation/tools/episodes.py",
+   "original": "        if reasons:\n            excluded.append(",
+   "mutation": "        if False:\n            excluded.append(",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "ec65bbe6e479acdc197e14bcfe0a8161d4d5ffd05d07962776b404b916896abe"
+   },
+   "killer_files": [
+    "acceptance/memory/test_witness_exclusion_contract.py",
+    "acceptance/memory/test_agent_own_witness_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_agent_own_witness_acceptance.py::test_a_confirmation_from_a_service_named_as_the_agents_own_is_no_witness_and_the_report_says_why"
+  },
+  {
+   "mutant_id": "OD2A-02",
+   "item": "witness_exclusions_report",
+   "production_file": "synapse/memory_consolidation/court/reactions.py",
+   "original": "            for item in failure[\"excluded_attestations\"] if item[\"gw_seq\"] in inside]",
+   "mutation": "            for item in failure[\"excluded_attestations\"]]",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "18540699cbc5b3ce142ebd1ef7fb32709d20b3cb6dc1fed1f480502d2d794b8f"
+   },
+   "killer_files": [
+    "acceptance/memory/test_witness_exclusion_contract.py",
+    "acceptance/memory/test_agent_own_witness_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_witness_exclusion_contract.py::test_only_answers_inside_the_slow_path_are_explained"
+  },
+  {
+   "mutant_id": "OD2A-03",
+   "item": "witness_exclusions_report",
+   "production_file": "synapse/memory_consolidation/court/reactions.py",
+   "original": "    return [{**item, \"resolves_effect\": item[\"gw_seq\"] == settled_by}",
+   "mutation": "    return [{**item, \"resolves_effect\": False}",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "ba48f05a85bfdcc575a67fb11e2d5bb2eb5368cf4870dfcddc04c9b7d5a98e80"
+   },
+   "killer_files": [
+    "acceptance/memory/test_witness_exclusion_contract.py",
+    "acceptance/memory/test_own_record_settles_effect_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_witness_exclusion_contract.py::test_only_answers_inside_the_slow_path_are_explained"
+  },
+  {
+   "mutant_id": "OD2A-04",
+   "item": "witness_exclusions_report",
+   "production_file": "synapse/memory_consolidation/court/reactions.py",
+   "original": "    if failure is None:\n        return []\n    inside",
+   "mutation": "    inside",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "b815192782fb854cf567fffaba9873d5b0fb5ea2aa29e2368d3d17075b1fd098"
+   },
+   "killer_files": [
+    "acceptance/memory/test_witness_exclusion_contract.py",
+    "acceptance/memory/test_agent_own_witness_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_witness_exclusion_contract.py::test_only_answers_inside_the_slow_path_are_explained"
+  },
+  {
+   "mutant_id": "OD2A-05",
+   "item": "witness_exclusions_report",
+   "production_file": "synapse/memory_consolidation/court/births.py",
+   "original": "        if (slow is None or (reaction[\"run_id\"], reaction[\"event_id\"]) not in held",
+   "mutation": "        if (slow is None",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "ce99d82fbfd0cc472749ef64bc8b5bb253a04adefbb536338f60d0c797146484"
+   },
+   "killer_files": [
+    "acceptance/memory/test_witness_exclusion_contract.py",
+    "acceptance/memory/test_agent_own_witness_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_witness_exclusion_contract.py::test_a_candidate_is_explained_by_its_own_held_episodes_only"
+  },
+  {
+   "mutant_id": "OD2A-06",
+   "item": "witness_exclusions_report",
+   "production_file": "synapse/memory_consolidation/court/births.py",
+   "original": "                or candidate_key(reaction[\"context\"][\"event_type\"], slow[\"steps\"]) != key):",
+   "mutation": "                or False):",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "33237ba4b5c11d0de6cee024a81ebc0318692915cd7f71c7cba946ee95c89ab9"
+   },
+   "killer_files": [
+    "acceptance/memory/test_witness_exclusion_contract.py",
+    "acceptance/memory/test_agent_own_witness_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_witness_exclusion_contract.py::test_a_candidate_is_explained_by_its_own_held_episodes_only"
+  },
+  {
+   "mutant_id": "OD2A-07",
+   "item": "witness_exclusions_report",
+   "production_file": "synapse/memory_consolidation/court/births.py",
+   "original": "    if not excluded:\n        return\n",
+   "mutation": "",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "567662bc9bbb6bf338bb625d74b39155f8489c767c338fd466d05b50ab7ea8a1"
+   },
+   "killer_files": [
+    "acceptance/memory/test_witness_exclusion_contract.py",
+    "acceptance/memory/test_outside_service_witness_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_outside_service_witness_acceptance.py::test_the_same_confirmation_from_an_outside_service_teaches_the_procedure"
+  },
+  {
+   "mutant_id": "OD2A-08",
+   "item": "witness_exclusions_report",
+   "production_file": "synapse/memory_consolidation/court/births.py",
+   "original": "            counts[reason] = counts.get(reason, 0) + 1",
+   "mutation": "            counts[reason] = 1",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "973cca6c42b977e4d5acf78ae85e3d3251821b12d0a0eb994c0190462d202081"
+   },
+   "killer_files": [
+    "acceptance/memory/test_witness_exclusion_contract.py",
+    "acceptance/memory/test_agent_own_witness_acceptance.py",
+    "acceptance/memory/test_own_record_settles_effect_acceptance.py"
+   ],
+   "first_round": {
+    "status": "SURVIVED",
+    "closed_by": "acceptance/memory/test_witness_exclusion_contract.py::test_a_candidate_is_explained_by_its_own_held_episodes_only (two answers of one reason)"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_witness_exclusion_contract.py::test_a_candidate_is_explained_by_its_own_held_episodes_only"
+  },
+  {
+   "mutant_id": "OD2A-09",
+   "item": "witness_exclusions_report",
+   "production_file": "synapse/memory_consolidation/court/births.py",
+   "original": "        \"counted\": len(independence[\"independent_set\"]), \"required\": independence[\"required\"],",
+   "mutation": "        \"counted\": len(independence[\"witnesses\"]), \"required\": independence[\"required\"],",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "fdfdcf5f968329c89cb6f4547e3238bfd93a1d075f5de4a8bb4cfd44481ba0cf"
+   },
+   "killer_files": [
+    "acceptance/memory/test_witness_exclusion_contract.py",
+    "acceptance/memory/test_agent_own_witness_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED",
+    "weak": "killed by a KeyError of a synthetic assessment without witnesses, not by the count",
+    "closed_by": "acceptance/memory/test_witness_exclusion_contract.py::test_a_candidate_is_explained_by_its_own_held_episodes_only (a dependent assessment)"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_witness_exclusion_contract.py::test_a_candidate_is_explained_by_its_own_held_episodes_only"
+  },
+  {
+   "mutant_id": "OD2A-10",
+   "item": "witness_exclusions_report",
+   "production_file": "synapse/memory_consolidation/court/decide.py",
+   "original": "                   \"composition_reviews\", \"contract_violations\", \"dependencies\", \"witness_exclusions\")",
+   "mutation": "                   \"composition_reviews\", \"contract_violations\", \"dependencies\")",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "8109cc2eabfd72808760b6cbb3f7583580c6c6c0a813cd1e58e9731fa83addcc"
+   },
+   "killer_files": [
+    "acceptance/memory/test_witness_exclusion_contract.py",
+    "acceptance/memory/test_agent_own_witness_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_agent_own_witness_acceptance.py::test_a_confirmation_from_a_service_named_as_the_agents_own_is_no_witness_and_the_report_says_why"
+  },
+  {
+   "mutant_id": "OD2A-11",
+   "item": "witness_exclusions_report",
+   "production_file": "synapse/memory_consolidation/court/apply.py",
+   "original": "REPORT_V2 = \"synapse.memory.consolidation-report/v2\"",
+   "mutation": "REPORT_V2 = \"synapse.memory.consolidation-report/v1\"",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "0f8bef03758854206b1491ad09b20e7bcac09c302f766ad1f3b0f9c42005165d"
+   },
+   "killer_files": [
+    "acceptance/memory/test_witness_exclusion_contract.py",
+    "acceptance/memory/test_agent_own_witness_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_agent_own_witness_acceptance.py::test_a_confirmation_from_a_service_named_as_the_agents_own_is_no_witness_and_the_report_says_why"
+  },
+  {
+   "mutant_id": "OD2B-01",
+   "item": "outside_witness_declaration_v3",
+   "production_file": "synapse/memory_consolidation/tools/contracts.py",
+   "original": "        node = _mapping(node, f\"provenance {source}\", required={\"ancestors\", \"outside\"} if declared else {\"ancestors\"})",
+   "mutation": "        node = _mapping(node, f\"provenance {source}\", required={\"ancestors\"})",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "18fe4856287e42ef24c0b440de391e4b619c5ef9b848e32bc27a375823398bf8"
+   },
+   "killer_files": [
+    "acceptance/memory/test_outside_witness_declaration_contract.py",
+    "acceptance/memory/test_outside_witness_declaration_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_outside_witness_declaration_contract.py::test_an_agent_own_service_cannot_be_declared_outside[ledger:erp]"
+  },
+  {
+   "mutant_id": "OD2B-02",
+   "item": "outside_witness_declaration_v3",
+   "production_file": "synapse/memory_consolidation/tools/contracts.py",
+   "original": "        if source.startswith(\"#\"):",
+   "mutation": "        if False:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "897264912bb762eee8338111dfe8df82cef7ef6b4b650c361dedf4c47f88cd94"
+   },
+   "killer_files": [
+    "acceptance/memory/test_outside_witness_declaration_contract.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_outside_witness_declaration_contract.py::test_v3_states_every_node_explicitly_and_reserves_operator_nodes[provenance2-reserved"
+  },
+  {
+   "mutant_id": "OD2B-03",
+   "item": "outside_witness_declaration_v3",
+   "production_file": "synapse/memory_consolidation/tools/contracts.py",
+   "original": "        if type(node[\"outside\"]) is not bool:",
+   "mutation": "        if False:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "22956265262235f63cfdc2593bef41f44560559d33f0334cfd323929706b17b4"
+   },
+   "killer_files": [
+    "acceptance/memory/test_outside_witness_declaration_contract.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_outside_witness_declaration_contract.py::test_v3_states_every_node_explicitly_and_reserves_operator_nodes[provenance1-true"
+  },
+  {
+   "mutant_id": "OD2B-04",
+   "item": "outside_witness_declaration_v3",
+   "production_file": "synapse/memory_consolidation/tools/contracts.py",
+   "original": "            if _SOURCE_RE.fullmatch(source) is None:",
+   "mutation": "            if False:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "5c5922f9d1139cabcb76498606e1dfbbb6b5e553867d9ebabc7ac2e37e3155e3"
+   },
+   "killer_files": [
+    "acceptance/memory/test_outside_witness_declaration_contract.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_outside_witness_declaration_contract.py::test_v3_states_every_node_explicitly_and_reserves_operator_nodes[provenance3-service:account]"
+  },
+  {
+   "mutant_id": "OD2B-05",
+   "item": "outside_witness_declaration_v3",
+   "production_file": "synapse/memory_consolidation/tools/contracts.py",
+   "original": "            if service in AGENT_OWN_SERVICES:",
+   "mutation": "            if False:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "4f433beaa17f95c3adc189d3382d53479ba189584d59445b55cd9734b9c7583b"
+   },
+   "killer_files": [
+    "acceptance/memory/test_outside_witness_declaration_contract.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_outside_witness_declaration_contract.py::test_an_agent_own_service_cannot_be_declared_outside[ledger:erp]"
+  },
+  {
+   "mutant_id": "OD2B-06",
+   "item": "outside_witness_declaration_v3",
+   "production_file": "synapse/memory_consolidation/tools/contracts.py",
+   "original": "        graph[source] = tuple(sorted({*graph[source], operator}))",
+   "mutation": "        graph[source] = graph[source]",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "dc2b3873138b42eef135f0ecde78451bd06cbbb93d5606a210a0c92e7e5ec744"
+   },
+   "killer_files": [
+    "acceptance/memory/test_outside_witness_declaration_contract.py",
+    "acceptance/memory/test_one_operator_witness_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_one_operator_witness_acceptance.py::test_two_outside_sources_of_one_service_are_one_operator"
+  },
+  {
+   "mutant_id": "OD2B-07",
+   "item": "outside_witness_declaration_v3",
+   "production_file": "synapse/memory_consolidation/tools/contracts.py",
+   "original": "        graph.setdefault(operator, ())",
+   "mutation": "        pass",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "58938ca710087be99265891ef8755c2ecd09609311f44464c48a5178a7ffb227"
+   },
+   "killer_files": [
+    "acceptance/memory/test_outside_witness_declaration_contract.py",
+    "acceptance/memory/test_outside_witness_declaration_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_outside_witness_declaration_contract.py::test_a_recorded_witness_counts_only_while_the_configuration_in_force_admits_its_source"
+  },
+  {
+   "mutant_id": "OD2B-08",
+   "item": "outside_witness_declaration_v3",
+   "production_file": "synapse/memory_consolidation/tools/contracts.py",
+   "original": "    return graph, (frozenset(outside) if declared else None)",
+   "mutation": "    return graph, frozenset(outside)",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "3f83f51482b1f39fcbe14ea80af76b51f2939fde8967cff433aa0350f9a7d320"
+   },
+   "killer_files": [
+    "acceptance/memory/test_outside_witness_declaration_contract.py",
+    "acceptance/memory/test_agent_own_witness_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_outside_witness_declaration_contract.py::test_a_recorded_witness_counts_only_while_the_configuration_in_force_admits_its_source"
+  },
+  {
+   "mutant_id": "OD2B-09",
+   "item": "outside_witness_declaration_v3",
+   "production_file": "synapse/memory_consolidation/tools/contracts.py",
+   "original": "                                            declared=root[\"schema_version\"] == TOOL_CONFIGURATION_V3)",
+   "mutation": "                                            declared=False)",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "9f22e6e2d261a9de8529ed8820546892a0d97959173b1458fe844e52882fa6bc"
+   },
+   "killer_files": [
+    "acceptance/memory/test_outside_witness_declaration_contract.py",
+    "acceptance/memory/test_outside_witness_declaration_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_outside_witness_declaration_contract.py::test_an_agent_own_service_cannot_be_declared_outside[ledger:erp]"
+  },
+  {
+   "mutant_id": "OD2B-10",
+   "item": "outside_witness_declaration_v3",
+   "production_file": "synapse/memory_consolidation/tools/semantics.py",
+   "original": "    if configuration.outside is None:",
+   "mutation": "    if True:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "f40c3486a8c325c440b1d9bfc1e065955c040d40141e56ec17c2fee6568fc9e1"
+   },
+   "killer_files": [
+    "acceptance/memory/test_witness_exclusion_contract.py",
+    "acceptance/memory/test_undeclared_source_witness_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_witness_exclusion_contract.py::test_under_v3_only_a_declared_outside_source_witnesses"
+  },
+  {
+   "mutant_id": "OD2B-11",
+   "item": "outside_witness_declaration_v3",
+   "production_file": "synapse/memory_consolidation/tools/semantics.py",
+   "original": "    elif source not in configuration.outside:",
+   "mutation": "    elif False:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "2ad2632c22ecb7754e969e6b8b97a52df140d66c7a502e25c59481f1b338e812"
+   },
+   "killer_files": [
+    "acceptance/memory/test_witness_exclusion_contract.py",
+    "acceptance/memory/test_undeclared_source_witness_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_witness_exclusion_contract.py::test_under_v3_only_a_declared_outside_source_witnesses"
+  },
+  {
+   "mutant_id": "OD2B-12",
+   "item": "outside_witness_declaration_v3",
+   "production_file": "synapse/memory_consolidation/tools/semantics.py",
+   "original": "    if role != \"action\":",
+   "mutation": "    if False:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "fd3c23528350cea1170e8c6b346a95567325e6f4fa2a08b405fcc5b95aa38356"
+   },
+   "killer_files": [
+    "acceptance/memory/test_witness_exclusion_contract.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_witness_exclusion_contract.py::test_under_v2_the_service_before_the_colon_decides"
+  },
+  {
+   "mutant_id": "OD2B-13",
+   "item": "outside_witness_declaration_v3",
+   "production_file": "synapse/memory_consolidation/court/pool.py",
+   "original": "            if witness_exclusions(configuration.tools, \"action\", witness[\"source\"]):\n                continue",
+   "mutation": "            if False:\n                continue",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "28ac2f19305f353da6f0f2a49ba3b3143f9ccd7a91f77870b89cf3f27d363a81"
+   },
+   "killer_files": [
+    "acceptance/memory/test_outside_witness_declaration_contract.py",
+    "acceptance/memory/test_outside_declaration_adoption_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_outside_witness_declaration_contract.py::test_a_recorded_witness_counts_only_while_the_configuration_in_force_admits_its_source"
+  },
+  {
+   "mutant_id": "OD2B-14",
+   "item": "outside_witness_declaration_v3",
+   "production_file": "synapse/memory_consolidation/court/pool.py",
+   "original": "            if witness_exclusions(configuration.tools, \"action\", witness[\"source\"]):",
+   "mutation": "            if witness_exclusions(configuration.tools, \"reason\", witness[\"source\"]):",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "7fb0c717bf96f7a17892eef3454802db047f2add9c027ed0b19695dc172a92a5"
+   },
+   "killer_files": [
+    "acceptance/memory/test_outside_witness_declaration_contract.py",
+    "acceptance/memory/test_outside_service_witness_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_outside_witness_declaration_contract.py::test_a_recorded_witness_counts_only_while_the_configuration_in_force_admits_its_source"
+  },
+  {
+   "mutant_id": "OD3-01",
+   "item": "recall_profile_v2",
+   "production_file": "synapse/experiments/gold/source_experience.py",
+   "original": "                    and type(value[\"profile\"]) is str and value[\"profile\"] in _PROFILES)):",
+   "mutation": "                    and value[\"profile\"] in _PROFILES)):",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "c9ecb7222b12cd9f6859af7e2664b595d061c8813f1cb2aa9ce2805480261969"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_recall_query_contract.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_recall_query_contract.py::test_a_query_names_exactly_one_known_profile[non-text-profile]"
+  },
+  {
+   "mutant_id": "OD3-02",
+   "item": "recall_profile_v2",
+   "production_file": "synapse/experiments/gold/source_experience.py",
+   "original": "                    and type(value[\"profile\"]) is str and value[\"profile\"] in _PROFILES)):",
+   "mutation": "                    and type(value[\"profile\"]) is str)):",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "5ae74a94343379cc386e77043972839e94eab36abd106e1754a9a51d23e83291"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_recall_query_contract.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_recall_query_contract.py::test_a_query_names_exactly_one_known_profile[unknown-profile]"
+  },
+  {
+   "mutant_id": "OD3-03",
+   "item": "recall_profile_v2",
+   "production_file": "synapse/experiments/gold/source_experience.py",
+   "original": "                    or value.get(\"schema_version\") == SOURCE_RECALL_QUERY_V2 and set(value) == fields | {\"profile\"}",
+   "mutation": "                    or value.get(\"schema_version\") == SOURCE_RECALL_QUERY_V2 and set(value) >= fields",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "ce030a74a50f9a881dd141315ae9479bfdd787e83e1b23c05666abc6b4fd9732"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_recall_query_contract.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_recall_query_contract.py::test_a_query_names_exactly_one_known_profile[v2-without-profile]"
+  },
+  {
+   "mutant_id": "OD3-04",
+   "item": "recall_profile_v2",
+   "production_file": "synapse/experiments/gold/source_experience.py",
+   "original": "            or not (value.get(\"schema_version\") == SOURCE_RECALL_QUERY_V1 and set(value) == fields",
+   "mutation": "            or not (value.get(\"schema_version\") == SOURCE_RECALL_QUERY_V1 and set(value) >= fields",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "11ef11685ec6322c418a928b14854f824df8a4d5c95b8d4b866bc2b83d535994"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_recall_query_contract.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_recall_query_contract.py::test_a_query_names_exactly_one_known_profile[v1-with-profile]"
+  },
+  {
+   "mutant_id": "OD3-05",
+   "item": "recall_profile_v2",
+   "production_file": "synapse/experiments/gold/source_experience.py",
+   "original": "    return scope, value.get(\"profile\", SOURCE_RECALL_PROFILE_V1)",
+   "mutation": "    return scope, value.get(\"profile\", SOURCE_RECALL_PROFILE_V2)",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "dbbd0055214f12e248f9a101eaec6fcf227aa57a4f19c1a7f512520d76ddc73c"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_recall_query_contract.py",
+    "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py::test_v1_ties_on_the_text_and_v2_ranks_by_tiers"
+  },
+  {
+   "mutant_id": "OD3-06",
+   "item": "recall_profile_v2",
+   "production_file": "synapse/experiments/gold/source_experience.py",
+   "original": "    names = [*claim[\"sources\"], *(item[\"qualname\"] for item in observed[\"bindings\"])]",
+   "mutation": "    names = [*claim[\"sources\"]]",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "1bc804627c44d83428f5ac06ebe6293810a809825265038b66b279557f0dda4a"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py::test_v1_ties_on_the_text_and_v2_ranks_by_tiers"
+  },
+  {
+   "mutant_id": "OD3-07",
+   "item": "recall_profile_v2",
+   "production_file": "synapse/experiments/gold/source_experience.py",
+   "original": "    output = [] if command is None else [command[\"stdout\"], command[\"stderr\"]]",
+   "mutation": "    output = [] if command is None else [command[\"stdout\"]]",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "d4015d1ff0bdab5ba10c6b270a4958f9b1e9ee7b1f93e274af26fddb77904eac"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py",
+    "acceptance/stage4/stage16/test_source_experience_acceptance.py"
+   ],
+   "first_round": {
+    "status": "SURVIVED",
+    "closed_by": "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py (a command printing on both streams)"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py::test_v1_ties_on_the_text_and_v2_ranks_by_tiers"
+  },
+  {
+   "mutant_id": "OD3-08",
+   "item": "recall_profile_v2",
+   "production_file": "synapse/experiments/gold/source_experience.py",
+   "original": "    output = [] if command is None else [command[\"stdout\"], command[\"stderr\"]]",
+   "mutation": "    output = [] if command is None else [command[\"stderr\"]]",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "9ef0cd131331463d6950295088a3b707154e1351e2a56f7ad52f33a023b2d849"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py",
+    "acceptance/stage4/stage16/test_source_experience_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py::test_v1_ties_on_the_text_and_v2_ranks_by_tiers"
+  },
+  {
+   "mutant_id": "OD3-09",
+   "item": "recall_profile_v2",
+   "production_file": "synapse/experiments/gold/source_experience.py",
+   "original": "    return ((len(matched_paths), *(len(tiers[name]) for name in (\"identity\", \"output\", \"source\"))),",
+   "mutation": "    return ((len(matched_paths), *(len(tiers[name]) for name in (\"output\", \"identity\", \"source\"))),",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "2acae1fcc7ec2348e5c8c674bfbbefa4a612653a28cc7b0c44b39ea528e79e4d"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py::test_v1_ties_on_the_text_and_v2_ranks_by_tiers"
+  },
+  {
+   "mutant_id": "OD3-10",
+   "item": "recall_profile_v2",
+   "production_file": "synapse/experiments/gold/source_experience.py",
+   "original": "    return ((len(matched_paths), *(len(tiers[name]) for name in (\"identity\", \"output\", \"source\"))),",
+   "mutation": "    return ((len(matched_paths), *(len(tiers[name]) for name in (\"source\", \"output\", \"identity\"))),",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "6063b4fd7bb20ed2e4a8302e5d6b78622f24b94ae184cfdb7717a73291db06aa"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py::test_v1_ties_on_the_text_and_v2_ranks_by_tiers"
+  },
+  {
+   "mutant_id": "OD3-11",
+   "item": "recall_profile_v2",
+   "production_file": "synapse/experiments/gold/source_experience.py",
+   "original": "    return ((len(matched_paths), *(len(tiers[name]) for name in (\"identity\", \"output\", \"source\"))),",
+   "mutation": "    return ((0, *(len(tiers[name]) for name in (\"identity\", \"output\", \"source\"))),",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "c827139928b3bc7c575b6901054be1b3a8cc70cb133b42d6eb503695bc6684e8"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py"
+   ],
+   "first_round": {
+    "status": "SURVIVED",
+    "closed_by": "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py (an operation over both files of the scope)"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py::test_v1_ties_on_the_text_and_v2_ranks_by_tiers"
+  },
+  {
+   "mutant_id": "OD3-12",
+   "item": "recall_profile_v2",
+   "production_file": "synapse/experiments/gold/source_experience.py",
+   "original": "        terms = sorted(query_terms & _terms(\" \".join([*names, *output, *texts])))",
+   "mutation": "        terms = sorted(query_terms & _terms(\" \".join([*names, *texts])))",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "db923ff7387b5f61dcf9c7f9536a33aa1d05db8d4b7c5df5fc8083a1c8e0b926"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py",
+    "acceptance/stage4/stage16/test_source_experience_acceptance.py"
+   ],
+   "first_round": {
+    "status": "SURVIVED",
+    "closed_by": "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py (v1 counts a command's output)"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py::test_v1_ties_on_the_text_and_v2_ranks_by_tiers"
+  },
+  {
+   "mutant_id": "OD3-13",
+   "item": "recall_profile_v2",
+   "production_file": "synapse/experiments/gold/source_experience.py",
+   "original": "            groups[key] = groups.get(key, 0) + 1",
+   "mutation": "            groups[key] = 1",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "d228c5d7e0614d74a6549cec8644c4c0f2b375ace2a22ed01f66f078a64aa0d5"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py::test_v1_ties_on_the_text_and_v2_ranks_by_tiers"
+  },
+  {
+   "mutant_id": "OD3-14",
+   "item": "recall_profile_v2",
+   "production_file": "synapse/experiments/gold/source_experience.py",
+   "original": "    if profile == SOURCE_RECALL_PROFILE_V2:\n        # How many eligible operations share each key",
+   "mutation": "    if True:\n        # How many eligible operations share each key",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "4bba9444c954ba51cbf57548960de0d748a73195589835b8cc08e8357735b9f8"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py::test_v1_ties_on_the_text_and_v2_ranks_by_tiers"
+  },
+  {
+   "mutant_id": "OD3-15",
+   "item": "recall_profile_v2",
+   "production_file": "synapse/experiments/gold/source_experience.py",
+   "original": "    value = {\"schema_version\": _PROFILES[profile], \"profile\": profile,",
+   "mutation": "    value = {\"schema_version\": SOURCE_RECALL_V1, \"profile\": profile,",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "9a839830a87ba27bc7edbede43a8dfdb02937bab0edce7bb90f1abec660a7a95"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py::test_v1_ties_on_the_text_and_v2_ranks_by_tiers"
+  },
+  {
+   "mutant_id": "OD3-16",
+   "item": "recall_profile_v2",
+   "production_file": "synapse/experiments/gold/source_experience.py",
+   "original": "             \"source\": sorted(query_terms & _terms(\" \".join(texts)))}",
+   "mutation": "             \"source\": []}",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "16658e8e8d4b3c9f223272047d80856a56a789ebb378d3a9eb2526c5bac73fc7"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_recall_profile_acceptance.py::test_v1_ties_on_the_text_and_v2_ranks_by_tiers"
+  },
+  {
+   "mutant_id": "OD4-01",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "    supported = ((BINDING_CONTRACT_VERSION_V1, BINDING_CONTRACT_VERSION_V2) if binding_kind is BindingKind.PYTHON",
+   "mutation": "    supported = ((BINDING_CONTRACT_VERSION_V1, BINDING_CONTRACT_VERSION_V2) if True",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "314df126c9224f554c204e999467c3024ac2c06aa35801e03c69f8d385100abc"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_document_bindings_have_no_contract_v2"
+  },
+  {
+   "mutant_id": "OD4-02",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "    if value.contract_version == BINDING_CONTRACT_VERSION_V2:\n        payload.update(",
+   "mutation": "    if False:\n        payload.update(",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "a7fe0240120e144269b2961632295b091726b3134147240c857d0781b4c75bf4"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_names_a_module_from_its_longest_declared_root"
+  },
+  {
+   "mutant_id": "OD4-03",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "        if value.python_root is not None or value.python_roots != ():",
+   "mutation": "        if False:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "e5fc2a58b3674f14d1e0816a5e8e19daf4db5b913cfb4cadea5b76264c6ea24a"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_sealed_python_bindings_keep_their_contract_roots_and_module"
+  },
+  {
+   "mutant_id": "OD4-04",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "        if type(value.python_roots) is not tuple or canonical_python_roots(value.python_roots) != value.python_roots:",
+   "mutation": "        if type(value.python_roots) is not tuple:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "e79a7f575902d43b01b35d8de321109c92aa12be94ed56c149eec53ee9aa5d47"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_sealed_python_bindings_keep_their_contract_roots_and_module"
+  },
+  {
+   "mutant_id": "OD4-05",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "        if _python_module_v2(value.path, value.python_roots) != (value.module, value.python_root):",
+   "mutation": "        if False:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "62dd10b6fa1b0315926258760c40de305d1e3646372a8b599a123c8f5538a3e7"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_sealed_python_bindings_keep_their_contract_roots_and_module"
+  },
+  {
+   "mutant_id": "OD4-06",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "    if type(value) not in (list, tuple) or not value or len(value) > MAX_PYTHON_ROOTS_V2:",
+   "mutation": "    if type(value) not in (list, tuple) or len(value) > MAX_PYTHON_ROOTS_V2:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "5b44c09e5e40794ea7db82961c588d71fc24c7aae4223adbf52f01db97c14056"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_refuses_malformed_import_roots[roots0]"
+  },
+  {
+   "mutant_id": "OD4-07",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "    if type(value) not in (list, tuple) or not value or len(value) > MAX_PYTHON_ROOTS_V2:",
+   "mutation": "    if type(value) not in (list, tuple) or not value or len(value) > MAX_PYTHON_ROOTS_V2 + 1:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "0276fd645606a58aef4acdc36f675f174f0134e292571beff71d7ed71c8c3cab"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_refuses_a_root_that_names_no_directory_or_package_module"
+  },
+  {
+   "mutant_id": "OD4-08",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "        if any(char in \"*?[]\" for char in root) or root.endswith(\".py\"):",
+   "mutation": "        if root.endswith(\".py\"):",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "2c93ac998c22d793878b21dc83682b7be2f1b74e14fe1dd0b6c9baacf8700296"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_refuses_malformed_import_roots[roots5]"
+  },
+  {
+   "mutant_id": "OD4-09",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "        if any(char in \"*?[]\" for char in root) or root.endswith(\".py\"):",
+   "mutation": "        if any(char in \"*?[]\" for char in root):",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "da5756fd732f67744fcda97c3797f4b4e6cefe2d702f380a3a553e42e0218da3"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_refuses_malformed_import_roots[roots6]"
+  },
+  {
+   "mutant_id": "OD4-10",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "    if len(set(roots)) != len(roots):",
+   "mutation": "    if False:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "8d10f4bdc61b5ce463885a79a87d1c9058b9c26294ea5a0d002d5efad4075e93"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py",
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_refuses_malformed_import_roots[roots1]"
+  },
+  {
+   "mutant_id": "OD4-11",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "    return tuple(sorted(roots))",
+   "mutation": "    return tuple(roots)",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "aa1499b39ed4b44ab70777aac483cc00e1b3be2a1cc88f548f985d779676abb3"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_names_a_module_from_its_longest_declared_root"
+  },
+  {
+   "mutant_id": "OD4-12",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "    root = max((item for item in roots if path.startswith(item + \"/\")), key=len, default=\"\")",
+   "mutation": "    root = min((item for item in roots if path.startswith(item + \"/\")), key=len, default=\"\")",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "0ac3e3630a4e092142ac26e7a38e623e6bb0f90276fa061b5b683fd27924a31f"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_names_a_module_from_its_longest_declared_root"
+  },
+  {
+   "mutant_id": "OD4-13",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "    root = max((item for item in roots if path.startswith(item + \"/\")), key=len, default=\"\")",
+   "mutation": "    root = max((item for item in roots if path.startswith(item)), key=len, default=\"\")",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "8b4025156c7e8a729863527ff6f88ce3f632974cc7c680a8d12f04faca682d43"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_names_a_module_from_its_longest_declared_root"
+  },
+  {
+   "mutant_id": "OD4-14",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "    if relative == \"__init__.py\":",
+   "mutation": "    if False:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "f7c4e029625190c811e83fac63e527b76661df6071000875748da90ad5969779"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_refuses_a_root_that_names_no_directory_or_package_module"
+  },
+  {
+   "mutant_id": "OD4-15",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "    for depth in range(len(parts), 0, -1):",
+   "mutation": "    for depth in range(len(parts), len(parts) - 1, -1):",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "819541e8af270be3fa50a6ed2744c4f8c5807b38a46c55c3e4aed481e6fe6575"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py",
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_names_a_module_from_its_longest_declared_root"
+  },
+  {
+   "mutant_id": "OD4-16",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "        if not _tree_entry_present(repo_root, revision.git_sha, root, \"tree\"):",
+   "mutation": "        if False:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "95dfb93d601725dd8cbc9013e5c9df73405117cc1dd76bfb0dfbce34b6d2382a"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py",
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_refuses_a_root_that_names_no_directory_or_package_module"
+  },
+  {
+   "mutant_id": "OD4-17",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "        _require_root_outside_packages(repo_root, revision.git_sha, root)\n    return roots",
+   "mutation": "    return roots",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "e305fc63af368ce602aa464f5f33ec44746262a0e8f6722f17a90a8e5ed41209"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py",
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py::test_roots_that_cannot_name_modules_refuse_the_connection[files1-roots1-an"
+  },
+  {
+   "mutant_id": "OD4-18",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "    _require_root_outside_packages(repo_root, git_sha, current.python_root)\n    stem = current.module.replace(\".\", \"/\")",
+   "mutation": "    stem = current.module.replace(\".\", \"/\")",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "33b765ab06742d9711d6a5cd97c83476b454d5da22081a0919684e4e8b9e24fd"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_refuses_layouts_that_name_a_module_twice[files0-roots0-app/mod.py-mod-IMPORT_ROOT_INVALID]"
+  },
+  {
+   "mutant_id": "OD4-19",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "    for candidate_root in (\"\", *current.python_roots):",
+   "mutation": "    for candidate_root in current.python_roots:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "35ec647a79791c65cc381419e8384c8cab1b5fae507bf89473518697e1450a2a"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_refuses_layouts_that_name_a_module_twice[files2-roots2-src/pkg/__init__.py-pkg-MODULE_AMBIGUOUS]"
+  },
+  {
+   "mutant_id": "OD4-20",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "        for candidate in (base + \".py\", base + \"/__init__.py\"):",
+   "mutation": "        for candidate in (base + \".py\",):",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "64fabfededa4c35a93a1f9010a60db917b19bd503961790a4bc771bb940a3b6e"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_refuses_layouts_that_name_a_module_twice[files2-roots2-src/pkg/__init__.py-pkg-MODULE_AMBIGUOUS]"
+  },
+  {
+   "mutant_id": "OD4-21",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "            if named == current.module:",
+   "mutation": "            if False:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "7352fb3480a83be4053306a48958fd60e4f8acc4821a2b2ea3ba45f8094b735c"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_refuses_layouts_that_name_a_module_twice[files2-roots2-src/pkg/__init__.py-pkg-MODULE_AMBIGUOUS]"
+  },
+  {
+   "mutant_id": "OD4-22",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "    return check_python_layout(repo_root, _resolve_python_snapshot(raw, revision=revision,",
+   "mutation": "    return (lambda _root, binding: binding)(repo_root, _resolve_python_snapshot(raw, revision=revision,",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "4caa1e2a066f065cda053cc44f5b6af7229a27532b2dc688a54f8928934fd63c"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_refuses_layouts_that_name_a_module_twice[files0-roots0-app/mod.py-mod-IMPORT_ROOT_INVALID]"
+  },
+  {
+   "mutant_id": "OD4-23",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "    check_python_layout(repo_root, bindings[0])  # The module binding: every symbol shares its module.",
+   "mutation": "    pass",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "8c7380b6277b06f48212f1890128333589ca3d1e3285882c5c3eb637fd0c6903"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py",
+    "acceptance/stage4/stage10/test_task_target_resolution.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_refuses_layouts_that_name_a_module_twice[files0-roots0-app/mod.py-mod-IMPORT_ROOT_INVALID]"
+  },
+  {
+   "mutant_id": "OD4-24",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "    contract_version = BINDING_CONTRACT_VERSION_V2 if roots else BINDING_CONTRACT_VERSION_V1",
+   "mutation": "    contract_version = BINDING_CONTRACT_VERSION_V1",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "1109069931c0ee5e8ab1d4d6b67793d2ac70ed08b48d6226ed9d14b4e742dbe4"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py",
+    "acceptance/stage4/stage10/test_task_target_resolution.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_names_a_module_from_its_longest_declared_root"
+  },
+  {
+   "mutant_id": "OD4-25",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "    module = _python_module_v2(canonical_path, roots)[0] if roots else _module_from_path(canonical_path)",
+   "mutation": "    module = _module_from_path(canonical_path)",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "6cf1fe733e6f04ed77526d517c5259370e147b6ec92d105e2bb3baec0079997b"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py",
+    "acceptance/stage4/stage10/test_task_target_resolution.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_names_a_module_from_its_longest_declared_root"
+  },
+  {
+   "mutant_id": "OD4-26",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "        if python_roots:\n            raise _fail(BindingFailureCode.CONTRACT_VERSION_MISMATCH,",
+   "mutation": "        if False:\n            raise _fail(BindingFailureCode.CONTRACT_VERSION_MISMATCH,",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "67969e418d52ad3c11853a4b548af451907dde9b758706ce1f3a9ac7cf2bb229"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py",
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_versions_and_import_roots_never_mix"
+  },
+  {
+   "mutant_id": "OD4-27",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "        if not python_roots:\n            raise _fail(BindingFailureCode.CONTRACT_VERSION_MISMATCH,",
+   "mutation": "        if False:\n            raise _fail(BindingFailureCode.CONTRACT_VERSION_MISMATCH,",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "ce50dc37c8bc4f942ac3fb372af60b13eff20a9243998731479c68ca3bac11bc"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py",
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_s4_p3_acc_python_03_duplicate_qualname_and_version_mismatches"
+  },
+  {
+   "mutant_id": "OD4-28",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "    if roots:\n        payload.update(python_root=python_root, python_roots=list(roots))",
+   "mutation": "    if False:\n        payload.update(python_root=python_root, python_roots=list(roots))",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "582d78fc86b57a0588706d2f9e89ba3e3637eebfe1802b969c8c4852a984f4b5"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_names_a_module_from_its_longest_declared_root"
+  },
+  {
+   "mutant_id": "OD4-29",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "        BindingKind.PYTHON: (_PYTHON_FIELDS_V2 if value.get(\"contract_version\") == BINDING_CONTRACT_VERSION_V2",
+   "mutation": "        BindingKind.PYTHON: (_PYTHON_FIELDS_V2 if False",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "2cc4d94a1c66e31443aee9331322207433beaa166e563bf38036eb95fd6d8352"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_names_a_module_from_its_longest_declared_root"
+  },
+  {
+   "mutant_id": "OD4-30",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "            python_roots=_exact_list(data[\"python_roots\"], \"python_roots\") if \"python_roots\" in fields else (),",
+   "mutation": "            python_roots=(),",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "b78269be2d5c730d7d2fa24944f0ba16841111cfe52e823dcbcd999c42f41889"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_names_a_module_from_its_longest_declared_root"
+  },
+  {
+   "mutant_id": "OD4-31",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "        python_roots=current.python_roots,\n    )\n    if resolved.source_span_hash != current.source_span_hash:",
+   "mutation": "    )\n    if resolved.source_span_hash != current.source_span_hash:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "179c2192ab2bcd7c861b3a5a94a398447e6f381003613d7de8243e2ff9d48b46"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_names_a_module_from_its_longest_declared_root"
+  },
+  {
+   "mutant_id": "OD4-32",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/bindings.py",
+   "original": "        python_roots=value.get(\"python_roots\", ()))",
+   "mutation": "        python_roots=())",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "59d2346c6647da2be38a7f484cf6c9bd359e1bf7f1c2f9ebee8efcd82ee3e123"
+   },
+   "killer_files": [
+    "tests/test_stage4_gold_bindings.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_stage4_gold_bindings.py::test_binding_contract_v2_names_a_module_from_its_longest_declared_root"
+  },
+  {
+   "mutant_id": "OD4-33",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/knowledge_environment.py",
+   "original": "        if self.python_roots and _python_roots(self.python_roots) != self.python_roots:",
+   "mutation": "        if False:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "7949dbbe01c7687fbf17a7c2c8e9d64c3ba3b047d104cc8e46e5308bfd66eac9"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py",
+    "acceptance/stage4/stage16/test_src_layout_project_acceptance.py"
+   ],
+   "first_round": {
+    "status": "SURVIVED",
+    "closed_by": "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py::test_a_declaration_holds_its_import_roots_canonical"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py::test_a_declaration_holds_its_import_roots_canonical"
+  },
+  {
+   "mutant_id": "OD4-34",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/knowledge_environment.py",
+   "original": "    if declaration.python_roots:\n        try:\n            check_python_roots(",
+   "mutation": "    if False:\n        try:\n            check_python_roots(",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "07e5efed62a6f25ac59df0924659f53c660eacc4592117289088cc5752b78f08"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py::test_roots_that_cannot_name_modules_refuse_the_connection[files0-roots0-an"
+  },
+  {
+   "mutant_id": "OD4-35",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/knowledge_environment.py",
+   "original": "        \"schema_version\": PROJECT_RECORD_SCHEMA_V2 if declaration.python_roots else PROJECT_RECORD_SCHEMA_V1,",
+   "mutation": "        \"schema_version\": PROJECT_RECORD_SCHEMA_V1,",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "50f33bc32d4b7ee140aaf65e59d38eaaa473321631761856fc3c636e1d68fd20"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py",
+    "acceptance/stage4/stage16/test_src_layout_project_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py::test_a_claim_under_the_other_binding_contract_is_refused_before_it_is_journaled[roots0-src.shapes.area-synapse.stage4.gold.binding-contract/v1]"
+  },
+  {
+   "mutant_id": "OD4-36",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/knowledge_environment.py",
+   "original": "        **({\"python_roots\": list(declaration.python_roots)} if declaration.python_roots else {}),",
+   "mutation": "        **{},",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "e0ffb3759f9b7ae316d055e71549d44a4370bac85116856a48e1d6f9580a6444"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py",
+    "acceptance/stage4/stage16/test_src_layout_project_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py::test_a_claim_under_the_other_binding_contract_is_refused_before_it_is_journaled[roots0-src.shapes.area-synapse.stage4.gold.binding-contract/v1]"
+  },
+  {
+   "mutant_id": "OD4-37",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/knowledge_environment.py",
+   "original": "    missing = sorted(_RECORD_FIELDS - set(payload) | ({\"python_roots\"} - set(payload) if rooted else set()))",
+   "mutation": "    missing = sorted(_RECORD_FIELDS - set(payload))",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "d5396ff61eb6845036fc4d4f2f472deccc2c638a8286a1273eb0c310173f49a4"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py",
+    "acceptance/stage4/stage16/test_src_layout_project_acceptance.py"
+   ],
+   "first_round": {
+    "status": "SURVIVED",
+    "closed_by": "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py::test_a_project_record_that_lost_its_import_roots_is_refused"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py::test_a_project_record_that_lost_its_import_roots_is_refused"
+  },
+  {
+   "mutant_id": "OD4-38",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/knowledge_environment.py",
+   "original": "        python_roots=_python_roots(payload[\"python_roots\"]) if rooted else (),",
+   "mutation": "        python_roots=(),",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "c8651d808c9b4f9fd78b90f28fb949bbe7c7275706887165de31a83aa55ae93f"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py",
+    "acceptance/stage4/stage16/test_src_layout_project_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py::test_a_claim_under_the_other_binding_contract_is_refused_before_it_is_journaled[roots0-src.shapes.area-synapse.stage4.gold.binding-contract/v1]"
+  },
+  {
+   "mutant_id": "OD4-39",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/knowledge_environment.py",
+   "original": "                                                                           PROJECT_RECORD_SCHEMA_V2):",
+   "mutation": "                                                                           PROJECT_RECORD_SCHEMA_V1):",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "0dbd96263b8b40db79ba94b199a585e8496be333ad684532c9fb711d8d100edd"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py",
+    "acceptance/stage4/stage16/test_src_layout_project_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py::test_a_claim_under_the_other_binding_contract_is_refused_before_it_is_journaled[roots0-src.shapes.area-synapse.stage4.gold.binding-contract/v1]"
+  },
+  {
+   "mutant_id": "OD4-40",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/knowledge_environment.py",
+   "original": "        \"entitlements\",\n        \"python_roots\",\n    }",
+   "mutation": "        \"entitlements\",\n    }",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "f5aa35ad942e72b75b6b03b2029d2e041eb957c8b7e7b16b87465799feac04ef"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py",
+    "acceptance/stage4/stage16/test_src_layout_project_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py::test_a_claim_under_the_other_binding_contract_is_refused_before_it_is_journaled[roots0-src.shapes.area-synapse.stage4.gold.binding-contract/v1]"
+  },
+  {
+   "mutant_id": "OD4-41",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/knowledge_environment.py",
+   "original": "        python_roots=_python_roots(payload[\"python_roots\"]) if \"python_roots\" in payload else (),",
+   "mutation": "        python_roots=(),",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "f9d7d3cd13a66d5f6510743300864841d5e0ff82138ec8aee73d96594c534c82"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py",
+    "acceptance/stage4/stage16/test_src_layout_project_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py::test_a_claim_under_the_other_binding_contract_is_refused_before_it_is_journaled[roots0-src.shapes.area-synapse.stage4.gold.binding-contract/v1]"
+  },
+  {
+   "mutant_id": "OD4-42",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/knowledge_environment.py",
+   "original": "        python_roots=declaration.python_roots,\n    )",
+   "mutation": "        python_roots=(),\n    )",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "7528eb492e62649984dfa743e089ab152da3e67eaf6c362d98139b24fd28dbe6"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py",
+    "acceptance/stage4/stage16/test_src_layout_project_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_project_acceptance.py::test_a_rooted_project_learns_a_symbol_by_its_import_name"
+  },
+  {
+   "mutant_id": "OD4-43",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/cli.py",
+   "original": "        if status.python_roots:",
+   "mutation": "        if False:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "89731b27a801641d3cff7586708cc7a5b3a6115edbc807b9dc65d97e650bec1d"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py",
+    "acceptance/stage4/stage16/test_src_layout_project_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_project_acceptance.py::test_a_rooted_project_learns_a_symbol_by_its_import_name"
+  },
+  {
+   "mutant_id": "OD4-44",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/source_ingestion.py",
+   "original": "    if any(symbol[\"contract_version\"] != contract for symbol in claim[\"symbols\"]):",
+   "mutation": "    if False:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "6177bd6f90ee2f4f322f8accf8b8c02a4f2548b810bf5018231d09339490c93a"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py",
+    "acceptance/stage4/stage16/test_src_layout_project_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py::test_a_claim_under_the_other_binding_contract_is_refused_before_it_is_journaled[roots0-src.shapes.area-synapse.stage4.gold.binding-contract/v1]"
+  },
+  {
+   "mutant_id": "OD4-45",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/source_ingestion.py",
+   "original": "    contract = BINDING_CONTRACT_VERSION_V2 if project.declaration.python_roots else BINDING_CONTRACT_VERSION_V1",
+   "mutation": "    contract = BINDING_CONTRACT_VERSION_V1",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "384b8f51bbcb61a5e531994f75eaa5ef242d80c35996089b9bf0065fa199602c"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py",
+    "acceptance/stage4/stage16/test_src_layout_project_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py::test_a_claim_under_the_other_binding_contract_is_refused_before_it_is_journaled[roots0-src.shapes.area-synapse.stage4.gold.binding-contract/v1]"
+  },
+  {
+   "mutant_id": "OD4-46",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/source_ingestion.py",
+   "original": "                observation_sink=retain_observation, python_roots=project.declaration.python_roots)",
+   "mutation": "                observation_sink=retain_observation)",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "449733d51b5c05664109a8dbffebda0bd930f48455f795fabf222538cfb72b3f"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py",
+    "acceptance/stage4/stage16/test_src_layout_project_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_project_acceptance.py::test_a_rooted_project_learns_a_symbol_by_its_import_name"
+  },
+  {
+   "mutant_id": "OD4-47",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/source_verification.py",
+   "original": "                    repository_revision=revision, path=item[\"path\"], python_roots=python_roots)",
+   "mutation": "                    repository_revision=revision, path=item[\"path\"])",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "291c899310622baeabd12f5016052161015bf07aaa8c55cd88db3ca534ce8958"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_src_layout_study_acceptance.py",
+    "acceptance/stage4/stage16/test_source_study_acceptance.py",
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py",
+    "acceptance/stage4/stage16/test_src_layout_project_acceptance.py"
+   ],
+   "first_round": {
+    "status": "SURVIVED",
+    "closed_by": "acceptance/stage4/stage16/test_src_layout_study_acceptance.py"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_study_acceptance.py::test_a_rooted_project_studies_its_modules_by_their_import_names"
+  },
+  {
+   "mutant_id": "OD4-48",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/source_verification.py",
+   "original": "                check_python_layout(repo_root, discovered[0])",
+   "mutation": "                pass",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "ee3ad83fc94320e7a4992d6578cb37408b71b4120125ec0ee09084def82399b2"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_src_layout_study_acceptance.py",
+    "acceptance/stage4/stage16/test_source_study_acceptance.py",
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py",
+    "acceptance/stage4/stage16/test_src_layout_project_acceptance.py"
+   ],
+   "first_round": {
+    "status": "SURVIVED",
+    "closed_by": "acceptance/stage4/stage16/test_src_layout_study_acceptance.py"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_study_acceptance.py::test_a_rooted_project_studies_its_modules_by_their_import_names"
+  },
+  {
+   "mutant_id": "OD4-49",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/source_verification.py",
+   "original": "            python_roots=python_roots)\n        bindings.append(binding.to_dict())",
+   "mutation": ")\n        bindings.append(binding.to_dict())",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "68e5e84363f1c29d8eecb7f30b8a8d9558ba39d5314eb557aa34ecd597a64c43"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py",
+    "acceptance/stage4/stage16/test_src_layout_project_acceptance.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_project_acceptance.py::test_a_rooted_project_learns_a_symbol_by_its_import_name"
+  },
+  {
+   "mutant_id": "OD4-50",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/task_targets.py",
+   "original": "        bindings = discover_python_bindings(repository_root, repository_revision=revision, path=path,\n                                            python_roots=python_roots)",
+   "mutation": "        bindings = discover_python_bindings(repository_root, repository_revision=revision, path=path)",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "4ca0785b2b954407ad9a4a59319f3adf02bab4f8e20e21c4134edc6fe2b04394"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage10/test_task_target_resolution.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage10/test_task_target_resolution.py::test_a_rooted_project_selects_a_symbol_its_task_names_by_import_name"
+  },
+  {
+   "mutant_id": "OD4-51",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/task_targets.py",
+   "original": "        \"schema_version\": TASK_TARGET_RESOLUTION_V2 if python_roots else TASK_TARGET_RESOLUTION_V1,",
+   "mutation": "        \"schema_version\": TASK_TARGET_RESOLUTION_V1,",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "34b33551d1749ac8aa121534911fd3aca071e9855a9da77d983f1573719c849e"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage10/test_task_target_resolution.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage10/test_task_target_resolution.py::test_a_rooted_project_selects_a_symbol_its_task_names_by_import_name"
+  },
+  {
+   "mutant_id": "OD4-52",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/task_targets.py",
+   "original": "        **({\"python_roots\": list(python_roots)} if python_roots else {}),",
+   "mutation": "        **{},",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "7358cded493815ec2b727d18a34195375c2e09c972c1b7204465bb01bd3d6144"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage10/test_task_target_resolution.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage10/test_task_target_resolution.py::test_a_rooted_project_selects_a_symbol_its_task_names_by_import_name"
+  },
+  {
+   "mutant_id": "OD4-53",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/task_targets.py",
+   "original": "        roots = tuple(recorded[\"python_roots\"])",
+   "mutation": "        roots = ()",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "649d092624c71c8947234c81238f3d3420dea7d408835d220ec63e16e27154a0"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage10/test_task_target_resolution.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage10/test_task_target_resolution.py::test_a_rooted_project_selects_a_symbol_its_task_names_by_import_name"
+  },
+  {
+   "mutant_id": "OD4-54",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/task_targets.py",
+   "original": "        if type(recorded.get(\"python_roots\")) is not list or not recorded[\"python_roots\"]:",
+   "mutation": "        if False:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "ec2f2e9e687290a717ee724154fbd40e7730739e2253bf7e6a67193e316aa24d"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage10/test_task_target_resolution.py"
+   ],
+   "first_round": {
+    "status": "KILLED"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage10/test_task_target_resolution.py::test_a_resolution_never_reproduces_under_roots_other_than_it_recorded[drop-roots]"
+  },
+  {
+   "mutant_id": "OD4-55",
+   "item": "src_layout_binding_contract_v2",
+   "production_file": "synapse/experiments/gold/run_inputs.py",
+   "original": "        target_resolution = decode_canonical(resolve_task_targets(task=task, repository_root=project.declaration.repo_root,\n                                                                  python_roots=project.declaration.python_roots))",
+   "mutation": "        target_resolution = decode_canonical(resolve_task_targets(task=task, repository_root=project.declaration.repo_root))",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "0d9d808f33bf282076dfb496c9dbeefd8fa45db478e2a94bb9592fcc265cf874"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage10/test_task_target_resolution.py",
+    "acceptance/stage4/stage16/test_src_layout_gold_inputs_acceptance.py",
+    "acceptance/stage4/stage16/test_src_layout_project_acceptance.py"
+   ],
+   "first_round": {
+    "status": "SURVIVED",
+    "closed_by": "acceptance/stage4/stage16/test_src_layout_gold_inputs_acceptance.py"
+   },
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_gold_inputs_acceptance.py::test_a_rooted_project_freezes_its_task_targets_under_its_import_roots"
+  }
+ ]
+}

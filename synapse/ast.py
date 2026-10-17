@@ -269,6 +269,8 @@ class FractureStmt(Node):
     consensus_strategy: str = "weighted"  # weighted | majority | unanimous | affective_weighted
     consensus_config: Optional[Node] = None
     integration_clause: Optional[List[Node]] = None
+    # ``reason`` of the integrate clause: audit metadata of identity_integrated (spec v1.5).
+    integration_reason: Optional[Node] = None
 
 @dataclass
 class FractureResult(Node):

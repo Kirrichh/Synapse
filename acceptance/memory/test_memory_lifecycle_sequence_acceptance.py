@@ -203,7 +203,8 @@ class Lifecycles(RuleBasedStateMachine):
         run_id = self._run_id("slow")
         flight = self._flight("SLOW")
         process = self.world.start(lifecycle.PROGRAM, run_id, lifecycle.inputs(run_id, "book", flight=flight))
-        _await(lambda: any(item["args"]["flight"] == flight for item in self.world.world()["effects"]))
+        # The world also holds effects of other tools (a restart names no flight).
+        _await(lambda: any(item["args"].get("flight") == flight for item in self.world.world()["effects"]))
         os.killpg(process.pid, signal.SIGKILL)  # After the booking, before its answer.
         process.wait(60)
         self._resume(run_id)

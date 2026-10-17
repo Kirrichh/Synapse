@@ -13,6 +13,7 @@ from pathlib import Path
 from synapse.change.workspace import GitWorkspaceError
 
 from .admission_journal import FileSnapshotFence, JournalAdapterViolation
+from .bindings import BINDING_CONTRACT_VERSION_V1, BINDING_CONTRACT_VERSION_V2
 from .canonicalization import HashBoundRef
 from .contracts import AttemptId
 from .knowledge_environment import open_gold_project, _builder_runtime_identity
@@ -62,6 +63,9 @@ def _ingest_sources(*, state_root: Path, input_path: Path):
         raise ValueError("source claim exceeds the project's declared read scope")
     if claim["recipe"] is not None and "execute" not in grant.capabilities:
         raise ValueError("source recipe execution is outside the project's declared capabilities")
+    contract = BINDING_CONTRACT_VERSION_V2 if project.declaration.python_roots else BINDING_CONTRACT_VERSION_V1
+    if any(symbol["contract_version"] != contract for symbol in claim["symbols"]):
+        raise ValueError("source claim names modules under another binding contract than the project's")
     evidence_paths = {}
     if type(declaration["files"]) is not list:
         raise ValueError("source ingestion needs explicit observed input files")
@@ -146,7 +150,7 @@ def _ingest_sources(*, state_root: Path, input_path: Path):
                 evidence[ref] = raw
             verification = verify_source_claim(repo_root=project.declaration.repo_root, claim=claim,
                 external_evidence=evidence, attempt_id=AttemptId("source-verification-1"),
-                observation_sink=retain_observation)
+                observation_sink=retain_observation, python_roots=project.declaration.python_roots)
         except (ValueError, OSError, TypeError, GitWorkspaceError, PersistenceViolation) as exc:
             if fence.current_epoch() % 2:
                 raise  # A failed journal mutation cannot authorize another write.

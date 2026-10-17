@@ -91,13 +91,17 @@ class MemoryOwner:
         bindings = self._bindings(guard)
         return bindings[-1]["configuration_sha256"] if bindings else None
 
-    def bind(self, guard, configuration: MemoryConfiguration) -> None:
-        """Bind the owner's one configuration; a different one is refused (a reassessment changes it)."""
+    def require_bindable(self, configuration: MemoryConfiguration, *, guard=None) -> str | None:
+        """The digest in force, once a configuration other than it is refused (a reassessment changes it)."""
         bound = self.bound_digest(guard=guard)
         if bound is not None and bound != configuration.configuration_sha256:
             raise MemoryOwnerViolation("this memory owner is bound to another memory configuration; "
                                        "a new configuration is adopted only by 'synapse memory reassess'")
-        if bound is None:
+        return bound
+
+    def bind(self, guard, configuration: MemoryConfiguration) -> None:
+        """Bind the owner's one configuration; a different one is refused (a reassessment changes it)."""
+        if self.require_bindable(configuration, guard=guard) is None:
             self.store.put(kind="MEMORY_BOUND", job_key=_key("synapse.memory.owner", self.identity), guard=guard,
                            payload={"schema_version": OWNER_BINDING_V1, "project_identity": self.identity,
                                     "configuration": dict(configuration.raw),

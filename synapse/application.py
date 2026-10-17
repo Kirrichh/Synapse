@@ -339,9 +339,18 @@ class _DurablePreExecutionError(Exception):
         self.error_code = error_code or _error_code_for_exit(exit_code)
         self.public_message = public_message or _public_message_for_exit(exit_code)
 
+    def diagnostic(self, source_path: Path) -> str | None:
+        """The one stderr line that names this refusal (RFC-ASYNC-EXECUTION-AMENDMENT-04).
+
+        A refusal names itself only when every part of the line is allowlisted: its error code, AST
+        class names, identifiers and a line of the source, the program path as given, an initial
+        binding's name. A refusal that could carry anything else names nothing.
+        """
+        return None
+
 
 class _DurableUnsupportedError(_DurablePreExecutionError):
-    def __init__(self, message: str):
+    def __init__(self, message: str, *, line: int | None = None):
         super().__init__(
             message,
             exit_code=25,
@@ -349,6 +358,36 @@ class _DurableUnsupportedError(_DurablePreExecutionError):
             error_code=_UNSUPPORTED_DURABLE_OPERATION_OR_REASON,
             public_message=_PUBLIC_ERROR_MESSAGES["unsupported"],
         )
+        self.line = line
+
+    def locate(self, node: synapse_ast.Node) -> None:
+        """Place the refusal at the innermost construct it was raised for, the first to report it."""
+        if self.line is None and not isinstance(node, synapse_ast.Program) and node.line > 0:
+            self.line = node.line
+
+    def diagnostic(self, source_path: Path) -> str | None:
+        # Every message of this class names AST classes, registry constraints and source identifiers only.
+        where = _diagnostic_text(str(source_path)) + ("" if self.line is None else f":{self.line}")
+        return f"synapse: {where}: {self.error_code}: {_diagnostic_text(str(self))}"
+
+
+class _DurableBindingRefusal(_DurablePreExecutionError):
+    """An initial binding the program cannot receive; it is named, its value never is."""
+
+    def __init__(self, binding: str, reason: str):
+        super().__init__(f"initial binding {reason}: {binding}", exit_code=2)
+        self.binding = binding
+        self.reason = reason
+
+    def diagnostic(self, source_path: Path) -> str | None:
+        name = self.binding if len(self.binding) <= 64 else self.binding[:63] + "…"
+        return f"synapse: {self.error_code}: initial binding {_diagnostic_text(repr(name))} {self.reason}"
+
+
+def _diagnostic_text(text: str, limit: int = 512) -> str:
+    """One bounded line: control and other non-printable characters are escaped, never emitted."""
+    escaped = "".join(char if char.isprintable() else repr(char)[1:-1] for char in text)
+    return escaped if len(escaped) <= limit else escaped[: limit - 1] + "…"
 
 
 def durable_ast_inventory() -> tuple[dict[str, object], ...]:
@@ -998,6 +1037,21 @@ def _validate_node(
     top_level: bool = False,
     role: str = "",
 ) -> _DurableValidationContext:
+    """Validate one construct; a refusal inside it is placed at the innermost construct's line."""
+    try:
+        return _validate_construct(node, context, top_level=top_level, role=role)
+    except _DurableUnsupportedError as exc:
+        exc.locate(node)
+        raise
+
+
+def _validate_construct(
+    node: synapse_ast.Node,
+    context: _DurableValidationContext,
+    *,
+    top_level: bool,
+    role: str,
+) -> _DurableValidationContext:
     name = type(node).__name__
     if name not in _DURABLE_AST_CLASSIFICATIONS:
         raise _DurableUnsupportedError(f"unclassified durable AST node: {name}")
@@ -1166,17 +1220,17 @@ def _validate_initial_bindings(bindings: dict[str, Any], source_owned: set[str])
     reserved = set(bootstrap.global_env.variables)
     for key, value in bindings.items():
         if not _IDENTIFIER_RE.fullmatch(key):
-            raise _DurablePreExecutionError(f"invalid initial binding identifier: {key}", exit_code=2)
+            raise _DurableBindingRefusal(key, "is not an identifier")
         if key in KEYWORDS:
-            raise _DurablePreExecutionError(f"initial binding collides with keyword: {key}", exit_code=2)
+            raise _DurableBindingRefusal(key, "collides with a keyword")
         if key in BUILTINS:
-            raise _DurablePreExecutionError(f"initial binding collides with builtin: {key}", exit_code=2)
+            raise _DurableBindingRefusal(key, "collides with a builtin")
         if key in reserved:
-            raise _DurablePreExecutionError(f"initial binding collides with bootstrap binding: {key}", exit_code=2)
+            raise _DurableBindingRefusal(key, "collides with a bootstrap binding")
         if key.startswith("__synapse_"):
-            raise _DurablePreExecutionError(f"initial binding uses reserved prefix: {key}", exit_code=2)
+            raise _DurableBindingRefusal(key, "uses the reserved prefix __synapse_")
         if key in source_owned:
-            raise _DurablePreExecutionError(f"initial binding collides with source-owned binding: {key}", exit_code=2)
+            raise _DurableBindingRefusal(key, "collides with a binding the source owns")
         _validate_strict_json_value(value)
 
 
@@ -2527,7 +2581,7 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
             try:
                 source_owned = validate_cognitive_program(ast)
             except CognitiveProfileViolation as exc:
-                raise _DurableUnsupportedError(str(exc)) from exc
+                raise _DurableUnsupportedError(str(exc), line=exc.line) from exc
         else:
             source_owned = _validate_durable_ast(ast)
         _validate_initial_bindings(initial_bindings, source_owned)
@@ -2649,6 +2703,7 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
             )
         return result
     except _DurablePreExecutionError as exc:
+        diagnostic = exc.diagnostic(request.source_path)
         return _durable_failure(
             exc.status,
             exc.exit_code,
@@ -2656,6 +2711,7 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
             exc.public_message,
             run_id=run_id,
             correlation_id=request.correlation_id,
+            diagnostics=() if diagnostic is None else (diagnostic,),
         )
     except OSError as exc:
         if _is_permission_os_error(exc):
@@ -2716,18 +2772,26 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
 
 
 def execute_loaded_source(request: SourceExecutionRequest, *, interpreter: Interpreter | None = None) -> RuntimeExecutionResult:
-    """Execute already-loaded Synapse source through the public runtime primitive."""
+    """Execute already-loaded Synapse source through the public runtime primitive.
 
+    The result carries the output this execution produced, on a failure as well:
+    what the program printed before it failed is part of what it did. A REPL
+    interpreter's earlier output belongs to its earlier executions.
+    """
+
+    if interpreter is None:
+        interpreter = Interpreter()
+    start = len(interpreter.output_buffer)
     try:
-        output = run_source_runtime(request.source, interpreter)
+        run_source_runtime(request.source, interpreter)
     except Exception as exc:  # keep application error normalization at this layer
         return RuntimeExecutionResult(
             status="ERROR",
             exit_code=1,
-            output="",
+            output="\n".join(interpreter.output_buffer[start:]),
             diagnostics=(str(exc),),
         )
-    return RuntimeExecutionResult(status="OK", exit_code=0, output=output)
+    return RuntimeExecutionResult(status="OK", exit_code=0, output="\n".join(interpreter.output_buffer[start:]))
 
 
 def execute_source(request: SourceExecutionRequest) -> RuntimeExecutionResult:
@@ -2775,34 +2839,44 @@ def execute_file(request: FileExecutionRequest) -> RuntimeExecutionResult:
 
 
 def run_repl(request: ReplRequest, *, stdin: TextIO, stdout: TextIO, stderr: TextIO) -> ReplResult:
-    if request.banner:
-        stdout.write("╔══════════════════════════════════════╗\n")
-        stdout.write(f"║  Synapse v{RUNTIME_VERSION} - Язык для ИИ        ║\n")
-        stdout.write("║  Type 'exit' to quit                 ║\n")
-        stdout.write("╚══════════════════════════════════════╝\n")
-    interpreter = Interpreter()
-    while True:
-        try:
-            stdout.write(request.prompt)
-            stdout.flush()
-            line = stdin.readline()
-            if line == "":
+    try:
+        if request.banner:
+            lines = (f"Synapse v{RUNTIME_VERSION} - a language for AI", "Type 'exit' to quit")
+            width = max(len(line) for line in lines) + 4
+            stdout.write("╔" + "═" * width + "╗\n")
+            for line in lines:
+                stdout.write("║  " + line.ljust(width - 2) + "║\n")
+            stdout.write("╚" + "═" * width + "╝\n")
+        interpreter = Interpreter()
+        while True:
+            try:
+                stdout.write(request.prompt)
+                stdout.flush()
+                line = stdin.readline()
+                if line == "":
+                    break
+                line = line.rstrip("\n")
+                if line.strip() in ["exit", "quit"]:
+                    break
+                if not line.strip():
+                    continue
+                result = execute_loaded_source(SourceExecutionRequest(line), interpreter=interpreter)
+                if result.output:
+                    stdout.write(f"{result.output}\n")
+                if result.exit_code != 0:
+                    stdout.write(f"Error: {'; '.join(result.diagnostics)}\n")
+            except KeyboardInterrupt:
+                stdout.write("\n")
                 break
-            line = line.rstrip("\n")
-            if line.strip() in ["exit", "quit"]:
-                break
-            if not line.strip():
-                continue
-            result = execute_loaded_source(SourceExecutionRequest(line), interpreter=interpreter)
-            if result.output:
-                stdout.write(f"{result.output}\n")
-            if result.exit_code != 0:
-                stdout.write(f"Error: {'; '.join(result.diagnostics)}\n")
-        except KeyboardInterrupt:
-            stdout.write("\n")
-            break
-        except Exception as exc:
-            stderr.write(f"Error: {exc}\n")
+            except OSError:
+                raise
+            except Exception as exc:
+                stderr.write(f"Error: {exc}\n")
+    except OSError as exc:
+        # A line's own errors are its result; a channel that fails (a closed pipe, a hung-up terminal)
+        # fails again on every line, so the session ends with the failure once.
+        stderr.write(f"Error: {exc}\n")
+        return ReplResult(status="ERROR", exit_code=1, diagnostics=(str(exc),))
     return ReplResult(status="OK", exit_code=0)
 
 

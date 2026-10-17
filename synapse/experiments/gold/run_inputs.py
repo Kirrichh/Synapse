@@ -290,10 +290,16 @@ def freeze_gold_inputs(*, declaration_path: Path, project, run_root: Path, court
     from synapse.resource_usage import RESOURCE_PROFILE
     declaration = read_input_json(declaration_path)
     task = _validate_declaration(declaration)
+    # The declaration is refused before its run's memory job is requested: that job holds the run id.
+    if declaration["schema_version"] != EXPERIMENT_INPUT_SCHEMA_V4:
+        raise ValueError("new runs select an admitted agent profile (experiment input v4)")
+    from .agent_selection import select_coding_agent
+    agent_selection, _ = select_coding_agent(declaration)
     target_resolution = None
     if task.schema_version == TASK_CONTRACT_SCHEMA_V3:
         from .task_targets import resolve_task_targets
-        target_resolution = decode_canonical(resolve_task_targets(task=task, repository_root=project.declaration.repo_root))
+        target_resolution = decode_canonical(resolve_task_targets(task=task, repository_root=project.declaration.repo_root,
+                                                                  python_roots=project.declaration.python_roots))
     knowledge_path = Path(declaration["knowledge_path"])
     if not knowledge_path.is_absolute():
         knowledge_path = declaration_path.parent / knowledge_path
@@ -313,13 +319,8 @@ def freeze_gold_inputs(*, declaration_path: Path, project, run_root: Path, court
             selection = require_run_memory_selection(knowledge.get("run_memory_selection"))
         if set(knowledge) != fields or type(knowledge["files"]) is not list:
             raise ValueError("project knowledge input has an unknown selection contract")
-        support = knowledge["files"]
-        source_snapshot, knowledge, source_heads = capture_project_source_snapshot(project=project,
-            task=task, limit=knowledge["experience_limit"], target_resolution=target_resolution,
-            run_root=run_root, run_id=declaration["run_id"], run_memory_selection=selection, court=court)
-        references = {HashBoundRef.from_dict(item["ref"]) for item in knowledge["files"]}
-        supplied = set()
-        for item in support:
+        supplied = {}
+        for item in knowledge["files"]:
             if type(item) is not dict or set(item) != {"ref", "path"}:
                 raise ValueError("project support evidence requires a reference and path")
             ref = HashBoundRef.from_dict(item["ref"])
@@ -328,13 +329,13 @@ def freeze_gold_inputs(*, declaration_path: Path, project, run_root: Path, court
             raw = read_regular_bytes(path, maximum_bytes=MAX_INPUT_BYTES)
             if ref in supplied or len(raw) != ref.byte_length or hashlib.sha256(raw).hexdigest() != ref.sha256:
                 raise ValueError("project support evidence is repeated or changed")
-            supplied.add(ref)
-            if ref not in references:
-                knowledge["files"].append({"ref": ref.to_dict(), "path": str(path.resolve())})
-    if declaration["schema_version"] != EXPERIMENT_INPUT_SCHEMA_V4:
-        raise ValueError("new runs select an admitted agent profile (experiment input v4)")
-    from .agent_selection import select_coding_agent
-    agent_selection, _ = select_coding_agent(declaration)
+            supplied[ref] = str(path.resolve())
+        source_snapshot, knowledge, source_heads = capture_project_source_snapshot(project=project,
+            task=task, limit=knowledge["experience_limit"], target_resolution=target_resolution,
+            run_root=run_root, run_id=declaration["run_id"], run_memory_selection=selection, court=court)
+        references = {HashBoundRef.from_dict(item["ref"]) for item in knowledge["files"]}
+        knowledge["files"].extend({"ref": ref.to_dict(), "path": path} for ref, path in supplied.items()
+                                  if ref not in references)
     state_root = project.declaration.state_root
     with project.fence.exclusive():
         if project.fence.current_epoch() % 2:

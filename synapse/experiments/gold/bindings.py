@@ -39,6 +39,14 @@ from .contracts import ContractViolation, RepositoryRevision, RepositoryRevision
 
 BINDING_SCHEMA_V1 = "synapse.stage4.gold.binding/v1"
 BINDING_CONTRACT_VERSION_V1 = "synapse.stage4.gold.binding-contract/v1"
+#: The Python contract of a project that declares import roots (``python_roots``). A module is named from
+#: the longest declared root that contains its path, every other path from the repository root:
+#: ``src/flask/app.py`` binds as ``flask.app`` under the root ``src``, ``tests/test_app.py`` as
+#: ``tests.test_app``. The chosen root and the declared roots are part of the binding, so a retained
+#: binding derives its module again without the project. Every other binding kind, and every project
+#: that declares no roots, keeps v1.
+BINDING_CONTRACT_VERSION_V2 = "synapse.stage4.gold.binding-contract/v2"
+MAX_PYTHON_ROOTS_V2 = 16
 BINDING_DOCUMENT_SCHEMA_V1 = "synapse.stage4.gold.binding-document/v1"
 BINDING_IDENTITY_PROFILE_V1 = "synapse.stage4.gold.binding-record/v1"
 BINDING_IDENTITY_PREFIX_V1 = b"synapse.stage4.gold.binding-record/v1\x00"
@@ -107,6 +115,8 @@ class BindingFailureCode(str, Enum):
     INVALID_PYTHON_SOURCE = "INVALID_PYTHON_SOURCE"
     INVALID_PYTHON_SCOPE = "INVALID_PYTHON_SCOPE"
     MODULE_MISMATCH = "MODULE_MISMATCH"
+    MODULE_AMBIGUOUS = "MODULE_AMBIGUOUS"
+    IMPORT_ROOT_INVALID = "IMPORT_ROOT_INVALID"
     SYMBOL_MISSING = "SYMBOL_MISSING"
     SYMBOL_AMBIGUOUS = "SYMBOL_AMBIGUOUS"
     QUALNAME_MISMATCH = "QUALNAME_MISMATCH"
@@ -194,8 +204,10 @@ def _parse_enum(value: object, enum_type: type[Enum], code: BindingFailureCode, 
         raise _fail(code, f"{name} is unknown") from exc
 
 
-def _require_contract_version(value: object) -> str:
-    if type(value) is not str or value != BINDING_CONTRACT_VERSION_V1:
+def _require_contract_version(value: object, binding_kind: BindingKind) -> str:
+    supported = ((BINDING_CONTRACT_VERSION_V1, BINDING_CONTRACT_VERSION_V2) if binding_kind is BindingKind.PYTHON
+                 else (BINDING_CONTRACT_VERSION_V1,))
+    if type(value) is not str or value not in supported:
         raise _fail(BindingFailureCode.CONTRACT_VERSION_MISMATCH, "binding contract version is unsupported")
     return value
 
@@ -343,7 +355,7 @@ def _common_payload(
 ) -> dict[str, object]:
     _require_git_commit_revision(repository_revision)
     _canonical_path(path)
-    _require_contract_version(contract_version)
+    _require_contract_version(contract_version, binding_kind)
     return {
         "schema_version": BINDING_SCHEMA_V1,
         "binding_kind": binding_kind.value,
@@ -366,6 +378,10 @@ class PythonBinding:
     source_span_hash: str
     contract_version: str
     resolver_version: str
+    #: Contract v2 only: the declared root the module is named from ("" for the repository root), and every
+    #: root the project declared. A v1 binding carries ``None`` and ``()`` and its payload names neither.
+    python_root: str | None
+    python_roots: tuple[str, ...]
     binding_id: BindingId
     _canonical_payload: bytes
     _trusted_seal: object
@@ -539,7 +555,7 @@ def _creation_payload(value: CreationBinding) -> dict[str, object]:
 
 
 def _python_payload(value: PythonBinding) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         **_common_payload(
             binding_kind=BindingKind.PYTHON,
             repository_revision=value.repository_revision,
@@ -552,6 +568,9 @@ def _python_payload(value: PythonBinding) -> dict[str, object]:
         "symbol_kind": value.symbol_kind.value,
         "source_span_hash": value.source_span_hash,
     }
+    if value.contract_version == BINDING_CONTRACT_VERSION_V2:
+        payload.update(python_root=value.python_root, python_roots=list(value.python_roots))
+    return payload
 
 
 def _document_payload(value: DocumentBinding) -> dict[str, object]:
@@ -670,7 +689,7 @@ def _validate_common_record(value: object, expected_type: type[Binding], expecte
         raise _fail(BindingFailureCode.UNKNOWN_BINDING_KIND, "binding kind is inconsistent")
     _require_git_commit_revision(value.repository_revision)
     _canonical_path(value.path)
-    _require_contract_version(value.contract_version)
+    _require_contract_version(value.contract_version, expected_kind)
     _validate_binding_id(value.binding_id)
     if type(value._canonical_payload) is not bytes:
         raise _fail(BindingFailureCode.TRUSTED_OBJECT_FORGED, "binding canonical payload is malformed")
@@ -694,6 +713,14 @@ def _validate_python_binding_record(value: object) -> PythonBinding:
     if type(value.symbol_kind) is not PythonSymbolKind:
         raise _fail(BindingFailureCode.UNKNOWN_SYMBOL_KIND, "Python symbol kind is malformed")
     _sha256(value.source_span_hash, BindingFailureCode.SOURCE_SPAN_HASH_MISMATCH, "source span hash")
+    if value.contract_version == BINDING_CONTRACT_VERSION_V1:
+        if value.python_root is not None or value.python_roots != ():
+            raise _fail(BindingFailureCode.CONTRACT_VERSION_MISMATCH, "a v1 Python binding declares no import roots")
+    else:
+        if type(value.python_roots) is not tuple or canonical_python_roots(value.python_roots) != value.python_roots:
+            raise _fail(BindingFailureCode.IMPORT_ROOT_INVALID, "sealed import roots are not canonical")
+        if _python_module_v2(value.path, value.python_roots) != (value.module, value.python_root):
+            raise _fail(BindingFailureCode.MODULE_MISMATCH, "module does not match its import root")
     _validate_payload_identity(value, _python_payload(value))
     return value
 
@@ -816,6 +843,102 @@ def _module_from_path(path: str) -> str:
     return ".".join(parts)
 
 
+def canonical_python_roots(value: object) -> tuple[str, ...]:
+    """A project's declared import roots: canonical repository directories, sorted, never repeated.
+
+    A root is a literal directory. The repository root is the implicit root of every path outside the
+    declared ones and is never declared itself.
+    """
+    if type(value) not in (list, tuple) or not value or len(value) > MAX_PYTHON_ROOTS_V2:
+        raise _fail(BindingFailureCode.IMPORT_ROOT_INVALID,
+                    f"python roots are 1 to {MAX_PYTHON_ROOTS_V2} repository directories")
+    roots: list[str] = []
+    for item in value:
+        try:
+            root = _canonical_path(item)
+        except BindingViolation as exc:
+            raise _fail(BindingFailureCode.IMPORT_ROOT_INVALID,
+                        "a python root is not a canonical repository directory") from exc
+        if any(char in "*?[]" for char in root) or root.endswith(".py"):
+            raise _fail(BindingFailureCode.IMPORT_ROOT_INVALID, "a python root is a literal directory")
+        roots.append(root)
+    if len(set(roots)) != len(roots):
+        raise _fail(BindingFailureCode.IMPORT_ROOT_INVALID, "a python root is declared twice")
+    return tuple(sorted(roots))
+
+
+def _python_module_v2(path: str, roots: tuple[str, ...]) -> tuple[str, str]:
+    """The module a path names under declared roots, and the root it is named from ("" for the repository).
+
+    The longest declared root that contains the path wins, compared by whole path components, so the
+    name never depends on the order roots were declared in (mypy's explicit package bases and pyright
+    name a file from its deepest root the same way).
+    """
+    root = max((item for item in roots if path.startswith(item + "/")), key=len, default="")
+    relative = path[len(root) + 1:] if root else path
+    if relative == "__init__.py":
+        raise _fail(BindingFailureCode.IMPORT_ROOT_INVALID, "an import root cannot itself be a package")
+    return _module_from_path(relative), root
+
+
+def _tree_entry_present(repo_root: object, git_sha: str, path: str, object_type: str) -> bool:
+    try:
+        entry = ls_tree_entry(repo_root, git_sha, path)
+    except (GitWorkspaceError, TaskContractError, OSError, ValueError) as exc:
+        raise _fail(BindingFailureCode.REPOSITORY_SNAPSHOT_UNAVAILABLE, "Git tree entry is unavailable") from exc
+    return entry is not None and entry.object_type == object_type
+
+
+def _require_root_outside_packages(repo_root: object, git_sha: str, root: str) -> None:
+    """A root that is a package, or lies inside one, makes its modules importable by a second name."""
+    parts = root.split("/") if root else []
+    for depth in range(len(parts), 0, -1):
+        if _tree_entry_present(repo_root, git_sha, "/".join(parts[:depth]) + "/__init__.py", "blob"):
+            raise _fail(BindingFailureCode.IMPORT_ROOT_INVALID, "an import root is a package or lies inside one")
+
+
+def check_python_roots(repo_root: object, repository_revision: RepositoryRevision,
+                       python_roots: object) -> tuple[str, ...]:
+    """Declared import roots against one exact commit: each is a directory there and no package."""
+    revision = _require_git_commit_revision(repository_revision)
+    assert revision.git_sha is not None
+    roots = canonical_python_roots(python_roots)
+    for root in roots:
+        if not _tree_entry_present(repo_root, revision.git_sha, root, "tree"):
+            raise _fail(BindingFailureCode.IMPORT_ROOT_INVALID, "an import root is not a directory of the commit")
+        _require_root_outside_packages(repo_root, revision.git_sha, root)
+    return roots
+
+
+def check_python_layout(repo_root: object, binding: object) -> PythonBinding:
+    """Check a contract v2 binding's import root and module name against its exact commit.
+
+    The root it is named from is no package and lies inside none; no other file derives the same module
+    (a package beside a module, the same package under two roots), which would bind one identity to two
+    sources. Both are refused, never guessed. A retained binding is checked offline by derivation only;
+    this check needs the repository.
+    """
+    current = _validate_python_binding_record(binding)
+    if current.contract_version != BINDING_CONTRACT_VERSION_V2:
+        return current
+    git_sha = current.repository_revision.git_sha
+    assert git_sha is not None and current.python_root is not None
+    _require_root_outside_packages(repo_root, git_sha, current.python_root)
+    stem = current.module.replace(".", "/")
+    for candidate_root in ("", *current.python_roots):
+        base = f"{candidate_root}/{stem}" if candidate_root else stem
+        for candidate in (base + ".py", base + "/__init__.py"):
+            if candidate == current.path or not _tree_entry_present(repo_root, git_sha, candidate, "blob"):
+                continue
+            try:
+                named = _python_module_v2(candidate, current.python_roots)[0]
+            except BindingViolation:
+                continue
+            if named == current.module:
+                raise _fail(BindingFailureCode.MODULE_AMBIGUOUS, "the module name maps to more than one repository path")
+    return current
+
+
 @dataclass(frozen=True)
 class _Declaration:
     qualname: str
@@ -873,6 +996,7 @@ def resolve_python_binding(
     symbol_kind: PythonSymbolKind,
     contract_version: str,
     resolver_version: str,
+    python_roots: tuple[str, ...] = (),
 ) -> PythonBinding:
     revision, canonical_path, raw = _load_snapshot_bytes(
         repo_root,
@@ -880,9 +1004,9 @@ def resolve_python_binding(
         path,
         maximum_bytes=MAX_PYTHON_SOURCE_BYTES_V1,
     )
-    return _resolve_python_snapshot(raw, revision=revision, canonical_path=canonical_path,
-        module=module, qualname=qualname, symbol_kind=symbol_kind,
-        contract_version=contract_version, resolver_version=resolver_version)
+    return check_python_layout(repo_root, _resolve_python_snapshot(raw, revision=revision,
+        canonical_path=canonical_path, module=module, qualname=qualname, symbol_kind=symbol_kind,
+        contract_version=contract_version, resolver_version=resolver_version, python_roots=python_roots))
 
 
 def inspect_retained_python_binding(value: object, raw: bytes) -> PythonBinding:
@@ -896,34 +1020,41 @@ def inspect_retained_python_binding(value: object, raw: bytes) -> PythonBinding:
     binding = _resolve_python_snapshot(raw,
         revision=_revision_from_dict(value["repository_revision"]), canonical_path=_canonical_path(value["path"]),
         module=value["module"], qualname=value["qualname"], symbol_kind=PythonSymbolKind(value["symbol_kind"]),
-        contract_version=value["contract_version"], resolver_version=value["resolver_version"])
+        contract_version=value["contract_version"], resolver_version=value["resolver_version"],
+        python_roots=value.get("python_roots", ()))
     if binding.to_dict() != value:
         raise _fail(BindingFailureCode.INVALID_PYTHON_SOURCE, "retained source does not reproduce the binding")
     return binding
 
 
 def discover_python_bindings(repo_root: object, *, repository_revision: RepositoryRevision,
-                             path: str) -> tuple[PythonBinding, ...]:
+                             path: str, python_roots: tuple[str, ...] = ()) -> tuple[PythonBinding, ...]:
     """Discover supported symbols from an exact regular Git blob, never the worktree."""
     revision, canonical_path, raw = _load_snapshot_bytes(
         repo_root, repository_revision, path, maximum_bytes=MAX_PYTHON_SOURCE_BYTES_V1,
     )
-    return discover_retained_python_bindings(raw, repository_revision=revision, path=canonical_path)
+    bindings = discover_retained_python_bindings(raw, repository_revision=revision, path=canonical_path,
+                                                 python_roots=python_roots)
+    check_python_layout(repo_root, bindings[0])  # The module binding: every symbol shares its module.
+    return bindings
 
 
 def discover_retained_python_bindings(raw: bytes, *, repository_revision: RepositoryRevision,
-                                     path: str) -> tuple[PythonBinding, ...]:
+                                     path: str, python_roots: tuple[str, ...] = ()) -> tuple[PythonBinding, ...]:
     """Discover the identities supported by this resolver without executing code.
 
     Discovery and explicit resolution share the same syntax, scope and span
     semantics. Duplicate declarations are refused rather than guessed. This
     establishes source identity, not calls, effects or runtime correctness.
+    A project that declares import roots discovers under binding contract v2.
     """
     if type(raw) is not bytes or len(raw) > MAX_PYTHON_SOURCE_BYTES_V1:
         raise _fail(BindingFailureCode.RESOURCE_LIMIT_EXCEEDED, "Python discovery needs bounded source bytes")
     canonical_path = _canonical_path(path)
     revision = _revision_from_dict(repository_revision.to_dict())
-    module = _module_from_path(canonical_path)
+    roots = canonical_python_roots(python_roots) if python_roots else ()
+    contract_version = BINDING_CONTRACT_VERSION_V2 if roots else BINDING_CONTRACT_VERSION_V1
+    module = _python_module_v2(canonical_path, roots)[0] if roots else _module_from_path(canonical_path)
     declarations = _declarations(_parse_python(_decode_python_source(raw), canonical_path))
     if len(declarations) >= 128:
         raise _fail(BindingFailureCode.RESOURCE_LIMIT_EXCEEDED, "Python discovery exceeds its symbol budget")
@@ -932,17 +1063,29 @@ def discover_retained_python_bindings(raw: bytes, *, repository_revision: Reposi
     symbols = ((module, PythonSymbolKind.MODULE), *((item.qualname, item.kind) for item in declarations))
     return tuple(_resolve_python_snapshot(raw, revision=revision, canonical_path=canonical_path,
         module=module, qualname=qualname, symbol_kind=kind,
-        contract_version=BINDING_CONTRACT_VERSION_V1, resolver_version=PYTHON_BINDING_RESOLVER_V1)
+        contract_version=contract_version, resolver_version=PYTHON_BINDING_RESOLVER_V1, python_roots=roots)
         for qualname, kind in symbols)
 
 
 def _resolve_python_snapshot(raw, *, revision, canonical_path, module, qualname, symbol_kind,
-                             contract_version, resolver_version):
-    _require_contract_version(contract_version)
+                             contract_version, resolver_version, python_roots=()):
+    _require_contract_version(contract_version, BindingKind.PYTHON)
     _require_resolver_version(resolver_version, PYTHON_BINDING_RESOLVER_V1)
-    expected_module = _module_from_path(canonical_path)
+    if contract_version == BINDING_CONTRACT_VERSION_V1:
+        if python_roots:
+            raise _fail(BindingFailureCode.CONTRACT_VERSION_MISMATCH,
+                        "binding contract v1 names modules by repository path, without import roots")
+        roots, python_root = (), None
+        expected_module = _module_from_path(canonical_path)
+    else:
+        if not python_roots:
+            raise _fail(BindingFailureCode.CONTRACT_VERSION_MISMATCH,
+                        "binding contract v2 names modules under the project's declared import roots")
+        roots = canonical_python_roots(python_roots)
+        expected_module, python_root = _python_module_v2(canonical_path, roots)
     if type(module) is not str or module != expected_module:
-        raise _fail(BindingFailureCode.MODULE_MISMATCH, "module does not match the canonical repository path")
+        raise _fail(BindingFailureCode.MODULE_MISMATCH, "module does not match the canonical repository path"
+                    if not roots else "module does not match its path under the declared import roots")
     _text(qualname, "qualname")
     if type(symbol_kind) is not PythonSymbolKind:
         raise _fail(BindingFailureCode.UNKNOWN_SYMBOL_KIND, "Python symbol kind must be exact")
@@ -975,6 +1118,8 @@ def _resolve_python_snapshot(raw, *, revision, canonical_path, module, qualname,
         "symbol_kind": symbol_kind.value,
         "source_span_hash": span_hash,
     }
+    if roots:
+        payload.update(python_root=python_root, python_roots=list(roots))
     binding = _seal_binding(
         PythonBinding,
         {
@@ -988,6 +1133,8 @@ def _resolve_python_snapshot(raw, *, revision, canonical_path, module, qualname,
             "source_span_hash": span_hash,
             "contract_version": contract_version,
             "resolver_version": resolver_version,
+            "python_root": python_root,
+            "python_roots": roots,
             "_payload": payload,
         },
     )
@@ -1081,7 +1228,7 @@ def _load_document_snapshot(
         path,
         maximum_bytes=MAX_DOCUMENT_SOURCE_BYTES_V1,
     )
-    _require_contract_version(contract_version)
+    _require_contract_version(contract_version, BindingKind.DOCUMENT)
     _require_resolver_version(resolver_version, DOCUMENT_BINDING_RESOLVER_V1)
     actual_document_id, actual_revision, actual_section, statuses = _parse_document(
         raw,
@@ -1243,6 +1390,7 @@ def consume_python_binding(
         symbol_kind=current.symbol_kind,
         contract_version=current.contract_version,
         resolver_version=current.resolver_version,
+        python_roots=current.python_roots,
     )
     if resolved.source_span_hash != current.source_span_hash:
         raise _fail(BindingFailureCode.SOURCE_SPAN_HASH_MISMATCH, "Python source span changed")
@@ -1315,6 +1463,7 @@ _PYTHON_FIELDS = (
     "source_span_hash",
     "binding_id",
 )
+_PYTHON_FIELDS_V2 = (*_PYTHON_FIELDS, "python_root", "python_roots")
 _DOCUMENT_FIELDS = (
     "schema_version",
     "binding_kind",
@@ -1371,7 +1520,8 @@ def binding_from_dict(
     )
     assert isinstance(kind, BindingKind)
     fields = {
-        BindingKind.PYTHON: _PYTHON_FIELDS,
+        BindingKind.PYTHON: (_PYTHON_FIELDS_V2 if value.get("contract_version") == BINDING_CONTRACT_VERSION_V2
+                             else _PYTHON_FIELDS),
         BindingKind.DOCUMENT: _DOCUMENT_FIELDS,
         BindingKind.REQUIREMENT: _REQUIREMENT_FIELDS,
         BindingKind.CREATION: _CREATION_FIELDS,
@@ -1380,7 +1530,7 @@ def binding_from_dict(
     claimed_revision = _revision_from_dict(data["repository_revision"])
     consumer = _require_consumer_revision(claimed_revision, consumer_revision)
     claimed_id = BindingId.from_dict(data["binding_id"])
-    contract_version = _require_contract_version(data["contract_version"])
+    contract_version = _require_contract_version(data["contract_version"], kind)
     if kind is BindingKind.PYTHON:
         resolver_version = _require_resolver_version(data["resolver_version"], PYTHON_BINDING_RESOLVER_V1)
         symbol_kind = _parse_enum(
@@ -1399,6 +1549,7 @@ def binding_from_dict(
             symbol_kind=symbol_kind,
             contract_version=contract_version,
             resolver_version=resolver_version,
+            python_roots=_exact_list(data["python_roots"], "python_roots") if "python_roots" in fields else (),
         )
         if data["source_span_hash"] != result.source_span_hash or type(data["source_span_hash"]) is not str:
             raise _fail(BindingFailureCode.SOURCE_SPAN_HASH_MISMATCH, "transport source span hash changed")
@@ -1484,6 +1635,7 @@ def binding_canonical_payload_bytes(binding: object) -> bytes:
 
 __all__ = [
     "BINDING_CONTRACT_VERSION_V1",
+    "BINDING_CONTRACT_VERSION_V2",
     "BINDING_DOCUMENT_SCHEMA_V1",
     "BINDING_IDENTITY_PREFIX_V1",
     "BINDING_IDENTITY_PROFILE_V1",
@@ -1495,6 +1647,7 @@ __all__ = [
     "MAX_DOCUMENT_SOURCE_BYTES_V1",
     "MAX_PYTHON_AST_NODES_V1",
     "MAX_PYTHON_SCOPE_DEPTH_V1",
+    "MAX_PYTHON_ROOTS_V2",
     "MAX_PYTHON_SOURCE_BYTES_V1",
     "PYTHON_BINDING_RESOLVER_V1",
     "BindingFailureCode",
@@ -1510,9 +1663,13 @@ __all__ = [
     "binding_canonical_payload_bytes",
     "binding_from_dict",
     "binding_to_ref",
+    "canonical_python_roots",
+    "check_python_layout",
+    "check_python_roots",
     "consume_document_binding",
     "consume_python_binding",
     "consume_requirement_binding",
+    "discover_python_bindings",
     "discover_retained_python_bindings",
     "resolve_creation_binding",
     "resolve_document_binding",

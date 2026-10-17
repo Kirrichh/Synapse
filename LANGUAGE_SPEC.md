@@ -745,7 +745,14 @@ Synapse v1.4.1 hardens the transactional identity layer introduced in v1.4.
 
 ## Syntax
 
+Inside an agent's method `self` is that agent. At the top level of a program `self` is an ordinary name that
+the program binds to the base agent, as below; without that binding the fracture is refused as an undefined
+name.
+
 ```synapse
+agent Guide { model "mock" }
+let self = Guide
+
 fracture self into {
     Analyst {
         focus "rational analysis"
@@ -770,6 +777,8 @@ Supported consensus strategies:
 ## Runtime contract
 
 The base agent is suspended while sub-agents execute in isolated ephemeral contexts with shadow soulprints. The base mailbox is frozen and restored after integration. Sub-agent state is purged after termination.
+
+`reason <expr>` inside the `integrate` clause is audit metadata, as in a transactional `integrate`: it is evaluated where `consensus`, `positions` and `deaths` are bound and recorded as `reason` in the `identity_integrated` event. An integration without a reason records no such field.
 
 Death types:
 
@@ -798,6 +807,9 @@ v1.5.1 polishes the v1.5 `fracture self` layer without changing the public philo
 A sub-agent may perform one nested fracture for recursive analysis:
 
 ```synapse
+agent Guide { model "mock" }
+let self = Guide
+
 fracture self into {
     Analyst {
         let micro = fracture self into {

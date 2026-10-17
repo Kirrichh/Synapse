@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -42,7 +43,7 @@ def test_package_entry_point_is_thin_adapter_and_help_surfaces_match():
     cli_help = run_cmd([sys.executable, "-m", "synapse.cli", "--help"])
     assert package_help.returncode == cli_help.returncode == 0
     assert package_help.stdout == cli_help.stdout
-    assert "{run,repl,replay,project,memory,debug,metrics,change}" in package_help.stdout
+    assert "{run,repl,replay,resume,project,memory,debug,metrics,change,approve,revoke-approval}" in package_help.stdout
 
 
 def test_synapse_cli_run_delegates_file_execution(monkeypatch, capsys, tmp_path):
@@ -213,6 +214,70 @@ def test_repl_uses_single_interpreter_and_survives_command_errors():
     assert "Undefined function or agent" in text
     assert text.count("41") >= 2
     assert stderr.getvalue() == ""
+
+
+def test_a_failed_run_keeps_the_output_printed_before_the_failure(tmp_path):
+    program = tmp_path / "failing.syn"
+    program.write_text('print("before")\nlet x = missing_name\nprint("after")\n', encoding="utf-8")
+    completed = run_cmd([sys.executable, "-m", "synapse", "run", str(program)])
+    assert completed.returncode == 1
+    assert completed.stdout == "before\n"
+    assert completed.stderr == "Error: Undefined variable or function: 'missing_name'\n"
+
+    result = app.execute_source(app.SourceExecutionRequest('print("before")\nlet x = missing_name\n'))
+    assert (result.status, result.output, result.diagnostics) == (
+        "ERROR", "before", ("Undefined variable or function: 'missing_name'",))
+
+
+def test_repl_prints_each_command_output_once():
+    stdin = io.StringIO('print("first")\nprint("second")\nmissing_name\nprint("third")\n')
+    stdout = io.StringIO()
+    app.run_repl(app.ReplRequest(banner=False, prompt=""), stdin=stdin, stdout=stdout, stderr=io.StringIO())
+    assert stdout.getvalue().splitlines() == [
+        "first", "second", "Error: Undefined variable or function: 'missing_name'", "third"]
+
+
+def test_a_repl_whose_output_closes_ends_once_with_its_exit_code():
+    # A buffered stdout, as a shell gives a pipe, closed by its reader after the banner (`synapse repl | head -4`).
+    env = {key: value for key, value in os.environ.items() if key != "PYTHONUNBUFFERED"}
+    env.update(PYTHONPATH=str(REPO_ROOT), PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8")
+    process = subprocess.Popen([sys.executable, "-m", "synapse", "repl"], cwd=REPO_ROOT, env=env,
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    for _ in range(4):
+        process.stdout.readline()
+    process.stdout.close()
+    try:
+        _, stderr = process.communicate(b'print("x")\nprint("y")\nexit\n', timeout=60)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        raise
+    # The session ends on its closed channel with one error line, and the process keeps the REPL's exit code.
+    assert process.returncode == 1
+    assert len(stderr.decode().splitlines()) == 1 and stderr.decode().startswith("Error: ")
+
+
+def test_replay_and_compare_report_a_broken_chain_with_one_integrity_code(tmp_path):
+    program = tmp_path / "chain.syn"
+    program.write_text('let r = random()\nprint(r >= 0)\n', encoding="utf-8")
+    artifact = tmp_path / "artifact"
+    recorded = run_cmd([sys.executable, "-m", "synapse", "run", str(program), "--record", "--output", str(artifact)])
+    assert recorded.returncode == 0
+    assert run_cmd([sys.executable, "-m", "synapse", "replay", "--mock", str(artifact)]).returncode == 0
+
+    history = json.loads((artifact / "history.json").read_text(encoding="utf-8"))
+    history[0]["result"] = 0.5
+    (artifact / "history.json").write_text(json.dumps(history), encoding="utf-8")
+    replay = run_cmd([sys.executable, "-m", "synapse", "replay", "--mock", str(artifact)])
+    compare = run_cmd([sys.executable, "-m", "synapse", "debug", "compare", str(artifact), str(artifact)])
+    assert replay.returncode == compare.returncode == 8
+    assert replay.stderr.startswith("ArtifactIntegrityError: execution_history chain broken")
+
+    rerecorded = tmp_path / "rerecorded"
+    assert run_cmd([sys.executable, "-m", "synapse", "run", str(program), "--record", "--output", str(rerecorded)]).returncode == 0
+    (rerecorded / "source.syn").write_text('let r = random()\nprint(r < 0)\n', encoding="utf-8")
+    edited = run_cmd([sys.executable, "-m", "synapse", "replay", "--mock", str(rerecorded)])
+    assert edited.returncode == 8
+    assert edited.stderr.startswith("ArtifactIntegrityError: program_hash mismatch")
 
 
 def test_record_mode_application_uses_existing_artifact_format(tmp_path):

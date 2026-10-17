@@ -15,12 +15,15 @@ from .stage10.task_contract import GoverningTaskContract, TASK_CONTRACT_SCHEMA_V
 
 
 TASK_TARGET_RESOLUTION_V1 = "synapse.stage4.gold.task-target-resolution/v1"
+#: A project that declares Python import roots records them with its targets, which bind under binding
+#: contract v2; a reader reproduces the selection under the same roots.
+TASK_TARGET_RESOLUTION_V2 = "synapse.stage4.gold.task-target-resolution/v2"
 TARGET_SELECTION_PROFILE_V1 = "committed-python-effect-paths-and-mentioned-symbols/v1"
 MAX_TARGET_PATHS = 32
 MAX_PROJECT_ELEMENTS = 1024
 
 
-def _resolve(task, repository_root):
+def _resolve(task, repository_root, python_roots=()):
     if type(task) is not GoverningTaskContract or task.schema_version != TASK_CONTRACT_SCHEMA_V3:
         raise ValueError("automatic target resolution requires governing task v3")
     if type(repository_root) is not type(Path()) or not repository_root.is_absolute():
@@ -53,7 +56,8 @@ def _resolve(task, repository_root):
             if len(elements) > MAX_PROJECT_ELEMENTS:
                 raise ValueError("project elements exceed the selection budget")
             continue
-        bindings = discover_python_bindings(repository_root, repository_revision=revision, path=path)
+        bindings = discover_python_bindings(repository_root, repository_revision=revision, path=path,
+                                            python_roots=python_roots)
         for binding in bindings:
             reasons = []
             if binding.symbol_kind is PythonSymbolKind.MODULE:
@@ -81,16 +85,18 @@ def _resolve(task, repository_root):
     targets.sort(key=_target_key)
     elements.sort(key=_element_key)
     return {
-        "schema_version": TASK_TARGET_RESOLUTION_V1, "profile": TARGET_SELECTION_PROFILE_V1,
+        "schema_version": TASK_TARGET_RESOLUTION_V2 if python_roots else TASK_TARGET_RESOLUTION_V1,
+        "profile": TARGET_SELECTION_PROFILE_V1,
         "task_contract_ref": task.reference.to_dict(), "repository_revision": revision.to_dict(),
         "effect_paths": list(paths), "elements": elements,
         "target_bindings": [binding_to_ref(item).to_dict() for item in targets],
+        **({"python_roots": list(python_roots)} if python_roots else {}),
     }, tuple(targets)
 
 
-def resolve_task_targets(*, task, repository_root) -> bytes:
+def resolve_task_targets(*, task, repository_root, python_roots=()) -> bytes:
     """Freeze structural evidence without changing the governing task's bytes."""
-    payload, _ = _resolve(task, repository_root)
+    payload, _ = _resolve(task, repository_root, tuple(python_roots))
     return encode_canonical(payload)
 
 
@@ -104,7 +110,12 @@ def read_task_targets(raw: bytes, *, task, repository_root):
     if type(raw) is not bytes:
         raise ValueError("task target resolution must contain exact canonical bytes")
     recorded = decode_canonical(raw)
-    actual, targets = _resolve(task, repository_root)
+    roots = ()
+    if type(recorded) is dict and recorded.get("schema_version") == TASK_TARGET_RESOLUTION_V2:
+        if type(recorded.get("python_roots")) is not list or not recorded["python_roots"]:
+            raise ValueError("task target resolution v2 must record its import roots")
+        roots = tuple(recorded["python_roots"])
+    actual, targets = _resolve(task, repository_root, roots)
     if recorded != actual or raw != encode_canonical(actual):
         raise ValueError("task target resolution differs from committed project evidence")
     return targets

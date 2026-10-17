@@ -132,6 +132,13 @@ class MemoryFactory:
         return bool(self.legitimacy.status(habit_id, {"publication": item["publication"]})["admitted"])
 
     # -- sessions --------------------------------------------------------------
+    def check_binding(self) -> None:
+        """Refuse a configuration this owner cannot open a session or an exam under, before a run starts."""
+        if self.exam is None:
+            self.owner.require_bindable(self.configuration)
+        elif self.owner.bound_digest() != self.configuration.configuration_sha256:
+            raise MemoryOwnerViolation("an exam reads a memory bound to its own configuration")
+
     def open_session(self, run: Mapping[str, Any]) -> MemorySession:
         if self.exam is not None:
             return self._exam_session(run)
@@ -144,8 +151,7 @@ class MemoryFactory:
 
     def _exam_session(self, run: Mapping[str, Any]) -> MemorySession:
         """An exam reads a fixed snapshot of this memory and is never registered for the court."""
-        if self.owner.bound_digest() != self.configuration.configuration_sha256:
-            raise MemoryOwnerViolation("an exam reads a memory bound to its own configuration")
+        self.check_binding()
         self.owner.require_policy(self.configuration)
         boundary, digest = self._complete(self.exam["snapshot"], None)
         if self.exam["mode"] == "A":

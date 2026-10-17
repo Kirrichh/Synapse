@@ -701,13 +701,26 @@ class Parser:
                 self.error("Expected weighted, majority, unanimous, or affective_weighted after consensus")
 
         integration = None
+        integration_reason = None
         if self.match(TokenType.INTEGRATE):
-            integration = self.block()
+            # As in a transactional integrate, ``reason`` is the integration's audit metadata, not a statement.
+            self.consume(TokenType.LBRACE, "Expected '{'")
+            self.skip_newlines()
+            integration = []
+            while not self.check(TokenType.RBRACE) and not self.is_at_end():
+                if self.match(TokenType.REASON):
+                    integration_reason = self.expression()
+                else:
+                    stmt = self.statement()
+                    if stmt:
+                        integration.append(stmt)
+                self.skip_newlines()
+            self.consume(TokenType.RBRACE, "Expected '}'")
 
         return FractureStmt(
             target=target, subagents=subagents, fracture_id=fracture_id,
             consensus_strategy=consensus, consensus_config=consensus_config, integration_clause=integration,
-            line=token.line, column=token.column
+            integration_reason=integration_reason, line=token.line, column=token.column
         )
 
     def affective_bias_mapping(self) -> Dict[str, Node]:

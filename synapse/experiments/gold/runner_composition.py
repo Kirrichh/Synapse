@@ -486,6 +486,10 @@ def execute_gold_project_run(*, run_root: Path, court, state_root: Path | None =
             project = open_gold_project(state_root.expanduser().resolve())
             if root.is_relative_to(project.declaration.repo_root.resolve()) or root == project.declaration.state_root:
                 raise ValueError("run state must be separate from the project and worker repository")
+            if root.exists():
+                # Refused before the run's memory job is requested, which would hold its run id.
+                raise ValueError("the run directory already exists; a new run needs a new directory "
+                                 "('project resume' continues the run started there)")
             inputs = freeze_gold_inputs(
                 declaration_path=declaration_path.expanduser().resolve(), project=project, run_root=root,
                 court=court,

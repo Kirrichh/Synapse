@@ -34,12 +34,25 @@ def test_unconfirmed_recipe_never_becomes_knowledge(tmp_path, program, expected,
 
 def test_recipe_requires_project_execute_entitlement(tmp_path):
     _, state, input_path = prepare(tmp_path)
+    marker = tmp_path / 'recipe-ran'
     value = json.loads(input_path.read_text())
     value['claim']['kind'] = 'VERIFICATION_RECIPE'
-    value['claim']['recipe'] = {'command': [sys.executable, '-B', '-c', 'print("done")'], 'expectation': {
-        'expected_exit_codes': [0], 'expected_nonzero_exit': False, 'combined_output_contains': ['done'],
-        'combined_output_not_contains': [], 'timeout_seconds': 1}}
+    value['claim']['recipe'] = {'command': [sys.executable, '-B', '-c',
+                                            f'open({str(marker)!r}, "w").write("ran"); print("done")'],
+        'expectation': {'expected_exit_codes': [0], 'expected_nonzero_exit': False,
+                        'combined_output_contains': ['done'], 'combined_output_not_contains': [], 'timeout_seconds': 1}}
     input_path.write_text(json.dumps(value))
     code, result = learn(state, input_path)
     assert code == 2 and 'capabilities' in result['reason']
+    assert not marker.exists()  # Refused before the command could run.
+    assert not open_gold_project(state).library.search_index()
+
+
+def test_sources_outside_the_declared_read_scope_are_refused_before_any_effect(tmp_path):
+    _, state, input_path = prepare(tmp_path)
+    value = json.loads(input_path.read_text())
+    value['claim']['sources'].append('vault.py')
+    input_path.write_text(json.dumps(value))
+    code, result = learn(state, input_path)
+    assert (code, result) == (2, {'status': 'REFUSED', 'reason': "source claim exceeds the project's declared read scope"})
     assert not open_gold_project(state).library.search_index()

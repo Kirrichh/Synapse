@@ -130,6 +130,11 @@ The distinction between `7` and `1` matters: `7` means "comparison ran fine and
 found a difference," while `1` means "the command could not run as given." Do
 not conflate diagnostic divergence with bad input.
 
+`replay --mock` reports the same broken artifact with the same code: `8` when
+the artifact is malformed, its history chain does not match its manifest, or its
+source differs from the recorded program hash; `1` when an intact artifact
+replays with drift or needs a resource the artifact does not hold.
+
 ## 7. Fork lifecycle commands (exploratory)
 
 These operate on an in-process fork registry and are for exploratory debugging:

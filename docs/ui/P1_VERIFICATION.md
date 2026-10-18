@@ -35,6 +35,50 @@ The [preview](assets/bootstrap-browser.png) is captured from the actual renderer
 displaying `DESKTOP_REQUIRED` in a browser. It is not a simulated ready session,
 the original prototype, or evidence of a running installed Tauri window.
 
+## Automatic affected checks
+
+The Stage 4 workflow now handles push and pull-request selection, including calls
+to the existing durable/version jobs and the new UI component workflow. Existing
+Gold matrix catalogs stay beside their owning commands; only affected rows and
+pytest files execute. New Python acceptance is discovered rather than requiring
+an ever-growing duplicate test list.
+
+The selector uses Python imports, package initialization, local helpers, parent
+fixtures, embedded subprocess imports, explicit machine/packaging dependencies,
+and shared UI contract boundaries. A Python dependency-environment change affects
+all automatic Python consumers; a package-data-only change follows packaging
+consumers. New dynamic loading or non-import dependencies must be represented in
+the selector when introduced. Provider tests requiring a live service retain
+their existing separate execution policy.
+
+| Change | Scheduled behavior |
+|---|---|
+| Renderer source | Renderer build, TypeScript/browser acceptance, affected renderer mutants |
+| A single existing acceptance file | Its existing job/matrix row and its related mutation cases |
+| A new Python acceptance file | Its own job when no existing group owns it |
+| Shared CLI | Existing direct/transitive CLI consumers, including subprocess scenarios |
+| Shared control profile/schema | Machine acceptance plus native and renderer contract consumers |
+| Unreferenced development notes | No product test execution |
+
+Feature pushes and PRs use the cumulative merge-base comparison. Renames select
+both ownership boundaries. Missing comparison data fails the selector; failed,
+cancelled, or unexpectedly skipped selected jobs fail the existing Gold gate.
+The build/test layer does not enter product imports or packaged runtime data.
+
+Local verification of the final selection behavior: **23 acceptance cases passed**
+and **18 seeded tooling mutants killed**. The existing **114 Python UI cases**,
+the browser/component scenarios using the isolated CI server, and actionlint
+validation also passed. All three reporting-confidentiality mutants were killed
+again after making mutation dependencies optional for independent CI jobs.
+These results are local verification; GitHub workflow outcomes are reported by
+the PR checks, not inferred from this document. P1 platform gaps remain open.
+
+```bash
+python scripts/ci/select_tests.py --base origin/main
+python -m pytest -q -p no:cacheprovider acceptance/ci
+python acceptance/ci/mutate.py
+```
+
 ## Reproduce the component checks
 
 Build the core and generated frontend contracts using

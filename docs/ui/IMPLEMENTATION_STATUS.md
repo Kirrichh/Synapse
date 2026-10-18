@@ -101,6 +101,9 @@ the product integration index. They are not product links or data feeds.
   a single development notebook, and a preview of the actual renderer.
 - [x] Permanent prohibition on repository user-data retention; reviewed pending
   artifacts and restricted mutation reporting to non-sensitive structured results.
+- [x] Affected-test selection for push/PR checks: existing Python consumers and
+  matrix rows, automatically discovered new acceptance, and UI component checks.
+  Selection tooling has external behavioral and mutation acceptance.
 
 ## Remaining before P1 can close
 
@@ -144,3 +147,4 @@ and traceability together before changing what completion means.
 | 2026-10-18 | Recorded the owner's permanent prohibition on agent-performed merges in AGENTS.md and coding rules, including local merges, PR merge actions, auto-merge, merge queues, and equivalent integration workarounds; merge authority remains with the owner |
 | 2026-10-18 | Implemented the P1 control/bootstrap increment; placed all new product source under `synapse/`; added external acceptance/mutation evidence, a development notebook, build guide, and actual renderer preview; kept platform, JCS, and TR-2 conditions open |
 | 2026-10-18 | Recorded the permanent prohibition on writing private user data into repository files; reviewed pending artifacts, removed raw diagnostic excerpts, and verified reporting confidentiality with synthetic acceptance and a separate mutation campaign |
+| 2026-10-18 | Connected changed-file dependency selection to existing CI environments and UI component checks; added external selection acceptance and 18 killed tooling mutants; retained platform and installed-desktop gaps |

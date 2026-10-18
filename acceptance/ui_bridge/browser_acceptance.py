@@ -1,15 +1,35 @@
 """Browser/component evidence only. Native IPC, CSP, and OS containment need desktop runs."""
 import argparse
+from contextlib import contextmanager
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+import os
 from pathlib import Path
+from threading import Thread
 
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@contextmanager
+def serve(directory):
+    class Handler(SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(directory), **kwargs)
+        def log_message(self, *_):
+            pass
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def check(base_url, screenshot=None):
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(executable_path="/usr/bin/chromium", headless=True)
+        browser = playwright.chromium.launch(executable_path=os.environ.get("SYNAPSE_BROWSER_EXECUTABLE"), headless=True)
         page = browser.new_page(viewport={"width": 1600, "height": 1000})
         page.set_default_timeout(5000)
         errors = []
@@ -75,5 +95,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:4174")
     parser.add_argument("--screenshot", type=Path)
+    parser.add_argument("--serve", type=Path, help="Serve a built renderer on an isolated loopback port")
     args = parser.parse_args()
-    check(args.url, args.screenshot)
+    if args.serve:
+        with serve(args.serve) as url:
+            check(url, args.screenshot)
+    else:
+        check(args.url, args.screenshot)

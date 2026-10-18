@@ -4,6 +4,29 @@ Version 1.0. Started on 2026-10-18. This is the single chronological notebook
 for observed behavior, implementation decisions, problems, and follow-up work.
 The specification remains authoritative; the matrices record completion evidence.
 
+## 2026-10-18 — Affected checks on push and pull request
+
+- Existing Gold jobs previously ran regardless of changed files; the UI acceptance
+  suites were not connected to CI. The change now selects their affected owners
+  and preserves existing Python versions, SDK dependencies, and heavy-file shards.
+- Python selection follows imports, parent fixtures, subprocess snippets, shared
+  machine data, and packaging inputs. The explicit lazy machine dispatch does not
+  make other CLI commands consumers of machine-only implementation changes.
+- Existing fixed pytest invocations are filtered before execution. Matrix rows
+  without affected cases are omitted. Newly added Python acceptance files have an
+  automatic independent job when no existing group owns them. Live-provider and
+  external PostgreSQL acceptance retain their separate workflows.
+- The current PR also changes the shared CLI and package metadata. Its affected
+  legacy consumers therefore extend beyond the three initial CLI smoke files.
+  This is different from an isolated renderer change, which selects the renderer.
+- Feature pushes compare the complete branch against its base, so a later notes
+  commit cannot cancel and replace code verification with an empty selection.
+  Default-branch pushes use their actual before/head comparison and separate run
+  concurrency. An unavailable comparison fails selection instead of claiming a pass.
+- Only selection and CI execution support changed in this follow-up. Product
+  behavior, Windows platform acceptance, and installed-window claims are unchanged.
+  Static dependency edges need maintenance when new dynamic owners are introduced.
+
 ## 2026-10-18 — P1 implementation begins
 
 - The canonical `python -m synapse` entry exists; a machine subcommand, Tauri

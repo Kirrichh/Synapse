@@ -19,15 +19,102 @@ name: Stage 4 Gold
 # check said nothing at all about Patch 9 — which is how it stayed absent.
 
 on:
+  push:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: affected-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}-${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.sha || 'branch' }}
+  cancel-in-progress: true
+
 jobs:
-  host-runtime:
-    name: host-runtime
+  select:
+    runs-on: ubuntu-latest
+    outputs:
+      plan: ${{ steps.select.outputs.plan }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install PyYAML==6.0.3
+      - id: select
+        run: python scripts/ci/select_tests.py
+
+  selection-acceptance:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).tooling
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest PyYAML==6.0.3
+      - run: python -m pytest -q -p no:cacheprovider acceptance/ci
+      - run: python acceptance/ci/mutate.py
+
+  additional-tests:
+    needs: select
+    if: toJSON(fromJSON(needs.select.outputs.plan).additional) != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        file: ${{ fromJSON(needs.select.outputs.plan).additional }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e '.[dev]'
+      - name: Run one affected acceptance file not yet in an existing group
+        env:
+          ACCEPTANCE_FILE: ${{ matrix.file }}
+        run: python -m pytest -q --tb=short "$ACCEPTANCE_FILE"
+
+  durable:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).durable
+    uses: ./.github/workflows/p2-durable.yml
+
+  version:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).version
+    uses: ./.github/workflows/version-sync.yml
+
+  ui:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).ui.python || fromJSON(needs.select.outputs.plan).ui.native || fromJSON(needs.select.outputs.plan).ui.renderer || fromJSON(needs.select.outputs.plan).ui.reporting
+    uses: ./.github/workflows/ui-tests.yml
+    with:
+      plan: ${{ toJSON(fromJSON(needs.select.outputs.plan).ui) }}
+
+  host-runtime:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['host-runtime'].enabled
+    name: host-runtime
+    runs-on: ubuntu-latest
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -35,7 +122,7 @@ jobs:
         run: python -m pip install -e '.[dev]'
       - name: Verify interpreter, replay and CLI compatibility
         run: >
-          python -m pytest -q --tb=short
+          python scripts/ci/pytest_selected.py -q --tb=short
           tests/test_interpreter.py
           tests/test_interpreter_optimizations.py
           tests/test_system_execution_path.py
@@ -60,10 +147,17 @@ jobs:
           acceptance/runtime/test_ownership_boundaries_contract.py
 
   gold-fast:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['gold-fast'].enabled
     name: gold-fast
     runs-on: ubuntu-latest
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -74,7 +168,7 @@ jobs:
 
       - name: Run the Stage 4 Gold suites that do not shell out to git
         run: >
-          python -m pytest -q -p no:randomly
+          python scripts/ci/pytest_selected.py -q -p no:randomly
           tests/test_cvm_llm_request_pending_envelope.py
           tests/test_stage4_gold_admission.py
           tests/test_stage4_gold_admission_journal.py
@@ -137,11 +231,16 @@ jobs:
           acceptance/agents/test_execution_retention_acceptance.py
 
   gold-slow-core:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['gold-slow-core'].enabled
     name: gold-slow-core-${{ matrix.shard }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
+      matrix: ${{ fromJSON(needs.select.outputs.plan).groups['gold-slow-core'].matrix }}
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
+      TEST_MATRIX: |
         include:
           - shard: acceptance-boundary
             file: tests/test_stage4_gold_acceptance_boundary.py
@@ -153,6 +252,9 @@ jobs:
             file: tests/test_stage4_gold_consumption_evidence.py
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -167,13 +269,20 @@ jobs:
           git config --global user.name "Stage 4 Gold CI"
 
       - name: Run one Stage 4 Gold suite that builds repositories
-        run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
+        run: python scripts/ci/pytest_selected.py -q -p no:randomly "${{ matrix.file }}"
 
   gold-slow-retrieval:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['gold-slow-retrieval'].enabled
     name: gold-slow-retrieval
     runs-on: ubuntu-latest
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -189,15 +298,20 @@ jobs:
 
       - name: Run the Stage 4 Gold retrieval suite
         run: >
-          python -m pytest -q -p no:randomly
+          python scripts/ci/pytest_selected.py -q -p no:randomly
           tests/test_stage4_gold_retrieval.py
 
   gold-slow-replay:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['gold-slow-replay'].enabled
     name: gold-slow-replay-${{ matrix.shard }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
+      matrix: ${{ fromJSON(needs.select.outputs.plan).groups['gold-slow-replay'].matrix }}
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
+      TEST_MATRIX: |
         include:
           - shard: contract
             file: tests/test_stage4_gold_replay_contract.py
@@ -227,6 +341,9 @@ jobs:
             file: tests/test_stage4_gold_replay_permit_budget.py
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -241,13 +358,20 @@ jobs:
           git config --global user.name "Stage 4 Gold CI"
 
       - name: Run one independent Stage 4 Gold replay shard
-        run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
+        run: python scripts/ci/pytest_selected.py -q -p no:randomly "${{ matrix.file }}"
 
   gold-slow-vm-adapter:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['gold-slow-vm-adapter'].enabled
     name: gold-slow-vm-adapter
     runs-on: ubuntu-latest
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -263,14 +387,21 @@ jobs:
 
       - name: Run the Stage 4 replay VM adapter acceptance suite
         run: >
-          python -m pytest -q -p no:randomly
+          python scripts/ci/pytest_selected.py -q -p no:randomly
           tests/test_stage4_replay_vm_adapter_acceptance.py
 
   gold-slow-od10:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['gold-slow-od10'].enabled
     name: gold-slow-od10
     runs-on: ubuntu-latest
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -286,14 +417,21 @@ jobs:
 
       - name: Run the Stage 4 OD-10 execution conformance suite
         run: >
-          python -m pytest -q -p no:randomly
+          python scripts/ci/pytest_selected.py -q -p no:randomly
           tests/test_stage4_od10_execution_conformance.py
 
   gold-slow-e1:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['gold-slow-e1'].enabled
     name: gold-slow-e1
     runs-on: ubuntu-latest
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -309,14 +447,21 @@ jobs:
 
       - name: Run the Stage 4 replay E1 lifecycle acceptance suite
         run: >
-          python -m pytest -q -p no:randomly
+          python scripts/ci/pytest_selected.py -q -p no:randomly
           tests/test_stage4_replay_e1_lifecycle_acceptance.py
 
   gold-stage10-fast:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['gold-stage10-fast'].enabled
     name: gold-stage10-fast
     runs-on: ubuntu-latest
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -327,7 +472,7 @@ jobs:
 
       - name: Run the Stage 10 semantic acceptance layer
         run: >
-          python -m pytest -q -p no:randomly
+          python scripts/ci/pytest_selected.py -q -p no:randomly
           acceptance/stage4/stage10/test_scope_and_intent_acceptance.py
           acceptance/stage4/stage10/test_plan_authority_acceptance.py
           acceptance/stage4/stage10/test_governing_task_acceptance.py
@@ -348,11 +493,16 @@ jobs:
           acceptance/stage4/stage10/test_partial_patch_contract.py
 
   gold-stage10-heavy:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['gold-stage10-heavy'].enabled
     name: gold-stage10-${{ matrix.shard }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
+      matrix: ${{ fromJSON(needs.select.outputs.plan).groups['gold-stage10-heavy'].matrix }}
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
+      TEST_MATRIX: |
         include:
           - shard: worker-process
             file: acceptance/stage4/stage10/test_worker_transport_process.py
@@ -372,6 +522,9 @@ jobs:
             file: acceptance/stage4/stage10/test_replay_context_boundary.py
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -386,13 +539,20 @@ jobs:
           git config --global user.name "Stage 4 Gold CI"
 
       - name: Run one independent Stage 10 heavy acceptance shard
-        run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
+        run: python scripts/ci/pytest_selected.py -q -p no:randomly "${{ matrix.file }}"
 
   gold-stage11-fast:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['gold-stage11-fast'].enabled
     name: gold-stage11-fast
     runs-on: ubuntu-latest
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -403,7 +563,7 @@ jobs:
 
       - name: Run the Stage 11 decision and record acceptance
         run: >
-          python -m pytest -q -p no:randomly
+          python scripts/ci/pytest_selected.py -q -p no:randomly
           acceptance/stage4/stage11/test_stop_policy_acceptance.py
           acceptance/stage4/stage11/test_run_records_acceptance.py
           acceptance/stage4/stage11/test_composition_mutation_acceptance.py
@@ -411,11 +571,16 @@ jobs:
           acceptance/stage4/stage11/test_continuation_basis_acceptance.py
 
   gold-stage11-heavy:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['gold-stage11-heavy'].enabled
     name: gold-stage11-${{ matrix.shard }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
+      matrix: ${{ fromJSON(needs.select.outputs.plan).groups['gold-stage11-heavy'].matrix }}
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
+      TEST_MATRIX: |
         include:
           - shard: project-gold-run
             file: acceptance/stage4/stage11/test_project_gold_run_acceptance.py
@@ -489,6 +654,9 @@ jobs:
             file: acceptance/stage4/stage11/test_decision_policy_mutation_acceptance.py
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -503,14 +671,19 @@ jobs:
           git config --global user.name "Stage 4 Gold CI"
 
       - name: Run one independent Stage 11 heavy acceptance shard
-        run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
+        run: python scripts/ci/pytest_selected.py -q -p no:randomly "${{ matrix.file }}"
 
   gold-stage12-heavy:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['gold-stage12-heavy'].enabled
     name: gold-stage12-${{ matrix.shard }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
+      matrix: ${{ fromJSON(needs.select.outputs.plan).groups['gold-stage12-heavy'].matrix }}
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
+      TEST_MATRIX: |
         include:
           - shard: full-outcome
             file: acceptance/stage4/stage12/test_full_outcome_acceptance.py
@@ -528,6 +701,9 @@ jobs:
             file: acceptance/stage4/stage12/test_reusable_proof_acceptance.py
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -538,14 +714,19 @@ jobs:
           git config --global user.email "ci@example.invalid"
           git config --global user.name "Stage 4 Gold CI"
       - name: Run one independent Stage 12 acceptance file
-        run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
+        run: python scripts/ci/pytest_selected.py -q -p no:randomly "${{ matrix.file }}"
 
   gold-stage13-heavy:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['gold-stage13-heavy'].enabled
     name: gold-stage13-${{ matrix.shard }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
+      matrix: ${{ fromJSON(needs.select.outputs.plan).groups['gold-stage13-heavy'].matrix }}
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
+      TEST_MATRIX: |
         include:
           - shard: publication
             file: acceptance/stage4/stage13/test_publication_acceptance.py
@@ -577,6 +758,9 @@ jobs:
             file: acceptance/stage4/stage13/test_historical_compatibility_acceptance.py
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -587,14 +771,19 @@ jobs:
           git config --global user.email "ci@example.invalid"
           git config --global user.name "Stage 4 Gold CI"
       - name: Run one independent Stage 13 acceptance file
-        run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
+        run: python scripts/ci/pytest_selected.py -q -p no:randomly "${{ matrix.file }}"
 
   gold-stage14-heavy:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['gold-stage14-heavy'].enabled
     name: gold-stage14-${{ matrix.shard }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
+      matrix: ${{ fromJSON(needs.select.outputs.plan).groups['gold-stage14-heavy'].matrix }}
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
+      TEST_MATRIX: |
         include:
           - shard: attempt-lineage
             file: acceptance/stage4/stage14/test_attempt_lineage_acceptance.py
@@ -618,6 +807,9 @@ jobs:
             file: acceptance/stage4/stage14/test_partial_preparation_lineage_acceptance.py
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -628,14 +820,19 @@ jobs:
           git config --global user.email "ci@example.invalid"
           git config --global user.name "Stage 4 Gold CI"
       - name: Run one independent Stage 14 acceptance file
-        run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
+        run: python scripts/ci/pytest_selected.py -q -p no:randomly "${{ matrix.file }}"
 
   gold-stage15-heavy:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['gold-stage15-heavy'].enabled
     name: gold-stage15-${{ matrix.shard }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
+      matrix: ${{ fromJSON(needs.select.outputs.plan).groups['gold-stage15-heavy'].matrix }}
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
+      TEST_MATRIX: |
         include:
           - shard: provider-capture
             file: acceptance/stage4/stage15/test_provider_capture_acceptance.py
@@ -671,6 +868,9 @@ jobs:
             file: acceptance/stage4/stage15/test_snapshot_reconciliation_acceptance.py
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -681,14 +881,19 @@ jobs:
           git config --global user.email "ci@example.invalid"
           git config --global user.name "Stage 4 Gold CI"
       - name: Run one independent Stage 15 acceptance file
-        run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
+        run: python scripts/ci/pytest_selected.py -q -p no:randomly "${{ matrix.file }}"
 
   gold-stage16-heavy:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['gold-stage16-heavy'].enabled
     name: gold-stage16-${{ matrix.shard }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
+      matrix: ${{ fromJSON(needs.select.outputs.plan).groups['gold-stage16-heavy'].matrix }}
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
+      TEST_MATRIX: |
         include:
           - shard: baseline-capture
             file: acceptance/stage4/stage16/test_baseline_capture_acceptance.py
@@ -820,6 +1025,9 @@ jobs:
             file: acceptance/stage4/stage16/test_run_retrieval_object_admission.py
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -830,14 +1038,19 @@ jobs:
           git config --global user.email "ci@example.invalid"
           git config --global user.name "Stage 4 Gold CI"
       - name: Run one independent Stage 16 acceptance file
-        run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
+        run: python scripts/ci/pytest_selected.py -q -p no:randomly "${{ matrix.file }}"
 
   gold-stage16-mutations:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['gold-stage16-mutations'].enabled
     name: gold-stage16-mutation-${{ matrix.case }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
+      matrix: ${{ fromJSON(needs.select.outputs.plan).groups['gold-stage16-mutations'].matrix }}
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
+      TEST_MATRIX: |
         case:
           - S16-MUT-FINGERPRINT
           - S16-MUT-SELECTED-REPLICATES
@@ -847,6 +1060,9 @@ jobs:
           - S16-MUT-MISSING-DURATION
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -870,11 +1086,16 @@ jobs:
           if-no-files-found: error
 
   agent-sdk-acceptance:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['agent-sdk-acceptance'].enabled
     name: agent-sdk-${{ matrix.shard }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
+      matrix: ${{ fromJSON(needs.select.outputs.plan).groups['agent-sdk-acceptance'].matrix }}
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
+      TEST_MATRIX: |
         include:
           - shard: a2a
             extra: agent-a2a
@@ -886,20 +1107,28 @@ jobs:
             file: acceptance/agents/test_mcp_sdk_acceptance.py
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Install this adapter SDK and its acceptance dependencies
         run: python -m pip install -e '.[${{ matrix.extra }}]' pytest ${{ matrix.dependencies }}
       - name: Run one independent SDK acceptance file
-        run: python -m pytest -q -p no:randomly '${{ matrix.file }}'
+        run: python scripts/ci/pytest_selected.py -q -p no:randomly '${{ matrix.file }}'
 
   memory-acceptance:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['memory-acceptance'].enabled
     name: memory-${{ matrix.shard }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
+      matrix: ${{ fromJSON(needs.select.outputs.plan).groups['memory-acceptance'].matrix }}
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
+      TEST_MATRIX: |
         include:
           - shard: learning
             file: acceptance/memory/test_habit_learning_acceptance.py
@@ -1157,6 +1386,9 @@ jobs:
             file: tests/test_memory_dependency_direction.py
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -1167,16 +1399,21 @@ jobs:
           git config --global user.email "ci@example.invalid"
           git config --global user.name "Stage 4 Gold CI"
       - name: Run one memory acceptance file through the canonical launch
-        run: python -m pytest -q -p no:randomly '${{ matrix.file }}'
+        run: python scripts/ci/pytest_selected.py -q -p no:randomly '${{ matrix.file }}'
 
   repository-tests:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['repository-tests'].enabled
     # Review regressions run independently of the remaining repository suites,
     # so their larger owner-history scenarios can be scheduled in parallel.
     name: repository-tests-${{ matrix.shard }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
+      matrix: ${{ fromJSON(needs.select.outputs.plan).groups['repository-tests'].matrix }}
+    env:
+      SELECTED_TESTS: ${{ toJSON(fromJSON(needs.select.outputs.plan).tests) }}
+      TEST_MATRIX: |
         include:
           - shard: remaining
             file: ''
@@ -1187,6 +1424,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
           # The scope tripwires diff recorded historical commits of the branch.
           fetch-depth: 0
       - uses: actions/setup-python@v5
@@ -1201,7 +1440,7 @@ jobs:
       - name: Run the remaining repository suites
         if: matrix.shard == 'remaining'
         run: >
-          python -m pytest -q --tb=short -p no:randomly
+          python scripts/ci/pytest_selected.py -q --tb=short -p no:randomly
           tests/test_affective_memory.py
           tests/test_affective_vm.py
           tests/test_agentruntime_todict_drift_p0510.py
@@ -1302,77 +1541,21 @@ jobs:
           tests/test_worker_candidate_materializer.py
       - name: Run one external-review regression suite
         if: matrix.file != ''
-        run: python -m pytest -q --tb=short -p no:randomly '${{ matrix.file }}'
+        run: python scripts/ci/pytest_selected.py -q --tb=short -p no:randomly '${{ matrix.file }}'
+
 
   gold-slow:
     name: gold-slow
-    if: ${{ always() }}
-    needs:
-      - gold-slow-core
-      - gold-slow-retrieval
-      - gold-slow-replay
-      - gold-slow-vm-adapter
-      - gold-slow-od10
-      - gold-slow-e1
-      - gold-stage10-fast
-      - gold-stage10-heavy
-      - gold-stage11-fast
-      - gold-stage11-heavy
-      - gold-stage12-heavy
-      - gold-stage13-heavy
-      - gold-stage14-heavy
-      - gold-stage15-heavy
-      - gold-stage16-heavy
-      - gold-stage16-mutations
-      - agent-sdk-acceptance
-      - memory-acceptance
-      - repository-tests
+    if: always()
+    needs: [select, selection-acceptance, additional-tests, durable, version, ui, host-runtime, gold-fast, gold-slow-core, gold-slow-retrieval, gold-slow-replay, gold-slow-vm-adapter, gold-slow-od10, gold-slow-e1, gold-stage10-fast, gold-stage10-heavy, gold-stage11-fast, gold-stage11-heavy, gold-stage12-heavy, gold-stage13-heavy, gold-stage14-heavy, gold-stage15-heavy, gold-stage16-heavy, gold-stage16-mutations, agent-sdk-acceptance, memory-acceptance, repository-tests]
     runs-on: ubuntu-latest
     steps:
-      - name: Require every slow shard to succeed
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Require every selected job to succeed
         env:
-          CORE_RESULT: ${{ needs['gold-slow-core'].result }}
-          RETRIEVAL_RESULT: ${{ needs['gold-slow-retrieval'].result }}
-          REPLAY_RESULT: ${{ needs['gold-slow-replay'].result }}
-          VM_ADAPTER_RESULT: ${{ needs['gold-slow-vm-adapter'].result }}
-          OD10_RESULT: ${{ needs['gold-slow-od10'].result }}
-          E1_RESULT: ${{ needs['gold-slow-e1'].result }}
-          STAGE10_FAST_RESULT: ${{ needs['gold-stage10-fast'].result }}
-          STAGE10_HEAVY_RESULT: ${{ needs['gold-stage10-heavy'].result }}
-          STAGE11_FAST_RESULT: ${{ needs['gold-stage11-fast'].result }}
-          STAGE11_HEAVY_RESULT: ${{ needs['gold-stage11-heavy'].result }}
-          STAGE12_HEAVY_RESULT: ${{ needs['gold-stage12-heavy'].result }}
-          STAGE13_HEAVY_RESULT: ${{ needs['gold-stage13-heavy'].result }}
-          STAGE14_HEAVY_RESULT: ${{ needs['gold-stage14-heavy'].result }}
-          STAGE15_HEAVY_RESULT: ${{ needs['gold-stage15-heavy'].result }}
-          STAGE16_HEAVY_RESULT: ${{ needs['gold-stage16-heavy'].result }}
-          STAGE16_MUTATIONS_RESULT: ${{ needs['gold-stage16-mutations'].result }}
-          AGENT_SDK_RESULT: ${{ needs['agent-sdk-acceptance'].result }}
-          MEMORY_RESULT: ${{ needs['memory-acceptance'].result }}
-          REPOSITORY_RESULT: ${{ needs['repository-tests'].result }}
-        run: |
-          for result in \
-            "$CORE_RESULT" \
-            "$RETRIEVAL_RESULT" \
-            "$REPLAY_RESULT" \
-            "$VM_ADAPTER_RESULT" \
-            "$OD10_RESULT" \
-            "$E1_RESULT" \
-            "$STAGE10_FAST_RESULT" \
-            "$STAGE10_HEAVY_RESULT" \
-            "$STAGE11_FAST_RESULT" \
-            "$STAGE11_HEAVY_RESULT" \
-            "$STAGE12_HEAVY_RESULT" \
-            "$STAGE13_HEAVY_RESULT" \
-            "$STAGE14_HEAVY_RESULT" \
-            "$STAGE15_HEAVY_RESULT" \
-            "$STAGE16_HEAVY_RESULT" \
-            "$STAGE16_MUTATIONS_RESULT" \
-            "$AGENT_SDK_RESULT" \
-            "$MEMORY_RESULT" \
-            "$REPOSITORY_RESULT"
-          do
-            if [ "$result" != "success" ]; then
-              exit 1
-            fi
-          done
+          TEST_PLAN: ${{ needs.select.outputs.plan }}
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: python scripts/ci/check_results.py

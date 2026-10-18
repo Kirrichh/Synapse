@@ -23,10 +23,14 @@ def copy_subject(destination):
     shutil.copytree(ROOT / "synapse", destination / "synapse", ignore=IGNORED)
     shutil.copytree(ROOT / "scripts/ui", destination / "scripts/ui", ignore=IGNORED)
     shutil.copytree(ROOT / "acceptance/ui_bridge", destination / "acceptance/ui_bridge", ignore=IGNORED)
-    (destination / "synapse/ui/node_modules").symlink_to(ROOT / "synapse/ui/node_modules", target_is_directory=True)
+    dependencies = ROOT / "synapse/ui/node_modules"
+    if dependencies.is_dir():
+        (destination / "synapse/ui/node_modules").symlink_to(dependencies, target_is_directory=True)
     resource = destination / "synapse/ui/src-tauri/resources"
     resource.mkdir()
-    (resource / "core").symlink_to(ROOT / "synapse/ui/src-tauri/resources/core", target_is_directory=True)
+    core = ROOT / "synapse/ui/src-tauri/resources/core"
+    if core.is_dir():
+        (resource / "core").symlink_to(core, target_is_directory=True)
     for name in ("pyproject.toml", "README.md", "LICENSE"):
         shutil.copy2(ROOT / name, destination / name)
 
@@ -57,7 +61,7 @@ def execute(seed, root, python, cargo, timeout):
         result = run([python, "-m", "pytest", "-q", "-p", "no:cacheprovider", *seed["cases"]])
         marker = " failed"
     elif kind == "rust":
-        result = run([cargo, "test", "--offline", "--manifest-path", "acceptance/ui_bridge/native/Cargo.toml", "--test", seed["case"]])
+        result = run([cargo, "test", "--offline", "--locked", "--manifest-path", "acceptance/ui_bridge/native/Cargo.toml", "--test", seed["case"]])
         marker = "test result: FAILED"
     elif kind in {"typescript", "generator"}:
         if kind == "generator":

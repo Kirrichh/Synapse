@@ -1,8 +1,10 @@
 name: P2 Durable Initial Run
 
 on:
-  pull_request:
-  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   p2a-initial-run:
@@ -18,6 +20,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:

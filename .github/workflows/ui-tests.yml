@@ -1,0 +1,108 @@
+name: UI affected tests
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  python:
+    if: fromJSON(inputs.plan).python
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        file: ${{ fromJSON(inputs.plan).files }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e . pytest build setuptools
+      - env:
+          ACCEPTANCE_FILE: ${{ matrix.file }}
+        run: python -m pytest -q -p no:cacheprovider "$ACCEPTANCE_FILE"
+
+  python-mutations:
+    if: fromJSON(inputs.plan).python || fromJSON(inputs.plan).reporting
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e . pytest build setuptools
+      - name: Mutate affected Python behaviors and reporting
+        env:
+          UI_TEST_PLAN: ${{ inputs.plan }}
+        run: python scripts/ci/ui_mutations.py python
+
+  renderer:
+    if: fromJSON(inputs.plan).renderer
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: synapse/ui/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci --prefix synapse/ui
+      - run: python -m pip install playwright
+      - run: python -m playwright install --with-deps chromium
+      - run: npm run build --prefix synapse/ui
+      - run: node --import ./synapse/ui/node_modules/tsx/dist/loader.mjs --test acceptance/ui_bridge/typescript/*.test.ts
+      - run: python acceptance/ui_bridge/browser_acceptance.py --serve synapse/ui/dist
+      - env:
+          UI_TEST_PLAN: ${{ inputs.plan }}
+        run: python scripts/ci/ui_mutations.py renderer
+
+  native:
+    if: fromJSON(inputs.plan).native
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/acceptance/ui_bridge/native/target
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.99.1'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: acceptance/ui_bridge/native
+      - run: python -m pip install -e . pytest build setuptools
+      - run: python scripts/ui/build_core_bundle.py --output synapse/ui/src-tauri/resources/core
+      - run: cargo test --locked --manifest-path acceptance/ui_bridge/native/Cargo.toml
+      - env:
+          UI_TEST_PLAN: ${{ inputs.plan }}
+        run: python scripts/ci/ui_mutations.py native

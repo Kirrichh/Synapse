@@ -183,3 +183,21 @@ Implementation observations and verified outcomes will be appended below.
   start failure or domain workload justifies changing the current release deadlines.
   F-06, real WebView/Windows/systemd execution, installer and domain/JCS obligations
   remain open; these corrections do not complete P1 or change the normative spec.
+
+## 2026-10-18 — Cancelled push and empty verification plan
+
+- The push workflow can be cancelled when the PR workflow for the same head starts.
+  If cancellation interrupts `select`, it publishes no plan. The old `always()`
+  final gate still ran, and `json.loads('')` failed before checking job results.
+  This failure occurred in the cancelled push run; the concurrent PR run's UI and
+  selection jobs completed successfully. Both event runs must be inspected when
+  checking a pushed head, including the jobs of a cancelled run.
+- The final gate now uses `!cancelled()`: active failed dependencies still reach
+  verification, while a cancelled workflow does not start verification. The gate
+  checks selection success first and explicitly refuses missing, malformed or
+  incomplete plans. It never invents an empty successful selection.
+- External process acceptance covers empty/truncated/non-object plans, failed or
+  cancelled selection, missing/failed/cancelled selected jobs and unrelated skips.
+  The added mutation replaces invalid input with an empty permissive plan and must
+  be rejected by those cases. Product acceptance and product code are unchanged
+  by this CI follow-up.

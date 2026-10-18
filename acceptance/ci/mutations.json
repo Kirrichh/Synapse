@@ -154,5 +154,11 @@
     "target": "scripts/ci/check_results.py",
     "before": ", 'python_mutations'",
     "after": ""
+  },
+  {
+    "id": "CI-missing-plan-refusal",
+    "target": "scripts/ci/check_results.py",
+    "before": "raise SystemExit(f'{name} is missing or invalid; verification evidence is unavailable.') from None",
+    "after": "return {'groups': {}, 'durable': False, 'version': False, 'additional': [], 'tooling': False, 'ui': {}}"
   }
 ]

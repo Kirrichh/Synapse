@@ -1546,7 +1546,7 @@ jobs:
 
   gold-slow:
     name: gold-slow
-    if: always()
+    if: ${{ !cancelled() }}
     needs: [select, selection-acceptance, additional-tests, durable, version, ui, host-runtime, gold-fast, gold-slow-core, gold-slow-retrieval, gold-slow-replay, gold-slow-vm-adapter, gold-slow-od10, gold-slow-e1, gold-stage10-fast, gold-stage10-heavy, gold-stage11-fast, gold-stage11-heavy, gold-stage12-heavy, gold-stage13-heavy, gold-stage14-heavy, gold-stage15-heavy, gold-stage16-heavy, gold-stage16-mutations, agent-sdk-acceptance, memory-acceptance, repository-tests]
     runs-on: ubuntu-latest
     steps:

@@ -68,10 +68,13 @@ their existing separate execution policy.
 Feature pushes and PRs use the cumulative merge-base comparison. Renames select
 both ownership boundaries. Missing comparison data fails the selector; failed,
 cancelled, or unexpectedly skipped selected jobs fail the existing Gold gate.
+An entire cancelled workflow does not start the final gate. A failed selector or
+missing/invalid plan in an active workflow fails explicitly instead of attempting
+to parse empty output or treating absent checks as success.
 The build/test layer does not enter product imports or packaged runtime data.
 
-Local verification of the final selection behavior: **29 acceptance cases passed**
-and **26 seeded tooling mutants killed**. The existing **115 Python UI cases**,
+Local verification of the final selection behavior: **42 acceptance cases passed**
+and **27 seeded tooling mutants killed**. The existing **115 Python UI cases**,
 the browser/component scenarios using the isolated CI server, and actionlint
 validation also passed. All three reporting-confidentiality mutants were killed
 again on the review-correction tree.
@@ -128,7 +131,7 @@ An unbuildable mutant or infrastructure failure is not counted as a kill.
 
 Final executed total: **102 killed, 0 unexplained survivors, 0 invalid results**.
 The separate reporting campaign killed all three mutants; the CI selector campaign
-killed all 26 tooling mutants. Each retained product record matches its final
+killed all 27 tooling mutants. Each retained product record matches its final
 source SHA-256. The review correction cases specifically kill the missing-manifest
 edge and broken-reconnection mutants that the earlier campaign did not include.
 This is a targeted campaign, not exhaustive mutation coverage of every platform

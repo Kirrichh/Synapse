@@ -41,6 +41,32 @@ and Rust changes. An implementation convenience does not waive a requirement.
 - Distinguish requested, durably accepted, effective, completed, refused,
   cancelled, and unknown. Do not use an attractive label to hide uncertainty.
 
+### Permanent prohibition on storing user data
+
+- Never write the owner's or another user's personal/private data into any
+  repository file. This applies to tracked, untracked, generated, and ignored
+  files, including code, documentation, examples, acceptance fixtures, reports,
+  logs, configuration, screenshots, and bundled resources.
+- Do not copy credentials, tokens, keys, account/contact identifiers, private
+  filesystem paths, conversations, private document contents, or real user
+  profile/environment data into implementation or development artifacts.
+- Use invented, non-identifying values and isolated synthetic workspaces for
+  examples and acceptance. Do not derive a placeholder, digest, or encoded value
+  from private user data as a way to retain it indirectly.
+- Access granted for inspection or troubleshooting is not permission to store,
+  commit, or publish that information. Task-specific permission to retain a
+  supplied public/design artifact does not extend to unrelated private material.
+- Keep product runtime user data in its designated user-controlled storage,
+  outside the source checkout. Do not copy that storage into fixtures or bundles.
+- Review the content of changed files and visual artifacts before staging and
+  publication. A pattern scan is a review aid, not proof that all private data
+  has been detected. Prefer a small allowlist of structured evidence fields to
+  trying to redact an unrestricted stdout/stderr or environment dump.
+- If private material is found, remove it from pending artifacts and the index
+  before publishing. Report the affected category without reproducing its value.
+  Do not rewrite published history or claim an exposed secret is remediated by
+  deleting a current file; any such incident needs its own authorized response.
+
 ## 3. Establish responsibilities before creating modules
 
 For every substantial module, identify:

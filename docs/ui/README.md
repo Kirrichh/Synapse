@@ -2,9 +2,10 @@
 
 Version 1.0. Prepared on 2026-10-18 for the UI foundation workstream.
 
-Start with the [implementation status](IMPLEMENTATION_STATUS.md). The current
-work establishes the development contract and preserves the supplied design;
-the production desktop UI has not been implemented by this change.
+Start with the [implementation status](IMPLEMENTATION_STATUS.md). P1 now has a
+canonical control endpoint, a modular Tauri/React bootstrap application, and
+external behavioral/mutation evidence. P1 remains open for the platform and
+specification conditions listed in the status record.
 
 ## Requirements and references
 
@@ -16,12 +17,14 @@ the production desktop UI has not been implemented by this change.
 | [Development-only acceptance sources](development-reference/ACCEPTANCE_SOURCES.md) | Eight original acceptance entries/index, outside product UI integration |
 | [Prototype reference](prototype/README.md) | Original bilingual HTML, preserved byte for byte |
 | [Source manifest](SOURCE_MANIFEST.md) | Supplied-file provenance, hashes, translation/version policy, inspected baseline |
+| [Machine control profile v1](MACHINE_PROFILE_V1.md) | Released control envelope, negotiation, resource limits, and explicit authority boundary |
+| [Desktop development](DESKTOP_DEVELOPMENT.md) | Product layout under `synapse/`, build/launch steps, platform requirements, and delivery ownership |
 
 ## Mandatory development rules
 
 | Document | Purpose |
 |---|---|
-| [Coding rules](CODING_RULES.md) | Responsibilities, module boundaries, size review signals, frontend/native/core organization, and researched sources |
+| [Coding rules](CODING_RULES.md) | Responsibilities, module boundaries, user-data prohibition, size review signals, frontend/native/core organization, and researched sources |
 | [Acceptance rules](ACCEPTANCE_RULES.md) | Strict product separation, useful coverage, parallel heavy scenarios, mutation verification, and full completion |
 | [Security rules](SECURITY_RULES.md) | Continuous boundary review and concrete anti-bypass obligations |
 | [UI security design](UI_SECURITY_DESIGN.md) | Researched threat model, native/renderer controls, consent limits, secret handling, and external acceptance scenarios |
@@ -35,10 +38,12 @@ and canonical-entry constraints continue to apply.
 | Document | Purpose |
 |---|---|
 | [Implementation status](IMPLEMENTATION_STATUS.md) | Current stage, remaining delivery work, decisions, and handoff |
+| [Development notes](DEVELOPMENT_NOTES.md) | One chronological record of system behavior, implementation decisions, findings, and follow-up work |
 | [Requirement matrix](REQUIREMENT_MATRIX.md) | Every normative identifier and its implementation/verification state |
 | [Acceptance matrix](ACCEPTANCE_MATRIX.md) | All 44 source scenarios, future evidence, and mutation/security status |
 | [Open conditions](OPEN_CONDITIONS.md) | All 33 source conditions and local source-reference findings |
 | [Foundation verification](FOUNDATION_VERIFICATION.md) | Checks performed for this documentation-only change |
+| [P1 verification](P1_VERIFICATION.md) | Executed implementation checks, mutation results, security review, and unverified platform boundaries |
 
 ## Authority and maintenance
 

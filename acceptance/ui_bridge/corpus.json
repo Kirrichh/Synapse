@@ -1,0 +1,293 @@
+[
+  {
+    "behavior": "complete peer announcement",
+    "valid": true,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"hello\",\"component\":\"shell\",\"component_version\":\"v1\",\"protocol_min\":1,\"protocol_max\":1,\"profile\":\"synapse.control.v1\",\"max_frame_bytes\":65536}",
+    "value": {
+      "schema_version": "1.0",
+      "type": "hello",
+      "component": "shell",
+      "component_version": "v1",
+      "protocol_min": 1,
+      "protocol_max": 1,
+      "profile": "synapse.control.v1",
+      "max_frame_bytes": 65536
+    }
+  },
+  {
+    "behavior": "control request",
+    "valid": true,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{}}",
+    "value": {
+      "schema_version": "1.0",
+      "type": "request",
+      "request_id": "r1",
+      "method": "machine.ping",
+      "params": {}
+    }
+  },
+  {
+    "behavior": "unknown method reaches explicit refusal",
+    "valid": true,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"task.execute\",\"params\":{}}",
+    "value": {
+      "schema_version": "1.0",
+      "type": "request",
+      "request_id": "r1",
+      "method": "task.execute",
+      "params": {}
+    }
+  },
+  {
+    "behavior": "valid unicode, safe integer boundaries and literal syntax in parameters",
+    "valid": true,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{\"text\":\"\ud83d\ude42\u041f\u0440\u0438\u0432\u0435\u0442[\\\\\\\"{\",\"upper\":9007199254740991,\"lower\":-9007199254740991}}",
+    "value": {
+      "schema_version": "1.0",
+      "type": "request",
+      "request_id": "r1",
+      "method": "machine.ping",
+      "params": {
+        "text": "\ud83d\ude42\u041f\u0440\u0438\u0432\u0435\u0442[\\\"{",
+        "upper": 9007199254740991,
+        "lower": -9007199254740991
+      }
+    }
+  },
+  {
+    "behavior": "readiness grants only control",
+    "valid": true,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"ready\",\"profile\":\"synapse.control.v1\",\"protocol_version\":1,\"max_frame_bytes\":1024,\"command_classes\":[\"control\"],\"domain_ready\":false}",
+    "value": {
+      "schema_version": "1.0",
+      "type": "ready",
+      "profile": "synapse.control.v1",
+      "protocol_version": 1,
+      "max_frame_bytes": 1024,
+      "command_classes": [
+        "control"
+      ],
+      "domain_ready": false
+    }
+  },
+  {
+    "behavior": "correlated ping result",
+    "valid": true,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"result\",\"method\":\"machine.ping\",\"request_id\":\"r1\",\"result\":{\"status\":\"alive\"}}",
+    "value": {
+      "schema_version": "1.0",
+      "type": "result",
+      "method": "machine.ping",
+      "request_id": "r1",
+      "result": {
+        "status": "alive"
+      }
+    }
+  },
+  {
+    "behavior": "correlated shutdown result",
+    "valid": true,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"result\",\"method\":\"machine.shutdown\",\"request_id\":\"r1\",\"result\":{\"status\":\"stopped\",\"pending_commands\":0}}",
+    "value": {
+      "schema_version": "1.0",
+      "type": "result",
+      "method": "machine.shutdown",
+      "request_id": "r1",
+      "result": {
+        "status": "stopped",
+        "pending_commands": 0
+      }
+    }
+  },
+  {
+    "behavior": "correlated status result",
+    "valid": true,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"result\",\"method\":\"machine.status\",\"request_id\":\"r1\",\"result\":{\"state\":\"ready\",\"domain_ready\":false,\"profile\":\"synapse.control.v1\",\"max_frame_bytes\":65536}}",
+    "value": {
+      "schema_version": "1.0",
+      "type": "result",
+      "method": "machine.status",
+      "request_id": "r1",
+      "result": {
+        "state": "ready",
+        "domain_ready": false,
+        "profile": "synapse.control.v1",
+        "max_frame_bytes": 65536
+      }
+    }
+  },
+  {
+    "behavior": "explicit refusal",
+    "valid": true,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"error\",\"code\":\"NOT_READY\",\"fatal\":false,\"request_id\":\"r1\"}",
+    "value": {
+      "schema_version": "1.0",
+      "type": "error",
+      "code": "NOT_READY",
+      "fatal": false,
+      "request_id": "r1"
+    }
+  },
+  {
+    "behavior": "duplicate key",
+    "valid": false,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{\"a\":1,\"a\":2}}"
+  },
+  {
+    "behavior": "escaped duplicate",
+    "valid": false,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{\"a\":1,\"\\u0061\":2}}"
+  },
+  {
+    "behavior": "nested duplicate",
+    "valid": false,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{\"a\":{\"b\":1,\"b\":2}}}"
+  },
+  {
+    "behavior": "unsafe integer",
+    "valid": false,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{\"n\":9007199254740992}}"
+  },
+  {
+    "behavior": "unsafe negative",
+    "valid": false,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{\"n\":-9007199254740992}}"
+  },
+  {
+    "behavior": "floating token",
+    "valid": false,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{\"n\":1.0}}"
+  },
+  {
+    "behavior": "exponent token",
+    "valid": false,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{\"n\":1e0}}"
+  },
+  {
+    "behavior": "overflow token",
+    "valid": false,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{\"n\":1e999}}"
+  },
+  {
+    "behavior": "nonfinite number",
+    "valid": false,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{\"n\":NaN}}"
+  },
+  {
+    "behavior": "unpaired surrogate",
+    "valid": false,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{\"text\":\"\\ud800\"}}"
+  },
+  {
+    "behavior": "unpaired key",
+    "valid": false,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{\"\\udfff\":1}}"
+  },
+  {
+    "behavior": "depth overflow",
+    "valid": false,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{\"a\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[0]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}}"
+  },
+  {
+    "behavior": "unknown field",
+    "valid": false,
+    "raw": "{\"schema_version\": \"1.0\", \"type\": \"request\", \"request_id\": \"r1\", \"method\": \"machine.ping\", \"params\": {}, \"unexpected\": true}"
+  },
+  {
+    "behavior": "unsupported version",
+    "valid": false,
+    "raw": "{\"schema_version\": \"2.0\", \"type\": \"request\", \"request_id\": \"r1\", \"method\": \"machine.ping\", \"params\": {}}"
+  },
+  {
+    "behavior": "unsafe request id",
+    "valid": false,
+    "raw": "{\"schema_version\": \"1.0\", \"type\": \"request\", \"request_id\": \"r1\\n\", \"method\": \"machine.ping\", \"params\": {}}"
+  },
+  {
+    "behavior": "missing request id",
+    "valid": false,
+    "raw": "{\"schema_version\": \"1.0\", \"type\": \"request\", \"request_id\": null, \"method\": \"machine.ping\", \"params\": {}}"
+  },
+  {
+    "behavior": "wrong params type",
+    "valid": false,
+    "raw": "{\"schema_version\": \"1.0\", \"type\": \"request\", \"request_id\": \"r1\", \"method\": \"machine.ping\", \"params\": []}"
+  },
+  {
+    "behavior": "no numeric coercion",
+    "valid": false,
+    "raw": "{\"schema_version\": \"1.0\", \"type\": \"hello\", \"component\": \"shell\", \"component_version\": \"v1\", \"protocol_min\": \"1\", \"protocol_max\": 1, \"profile\": \"synapse.control.v1\", \"max_frame_bytes\": 65536}"
+  },
+  {
+    "behavior": "boolean is not integer",
+    "valid": false,
+    "raw": "{\"schema_version\": \"1.0\", \"type\": \"hello\", \"component\": \"shell\", \"component_version\": \"v1\", \"protocol_min\": true, \"protocol_max\": 1, \"profile\": \"synapse.control.v1\", \"max_frame_bytes\": 65536}"
+  },
+  {
+    "behavior": "zero frame limit",
+    "valid": false,
+    "raw": "{\"schema_version\": \"1.0\", \"type\": \"hello\", \"component\": \"shell\", \"component_version\": \"v1\", \"protocol_min\": 1, \"protocol_max\": 1, \"profile\": \"synapse.control.v1\", \"max_frame_bytes\": 0}"
+  },
+  {
+    "behavior": "frame limit overflow",
+    "valid": false,
+    "raw": "{\"schema_version\": \"1.0\", \"type\": \"hello\", \"component\": \"shell\", \"component_version\": \"v1\", \"protocol_min\": 1, \"protocol_max\": 1, \"profile\": \"synapse.control.v1\", \"max_frame_bytes\": 65537}"
+  },
+  {
+    "behavior": "result content cannot change method",
+    "valid": false,
+    "raw": "{\"schema_version\": \"1.0\", \"type\": \"result\", \"method\": \"machine.shutdown\", \"request_id\": \"r1\", \"result\": {\"status\": \"alive\"}}"
+  },
+  {
+    "behavior": "duplicate top level",
+    "valid": false,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{},\"method\":\"machine.shutdown\"}"
+  },
+  {
+    "behavior": "truncated json",
+    "valid": false,
+    "raw": "{\"type\":"
+  },
+  {
+    "behavior": "trailing second document",
+    "valid": false,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{}}{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{}}"
+  },
+  {
+    "behavior": "non-object envelope",
+    "valid": false,
+    "raw": "[]"
+  },
+  {
+    "behavior": "prototype-like property stays ordinary data",
+    "valid": true,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{\"__proto__\":{\"polluted\":true},\"constructor\":\"literal\"}}",
+    "value": {
+      "schema_version": "1.0",
+      "type": "request",
+      "request_id": "r1",
+      "method": "machine.ping",
+      "params": {
+        "__proto__": {
+          "polluted": true
+        },
+        "constructor": "literal"
+      }
+    }
+  },
+  {
+    "behavior": "negative zero",
+    "valid": false,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{\"n\":-0}}"
+  },
+  {
+    "behavior": "negative decimal zero",
+    "valid": false,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{\"n\":-0.0}}"
+  },
+  {
+    "behavior": "negative exponent zero",
+    "valid": false,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{\"n\":-0e0}}"
+  }
+]

@@ -1,0 +1,12 @@
+{
+  "profile_id": "synapse.control.v1",
+  "protocol_version": 1,
+  "bootstrap_max_frame_bytes": 65536,
+  "max_frame_bytes": 65536,
+  "min_frame_bytes": 1024,
+  "max_json_depth": 32,
+  "queue_capacity": 16,
+  "handshake_timeout_seconds": 5,
+  "write_timeout_seconds": 2,
+  "shutdown_timeout_seconds": 5
+}

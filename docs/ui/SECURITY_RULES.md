@@ -92,6 +92,15 @@ An error message alone is not proof that no forbidden effect occurred.
 
 ## 7. Secrets and local information
 
+- Never write user personal/private data into repository files, including
+  ignored outputs, fixtures, documentation, logs, reports, and screenshots.
+  Access to that data is not permission to retain or publish it. Follow the
+  [permanent data prohibition](CODING_RULES.md#permanent-prohibition-on-storing-user-data).
+- Use synthetic acceptance inputs. Persist only reviewed, non-sensitive
+  structured evidence; do not export raw subprocess output, environment dumps,
+  private paths, or real project/profile data into the checkout.
+- Keep application user storage outside source and build inputs. Review
+  generated assets and screenshot content/metadata before publication.
 - Use protected, versioned secret references in commands and pre-send storage.
 - Ordinary settings reads, exports, StateSync, logs, hashes of ordinary command
   parameters, and error stacks must not disclose secret values.

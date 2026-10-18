@@ -68,4 +68,7 @@ version = { attr = "synapse.version.PEP440_VERSION" }
 
 [tool.setuptools.packages.find]
 include = ["synapse*"]
-exclude = ["tests*", "examples*", "personal_slice*", "scripts*", "reports*", "docs*"]
+exclude = ["synapse.ui", "synapse.ui.*", "tests*", "examples*", "personal_slice*", "scripts*", "reports*", "docs*"]
+
+[tool.setuptools.package-data]
+"synapse.machine" = ["release_profile.json", "schemas/*.json"]

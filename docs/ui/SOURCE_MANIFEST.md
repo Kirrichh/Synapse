@@ -45,7 +45,7 @@ F-01 onward are navigation/status labels, not new protocol vocabulary.
 
 ## Inspected repository baseline
 
-Repository: `Kirrichh/Synapse`.
+Repository: the Synapse checkout containing this document.
 Base: `main`, commit `e5249908864ca9481f656092ecf08eb5f6bec567`.
 Working branch: `codex/ui-foundation-v1`.
 

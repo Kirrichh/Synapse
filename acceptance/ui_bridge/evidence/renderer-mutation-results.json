@@ -1,0 +1,231 @@
+{
+  "date": "2026-10-18",
+  "scope": "Control profile and component behavior only; installed Windows/Linux lifecycle and WebView security are not established.",
+  "baseline": "PASS",
+  "mutants": [
+    {
+      "id": "TS-negative-zero",
+      "behavior": "negative zero",
+      "target": "synapse/ui/src/contracts/decode.ts",
+      "source_sha256": "c9ec88dcab420f16556b844363d847f8ff9e4d98fde312d9510f64391513ac22",
+      "result": "KILLED",
+      "seconds": 0.186,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts"
+      ]
+    },
+    {
+      "id": "TS-integer-precision",
+      "behavior": "integer precision",
+      "target": "synapse/ui/src/contracts/decode.ts",
+      "source_sha256": "c9ec88dcab420f16556b844363d847f8ff9e4d98fde312d9510f64391513ac22",
+      "result": "KILLED",
+      "seconds": 0.243,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts"
+      ]
+    },
+    {
+      "id": "TS-duplicate-properties",
+      "behavior": "duplicate properties",
+      "target": "synapse/ui/src/contracts/decode.ts",
+      "source_sha256": "c9ec88dcab420f16556b844363d847f8ff9e4d98fde312d9510f64391513ac22",
+      "result": "KILLED",
+      "seconds": 0.235,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts"
+      ]
+    },
+    {
+      "id": "TS-unicode-scalars",
+      "behavior": "unicode scalars",
+      "target": "synapse/ui/src/contracts/decode.ts",
+      "source_sha256": "c9ec88dcab420f16556b844363d847f8ff9e4d98fde312d9510f64391513ac22",
+      "result": "KILLED",
+      "seconds": 0.223,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts"
+      ]
+    },
+    {
+      "id": "TS-json-depth",
+      "behavior": "json depth",
+      "target": "synapse/ui/src/contracts/decode.ts",
+      "source_sha256": "c9ec88dcab420f16556b844363d847f8ff9e4d98fde312d9510f64391513ac22",
+      "result": "KILLED",
+      "seconds": 0.214,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts"
+      ]
+    },
+    {
+      "id": "TS-utf8-byte-bound",
+      "behavior": "utf8 byte bound",
+      "target": "synapse/ui/src/contracts/decode.ts",
+      "source_sha256": "c9ec88dcab420f16556b844363d847f8ff9e4d98fde312d9510f64391513ac22",
+      "result": "KILLED",
+      "seconds": 0.237,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts"
+      ]
+    },
+    {
+      "id": "TS-envelope-schema",
+      "behavior": "envelope schema",
+      "target": "synapse/ui/src/contracts/decode.ts",
+      "source_sha256": "c9ec88dcab420f16556b844363d847f8ff9e4d98fde312d9510f64391513ac22",
+      "result": "KILLED",
+      "seconds": 0.22,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts"
+      ]
+    },
+    {
+      "id": "TS-snapshot-schema",
+      "behavior": "snapshot schema",
+      "target": "synapse/ui/src/contracts/decode.ts",
+      "source_sha256": "c9ec88dcab420f16556b844363d847f8ff9e4d98fde312d9510f64391513ac22",
+      "result": "KILLED",
+      "seconds": 0.195,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts"
+      ]
+    },
+    {
+      "id": "TS-nested-protocol",
+      "behavior": "nested protocol",
+      "target": "synapse/ui/src/contracts/decode.ts",
+      "source_sha256": "c9ec88dcab420f16556b844363d847f8ff9e4d98fde312d9510f64391513ac22",
+      "result": "KILLED",
+      "seconds": 0.2,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts"
+      ]
+    },
+    {
+      "id": "TS-diagnostic-redaction",
+      "behavior": "diagnostic redaction",
+      "target": "synapse/ui/src/contracts/decode.ts",
+      "source_sha256": "c9ec88dcab420f16556b844363d847f8ff9e4d98fde312d9510f64391513ac22",
+      "result": "KILLED",
+      "seconds": 0.215,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts"
+      ]
+    },
+    {
+      "id": "TS-native-session",
+      "behavior": "native session",
+      "target": "synapse/ui/src/connection/model.ts",
+      "source_sha256": "2f294b8c7b64714ff82571c9d90c94d052025020f1939bc96b3115a9a0f17eca",
+      "result": "KILLED",
+      "seconds": 0.207,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts"
+      ]
+    },
+    {
+      "id": "TS-duplicate-delivery",
+      "behavior": "duplicate delivery",
+      "target": "synapse/ui/src/connection/model.ts",
+      "source_sha256": "2f294b8c7b64714ff82571c9d90c94d052025020f1939bc96b3115a9a0f17eca",
+      "result": "KILLED",
+      "seconds": 0.199,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts"
+      ]
+    },
+    {
+      "id": "TS-generated-envelope",
+      "behavior": "generated envelope",
+      "target": "synapse/ui/tooling/generate-contracts.mjs",
+      "source_sha256": "54e54ec3ff649e0c89a260e124c53cffe2cde6d0ad48e4afc64effce72a62264",
+      "result": "KILLED",
+      "seconds": 0.388,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts"
+      ]
+    },
+    {
+      "id": "TS-generated-bootstrap",
+      "behavior": "generated bootstrap",
+      "target": "synapse/ui/tooling/generate-contracts.mjs",
+      "source_sha256": "54e54ec3ff649e0c89a260e124c53cffe2cde6d0ad48e4afc64effce72a62264",
+      "result": "KILLED",
+      "seconds": 0.416,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts"
+      ]
+    },
+    {
+      "id": "TS-language-switch",
+      "behavior": "language switch",
+      "target": "synapse/ui/src/App.tsx",
+      "source_sha256": "bde0a043fb8efcca5111ca2513e2b2b405fc5b54112714747608f322a5306d13",
+      "result": "KILLED",
+      "seconds": 1.987,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/browser_acceptance.py"
+      ]
+    },
+    {
+      "id": "TS-forced-close-confirmation",
+      "behavior": "forced close confirmation",
+      "target": "synapse/ui/src/components/ConnectionPanel.tsx",
+      "source_sha256": "b2a537d0bae6d2e3f0f6943e49bced05bd1d089f851d53d0fc85606917313b0f",
+      "result": "KILLED",
+      "seconds": 2.323,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/browser_acceptance.py"
+      ]
+    },
+    {
+      "id": "TS-renderer-acknowledgment",
+      "behavior": "renderer acknowledgment",
+      "target": "synapse/ui/src/connection/desktop.ts",
+      "source_sha256": "71e38b98e916aebde386eaed8fe3e1f5d1759ea3cf88ceb1765602969ec7be77",
+      "result": "KILLED",
+      "seconds": 2.352,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/browser_acceptance.py"
+      ]
+    },
+    {
+      "id": "TS-corruption-closes-observer",
+      "behavior": "corruption closes observer",
+      "target": "synapse/ui/src/connection/desktop.ts",
+      "source_sha256": "71e38b98e916aebde386eaed8fe3e1f5d1759ea3cf88ceb1765602969ec7be77",
+      "result": "KILLED",
+      "seconds": 2.35,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/browser_acceptance.py"
+      ]
+    },
+    {
+      "id": "TS-native-overload",
+      "behavior": "native overload",
+      "target": "synapse/ui/src/connection/useConnection.ts",
+      "source_sha256": "2b026034152ccebb3cb085ee58e3eeee0a0fcf96235e638ad32bdebabcff9ed2",
+      "result": "KILLED",
+      "seconds": 7.797,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/browser_acceptance.py"
+      ]
+    }
+  ],
+  "retention": "Reviewed structured evidence only; raw subprocess output is not retained."
+}

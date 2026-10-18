@@ -32,6 +32,15 @@ This repository contains the Synapse DSL/runtime and AS2 verification work.
 
 ## Permanent Development Requirements
 
+- Never write the owner's or other users' personal/private data into repository
+  files. This includes credentials, account identifiers, private local paths,
+  conversations, private document contents, and data copied from a real profile
+  or environment. The prohibition covers code, documentation, examples, fixtures,
+  logs, evidence, screenshots, generated files, and ignored/untracked files.
+- Use invented, non-identifying data for examples and acceptance. Permission to
+  inspect private input does not authorize retaining or publishing it. Review
+  artifacts before staging or publishing; retain only necessary, non-sensitive
+  structured evidence, never raw diagnostic dumps containing user data.
 - Agents must never merge branches or pull requests. This includes local
   `git merge`, pull-request merge actions, enabling auto-merge, and adding work
   to a merge queue. Merging is reserved for the repository owner.

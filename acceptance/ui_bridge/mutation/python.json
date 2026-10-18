@@ -1,0 +1,332 @@
+[
+  {
+    "id": "PY-duplicate-properties",
+    "kind": "python",
+    "behavior": "duplicate properties",
+    "target": "synapse/machine/codec.py",
+    "before": "if key in result:",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_json_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-negative-zero",
+    "kind": "python",
+    "behavior": "negative zero",
+    "target": "synapse/machine/codec.py",
+    "before": "token == \"-0\" or abs(value) > SAFE_INTEGER",
+    "after": "abs(value) > SAFE_INTEGER",
+    "cases": [
+      "acceptance/ui_bridge/test_corpus_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-integer-precision",
+    "kind": "python",
+    "behavior": "integer precision",
+    "target": "synapse/machine/codec.py",
+    "before": "abs(value) > SAFE_INTEGER",
+    "after": "False",
+    "cases": [
+      "acceptance/ui_bridge/test_json_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-depth-limit",
+    "kind": "python",
+    "behavior": "depth limit",
+    "target": "synapse/machine/codec.py",
+    "before": "if depth > PROFILE[\"max_json_depth\"]:",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_json_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-payload-byte-limit",
+    "kind": "python",
+    "behavior": "payload byte limit",
+    "target": "synapse/machine/codec.py",
+    "before": "if len(payload) > PROFILE[\"max_frame_bytes\"]:",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_json_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-utf8-strictness",
+    "kind": "python",
+    "behavior": "utf8 strictness",
+    "target": "synapse/machine/codec.py",
+    "before": "errors=\"strict\"",
+    "after": "errors=\"ignore\"",
+    "cases": [
+      "acceptance/ui_bridge/test_json_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-unicode-scalars",
+    "kind": "python",
+    "behavior": "unicode scalars",
+    "target": "synapse/machine/codec.py",
+    "before": "if any(0xD800 <= ord(char) <= 0xDFFF for char in item):",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_json_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-frame-boundary",
+    "kind": "python",
+    "behavior": "frame boundary",
+    "target": "synapse/machine/codec.py",
+    "before": "if length > limit:",
+    "after": "if length > limit + 1:",
+    "cases": [
+      "acceptance/ui_bridge/test_frame_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-outbound-boundary",
+    "kind": "python",
+    "behavior": "outbound boundary",
+    "target": "synapse/machine/codec.py",
+    "before": "if not 0 < len(payload) <= limit:",
+    "after": "if not 0 < len(payload) <= limit + 1:",
+    "cases": [
+      "acceptance/ui_bridge/test_frame_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-wire-endianness",
+    "kind": "python",
+    "behavior": "wire endianness",
+    "target": "synapse/machine/codec.py",
+    "before": "struct.pack(\">I\", len(payload))",
+    "after": "struct.pack(\"<I\", len(payload))",
+    "cases": [
+      "acceptance/ui_bridge/test_frame_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-partial-writes",
+    "kind": "python",
+    "behavior": "partial writes",
+    "target": "synapse/machine/codec.py",
+    "before": "remaining = remaining[written:]",
+    "after": "remaining = remaining[len(remaining):]",
+    "cases": [
+      "acceptance/ui_bridge/test_frame_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-schema-refusal",
+    "kind": "python",
+    "behavior": "schema refusal",
+    "target": "synapse/machine/contract.py",
+    "before": "if not VALIDATOR.is_valid(value):",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_json_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-version-refusal",
+    "kind": "python",
+    "behavior": "version refusal",
+    "target": "synapse/machine/contract.py",
+    "before": "if isinstance(value, dict) and value.get(\"schema_version\") != VERSION:",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_json_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-diagnostic-redaction",
+    "kind": "python",
+    "behavior": "diagnostic redaction",
+    "target": "synapse/machine/contract.py",
+    "before": "code if code in ERROR_CODES else \"INTERNAL_ERROR\"",
+    "after": "code",
+    "cases": [
+      "acceptance/ui_bridge/test_json_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-early-requests",
+    "kind": "python",
+    "behavior": "early requests",
+    "target": "synapse/machine/session.py",
+    "before": "if self.phase != \"ready\":",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_session_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-closed-session",
+    "kind": "python",
+    "behavior": "closed session",
+    "target": "synapse/machine/session.py",
+    "before": "if self.closed:",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_session_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-peer-role",
+    "kind": "python",
+    "behavior": "peer role",
+    "target": "synapse/machine/session.py",
+    "before": "incoming[\"component\"] != \"shell\" or",
+    "after": "False or",
+    "cases": [
+      "acceptance/ui_bridge/test_session_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-negotiated-limit",
+    "kind": "python",
+    "behavior": "negotiated limit",
+    "target": "synapse/machine/session.py",
+    "before": "incoming[\"max_frame_bytes\"] > min(self.peer_limit, PROFILE[\"max_frame_bytes\"])",
+    "after": "False",
+    "cases": [
+      "acceptance/ui_bridge/test_session_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-unknown-methods",
+    "kind": "python",
+    "behavior": "unknown methods",
+    "target": "synapse/machine/session.py",
+    "before": "if method not in METHODS:",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_session_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-nonempty-parameters",
+    "kind": "python",
+    "behavior": "nonempty parameters",
+    "target": "synapse/machine/session.py",
+    "before": "if incoming[\"params\"]:",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_session_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-shutdown-terminal",
+    "kind": "python",
+    "behavior": "shutdown terminal",
+    "target": "synapse/machine/session.py",
+    "before": "self.phase = \"stopped\"",
+    "after": "self.phase = \"ready\"",
+    "cases": [
+      "acceptance/ui_bridge/test_session_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-prefetched-limit",
+    "kind": "python",
+    "behavior": "prefetched limit",
+    "target": "synapse/machine/transport.py",
+    "before": "if len(item) > self.limit:",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_machine_cli_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-write-deadline",
+    "kind": "python",
+    "behavior": "write deadline",
+    "target": "synapse/machine/transport.py",
+    "before": "item.done.wait(max(0, deadline - monotonic()))",
+    "after": "item.done.wait(2)",
+    "cases": [
+      "acceptance/ui_bridge/test_transport_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-cli-machine-dispatch",
+    "kind": "python",
+    "behavior": "cli machine dispatch",
+    "target": "synapse/cli.py",
+    "before": "if args.cmd == \"machine\":",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_machine_cli_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-session-exit-status",
+    "kind": "python",
+    "behavior": "session exit status",
+    "target": "synapse/machine/entry.py",
+    "before": "return 0 if session.phase == \"stopped\" else 2",
+    "after": "return 0",
+    "cases": [
+      "acceptance/ui_bridge/test_machine_cli_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-fixed-handshake-deadline",
+    "kind": "python",
+    "behavior": "fixed handshake deadline",
+    "target": "synapse/machine/entry.py",
+    "before": "deadline = monotonic() + PROFILE[\"handshake_timeout_seconds\"]",
+    "after": "deadline = monotonic() + 10 * PROFILE[\"handshake_timeout_seconds\"]",
+    "cases": [
+      "acceptance/ui_bridge/test_handshake_deadline_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-stdlib-exclusions",
+    "kind": "python",
+    "behavior": "stdlib exclusions",
+    "target": "scripts/ui/build_core_bundle.py",
+    "before": "name in EXCLUDED or name.startswith((\"_test\", \"test_\"))",
+    "after": "False",
+    "cases": [
+      "acceptance/ui_bridge/test_bundle_tool_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-inventory-identity",
+    "kind": "python",
+    "behavior": "inventory identity",
+    "target": "scripts/ui/build_core_bundle.py",
+    "before": "hashlib.sha256(path.read_bytes()).hexdigest()",
+    "after": "\"0\" * 64",
+    "cases": [
+      "acceptance/ui_bridge/test_bundle_tool_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-distribution-isolation",
+    "kind": "python",
+    "behavior": "desktop code cannot enter the installed Python namespace",
+    "target": "pyproject.toml",
+    "before": "\"synapse.ui\", \"synapse.ui.*\", ",
+    "after": "",
+    "cases": [
+      "acceptance/ui_bridge/test_python_distribution_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-outgoing-validation",
+    "kind": "python",
+    "behavior": "invalid outgoing envelope cannot reach the pipe",
+    "target": "synapse/machine/transport.py",
+    "before": "        validate(value)\n        item = _Write",
+    "after": "        item = _Write",
+    "cases": [
+      "acceptance/ui_bridge/test_transport_acceptance.py"
+    ]
+  }
+]

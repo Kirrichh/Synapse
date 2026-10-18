@@ -1,0 +1,38 @@
+[package]
+name = "synapse-ui-acceptance"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+synapse-desktop = { path = "../../../synapse/ui/src-tauri", default-features = false }
+serde_json = "1"
+jsonschema = { version = "0.59", default-features = false }
+sha2 = "0.10"
+tempfile = "3"
+url = "2"
+
+[[test]]
+name = "protocol"
+path = "protocol.rs"
+[[test]]
+name = "transport"
+path = "transport.rs"
+[[test]]
+name = "bundle"
+path = "bundle.rs"
+[[test]]
+name = "publication"
+path = "publication.rs"
+[[test]]
+name = "platform"
+path = "platform.rs"
+[[test]]
+name = "canonical_core"
+path = "canonical_core.rs"
+[[test]]
+name = "controller"
+path = "controller.rs"
+[[test]]
+name = "bridge"
+path = "bridge.rs"

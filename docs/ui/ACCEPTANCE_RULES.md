@@ -174,6 +174,14 @@ Equivalent mutants, exclusions, and tooling limits require explicit evidence.
 
 ### Evidence record
 
+Never copy real user data into acceptance inputs or repository evidence. Use
+invented values, including for secret-disclosure and path-isolation scenarios.
+Keep only reviewed structured results, relative source/case references, and
+necessary build identities. Do not retain raw stdout/stderr, environment dumps,
+or screenshots of private user state. The
+[permanent data prohibition](CODING_RULES.md#permanent-prohibition-on-storing-user-data)
+also applies to temporary, generated, ignored, and untracked repository files.
+
 Record: scope/requirement IDs, implementation reference, environment, tool and
 configuration, baseline result, mutant descriptions, result classification,
 detecting checks, survivor resolutions, and final reruns. Commit references may

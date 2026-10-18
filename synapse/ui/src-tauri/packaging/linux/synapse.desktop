@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Synapse
+Comment=Governed agent workspace
+Exec=/usr/bin/systemctl --user start synapse-desktop.service
+Icon=synapse-desktop
+Terminal=false
+Categories=Development;
+StartupNotify=false

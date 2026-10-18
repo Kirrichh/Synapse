@@ -1,0 +1,299 @@
+[
+  {
+    "id": "RS-duplicate-properties",
+    "kind": "rust",
+    "behavior": "duplicate properties",
+    "target": "synapse/ui/src-tauri/src/protocol.rs",
+    "before": "if values.contains_key(&key) {",
+    "after": "if false {",
+    "case": "protocol"
+  },
+  {
+    "id": "RS-integer-precision",
+    "kind": "rust",
+    "behavior": "integer precision",
+    "target": "synapse/ui/src-tauri/src/protocol.rs",
+    "before": "if value > 9_007_199_254_740_991 {",
+    "after": "if false {",
+    "case": "protocol"
+  },
+  {
+    "id": "RS-depth-limit",
+    "kind": "rust",
+    "behavior": "depth limit",
+    "target": "synapse/ui/src-tauri/src/protocol.rs",
+    "before": "if depth > PROFILE.max_json_depth {",
+    "after": "if false {",
+    "case": "protocol"
+  },
+  {
+    "id": "RS-schema-refusal",
+    "kind": "rust",
+    "behavior": "schema refusal",
+    "target": "synapse/ui/src-tauri/src/protocol.rs",
+    "before": "if !VALIDATOR.is_valid(&value) {",
+    "after": "if false {",
+    "case": "protocol"
+  },
+  {
+    "id": "RS-peer-version",
+    "kind": "rust",
+    "behavior": "peer version",
+    "target": "synapse/ui/src-tauri/src/protocol.rs",
+    "before": "if value[\"component_version\"] != runtime_version {",
+    "after": "if false {",
+    "case": "protocol"
+  },
+  {
+    "id": "RS-peer-role",
+    "kind": "rust",
+    "behavior": "peer role",
+    "target": "synapse/ui/src-tauri/src/protocol.rs",
+    "before": "|| value[\"component\"] != \"core\"",
+    "after": "|| false",
+    "case": "protocol"
+  },
+  {
+    "id": "RS-readiness-limit",
+    "kind": "rust",
+    "behavior": "readiness limit",
+    "target": "synapse/ui/src-tauri/src/protocol.rs",
+    "before": "|| value[\"max_frame_bytes\"] != limit",
+    "after": "|| false",
+    "case": "protocol"
+  },
+  {
+    "id": "RS-result-id",
+    "kind": "rust",
+    "behavior": "result id",
+    "target": "synapse/ui/src-tauri/src/protocol.rs",
+    "before": "|| value[\"request_id\"] != id",
+    "after": "|| false",
+    "case": "protocol"
+  },
+  {
+    "id": "RS-result-method",
+    "kind": "rust",
+    "behavior": "result method",
+    "target": "synapse/ui/src-tauri/src/protocol.rs",
+    "before": "|| value[\"method\"] != method",
+    "after": "|| false",
+    "case": "protocol"
+  },
+  {
+    "id": "RS-frame-boundary",
+    "kind": "rust",
+    "behavior": "frame boundary",
+    "target": "synapse/ui/src-tauri/src/transport.rs",
+    "before": "size > limit",
+    "after": "size > limit + 1",
+    "case": "transport"
+  },
+  {
+    "id": "RS-prefetched-limit",
+    "kind": "rust",
+    "behavior": "prefetched limit",
+    "target": "synapse/ui/src-tauri/src/transport.rs",
+    "before": "if payload.len() > self.limit.load(Ordering::Acquire) {\n            return Err(Failure(\"PROTOCOL_ERROR\"));\n        }\n        protocol::decode",
+    "after": "if false {\n            return Err(Failure(\"PROTOCOL_ERROR\"));\n        }\n        protocol::decode",
+    "case": "transport"
+  },
+  {
+    "id": "RS-write-completion",
+    "kind": "rust",
+    "behavior": "write completion",
+    "target": "synapse/ui/src-tauri/src/transport.rs",
+    "before": "destination\n                    .write_all(&frame)",
+    "after": "destination\n                    .write_all(&frame[..4])",
+    "case": "transport"
+  },
+  {
+    "id": "RS-manifest-identity",
+    "kind": "rust",
+    "behavior": "manifest identity",
+    "target": "synapse/ui/src-tauri/src/bundle.rs",
+    "before": "if format!(\"{:x}\", Sha256::digest(&bytes)) != expected_manifest_digest {",
+    "after": "if false {",
+    "case": "bundle"
+  },
+  {
+    "id": "RS-executable-identity",
+    "kind": "rust",
+    "behavior": "executable identity",
+    "target": "synapse/ui/src-tauri/src/bundle.rs",
+    "before": "format!(\"{:x}\", hash.finalize()) != *expected",
+    "after": "false",
+    "case": "bundle"
+  },
+  {
+    "id": "RS-unlisted-startup-code",
+    "kind": "rust",
+    "behavior": "unlisted startup code",
+    "target": "synapse/ui/src-tauri/src/bundle.rs",
+    "before": "relative != \"bundle-manifest.json\" && !manifest.files.contains_key(&relative)",
+    "after": "false",
+    "case": "bundle"
+  },
+  {
+    "id": "RS-platform-binding",
+    "kind": "rust",
+    "behavior": "platform binding",
+    "target": "synapse/ui/src-tauri/src/bundle.rs",
+    "before": "|| manifest.target_os != std::env::consts::OS",
+    "after": "|| false",
+    "case": "bundle"
+  },
+  {
+    "id": "RS-window-binding",
+    "kind": "rust",
+    "behavior": "window binding",
+    "target": "synapse/ui/src-tauri/src/caller.rs",
+    "before": "if label != \"main\"",
+    "after": "if false",
+    "case": "platform"
+  },
+  {
+    "id": "RS-origin-binding",
+    "kind": "rust",
+    "behavior": "origin binding",
+    "target": "synapse/ui/src-tauri/src/caller.rs",
+    "before": "|| !local",
+    "after": "|| false",
+    "case": "platform"
+  },
+  {
+    "id": "RS-origin-credentials",
+    "kind": "rust",
+    "behavior": "origin credentials",
+    "target": "synapse/ui/src-tauri/src/caller.rs",
+    "before": "|| !url.username().is_empty()",
+    "after": "|| false",
+    "case": "platform"
+  },
+  {
+    "id": "RS-renderer-acknowledgment",
+    "kind": "rust",
+    "behavior": "renderer acknowledgment",
+    "target": "synapse/ui/src-tauri/src/publication.rs",
+    "before": "subscriber.waiting || subscriber.sent == Some(snapshot.sequence)",
+    "after": "false || subscriber.sent == Some(snapshot.sequence)",
+    "case": "publication"
+  },
+  {
+    "id": "RS-subscription-binding",
+    "kind": "rust",
+    "behavior": "subscription binding",
+    "target": "synapse/ui/src-tauri/src/publication.rs",
+    "before": "subscriber.id != subscription || subscriber.sent != Some(sequence)",
+    "after": "false || subscriber.sent != Some(sequence)",
+    "case": "publication"
+  },
+  {
+    "id": "RS-acknowledgment-sequence",
+    "kind": "rust",
+    "behavior": "acknowledgment sequence",
+    "target": "synapse/ui/src-tauri/src/publication.rs",
+    "before": "subscriber.id != subscription || subscriber.sent != Some(sequence)",
+    "after": "subscriber.id != subscription || false",
+    "case": "publication"
+  },
+  {
+    "id": "RS-replaced-subscription",
+    "kind": "rust",
+    "behavior": "replaced subscription",
+    "target": "synapse/ui/src-tauri/src/publication.rs",
+    "before": ".is_some_and(|subscriber| subscriber.id == id)",
+    "after": ".is_some_and(|_| true)",
+    "case": "publication"
+  },
+  {
+    "id": "RS-snapshot-authority",
+    "kind": "rust",
+    "behavior": "snapshot authority",
+    "target": "synapse/ui/src-tauri/src/publication.rs",
+    "before": "domain_ready: false,",
+    "after": "domain_ready: true,",
+    "case": "publication"
+  },
+  {
+    "id": "RS-diagnostic-retention",
+    "kind": "rust",
+    "behavior": "diagnostic retention",
+    "target": "synapse/ui/src-tauri/src/diagnostics.rs",
+    "before": "if events.len() == 32 {",
+    "after": "if events.len() == 64 {",
+    "case": "publication"
+  },
+  {
+    "id": "RS-diagnostic-redaction",
+    "kind": "rust",
+    "behavior": "diagnostic redaction",
+    "target": "synapse/ui/src-tauri/src/diagnostics.rs",
+    "before": "log.record(safe_code(&line));\n                                line.clear();",
+    "after": "log.record(std::str::from_utf8(&line).unwrap_or(\"CORE_DIAGNOSTIC\"));\n                                line.clear();",
+    "case": "publication"
+  },
+  {
+    "id": "RS-bridge-version-binding",
+    "kind": "rust",
+    "behavior": "bridge version binding",
+    "target": "synapse/ui/src-tauri/src/bridge.rs",
+    "before": "let limit = protocol::check_hello(&peer, version)?;",
+    "after": "let limit = 1024;",
+    "case": "bridge"
+  },
+  {
+    "id": "RS-bridge-ready-binding",
+    "kind": "rust",
+    "behavior": "bridge ready binding",
+    "target": "synapse/ui/src-tauri/src/bridge.rs",
+    "before": "protocol::check_ready(&ready, limit)?;",
+    "after": "let _ = limit;",
+    "case": "bridge"
+  },
+  {
+    "id": "RS-bridge-result-binding",
+    "kind": "rust",
+    "behavior": "bridge result binding",
+    "target": "synapse/ui/src-tauri/src/bridge.rs",
+    "before": "protocol::check_result(&reply, method, &id)?;",
+    "after": "let _ = (method, id);",
+    "case": "bridge"
+  },
+  {
+    "id": "RS-replacement-admission",
+    "kind": "rust",
+    "behavior": "replacement admission",
+    "target": "synapse/ui/src-tauri/src/controller.rs",
+    "before": "if self.launched {",
+    "after": "if false {",
+    "case": "controller"
+  },
+  {
+    "id": "RS-terminal-close",
+    "kind": "rust",
+    "behavior": "terminal close",
+    "target": "synapse/ui/src-tauri/src/controller.rs",
+    "before": "if !self.launched || self.stopped {",
+    "after": "if !self.launched {",
+    "case": "controller"
+  },
+  {
+    "id": "RS-heartbeat-deadline",
+    "kind": "rust",
+    "behavior": "heartbeat deadline",
+    "target": "synapse/ui/src-tauri/src/controller.rs",
+    "before": "let interval = Duration::from_secs(2);",
+    "after": "let interval = Duration::from_secs(60);",
+    "case": "controller"
+  },
+  {
+    "id": "RS-unsupported-environment",
+    "kind": "rust",
+    "behavior": "unsupported environment",
+    "target": "synapse/ui/src-tauri/src/lifecycle/linux.rs",
+    "before": "environment()?;",
+    "after": "// Environment validation removed by external mutant.",
+    "case": "platform"
+  }
+]

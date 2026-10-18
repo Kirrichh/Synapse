@@ -1,0 +1,154 @@
+[
+  {
+    "id": "TS-negative-zero",
+    "kind": "typescript",
+    "behavior": "negative zero",
+    "target": "synapse/ui/src/contracts/decode.ts",
+    "before": "token === \"-0\" || ",
+    "after": ""
+  },
+  {
+    "id": "TS-integer-precision",
+    "kind": "typescript",
+    "behavior": "integer precision",
+    "target": "synapse/ui/src/contracts/decode.ts",
+    "before": "if (!Number.isSafeInteger(number))",
+    "after": "if (false)"
+  },
+  {
+    "id": "TS-duplicate-properties",
+    "kind": "typescript",
+    "behavior": "duplicate properties",
+    "target": "synapse/ui/src/contracts/decode.ts",
+    "before": "onDuplicateKey() {\n      throw new ContractError();\n    }",
+    "after": "onDuplicateKey() { return undefined; }"
+  },
+  {
+    "id": "TS-unicode-scalars",
+    "kind": "typescript",
+    "behavior": "unicode scalars",
+    "target": "synapse/ui/src/contracts/decode.ts",
+    "before": "typeof item === \"string\" && !validUnicode(item)",
+    "after": "false"
+  },
+  {
+    "id": "TS-json-depth",
+    "kind": "typescript",
+    "behavior": "json depth",
+    "target": "synapse/ui/src/contracts/decode.ts",
+    "before": "if (depth > profile.max_json_depth)",
+    "after": "if (false)"
+  },
+  {
+    "id": "TS-utf8-byte-bound",
+    "kind": "typescript",
+    "behavior": "utf8 byte bound",
+    "target": "synapse/ui/src/contracts/decode.ts",
+    "before": "new TextEncoder().encode(text).length > profile.max_frame_bytes",
+    "after": "false"
+  },
+  {
+    "id": "TS-envelope-schema",
+    "kind": "typescript",
+    "behavior": "envelope schema",
+    "target": "synapse/ui/src/contracts/decode.ts",
+    "before": "if (!validateEnvelope(value))",
+    "after": "if (false)"
+  },
+  {
+    "id": "TS-snapshot-schema",
+    "kind": "typescript",
+    "behavior": "snapshot schema",
+    "target": "synapse/ui/src/contracts/decode.ts",
+    "before": "if (!validateBootstrap(value))",
+    "after": "if (false)"
+  },
+  {
+    "id": "TS-nested-protocol",
+    "kind": "typescript",
+    "behavior": "nested protocol",
+    "target": "synapse/ui/src/contracts/decode.ts",
+    "before": "if (snapshot.protocol_message) decodeEnvelope(snapshot.protocol_message);",
+    "after": "// Nested protocol verification removed by the external mutant."
+  },
+  {
+    "id": "TS-diagnostic-redaction",
+    "kind": "typescript",
+    "behavior": "diagnostic redaction",
+    "target": "synapse/ui/src/contracts/decode.ts",
+    "before": ": \"INTERNAL_ERROR\";",
+    "after": ": value as NonNullable<BootstrapSnapshot[\"code\"]>;"
+  },
+  {
+    "id": "TS-native-session",
+    "kind": "typescript",
+    "behavior": "native session",
+    "target": "synapse/ui/src/connection/model.ts",
+    "before": "previous.session_id !== next.session_id",
+    "after": "false"
+  },
+  {
+    "id": "TS-duplicate-delivery",
+    "kind": "typescript",
+    "behavior": "duplicate delivery",
+    "target": "synapse/ui/src/connection/model.ts",
+    "before": "next.sequence <= previous.sequence",
+    "after": "next.sequence < previous.sequence"
+  },
+  {
+    "id": "TS-generated-envelope",
+    "kind": "generator",
+    "behavior": "generated envelope",
+    "target": "synapse/ui/tooling/generate-contracts.mjs",
+    "before": "ajv.addSchema(envelope, \"envelope\");",
+    "after": "ajv.addSchema({type:\"object\"}, \"envelope\");"
+  },
+  {
+    "id": "TS-generated-bootstrap",
+    "kind": "generator",
+    "behavior": "generated bootstrap",
+    "target": "synapse/ui/tooling/generate-contracts.mjs",
+    "before": "ajv.addSchema(bootstrap, \"bootstrap\");",
+    "after": "ajv.addSchema({type:\"object\"}, \"bootstrap\");"
+  },
+  {
+    "id": "TS-language-switch",
+    "kind": "browser",
+    "behavior": "language switch",
+    "target": "synapse/ui/src/App.tsx",
+    "before": "onClick={() => setLanguage(value)}",
+    "after": "onClick={() => setLanguage(\"en\")}"
+  },
+  {
+    "id": "TS-forced-close-confirmation",
+    "kind": "browser",
+    "behavior": "forced close confirmation",
+    "target": "synapse/ui/src/components/ConnectionPanel.tsx",
+    "before": "if (window.confirm(t.forceWarning)) forceClose();",
+    "after": "forceClose();"
+  },
+  {
+    "id": "TS-renderer-acknowledgment",
+    "kind": "browser",
+    "behavior": "renderer acknowledgment",
+    "target": "synapse/ui/src/connection/desktop.ts",
+    "before": "channel.onmessage = (text) => accept(text, true);",
+    "after": "channel.onmessage = (text) => accept(text, false);"
+  },
+  {
+    "id": "TS-corruption-closes-observer",
+    "kind": "browser",
+    "behavior": "corruption closes observer",
+    "target": "synapse/ui/src/connection/desktop.ts",
+    "before": "if (closed) return;",
+    "after": "if (false) return;"
+  },
+  {
+    "id": "TS-native-overload",
+    "kind": "browser",
+    "behavior": "native overload",
+    "target": "synapse/ui/src/connection/useConnection.ts",
+    "before": "connectionFailure(current, decodeFailure(failure))",
+    "after": "connectionFailure(current, \"INTERNAL_ERROR\")"
+  }
+]

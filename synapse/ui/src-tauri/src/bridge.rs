@@ -1,0 +1,58 @@
+//! Negotiation and correlated control exchanges, independent of renderer delivery.
+use crate::{
+    protocol::{self, Failure, PROFILE},
+    transport::PipeConnection,
+};
+use serde_json::Value;
+use std::time::{Duration, Instant};
+
+pub struct Session {
+    connection: PipeConnection,
+    pub last: Value,
+}
+impl Session {
+    pub fn connect(connection: PipeConnection, version: &str) -> Result<Self, Failure> {
+        let deadline = Instant::now() + Duration::from_secs(PROFILE.handshake_timeout_seconds);
+        let remaining = || {
+            deadline
+                .checked_duration_since(Instant::now())
+                .ok_or(Failure("HANDSHAKE_TIMEOUT"))
+        };
+        let peer = connection.receive(remaining()?).map_err(|failure| {
+            if failure.0 == "TRANSPORT_TIMEOUT" {
+                Failure("HANDSHAKE_TIMEOUT")
+            } else {
+                failure
+            }
+        })?;
+        let limit = protocol::check_hello(&peer, version)?;
+        connection.send_before(&protocol::hello(env!("CARGO_PKG_VERSION")), deadline)?;
+        remaining()?;
+        connection.set_limit(limit);
+        connection.send_before(&protocol::select(limit), deadline)?;
+        let ready = connection.receive(remaining()?).map_err(|failure| {
+            if failure.0 == "TRANSPORT_TIMEOUT" {
+                Failure("HANDSHAKE_TIMEOUT")
+            } else {
+                failure
+            }
+        })?;
+        protocol::check_ready(&ready, limit)?;
+        Ok(Self {
+            connection,
+            last: ready,
+        })
+    }
+    pub fn exchange(&mut self, method: &str, deadline: Instant) -> Result<(), Failure> {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.connection
+            .send_before(&protocol::request(method, &id), deadline)?;
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or(Failure("TRANSPORT_TIMEOUT"))?;
+        let reply = self.connection.receive(remaining)?;
+        protocol::check_result(&reply, method, &id)?;
+        self.last = reply;
+        Ok(())
+    }
+}

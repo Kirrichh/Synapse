@@ -8,7 +8,7 @@ To close a row, establish its owner and precise contract/configuration, implemen
 
 | Condition | Work still required | Primary stage | Status / evidence |
 |---|---|---|---|
-| OC-01 | Implement/test Windows Job and Linux systemd user profiles, actual adapter launch paths, and environment matrix; CRASH-2 otherwise cannot hold (Architecture/implementation) | P1 | OPEN / none |
+| OC-01 | Implement/test Windows Job and Linux systemd user profiles, actual adapter launch paths, and environment matrix; CRASH-2 otherwise cannot hold (Architecture/implementation) | P1 | OPEN / [Control implementation and partial evidence](P1_VERIFICATION.md); full condition remains pending |
 | OC-02 | Locate durable once-grant/execution binding in the actual execution path; define proposal-identity record (Authority owner) | P3 | OPEN / none |
 | OC-03 | Define state-domain registry, snapshot bases, position encoding, progress cadence, subscription buffer size/retention, multiple subscribers (Contract/implementation) | P2 | OPEN / none |
 | OC-04 | Coordinate whole-task stopping separately from invocation cancellation (Contract) | P4 | OPEN / none |
@@ -16,7 +16,7 @@ To close a row, establish its owner and precise contract/configuration, implemen
 | OC-06 | Define main-agent conversation history and composite independently versioned snapshots without global atomicity (Contract) | P4 | OPEN / none |
 | OC-07 | Define authoritative acceptance records for approvals/messages/policy changes, using invocation claim as a pattern (Contract) | P3 | OPEN / none |
 | OC-08 | Reconcile lost command identity; protect sensitive pre-send content (Procedure) | P3 | OPEN / none |
-| OC-09 | Define protocol core shutdown and confirmation (CRASH-15) (Contract) | P1 | OPEN / none |
+| OC-09 | Define protocol core shutdown and confirmation (CRASH-15) (Contract) | P1 | OPEN / [Control implementation and partial evidence](P1_VERIFICATION.md); full condition remains pending |
 | OC-10 | Define terminal-result retention/TTL; expiry never makes an old command new (Policy) | P3 | OPEN / none |
 | OC-11 | Implement isolated dry reassessment, all mutable stores/references, report and basis binding (MEM-4–6) (Contract/implementation) | P6 | OPEN / none |
 | OC-12 | Core mathematical invariants and common UI/CLI/import validation (MEM-3) (Contract) | P6 | OPEN / none |
@@ -25,11 +25,11 @@ To close a row, establish its owner and precise contract/configuration, implemen
 | OC-15 | Byte accounting, reserves, shared-block attribution, double-count prevention, raw_capacity category (Contract) | P6 | OPEN / none |
 | OC-16 | Define/implement memory RAM-cache measurement and enforcement (Contract/implementation) | P6 | OPEN / none |
 | OC-17 | Define consequence metrics, sources, and normalization (Contract) | P6 | OPEN / none |
-| OC-18 | Exact hello/select/ready schemas, common profile, permitted command classes (Contract) | P1 | OPEN / none |
+| OC-18 | Exact hello/select/ready schemas, common profile, permitted command classes (Contract) | P1 | OPEN / [Control implementation and partial evidence](P1_VERIFICATION.md); full condition remains pending |
 | OC-19 | Intent issuance/storage, durable scope/content/command binding, restart recovery (Contract/implementation) | P3 | OPEN / none |
-| OC-20 | Numeric frame limits and exhaustion behavior (Contract) | P1 | OPEN / none |
-| OC-21 | Secret exclusion and diagnostic log/display volume limits (Contract) | P1 | OPEN / none |
-| OC-22 | Exact production CSP permitting IPC and excluding unnecessary networking (Configuration/acceptance) | P1 | OPEN / none |
+| OC-20 | Numeric frame limits and exhaustion behavior (Contract) | P1 | OPEN / [Control implementation and partial evidence](P1_VERIFICATION.md); full condition remains pending |
+| OC-21 | Secret exclusion and diagnostic log/display volume limits (Contract) | P1 | OPEN / [Control implementation and partial evidence](P1_VERIFICATION.md); full condition remains pending |
+| OC-22 | Exact production CSP permitting IPC and excluding unnecessary networking (Configuration/acceptance) | P1 | OPEN / [Control implementation and partial evidence](P1_VERIFICATION.md); full condition remains pending |
 | OC-23 | Evidential missing-record rechecks/range invalidation for restoration behind cursors (Contract/implementation) | P2 | OPEN / none |
 | OC-24 | Agent-definition administration: accepted versions, admission, preferences, expected revision, disabling, command recovery (Contract/implementation) | P5 | OPEN / none |
 | OC-25 | Safe bounded probes, no work data, cost/resource bounds, result sources, no hidden plugin loading during reads (Contract/acceptance) | P5 | OPEN / none |
@@ -39,7 +39,7 @@ To close a row, establish its owner and precise contract/configuration, implemen
 | OC-29 | Versioned instruction registry, scope/order/variables, public-model restrictions (Contract/implementation) | P5 | OPEN / none |
 | OC-30 | Own-material saves with expected version/conflict; evidence remains immutable (Contract/implementation) | P4 | OPEN / none |
 | OC-31 | Derived control metadata, exact input/equalizer, volume units, scoped measurements, four-axis chart data (Contract/UI) | P6 | OPEN / none |
-| OC-32 | Rust/Python delivery split, pre-negotiation bootstrap limit, damaged-stream shutdown, control queues, read-only command reconciliation (Contract/implementation) | P1/P3 | OPEN / none |
+| OC-32 | Rust/Python delivery split, pre-negotiation bootstrap limit, damaged-stream shutdown, control queues, read-only command reconciliation (Contract/implementation) | P1/P3 | OPEN / [Control implementation and partial evidence](P1_VERIFICATION.md); full condition remains pending |
 | OC-33 | Real-executor card projections, domain freshness, unsubscribe without cancellation, distinct role/profile/invocation (Contract/implementation) | P2/P4 | OPEN / none |
 
 ## Local findings
@@ -51,5 +51,7 @@ To close a row, establish its owner and precise contract/configuration, implemen
 | F-03 — required screens absent from demo | OPEN for implementation. Memory/learning and MCP administration are specified beyond the retained HTML. | Implement their full specified contracts/layout and acceptance; absence from demo cannot reduce scope. |
 | F-04 — acceptance references mixed with integration | RESOLVED in this documentation edition. Eight source references are separated from product mapping/index. | Developer-only acceptance source document preserves the translation; permanent rules prohibit product consumption, imports, navigation, assets, or runtime feeds from acceptance. No product code was changed. |
 | F-05 — consent assurance under renderer compromise | OPEN design clarification. Trusted window context and Rust-issued intent do not prove human approval if the privileged renderer is fully compromised. Existing APR proposal binding, current authority, and durable once-use requirements still apply. | Define the approval threat model and trusted display/input boundary; if consent must withstand this compromise, design and accept a separately trusted confirmation path before claiming that guarantee. See [UI security design](UI_SECURITY_DESIGN.md#2-threat-model-and-trust-boundaries). |
+| F-06 — TR-2 transport mechanism | OPEN specification discrepancy. The shell uses native byte pipes rather than plugin-shell `set_raw_out(true)`. Windows suspended creation, explicit inherited-handle selection, and pre-resume Job assignment are implemented on this native path. Byte preservation has component evidence, but that does not fulfill the literal named-API instruction. | Review a concrete amendment allowing native raw pipes with the same byte/bounds requirements, or supply a plugin-shell integration that preserves pre-execution containment. The specification is unchanged; TR-2/P1 remain open. |
+| F-07 — installed-platform evidence | OPEN acceptance limitation. This workspace lacks a systemd user manager and Windows execution. Its extracted WebKit library cannot start subprocesses at the native distribution path. | Run supported Linux and Windows installed artifacts, native Channels/CSP, crash/descendant/replacement behavior, and platform mutants. Do not disable a sandbox, add a one-PID fallback, or claim a browser as installed evidence. |
 
 Maintain unresolved findings with impact and next action. Historical source errors do not authorize weakening runtime or acceptance contracts.

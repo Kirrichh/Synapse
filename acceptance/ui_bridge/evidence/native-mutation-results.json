@@ -1,0 +1,371 @@
+{
+  "date": "2026-10-18",
+  "scope": "Control profile and component behavior only; installed Windows/Linux lifecycle and WebView security are not established.",
+  "baseline": "PASS",
+  "mutants": [
+    {
+      "id": "RS-duplicate-properties",
+      "behavior": "duplicate properties",
+      "target": "synapse/ui/src-tauri/src/protocol.rs",
+      "source_sha256": "69c30d8109c2c7f6364a6025dfaf67d16d8d4a5f9a4f85323d0efc56f1b2fbc6",
+      "result": "KILLED",
+      "seconds": 0.742,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/protocol.rs"
+      ]
+    },
+    {
+      "id": "RS-integer-precision",
+      "behavior": "integer precision",
+      "target": "synapse/ui/src-tauri/src/protocol.rs",
+      "source_sha256": "69c30d8109c2c7f6364a6025dfaf67d16d8d4a5f9a4f85323d0efc56f1b2fbc6",
+      "result": "KILLED",
+      "seconds": 1.4,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/protocol.rs"
+      ]
+    },
+    {
+      "id": "RS-depth-limit",
+      "behavior": "depth limit",
+      "target": "synapse/ui/src-tauri/src/protocol.rs",
+      "source_sha256": "69c30d8109c2c7f6364a6025dfaf67d16d8d4a5f9a4f85323d0efc56f1b2fbc6",
+      "result": "KILLED",
+      "seconds": 1.378,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/protocol.rs"
+      ]
+    },
+    {
+      "id": "RS-schema-refusal",
+      "behavior": "schema refusal",
+      "target": "synapse/ui/src-tauri/src/protocol.rs",
+      "source_sha256": "69c30d8109c2c7f6364a6025dfaf67d16d8d4a5f9a4f85323d0efc56f1b2fbc6",
+      "result": "KILLED",
+      "seconds": 1.398,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/protocol.rs"
+      ]
+    },
+    {
+      "id": "RS-peer-version",
+      "behavior": "peer version",
+      "target": "synapse/ui/src-tauri/src/protocol.rs",
+      "source_sha256": "69c30d8109c2c7f6364a6025dfaf67d16d8d4a5f9a4f85323d0efc56f1b2fbc6",
+      "result": "KILLED",
+      "seconds": 1.408,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/protocol.rs"
+      ]
+    },
+    {
+      "id": "RS-peer-role",
+      "behavior": "peer role",
+      "target": "synapse/ui/src-tauri/src/protocol.rs",
+      "source_sha256": "69c30d8109c2c7f6364a6025dfaf67d16d8d4a5f9a4f85323d0efc56f1b2fbc6",
+      "result": "KILLED",
+      "seconds": 1.339,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/protocol.rs"
+      ]
+    },
+    {
+      "id": "RS-readiness-limit",
+      "behavior": "readiness limit",
+      "target": "synapse/ui/src-tauri/src/protocol.rs",
+      "source_sha256": "69c30d8109c2c7f6364a6025dfaf67d16d8d4a5f9a4f85323d0efc56f1b2fbc6",
+      "result": "KILLED",
+      "seconds": 1.392,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/protocol.rs"
+      ]
+    },
+    {
+      "id": "RS-result-id",
+      "behavior": "result id",
+      "target": "synapse/ui/src-tauri/src/protocol.rs",
+      "source_sha256": "69c30d8109c2c7f6364a6025dfaf67d16d8d4a5f9a4f85323d0efc56f1b2fbc6",
+      "result": "KILLED",
+      "seconds": 1.333,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/protocol.rs"
+      ]
+    },
+    {
+      "id": "RS-result-method",
+      "behavior": "result method",
+      "target": "synapse/ui/src-tauri/src/protocol.rs",
+      "source_sha256": "69c30d8109c2c7f6364a6025dfaf67d16d8d4a5f9a4f85323d0efc56f1b2fbc6",
+      "result": "KILLED",
+      "seconds": 1.475,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/protocol.rs"
+      ]
+    },
+    {
+      "id": "RS-frame-boundary",
+      "behavior": "frame boundary",
+      "target": "synapse/ui/src-tauri/src/transport.rs",
+      "source_sha256": "21ede509d460241b081c23c75cb6d7877aa701b47d72f4281c98022f26b8392f",
+      "result": "KILLED",
+      "seconds": 0.819,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/transport.rs"
+      ]
+    },
+    {
+      "id": "RS-prefetched-limit",
+      "behavior": "prefetched limit",
+      "target": "synapse/ui/src-tauri/src/transport.rs",
+      "source_sha256": "21ede509d460241b081c23c75cb6d7877aa701b47d72f4281c98022f26b8392f",
+      "result": "KILLED",
+      "seconds": 1.756,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/transport.rs"
+      ]
+    },
+    {
+      "id": "RS-write-completion",
+      "behavior": "write completion",
+      "target": "synapse/ui/src-tauri/src/transport.rs",
+      "source_sha256": "21ede509d460241b081c23c75cb6d7877aa701b47d72f4281c98022f26b8392f",
+      "result": "KILLED",
+      "seconds": 1.732,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/transport.rs"
+      ]
+    },
+    {
+      "id": "RS-manifest-identity",
+      "behavior": "manifest identity",
+      "target": "synapse/ui/src-tauri/src/bundle.rs",
+      "source_sha256": "115bd9f156bc3a46ddbbf43d8efaef6a5c02bcf9aba210cbc024d9d0ad3d6df5",
+      "result": "KILLED",
+      "seconds": 0.795,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/bundle.rs"
+      ]
+    },
+    {
+      "id": "RS-executable-identity",
+      "behavior": "executable identity",
+      "target": "synapse/ui/src-tauri/src/bundle.rs",
+      "source_sha256": "115bd9f156bc3a46ddbbf43d8efaef6a5c02bcf9aba210cbc024d9d0ad3d6df5",
+      "result": "KILLED",
+      "seconds": 1.387,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/bundle.rs"
+      ]
+    },
+    {
+      "id": "RS-unlisted-startup-code",
+      "behavior": "unlisted startup code",
+      "target": "synapse/ui/src-tauri/src/bundle.rs",
+      "source_sha256": "115bd9f156bc3a46ddbbf43d8efaef6a5c02bcf9aba210cbc024d9d0ad3d6df5",
+      "result": "KILLED",
+      "seconds": 1.63,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/bundle.rs"
+      ]
+    },
+    {
+      "id": "RS-platform-binding",
+      "behavior": "platform binding",
+      "target": "synapse/ui/src-tauri/src/bundle.rs",
+      "source_sha256": "115bd9f156bc3a46ddbbf43d8efaef6a5c02bcf9aba210cbc024d9d0ad3d6df5",
+      "result": "KILLED",
+      "seconds": 1.822,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/bundle.rs"
+      ]
+    },
+    {
+      "id": "RS-window-binding",
+      "behavior": "window binding",
+      "target": "synapse/ui/src-tauri/src/caller.rs",
+      "source_sha256": "b32e45fcddb877a73a6d7e480ba057a9c82f1429d2742deedfda96af325e2c46",
+      "result": "KILLED",
+      "seconds": 0.687,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/platform.rs"
+      ]
+    },
+    {
+      "id": "RS-origin-binding",
+      "behavior": "origin binding",
+      "target": "synapse/ui/src-tauri/src/caller.rs",
+      "source_sha256": "b32e45fcddb877a73a6d7e480ba057a9c82f1429d2742deedfda96af325e2c46",
+      "result": "KILLED",
+      "seconds": 1.274,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/platform.rs"
+      ]
+    },
+    {
+      "id": "RS-origin-credentials",
+      "behavior": "origin credentials",
+      "target": "synapse/ui/src-tauri/src/caller.rs",
+      "source_sha256": "b32e45fcddb877a73a6d7e480ba057a9c82f1429d2742deedfda96af325e2c46",
+      "result": "KILLED",
+      "seconds": 1.44,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/platform.rs"
+      ]
+    },
+    {
+      "id": "RS-renderer-acknowledgment",
+      "behavior": "renderer acknowledgment",
+      "target": "synapse/ui/src-tauri/src/publication.rs",
+      "source_sha256": "44554ed1fee6ee61cd4b4bd310f46c24ab24b9e1e9597f4b16a02401513e3259",
+      "result": "KILLED",
+      "seconds": 1.029,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/publication.rs"
+      ]
+    },
+    {
+      "id": "RS-subscription-binding",
+      "behavior": "subscription binding",
+      "target": "synapse/ui/src-tauri/src/publication.rs",
+      "source_sha256": "44554ed1fee6ee61cd4b4bd310f46c24ab24b9e1e9597f4b16a02401513e3259",
+      "result": "KILLED",
+      "seconds": 1.706,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/publication.rs"
+      ]
+    },
+    {
+      "id": "RS-acknowledgment-sequence",
+      "behavior": "acknowledgment sequence",
+      "target": "synapse/ui/src-tauri/src/publication.rs",
+      "source_sha256": "44554ed1fee6ee61cd4b4bd310f46c24ab24b9e1e9597f4b16a02401513e3259",
+      "result": "KILLED",
+      "seconds": 1.832,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/publication.rs"
+      ]
+    },
+    {
+      "id": "RS-replaced-subscription",
+      "behavior": "replaced subscription",
+      "target": "synapse/ui/src-tauri/src/publication.rs",
+      "source_sha256": "44554ed1fee6ee61cd4b4bd310f46c24ab24b9e1e9597f4b16a02401513e3259",
+      "result": "KILLED",
+      "seconds": 1.828,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/publication.rs"
+      ]
+    },
+    {
+      "id": "RS-snapshot-authority",
+      "behavior": "snapshot authority",
+      "target": "synapse/ui/src-tauri/src/publication.rs",
+      "source_sha256": "44554ed1fee6ee61cd4b4bd310f46c24ab24b9e1e9597f4b16a02401513e3259",
+      "result": "KILLED",
+      "seconds": 1.912,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/publication.rs"
+      ]
+    },
+    {
+      "id": "RS-diagnostic-retention",
+      "behavior": "diagnostic retention",
+      "target": "synapse/ui/src-tauri/src/diagnostics.rs",
+      "source_sha256": "052bb9e355b229cc3870057b08a4aa5d0ff4756f0ddc6d9deeeb738a210a83fa",
+      "result": "KILLED",
+      "seconds": 2.324,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/publication.rs"
+      ]
+    },
+    {
+      "id": "RS-diagnostic-redaction",
+      "behavior": "diagnostic redaction",
+      "target": "synapse/ui/src-tauri/src/diagnostics.rs",
+      "source_sha256": "052bb9e355b229cc3870057b08a4aa5d0ff4756f0ddc6d9deeeb738a210a83fa",
+      "result": "KILLED",
+      "seconds": 2.18,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/publication.rs"
+      ]
+    },
+    {
+      "id": "RS-bridge-version-binding",
+      "behavior": "bridge version binding",
+      "target": "synapse/ui/src-tauri/src/bridge.rs",
+      "source_sha256": "81920761e698e493993404302c67aa3041edb94236018a5696cdbc1ff1326dc8",
+      "result": "KILLED",
+      "seconds": 0.627,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/bridge.rs"
+      ]
+    },
+    {
+      "id": "RS-bridge-ready-binding",
+      "behavior": "bridge ready binding",
+      "target": "synapse/ui/src-tauri/src/bridge.rs",
+      "source_sha256": "81920761e698e493993404302c67aa3041edb94236018a5696cdbc1ff1326dc8",
+      "result": "KILLED",
+      "seconds": 1.604,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/bridge.rs"
+      ]
+    },
+    {
+      "id": "RS-bridge-result-binding",
+      "behavior": "bridge result binding",
+      "target": "synapse/ui/src-tauri/src/bridge.rs",
+      "source_sha256": "81920761e698e493993404302c67aa3041edb94236018a5696cdbc1ff1326dc8",
+      "result": "KILLED",
+      "seconds": 1.652,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/bridge.rs"
+      ]
+    },
+    {
+      "id": "RS-replacement-admission",
+      "behavior": "replacement admission",
+      "target": "synapse/ui/src-tauri/src/controller.rs",
+      "source_sha256": "ed4a9aebdb5c672bcc6f26d596d9e266ff112e5e574a1bc766e2cb1707f3d67f",
+      "result": "KILLED",
+      "seconds": 9.254,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/controller.rs"
+      ]
+    },
+    {
+      "id": "RS-terminal-close",
+      "behavior": "terminal close",
+      "target": "synapse/ui/src-tauri/src/controller.rs",
+      "source_sha256": "ed4a9aebdb5c672bcc6f26d596d9e266ff112e5e574a1bc766e2cb1707f3d67f",
+      "result": "KILLED",
+      "seconds": 4.055,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/controller.rs"
+      ]
+    },
+    {
+      "id": "RS-heartbeat-deadline",
+      "behavior": "heartbeat deadline",
+      "target": "synapse/ui/src-tauri/src/controller.rs",
+      "source_sha256": "ed4a9aebdb5c672bcc6f26d596d9e266ff112e5e574a1bc766e2cb1707f3d67f",
+      "result": "KILLED",
+      "seconds": 6.989,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/controller.rs"
+      ]
+    },
+    {
+      "id": "RS-unsupported-environment",
+      "behavior": "unsupported environment",
+      "target": "synapse/ui/src-tauri/src/lifecycle/linux.rs",
+      "source_sha256": "b13339a2faf2299935751474759f5ea9325d321388da8280917a0142a3c95f72",
+      "result": "KILLED",
+      "seconds": 1.182,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/platform.rs"
+      ]
+    }
+  ],
+  "retention": "Reviewed structured evidence only; raw subprocess output is not retained."
+}

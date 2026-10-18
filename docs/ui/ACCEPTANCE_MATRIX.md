@@ -1,12 +1,12 @@
 # Acceptance scenario matrix
 
-Version 1.0. Current product verdict: **all 44 scenarios NOT_RUN**.
+Version 1.0. Complete end-to-end verdict: **all 44 scenarios NOT_RUN**. Control/component portions now have evidence; this is not a full scenario pass.
 
 [Specification section 15](SYNAPSE_UI_BRIDGE_SPEC_V1.md#15-acceptance) owns the full expected behavior. AC identifiers retain the original case numbers; titles below are navigation labels, not reduced test requirements.
 
 All checks live in the external acceptance layer. Existing test-source references are [development-only](development-reference/ACCEPTANCE_SOURCES.md); product UI never imports, links to, or consumes them.
 
-Pending means no evidence has been produced for this workstream. Mutation and security remain pending for future executable changes; they are not satisfied by this documentation change. One source case can require several independently scheduled scenarios. The cases are required examples, not a claim of complete coverage of every specification requirement.
+Pending means the complete scenario has not been established. [P1 verification](P1_VERIFICATION.md) records executed control/component checks and mutations, including their installed-platform and domain limits. One source case can require several independently scheduled scenarios. The cases are required examples, not a claim of complete coverage of every specification requirement.
 
 | Case | Scenario | Primary stage | Source requirement references | Run | Mutation / security / evidence |
 |---|---|---|---|---|---|
@@ -23,8 +23,8 @@ Pending means no evidence has been produced for this workstream. Mutation and se
 | AC-11 | Late epoch versus current gap | P2, P7 | SYN-14, SYN-15 | NOT_RUN | Pending / pending / none |
 | AC-12 | Recover command ID | P3, P7 | CMD-7, CMD-14 | NOT_RUN | Pending / pending / none |
 | AC-13 | Acceptance moment | P3, P7 | CMD-10, CMD-11 | NOT_RUN | Pending / pending / none |
-| AC-14 | Core death | P1, P7 | CRASH-7 | NOT_RUN | Pending / pending / none |
-| AC-15 | Shell death | P1, P7 | CRASH-2, CRASH-6 | NOT_RUN | Pending / pending / none |
+| AC-14 | Core death | P1, P7 | CRASH-7 | NOT_RUN | [P1 component and mutation evidence](P1_VERIFICATION.md); Control failure/restart behavior exercised; domain outcome restoration pending |
+| AC-15 | Shell death | P1, P7 | CRASH-2, CRASH-6 | NOT_RUN | [P1 component and mutation evidence](P1_VERIFICATION.md); Lifecycle code exists; real OS shell-death/descendant evidence pending |
 | AC-16 | Mode change | P3, P7 | MODE-3, MODE-5 | NOT_RUN | Pending / pending / none |
 | AC-17 | B → C → retry B | P6, P7 | CMD-17 | NOT_RUN | Pending / pending / none |
 | AC-18 | Acceptance crash/lost reply | P6, P7 | CMD-18, CMD-19 | NOT_RUN | Pending / pending / none |
@@ -33,8 +33,8 @@ Pending means no evidence has been produced for this workstream. Mutation and se
 | AC-21 | Old-session binding after rebind | P6, P7 | MEM-8 | NOT_RUN | Pending / pending / none |
 | AC-22 | Limit below unavoidable usage | P6, P7 | MEM-9 | NOT_RUN | Pending / pending / none |
 | AC-23 | Rust/React reply loss | P3, P7 | CMD-3, CMD-20 | NOT_RUN | Pending / pending / none |
-| AC-24 | Mutation before ready | P1, P7 | BOOT-7, BOOT-8, CMD-8 | NOT_RUN | Pending / pending / none |
-| AC-25 | Oversize/corrupt frame | P1, P7 | TR-10, TR-11, TR-12, TR-13 | NOT_RUN | Pending / pending / none |
+| AC-24 | Mutation before ready | P1, P7 | BOOT-7, BOOT-8, CMD-8 | NOT_RUN | [P1 component and mutation evidence](P1_VERIFICATION.md); Early request refusal exercised in real CLI and shared contracts; domain intent recovery and installed UI pending |
+| AC-25 | Oversize/corrupt frame | P1, P7 | TR-10, TR-11, TR-12, TR-13 | NOT_RUN | [P1 component and mutation evidence](P1_VERIFICATION.md); Framing/corruption/backpressure exercised in core/native components; installed Channels and domain delivery classes pending |
 | AC-26 | Record restored behind cursor | P2, P7 | DEL-7, DEL-8 | NOT_RUN | Pending / pending / none |
 | AC-27 | Local information boundary | P1, P7 | SEC-8 | NOT_RUN | Pending / pending / none |
 | AC-28 | Discovery without loading | P5, P7 | AGT-1, CONN-4 | NOT_RUN | Pending / pending / none |
@@ -43,7 +43,7 @@ Pending means no evidence has been produced for this workstream. Mutation and se
 | AC-31 | Concurrent settings | P5, P7 | CMD-17, CONN-2 | NOT_RUN | Pending / pending / none |
 | AC-32 | Disable/delete | P5, P7 | CONN-6 | NOT_RUN | Pending / pending / none |
 | AC-33 | Cancellation scope | P4, P7 | MAP-8 | NOT_RUN | Pending / pending / none |
-| AC-34 | Secrets | P1, P7 | CMD-21, LLM-3 | NOT_RUN | Pending / pending / none |
+| AC-34 | Secrets | P1, P7 | CMD-21, LLM-3 | NOT_RUN | [P1 component and mutation evidence](P1_VERIFICATION.md); Diagnostic redaction exercised; protected domain secrets/bindings pending |
 | AC-35 | Model/tool roles | P5, P7 | LLM-1, LLM-4, TOOL-1 | NOT_RUN | Pending / pending / none |
 | AC-36 | Instructions | P5, P7 | INST-1, INST-2, INST-3 | NOT_RUN | Pending / pending / none |
 | AC-37 | Effect-free reading | P2, P7 | MAP-7, READ-1 | NOT_RUN | Pending / pending / none |

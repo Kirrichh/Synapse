@@ -43,6 +43,43 @@ development-rule documents add the owner's permanent requirements and researched
 engineering guidance. Tracker IDs P0–P7, AC-01–AC-44, OC-01–OC-33, and findings
 F-01 onward are navigation/status labels, not new protocol vocabulary.
 
+## Approved semantic amendments
+
+On 2026-10-18, the owner authorized resolution of F-06 by retaining native byte
+pipes as the transport mechanism. TR-2 now specifies byte fidelity, bounded
+stream processing, containment before core execution, and cleanup on launch
+failure. The mandatory `tauri-plugin-shell.set_raw_out(true)` instruction was
+removed. No parallel plugin launcher, runtime mechanism switch, or fallback
+launch path is authorized. Tauri remains the application shell.
+
+This is an explicit amendment to the English implementation contract, not a
+claim that the supplied revision 0.7 already said this. Edition 1.0 and the
+original requirement/case identifiers remain stable. The supplied-artifact
+hashes above and the original prototype are unchanged. No uploaded discussion
+or private source text is retained as a repository artifact.
+
+The rationale is to specify the required byte and process behavior without
+requiring a helper API that does not itself establish the complete lifecycle
+contract. The existing native Windows path can create a suspended process,
+assign it to the Job, and only then resume it. This source-level sequence is
+not a substitute for platform fault and installed-artifact acceptance.
+
+Public references for the mechanism decision:
+
+- [Tauri shell Command API](https://docs.rs/tauri-plugin-shell/latest/tauri_plugin_shell/process/struct.Command.html):
+  raw output and process-group options exist; neither establishes every required
+  handle, crash, or replacement guarantee on its own.
+- [Windows process creation flags](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags):
+  `CREATE_SUSPENDED` prevents the primary thread running until resumed.
+- [AssignProcessToJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject):
+  Job assignment is a separate operation with explicit failure conditions.
+
+Section 15.4 of the amended specification and the
+[acceptance obligations](ACCEPTANCE_MATRIX.md#native-transport-and-launch-obligations)
+retain byte, failure, platform, and installed-product evidence requirements.
+F-06 is resolved as a mechanism decision; TR-2, OC-01/09/32, F-07, and P1 retain
+their incomplete implementation/acceptance status.
+
 ## Inspected repository baseline
 
 Repository: the Synapse checkout containing this document.

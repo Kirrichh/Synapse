@@ -199,6 +199,29 @@ Tauri origins are not real account data. This scoped review is not a claim to
 have audited all historical repository content. Existing project attribution was
 not rewritten. The permanent data prohibition is now part of the development rules.
 
+## F-06 mechanism decision
+
+The owner-approved [TR-2 amendment](SOURCE_MANIFEST.md#approved-semantic-amendments)
+resolves the mandatory plugin-API discrepancy. Native byte pipes remain the
+single launch/transport mechanism per platform. Canonical entry, byte fidelity,
+bounded I/O, containment before core execution, and failure cleanup are required;
+no fallback launcher is authorized.
+
+This follow-up changes documentation only. Executable-change mutation status is
+**NOT_APPLICABLE**; the earlier executed results above are retained at their
+original scope, not claimed as new runs. The
+[acceptance obligation table](ACCEPTANCE_MATRIX.md#native-transport-and-launch-obligations)
+maps component evidence and remaining byte/platform cases. F-06 resolution does
+not close TR-2, OC-01/09/32, F-07, any complete source case, or P1.
+
+Documentation maintenance passed: local links and heading targets, table/fence
+structure, English additions, whitespace, preserved normative/case identifiers,
+and the original prototype digest. Reviewed the cited Tauri Command and Windows
+creation/Job-assignment documentation; all three public sources returned HTTP
+200. These checks validate the amendment record, not runtime conformance.
+The selector returns no product or tooling suites for this documentation delta
+alone. The PR still selects the consumers of its cumulative executable changes.
+
 ## Explicit incomplete evidence
 
 - The attempted native-window run failed to start WebKitNetworkProcess at its
@@ -210,8 +233,9 @@ not rewritten. The permanent data prohibition is now part of the development rul
 - Windows suspended process creation, Job cleanup, handle inheritance, installer,
   actual adapters, and platform mutation checks are **not run**. Cross-compilation
   is explicitly separate evidence.
-- TR-2's named plugin-shell API remains inconsistent with the native raw-pipe
-  implementation; F-06 records the concrete review decision still needed.
+- TR-2's mechanism choice is resolved as F-06. The complete byte-preservation
+  variants, startup-fault/handle/descendant behavior, and desktop/installed path
+  still require the evidence recorded in the acceptance obligation table.
 - JCS parameter hashing, domain command ownership/recovery, domain delivery classes,
   and the later UI workspace/features are not supplied by the control profile.
 

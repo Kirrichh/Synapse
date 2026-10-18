@@ -3,11 +3,17 @@
 **Version 1.0 — English edition of the supplied revision 0.7.**
 
 Status: implementation contract; not an assertion that the bridge exists.
-Requirement identifiers, examples, limitations, and open conditions are retained.
+Requirement identifiers, examples, limitations, and open conditions are retained,
+with explicit amendments recorded in [provenance](SOURCE_MANIFEST.md#approved-semantic-amendments).
 This is a documentation version, not a negotiated wire-protocol version.
 Appendix D is maintained in [the complete code map](UI_CODE_MAP_V1.md).
 See [provenance](SOURCE_MANIFEST.md), [working documents](README.md), and
 [implementation status](IMPLEMENTATION_STATUS.md).
+
+Amendment of 2026-10-18: the owner approved native byte pipes for TR-2 and
+removed the mandatory shell-plugin API. Section 15.4 records the corresponding
+acceptance obligations. This resolves the mechanism decision F-06; it does not
+establish implementation conformance or complete P1.
 
 ## 1. Stack
 
@@ -145,11 +151,31 @@ is bounded. Values belong to release configuration, not renderer input.
 **TR-1.** Core stdout is a sequence of frames: a big-endian u32 payload length
 in bytes followed by UTF-8 JSON.
 
-**TR-2.** Do not alter significant frame bytes, mix diagnostics into stdout,
-or perform unspecified output transformations. Bounded byte buffers,
-incremental parsing, and explicitly bounded queues are required and do not
-distort content or conceal state. Use tauri-plugin-shell `set_raw_out(true)`
-to preserve bytes without rewriting or reformatting core output.
+**TR-2.** Byte fidelity and transport implementation. The Rust shell and
+canonical Python core communicate through native byte pipes. Transmit formed
+frames without altering significant bytes, converting line endings, losing
+encoding information, inserting delimiters, or mixing stderr into framed stdout.
+
+Read a byte stream, not lines. An individual read does not define a frame
+boundary. Use bounded byte buffers, incremental framing, and explicitly bounded
+queues; retain the frame-size, corruption, timeout, and overload requirements
+of this transport contract.
+
+The native transport works with the platform launch and termination profile.
+Establish the profile's process-control and handle-inheritance conditions before
+the core begins executing. If preparation, containment, or resumption fails,
+refuse startup and clean up acquired resources; never run without those controls.
+
+The shell plugin and its `set_raw_out(true)` API are not required. Ship one
+native core-launch path per supported platform, without a plugin alternative,
+mechanism selector, or fallback to another launcher after failure. BOOT-1/2 and
+the Windows Job/Linux systemd profiles still apply. Tauri remains the shell;
+`invoke`, Channels, trusted caller checks, and capabilities retain their roles.
+
+Byte fidelity applies to formed frames crossing the pipes. Once a full frame
+has arrived, schema validation and an authorized UI projection are permitted.
+They must not silently rewrite source evidence or its identity (DEL-8); a
+projection does not become a replacement authoritative record.
 
 **TR-3.** Wait for the remainder of an incomplete frame; parse multiple frames
 in one read in order. Stream termination is an explicit transport event, not
@@ -1526,6 +1552,36 @@ properties they establish. Original case numbers are retained.
 Acceptance evaluates observable behavior, actual owner records, and absence of
 duplicate effects. Command names, file counts, and special test-only state are
 not evidence of those properties.
+
+### 15.4. Native transport and launch acceptance
+
+The TR-2 amendment requires behavioral evidence at the applicable ACC-1–5
+levels. Retain the original 44 case numbers; the following obligations refine
+transport and lifecycle coverage rather than replace those cases:
+
+- Reconstruct exact frame bytes with split headers/bodies, consecutive frames,
+  Cyrillic and other multibyte characters, and escaped line endings. Exercise
+  both fragmented delivery and consecutive frames available together.
+- Refuse oversized lengths before payload allocation, truncated headers/bodies
+  at EOF, and corrupt streams according to TR-10/11 without resynchronization.
+- Exercise short writes, queue saturation, closed pipes, and write deadlines;
+  distinguish their specified outcomes. Write completion is not domain acceptance.
+- On Windows, establish that the core cannot execute before Job assignment.
+  Fail preparation, assignment, and resume, and interrupt startup at intermediate
+  stages; observe cleanup and absence of uncontrolled execution or process leaks.
+- Inspect inherited handles and real adapter/MCP descendant launch paths. Only
+  required pipe ends pass to the child; no Job lifetime handle escapes to it.
+- Exercise shell death and replacement admission on both supported profiles.
+  A replacement cannot affect the scope while an old local executor can do so.
+  Linux systemd/cgroup obligations remain independent of byte transport.
+- Exercise the same native path through the real window and installed artifacts
+  on supported Windows/Linux, including production IPC/CSP and artifact identity.
+
+Use independent external files for heavy platform/failure scenarios and mutation
+checks that weaken the relevant controls. Source-token checks, cross-compilation,
+or a simulated participant do not establish platform execution. The
+[acceptance matrix](ACCEPTANCE_MATRIX.md#native-transport-and-launch-obligations)
+separates existing component evidence from outstanding cases.
 
 ## 16. Open-condition register
 

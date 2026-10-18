@@ -133,8 +133,14 @@ An error message alone is not proof that no forbidden effect occurred.
 
 - Verify containment with the real child-launch mechanisms, including adapters
   and MCP servers, on each supported platform.
-- Windows Job membership must be established before domain execution, with
-  breakaway and inherited lifetime handles controlled as specified.
+- Establish the platform's process and handle controls before core execution.
+  Windows Job assignment precedes resume; breakaway and inherited lifetime
+  handles remain controlled. Failure in preparation, assignment, or resume must
+  leave no uncontrolled execution or leaked process. Exercise startup fault
+  boundaries, not only failures after a successful handshake.
+- Use the single native launch path required by TR-2. No plugin alternative or
+  fallback may bypass failed containment. Keep byte pipes separate from stderr;
+  validated UI projections cannot rewrite authoritative source evidence/identity.
 - The initial Linux profile uses the user systemd service/cgroup contract.
   Unsupported environments fail explicitly.
 - Before a replacement executor may affect the same resources, establish that

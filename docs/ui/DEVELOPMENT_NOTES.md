@@ -112,9 +112,10 @@ Implementation observations and verified outcomes will be appended below.
 - This workspace has no systemd user manager. Real Linux supported-profile cleanup,
   installed Windows execution, and actual Tauri IPC/CSP remain unverified. The
   screenshot deliberately shows the real browser `DESKTOP_REQUIRED` state.
-- TR-2 names plugin-shell `set_raw_out(true)` while the implementation uses native
-  raw pipes to establish Windows containment before execution. Byte behavior has
-  evidence, but the literal implementation discrepancy remains open as F-06.
+- At this checkpoint, TR-2 named plugin-shell `set_raw_out(true)` while the
+  implementation used native raw pipes to establish Windows containment before
+  execution. The discrepancy was recorded as F-06; its later normative resolution
+  is recorded in the F-06 entry below.
 - No branch or pull request is merged. PR #110 is the review surface for this work.
 
 ## 2026-10-18 — Repository data privacy
@@ -181,8 +182,9 @@ Implementation observations and verified outcomes will be appended below.
 - Cold Python startup and the current two-second ping budget remain considerations
   for installed-platform acceptance and future domain concurrency. No observed cold
   start failure or domain workload justifies changing the current release deadlines.
-  F-06, real WebView/Windows/systemd execution, installer and domain/JCS obligations
-  remain open; these corrections do not complete P1 or change the normative spec.
+  At this checkpoint F-06, real WebView/Windows/systemd execution, installer and
+  domain/JCS obligations remained open. These code corrections did not change
+  the normative specification; the later F-06 decision below does so explicitly.
 
 ## 2026-10-18 — Cancelled push and empty verification plan
 
@@ -201,3 +203,33 @@ Implementation observations and verified outcomes will be appended below.
   The added mutation replaces invalid input with an empty permissive plan and must
   be rejected by those cases. Product acceptance and product code are unchanged
   by this CI follow-up.
+
+## 2026-10-18 — F-06 native transport amendment
+
+- The owner authorized retaining native byte pipes and removing TR-2's mandatory
+  shell-plugin API. Updated the governing specification, provenance, requirement
+  row, open finding, acceptance obligations, security rules, and handoff status.
+  F-06 is RESOLVED as a mechanism decision; TR-2 and P1 remain IN_PROGRESS.
+- The native path remains the only core launcher per supported platform. No
+  plugin wrapper, selector, fallback, new executor, or renderer process authority
+  is introduced. Tauri invoke/Channels, caller authorization, and capabilities
+  retain their existing responsibilities.
+- Byte fidelity applies to formed pipe frames. Validation and permitted renderer
+  projection follow complete-frame receipt and cannot rewrite authoritative
+  evidence or its identity. Bounded buffering/queues and explicit refusal remain
+  required; a write receipt is not a domain-acceptance record.
+- Windows must establish process/handle controls before the core executes.
+  Preparation, assignment, resume, and interrupted startup require observable
+  cleanup. Linux retains the required systemd/cgroup profile. Neither path may
+  bypass a failed prerequisite or admit a replacement while old local executors
+  can still affect the scope.
+- The acceptance matrix now distinguishes recorded component evidence from
+  outstanding escaped-line-ending variants, platform startup faults, inherited
+  handles, actual adapter/MCP descendants, shell death/replacement, and the
+  installed window. OC-01/09/32, F-07, and all complete source-case verdicts retain
+  their open/not-run status. Cross-compilation is not Windows execution.
+- This amendment changes Markdown documentation only. Mutation verification is
+  NOT_APPLICABLE to the amendment; earlier executable evidence is not relabeled
+  as a new run. The original prototype and supplied-source hashes are preserved.
+  Only the English engineering decision is retained; no uploaded discussion or
+  private input is copied into the repository.

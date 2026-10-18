@@ -7,6 +7,11 @@ canonical control endpoint, a modular Tauri/React bootstrap application, and
 external behavioral/mutation evidence. P1 remains open for the platform and
 specification conditions listed in the status record.
 
+F-06 is resolved by the [approved TR-2 amendment](SOURCE_MANIFEST.md#approved-semantic-amendments):
+retain native byte pipes with explicit byte and process guarantees. The
+[acceptance obligations](ACCEPTANCE_MATRIX.md#native-transport-and-launch-obligations)
+remain separate from that mechanism decision; TR-2 and P1 are still IN_PROGRESS.
+
 ## Requirements and references
 
 | Document | Purpose |

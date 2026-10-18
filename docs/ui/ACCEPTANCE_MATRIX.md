@@ -58,3 +58,29 @@ Pending means the complete scenario has not been established. [P1 verification](
 ## Evidence to add when executing a case
 
 Record the exact scenario/environment, external acceptance entry, exercised product behavior, observed UI result and owner records, build identity when applicable, outcome, mutation method and surviving-mutant analysis, security-negative result, and remaining limitations. Heavy recovery/platform/concurrency cases get independent acceptance files and isolated resources. Do not mark a case passed from a similarly named historical test or fixture.
+
+## Native transport and launch obligations
+
+The approved F-06 amendment resolves the mechanism choice. It does not waive
+the following behavioral obligations from
+[TR-2 and section 15.4](SYNAPSE_UI_BRIDGE_SPEC_V1.md#154-native-transport-and-launch-acceptance).
+The rows expand coverage within the existing requirements and cases; they do not
+renumber the 44 source scenarios or mark any of them passed.
+
+| Boundary / requirements | Required observable behavior | Existing evidence and remaining work |
+|---|---|---|
+| Byte fidelity — TR-1/2/3/4, ACC-1/2/3 | Exact headers/payloads survive fragmented and consecutive delivery, Cyrillic, multibyte characters, and escaped line endings; read boundaries never become frame boundaries; stderr never enters stdout. | Component portions: [Python frames](../../acceptance/ui_bridge/test_frame_acceptance.py), [Rust transport](../../acceptance/ui_bridge/native/transport.rs), and [real canonical interop](../../acceptance/ui_bridge/native/canonical_core.rs). Existing cases cover fragmentation, consecutive frames, Unicode, and short writes. Explicit escaped-line-ending variants and the full corpus through desktop/installed pipes remain pending. |
+| Bounds and damage — TR-10/11, AC-25 | Refuse oversized length before payload allocation; reject partial header/body at EOF; terminate a corrupt stream without scanning for another header. | Component frame cases, [raw corpus](../../acceptance/ui_bridge/test_corpus_acceptance.py), and [real CLI](../../acceptance/ui_bridge/test_machine_cli_acceptance.py) have recorded evidence in [P1 verification](P1_VERIFICATION.md). Desktop/installed execution and complete AC-25 remain pending. |
+| Writes and overload — TR-6/9/12, CMD-8, CRASH-15 | Complete short writes; distinguish full queue, closed pipe/dead writer, and deadline; never equate a write receipt with owner acceptance or shutdown confirmation. | [Python transport](../../acceptance/ui_bridge/test_transport_acceptance.py), [heavy backpressure](../../acceptance/ui_bridge/test_output_backpressure_acceptance.py), [native writer failures](../../acceptance/ui_bridge/native/writer_failure.rs), and [native refusal/shutdown cases](../../acceptance/ui_bridge/native/refusals.rs) have component evidence. Installed and domain-acceptance portions remain pending. |
+| Windows startup faults — TR-2, BOOT-2/4, CRASH-9/10/11 | Observe no core execution before Job assignment. Inject preparation, assignment, and resume failures; interrupt intermediate startup stages; verify no uncontrolled execution, leaked process, or fallback. | Native implementation inspected and cross-compiled only. Required Windows execution and platform mutants are NOT_RUN under OC-01/F-07. Faults must be exercised at real process boundaries, without product test hooks. |
+| Handles and actual descendants — CRASH-9/10/11/12, TOOL-4 | Observe only required child pipe ends inherited; no Job lifetime handle retained by a child; exercise actual adapters and MCP server launch paths, including descendants and nested launch behavior. | Real Windows/Linux descendant and handle evidence is NOT_RUN under OC-01/F-07. A simple synthetic child alone cannot close these obligations. |
+| Shell death and replacement — CRASH-2/6/12/14/15, AC-14/15 | On Windows and Linux, establish the fate of old local executors before replacement effects in the same scope. Unsupported Linux service/cgroup conditions refuse startup. Keep remote outcomes explicitly uncertain. | [Linux environment/refusal components](../../acceptance/ui_bridge/native/platform.rs) and native controller cases have limited evidence. Supported systemd cleanup, shell-death/replacement races, and platform mutations are NOT_RUN; OC-01/09 and F-07 remain OPEN. |
+| Installed path — BOOT-1/9, TR-2/4/5, SEC-5, ACC-2/3/4/5 | Drive the real window and verified installed artifact through the same canonical native byte/process path on Windows/Linux; observe Channels, caller checks, production CSP, crash recovery, and build identity. | NOT_RUN. Browser injection, source inspection, a compiled binary, and a separate peer are insufficient. P1/F-07 remain open. |
+
+Existing component mutation results are linked in [P1 verification](P1_VERIFICATION.md#mutation-evidence);
+they do not establish the unexecuted platform rows. Add mutations for byte
+rewriting/truncation, bound removal, failure misclassification, premature resume,
+handle leakage, and replacement before cleanup as the affected cases are executed.
+Keep heavy platform scenarios in independent acceptance files with isolated
+synthetic resources. No product imports, fixtures, hooks, or alternate launch
+mode may be introduced to satisfy them.

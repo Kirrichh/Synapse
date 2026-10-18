@@ -144,7 +144,15 @@ output-backpressure, and wheel-building acceptance each have a separate file.
 They can run as independent processes with isolated temporary directories; avoid
 CPU oversubscription when checking deadlines.
 
-The literal plugin-shell instruction in TR-2 remains a recorded implementation
-discrepancy: see F-06 in [open conditions](OPEN_CONDITIONS.md). Native raw pipes
-preserve bytes and allow suspended Windows creation, but this does not silently
-amend the specification or close TR-2.
+The [approved TR-2 amendment](SOURCE_MANIFEST.md#approved-semantic-amendments)
+resolves F-06: retain one native byte-pipe path per supported platform. Do not add
+a shell-plugin launcher, a mechanism switch, or a fallback after containment
+failure. `lifecycle/` owns launch, handles, containment, and process exit;
+`transport.rs` owns byte framing and bounded I/O; `protocol.rs` validates payloads
+and reply bindings; `publication.rs` delivers authorized projections to the
+renderer. Tauri `invoke`, Channels, caller checks, and capabilities remain in use.
+
+The mechanism decision does not close TR-2. Execute the
+[transport and launch obligations](ACCEPTANCE_MATRIX.md#native-transport-and-launch-obligations)
+at the specified component, desktop, and installed levels. Source inspection and
+cross-compilation do not establish startup-fault cleanup or descendant containment.

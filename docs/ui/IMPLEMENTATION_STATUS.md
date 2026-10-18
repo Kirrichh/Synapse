@@ -28,7 +28,7 @@ Independent capabilities may progress while unrelated open conditions remain.
 | Stage | Scope and exit evidence | Current state |
 |---|---|---|
 | P0 — Foundation | English v1, all original requirements/map entries, permanent rules, researched UI security design, prototype, traceability, reviewed branch | Documentation prepared |
-| P1 — Trusted application and bridge | Bundled canonical machine mode, schemas/JCS, handshake/framing/queues, trusted caller context, diagnostics/CSP, Windows/Linux containment/shutdown; behavioral and mutation evidence | IN_PROGRESS: control/bootstrap implementation and local evidence exist; platform execution, production IPC/CSP, JCS, and F-06 remain open |
+| P1 — Trusted application and bridge | Bundled canonical machine mode, schemas/JCS, handshake/framing/queues, trusted caller context, diagnostics/CSP, Windows/Linux containment/shutdown; behavioral and mutation evidence | IN_PROGRESS: control/bootstrap implementation and local evidence exist; F-06 mechanism decision resolved; full transport/platform acceptance, production IPC/CSP, and JCS remain open |
 | P2 — Authorized reading and synchronization | Project/material reads, domain snapshots/coverage/epochs, progress/freshness, unsubscribe, retained evidence gaps and safe source projections | Not started |
 | P3 — Durable commands and permissions | Intent/pre-send recovery, owner acceptance/status/retention, binding conflicts, grant/refuse/revoke, exclusive once-binding, new-task mode policy | Not started |
 | P4 — Task workspace and editing | Required panel layout, main conversation contract, task submit/control, real execution cards, Monaco reads/diffs/versioned own edits, RU/EN draft/focus preservation | Not started |
@@ -87,6 +87,10 @@ the product integration index. They are not product links or data feeds.
 
 ## Implemented in this increment
 
+- [x] F-06 mechanism decision: amended TR-2 to require native byte pipes and
+  explicit byte/process guarantees, removing the mandatory shell-plugin API.
+  Updated provenance, requirements, and the mandatory acceptance obligations.
+  This documentation decision does not complete TR-2 or platform acceptance.
 - [x] Review corrections: declared ownership-manifest dependencies and conservative
   governance-data selection; renderer recovery on a fresh channel without reload
   or process restart; native-state-based controls; correlated fatal/nonfatal
@@ -123,8 +127,9 @@ the product integration index. They are not product links or data feeds.
 3. Run real Tauri-window and installed-artifact checks of Channels, caller identity,
    navigation, IPC under production CSP, and shutdown. WebKit runtime startup is
    blocked by this workspace's native-library layout; browser evidence cannot substitute.
-4. Resolve the concrete TR-2 raw-pipe/plugin-shell discrepancy recorded as F-06.
-   The specification is unchanged and TR-2 is not marked complete.
+4. Complete the [native transport and launch acceptance obligations](ACCEPTANCE_MATRIX.md#native-transport-and-launch-obligations),
+   including byte-preservation variants, startup faults, and the installed path.
+   F-06 is resolved; TR-2 remains IN_PROGRESS until its behavioral evidence is complete.
 5. Finish JCS/parameter-binding and remaining P1 contracts with their actual owner
    integrations. The integer-only control profile does not implement COMP-6 or
    generic domain parameter hashing, readiness, recovery, or delivery classes.
@@ -155,3 +160,4 @@ and traceability together before changing what completion means.
 | 2026-10-18 | Implemented the P1 control/bootstrap increment; placed all new product source under `synapse/`; added external acceptance/mutation evidence, a development notebook, build guide, and actual renderer preview; kept platform, JCS, and TR-2 conditions open |
 | 2026-10-18 | Recorded the permanent prohibition on writing private user data into repository files; reviewed pending artifacts, removed raw diagnostic excerpts, and verified reporting confidentiality with synthetic acceptance and a separate mutation campaign |
 | 2026-10-18 | Connected changed-file dependency selection to existing CI environments and UI component checks; added external selection acceptance and 18 killed tooling mutants; retained platform and installed-desktop gaps |
+| 2026-10-18 | Resolved F-06 through the approved TR-2 amendment: one native byte-pipe launch path per platform, no mandatory plugin API or fallback; synchronized provenance and acceptance obligations while retaining TR-2/P1 and platform gaps |

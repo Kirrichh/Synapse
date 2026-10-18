@@ -30,6 +30,41 @@ This repository contains the Synapse DSL/runtime and AS2 verification work.
   the acceptance/test layer. Product code must never import them, depend on
   them, or contain an alternate implementation used to satisfy a test.
 
+## Permanent Development Requirements
+
+- Write new repository documentation, comments, identifiers, and development
+  records in English. Product localization and unchanged supplied reference
+  artifacts may retain their intended languages.
+- Fulfill the entire assigned task contract. Partial implementation is unfinished;
+  there is no "minimally completed" substitute for the requested behavior.
+- Tests, fixtures, mocks, scenario builders, and harnesses belong exclusively
+  to the acceptance layer, outside product code, imports, dependencies, and
+  distributed runtime artifacts. Do not add inline product-source tests or
+  product branches/state whose purpose is passing acceptance. Product UI must
+  not reference acceptance files as navigation targets, assets, runtime data,
+  status feeds, startup hooks, or implementation dependencies. Test-source
+  references belong only to developer documentation and acceptance tooling.
+- Isolate heavy acceptance scenarios in separate files for independent parallel
+  execution. Group smaller scenarios by coherent behavior across multiple files;
+  do not accumulate unrelated checks in one giant suite.
+- Acceptance must exercise the written code and its observable contract, including
+  applicable refusal, recovery, concurrency, and effect boundaries.
+- Mutation-check every new or changed executable behavior. Investigate meaningful
+  surviving mutants; record the changed behavior, method, outcomes, and evidence.
+  Documentation-only work records mutation as not applicable, never as passed.
+- Do not write meaningless tests of filenames, branch/commit names, line/file/test
+  counts, naming conventions, or similar metadata unrelated to behavior.
+- Review security while designing and implementing each affected boundary; verify
+  authority, scope, input, secret, resource, and recovery checks against bypass.
+- Prevent monoliths by cohesive responsibilities and explicit ownership. Preserve
+  NR-04: arbitrary line counts are not architectural acceptance criteria.
+- For the UI workstream and its supporting changes, follow
+  [coding rules](docs/ui/CODING_RULES.md),
+  [acceptance rules](docs/ui/ACCEPTANCE_RULES.md), and
+  [security rules](docs/ui/SECURITY_RULES.md). Keep the
+  [implementation status](docs/ui/IMPLEMENTATION_STATUS.md) and linked requirement,
+  acceptance, and open-condition records current as evidence changes.
+
 ## Local Setup
 
 Use Python 3.10 or newer. In local Windows workspaces, a virtual environment may already exist at `.venv/`.

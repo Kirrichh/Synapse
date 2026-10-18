@@ -4,10 +4,16 @@ import type { BootstrapSnapshot } from "../contracts/generated/BootstrapSnapshot
 import type { DiagnosticCode } from "./model";
 
 export function observeDesktop(
-  onSnapshot: (value: BootstrapSnapshot) => void,
+  onSnapshot: (value: BootstrapSnapshot, initial: boolean) => void,
   onFailure: (code: DiagnosticCode) => void,
 ): () => void {
   let closed = false;
+  let latest: BootstrapSnapshot | undefined;
+  const fail = (code: DiagnosticCode) => {
+    if (closed) return;
+    closed = true;
+    onFailure(code);
+  };
   if (!isTauri()) {
     onFailure("DESKTOP_REQUIRED");
     return () => {
@@ -19,27 +25,34 @@ export function observeDesktop(
     if (closed) return;
     try {
       const snapshot = decodeSnapshot(text);
-      onSnapshot(snapshot);
+      if (latest && (snapshot.session_id !== latest.session_id ||
+        snapshot.subscription_id !== latest.subscription_id)) return;
+      if (!latest || snapshot.sequence > latest.sequence) {
+        const initial = latest === undefined;
+        latest = snapshot;
+        onSnapshot(snapshot, initial);
+      }
+      // Only channel deliveries occupy the native ACK slot. The subscribe
+      // response can duplicate a delivery but must never release that slot.
       if (acknowledge) {
         void invoke("desktop_ack", { subscriptionId: snapshot.subscription_id, sequence: snapshot.sequence })
-          .catch(() => { if (!closed) onFailure("PROTOCOL_ERROR"); });
+          .catch(() => fail("PROTOCOL_ERROR"));
       }
     } catch {
-      closed = true;
-      onFailure("PROTOCOL_ERROR");
+      fail("PROTOCOL_ERROR");
     }
   };
   channel.onmessage = (text) => accept(text, true);
   invoke<string>("desktop_subscribe", { channel })
     .then((text) => accept(text))
-    .then(() => {
-      if (!closed) return invoke("desktop_start");
-    })
     .catch((failure) => {
-      if (!closed) onFailure(decodeFailure(failure));
+      fail(decodeFailure(failure));
     });
   return () => {
     closed = true;
+    // Native subscribe atomically replaces its one subscriber. Discard any
+    // queued callback from this generation, including late ACK rejections.
+    channel.onmessage = () => {};
   };
 }
 

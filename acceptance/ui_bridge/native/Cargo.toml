@@ -36,3 +36,15 @@ path = "controller.rs"
 [[test]]
 name = "bridge"
 path = "bridge.rs"
+
+[[test]]
+name = "writer_failure"
+path = "writer_failure.rs"
+
+[[test]]
+name = "refusals"
+path = "refusals.rs"
+
+[[test]]
+name = "diagnostics"
+path = "diagnostics.rs"

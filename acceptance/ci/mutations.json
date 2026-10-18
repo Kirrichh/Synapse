@@ -106,5 +106,53 @@
     "target": "scripts/ci/dependencies.py",
     "before": "if id(node) in lazy_dispatch:",
     "after": "if False:"
+  },
+  {
+    "id": "CI-manifest-canonical-reader",
+    "target": "scripts/ci/dependencies.py",
+    "before": "    'tests/test_stage4_gold_canonical_entrypoint.py',",
+    "after": ""
+  },
+  {
+    "id": "CI-manifest-dag-reader",
+    "target": "scripts/ci/dependencies.py",
+    "before": "    'scripts/stage9_ownership_dag.py',",
+    "after": ""
+  },
+  {
+    "id": "CI-unknown-governance",
+    "target": "scripts/ci/dependencies.py",
+    "before": "graph[consumer].update(unknown_governance)",
+    "after": "pass"
+  },
+  {
+    "id": "CI-deleted-data",
+    "target": "scripts/ci/select_tests.py",
+    "before": "add_runtime_edges(graph, files | changed)",
+    "after": "add_runtime_edges(graph, files)"
+  },
+  {
+    "id": "CI-renderer-recovery-owner",
+    "target": "scripts/ci/select_tests.py",
+    "before": ", 'acceptance/ui_bridge/browser_'",
+    "after": ""
+  },
+  {
+    "id": "CI-legacy-mutation-selection",
+    "target": "scripts/ci/ui_mutations.py",
+    "before": "plan.get('mutation_files', plan['files'])",
+    "after": "plan['files']"
+  },
+  {
+    "id": "CI-legacy-mutation-job",
+    "target": "scripts/ci/select_tests.py",
+    "before": "ui['python_mutations'] = any(",
+    "after": "ui['python_mutations'] = False and any("
+  },
+  {
+    "id": "CI-mutation-only-gate",
+    "target": "scripts/ci/check_results.py",
+    "before": ", 'python_mutations'",
+    "after": ""
   }
 ]

@@ -295,5 +295,95 @@
     "before": "environment()?;",
     "after": "// Environment validation removed by external mutant.",
     "case": "platform"
+  },
+  {
+    "id": "RS-writer-disconnected",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/transport.rs",
+    "before": "mpsc::TrySendError::Disconnected(_) => Failure(\"CORE_EXITED\")",
+    "after": "mpsc::TrySendError::Disconnected(_) => Failure(\"BUSY\")",
+    "behavior": "dead writer is terminal",
+    "case": "writer_failure"
+  },
+  {
+    "id": "RS-writer-overload",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/transport.rs",
+    "before": "mpsc::TrySendError::Full(_) => Failure(\"BUSY\")",
+    "after": "mpsc::TrySendError::Full(_) => Failure(\"CORE_EXITED\")",
+    "behavior": "full queue remains retryable",
+    "case": "writer_failure"
+  },
+  {
+    "id": "RS-writer-completion",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/transport.rs",
+    "before": "completion\n            .recv_timeout(remaining.min(Duration::from_secs(PROFILE.write_timeout_seconds)))\n            .map_err(|error| match error {\n                mpsc::RecvTimeoutError::Timeout => Failure(\"TRANSPORT_TIMEOUT\"),\n                mpsc::RecvTimeoutError::Disconnected => Failure(\"CORE_EXITED\"),\n            })?",
+    "after": "completion\n            .recv_timeout(remaining.min(Duration::from_secs(PROFILE.write_timeout_seconds)))\n            .map_err(|_| Failure(\"TRANSPORT_TIMEOUT\"))?",
+    "behavior": "aborted receipt is terminal",
+    "case": "writer_failure"
+  },
+  {
+    "id": "RS-refusal-correlation",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/protocol.rs",
+    "before": "|| value.get(\"request_id\").and_then(Value::as_str) != id",
+    "after": "|| false",
+    "behavior": "errors cannot acknowledge a foreign request",
+    "case": "refusals"
+  },
+  {
+    "id": "RS-refusal-fatal",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/bridge.rs",
+    "before": "return if fatal {",
+    "after": "return if false {",
+    "behavior": "fatal refusal terminates the session",
+    "case": "refusals"
+  },
+  {
+    "id": "RS-refusal-nonfatal",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/bridge.rs",
+    "before": "return if fatal {",
+    "after": "return if true {",
+    "behavior": "nonfatal refusal preserves a usable session",
+    "case": "refusals"
+  },
+  {
+    "id": "RS-shutdown-taxonomy",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/controller.rs",
+    "before": "if failure.0 == \"TRANSPORT_TIMEOUT\" {",
+    "after": "if true {",
+    "behavior": "shutdown retains failure identity",
+    "case": "refusals"
+  },
+  {
+    "id": "RS-close-requires-ack",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/controller.rs",
+    "before": "if matches!(result, Ok(true)) {",
+    "after": "if result.is_ok() {",
+    "behavior": "refused shutdown cannot exit cleanly",
+    "case": "refusals"
+  },
+  {
+    "id": "RS-heartbeat-refusal",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/controller.rs",
+    "before": "self.state(\"ready\", refusal);",
+    "after": "if let Some(code) = refusal { self.fail(Failure(code)); }",
+    "behavior": "heartbeat refusal does not tear down the session",
+    "case": "refusals"
+  },
+  {
+    "id": "RS-diagnostic-overflow",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/diagnostics.rs",
+    "before": ".unwrap_or(0) + 1;",
+    "after": ".unwrap_or(0);",
+    "behavior": "overlong diagnostics cannot become a valid code",
+    "case": "diagnostics"
   }
 ]

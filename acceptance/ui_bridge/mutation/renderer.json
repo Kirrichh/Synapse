@@ -140,15 +140,71 @@
     "kind": "browser",
     "behavior": "corruption closes observer",
     "target": "synapse/ui/src/connection/desktop.ts",
-    "before": "if (closed) return;",
-    "after": "if (false) return;"
+    "before": "const accept = (text: string, acknowledge = false) => {\n    if (closed) return;",
+    "after": "const accept = (text: string, acknowledge = false) => {\n    if (false) return;"
   },
   {
     "id": "TS-native-overload",
     "kind": "browser",
     "behavior": "native overload",
     "target": "synapse/ui/src/connection/useConnection.ts",
-    "before": "connectionFailure(current, decodeFailure(failure))",
-    "after": "connectionFailure(current, \"INTERNAL_ERROR\")"
+    "before": "setConnection((current) => connectionFailure(current, decodeFailure(failure)));\n    } finally",
+    "after": "setConnection((current) => connectionFailure(current, \"INTERNAL_ERROR\"));\n    } finally"
+  },
+  {
+    "id": "TS-fresh-subscription",
+    "kind": "browser",
+    "target": "synapse/ui/src/connection/useConnection.ts",
+    "before": "setGeneration((current) => current + 1);",
+    "after": "setGeneration((current) => current);",
+    "behavior": "recovery opens a new delivery session"
+  },
+  {
+    "id": "TS-same-sequence-recovery",
+    "kind": "typescript",
+    "target": "synapse/ui/src/connection/model.ts",
+    "before": "!initial && previous &&",
+    "after": "previous &&",
+    "behavior": "fresh subscription may return unchanged native sequence"
+  },
+  {
+    "id": "TS-subscription-binding",
+    "kind": "typescript",
+    "target": "synapse/ui/src/connection/model.ts",
+    "before": "previous.subscription_id !== next.subscription_id",
+    "after": "false",
+    "behavior": "old subscription cannot overwrite new state"
+  },
+  {
+    "id": "TS-recovery-no-spawn",
+    "kind": "browser",
+    "target": "synapse/ui/src/connection/useConnection.ts",
+    "before": "generation === 0 && !started.current && snapshot.state === \"native\"",
+    "after": "!started.current && snapshot.state === \"native\"",
+    "behavior": "view recovery does not launch a core"
+  },
+  {
+    "id": "TS-remount-no-start",
+    "kind": "browser",
+    "target": "synapse/ui/src/connection/useConnection.ts",
+    "before": "snapshot.state === \"native\"",
+    "after": "true",
+    "behavior": "remounting a stopped core cannot request restart"
+  },
+  {
+    "id": "TS-force-native-state",
+    "kind": "browser",
+    "target": "synapse/ui/src/components/ConnectionPanel.tsx",
+    "before": "connected && snapshot?.state === \"fail\" && coreStarted",
+    "after": "state === \"fail\" && coreStarted",
+    "behavior": "local channel failure cannot offer native force close"
+  },
+  {
+    "id": "TS-ack-failure-closes",
+    "kind": "browser",
+    "target": "synapse/ui/src/connection/desktop.ts",
+    "before": ".catch(() => fail(\"PROTOCOL_ERROR\"));",
+    "after": ".catch(() => {});",
+    "behavior": "ACK failure closes the delivery channel"
   }
 ]

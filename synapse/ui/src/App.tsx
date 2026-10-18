@@ -90,7 +90,7 @@ export function App() {
         <span>
           <i
             className={
-              snapshot?.state === "ready" && !model.connection.error
+              snapshot?.state === "ready" && model.connection.delivery === "connected"
                 ? "online"
                 : ""
             }

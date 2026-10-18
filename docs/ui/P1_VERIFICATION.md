@@ -13,19 +13,23 @@ dependencies were provisioned outside the repository's product tree.
 
 | Check | Observed result | Scope and limits |
 |---|---|---|
-| Python UI-bridge acceptance | **109 passed** | Framing, strict JSON, shared corpus, state machine, real canonical CLI, fixed negotiation deadline, unread-output deadline, transport failure, bundle tooling, installed wheel import isolation |
+| Python UI-bridge acceptance | **110 passed** | Framing, strict JSON, shared corpus, state machine, real canonical CLI, fixed negotiation deadline, unread-output deadline, transport failure, bundle tooling, installed wheel import isolation |
 | Evidence-tool confidentiality acceptance | **5 passed** | Synthetic diagnostic canaries are not persisted or printed for killed/surviving/invalid/timed-out mutants or a failed baseline; separate from product acceptance |
-| Native external acceptance crate | **21 passed** | Protocol/context binding, raw transport, bundle integrity, diagnostic redaction, caller checks, publication acknowledgment/isolation, real bundled-core negotiation and controller lifecycle |
-| TypeScript external acceptance | **44 passed** | Same raw corpus, bootstrap validation, byte/depth/Unicode limits, session/sequence filtering, safe native diagnostic codes |
-| Browser/component scenarios | **Passed** | Actual renderer in browser refusal state; RU/EN/focus; external peer exercises readiness, stale/foreign delivery, stop, forced-close confirmation, corrupt-channel closure, retry and BUSY presentation |
-| Existing CLI regression checks | **39 passed after targeted correction** | Interpreter startup, debugger CLI, canonical execution paths; initial old help-list expectation failed and was replaced by the observable canonical-help comparison |
+| Native external acceptance crate | **30 passed** | Protocol/context binding, raw transport, bundle integrity, diagnostic redaction, caller checks, publication acknowledgment/isolation, real bundled-core negotiation and controller lifecycle, dead-writer/overload distinction, correlated refusals and shutdown acknowledgment boundaries |
+| TypeScript external acceptance | **46 passed** | Same raw corpus, bootstrap validation, byte/depth/Unicode limits, session/subscription/sequence filtering, fresh-observer recovery, declared refusal projection, safe native diagnostic codes |
+| Browser/component scenarios | **Passed** | Actual renderer in browser refusal state; RU/EN/focus; external peer exercises readiness, stale/foreign delivery, stop, forced-close confirmation, corrupt-channel closure, fresh subscription recovery without reload/spawn, failed ACKs, same-sequence recovery, native action eligibility, retry and BUSY presentation |
+| Existing CLI regression checks | **40 passed** | Interpreter startup, debugger CLI, canonical execution paths; canonical help parity plus restored thin-adapter delegation, argument ownership and exit propagation |
+| Existing ownership/canonical architecture checks | **906 passed** | Four existing manifest-related suites, including the actual composition-root constraint and DAG checks |
 | Frontend production build | **Passed** | Schema generation, strict TypeScript, standalone bundled validators, Vite assets |
 | Native Linux debug application build | **Passed** | Tauri application with packaged custom protocol, configured production CSP, bundled core resources and build-bound manifest |
 | Windows native-core cross-check | **Passed** | `cargo check --no-default-features --target x86_64-pc-windows-gnu`; compilation only, no Windows execution or installed WebView claim |
 | npm production dependency audit | **0 reported vulnerabilities** | `npm audit --omit=dev`; registry advisory result for this dependency snapshot, not a whole-product security proof |
 
 The real-core/controller cases were rerun against the final rebuilt core resource.
-The final Python invocation passed all 114 cases: 109 product/build checks and
+The combined affected Python run passed **1061 cases**: 115 UI/tooling, 40 CLI,
+and 906 existing ownership/canonical architecture checks; no skips or failures.
+This is a related-suite run, not a whole-repository run.
+The final Python invocation passed all 115 UI cases: 110 product/build checks and
 five evidence-tool confidentiality checks.
 The native application itself has not passed a real-window or installed run here.
 Artifact digests are retained in the external
@@ -44,7 +48,7 @@ pytest files execute. New Python acceptance is discovered rather than requiring
 an ever-growing duplicate test list.
 
 The selector uses Python imports, package initialization, local helpers, parent
-fixtures, embedded subprocess imports, explicit machine/packaging dependencies,
+fixtures, embedded subprocess imports, declared governance-data readers, explicit machine/packaging dependencies,
 and shared UI contract boundaries. A Python dependency-environment change affects
 all automatic Python consumers; a package-data-only change follows packaging
 consumers. New dynamic loading or non-import dependencies must be represented in
@@ -57,6 +61,7 @@ their existing separate execution policy.
 | A single existing acceptance file | Its existing job/matrix row and its related mutation cases |
 | A new Python acceptance file | Its own job when no existing group owns it |
 | Shared CLI | Existing direct/transitive CLI consumers, including subprocess scenarios |
+| Ownership manifest or unregistered governance JSON | Declared ownership readers and their transitive consumers; no unrelated product-wide fallback |
 | Shared control profile/schema | Machine acceptance plus native and renderer contract consumers |
 | Unreferenced development notes | No product test execution |
 
@@ -65,11 +70,11 @@ both ownership boundaries. Missing comparison data fails the selector; failed,
 cancelled, or unexpectedly skipped selected jobs fail the existing Gold gate.
 The build/test layer does not enter product imports or packaged runtime data.
 
-Local verification of the final selection behavior: **23 acceptance cases passed**
-and **18 seeded tooling mutants killed**. The existing **114 Python UI cases**,
+Local verification of the final selection behavior: **29 acceptance cases passed**
+and **26 seeded tooling mutants killed**. The existing **115 Python UI cases**,
 the browser/component scenarios using the isolated CI server, and actionlint
 validation also passed. All three reporting-confidentiality mutants were killed
-again after making mutation dependencies optional for independent CI jobs.
+again on the review-correction tree.
 These results are local verification; GitHub workflow outcomes are reported by
 the PR checks, not inferred from this document. P1 platform gaps remain open.
 
@@ -117,11 +122,15 @@ An unbuildable mutant or infrastructure failure is not counted as a kill.
 
 | Campaign | Final result | Evidence |
 |---|---|---|
-| Python, bundler, distribution boundary | **30 killed** | [Results and survivor resolution](../../acceptance/ui_bridge/evidence/python-mutation-results.json) |
-| Native protocol/controller/security components | **33 killed** | [Results](../../acceptance/ui_bridge/evidence/native-mutation-results.json) |
-| TypeScript, contract generation, rendered behavior | **19 killed** | [Results](../../acceptance/ui_bridge/evidence/renderer-mutation-results.json) |
+| Python, bundler, distribution boundary | **33 killed** | [Results and survivor resolution](../../acceptance/ui_bridge/evidence/python-mutation-results.json) |
+| Native protocol/controller/security components | **43 killed** | [Results](../../acceptance/ui_bridge/evidence/native-mutation-results.json) |
+| TypeScript, contract generation, rendered behavior | **26 killed** | [Results](../../acceptance/ui_bridge/evidence/renderer-mutation-results.json) |
 
-Final executed total: **82 killed, 0 unexplained survivors, 0 invalid results**.
+Final executed total: **102 killed, 0 unexplained survivors, 0 invalid results**.
+The separate reporting campaign killed all three mutants; the CI selector campaign
+killed all 26 tooling mutants. Each retained product record matches its final
+source SHA-256. The review correction cases specifically kill the missing-manifest
+edge and broken-reconnection mutants that the earlier campaign did not include.
 This is a targeted campaign, not exhaustive mutation coverage of every platform
 integration or an assertion that all written platform behavior is accepted.
 Windows lifecycle mutations and native WebView/capability/CSP execution remain
@@ -152,7 +161,7 @@ The reporting tool has its own separate campaign in `mutation/reporting.json`:
 three mutants attempt to print raw diagnostics, include them in structured
 results, or persist a failed-baseline log. All three were killed by synthetic
 confidentiality cases. [Reporting results](../../acceptance/ui_bridge/evidence/reporting-mutation-results.json)
-do not inflate the 82 product/build mutation results above. Use the same runner
+do not inflate the 102 product/build mutation results above. Use the same runner
 with that seed file to reproduce this tool-only campaign.
 
 ## Coverage and security review

@@ -104,6 +104,9 @@ impl Default for Publication {
 }
 impl Publication {
     pub fn subscribe(&self, sink: Sink) -> String {
+        // Replace the previous subscriber and its ACK slot atomically. Only
+        // sink deliveries set waiting/sent; the returned initial snapshot is
+        // unacknowledged. A duplicate channel delivery must still be ACKed.
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let id = uuid::Uuid::new_v4().to_string();
         state.snapshot.subscription_id = id.clone();

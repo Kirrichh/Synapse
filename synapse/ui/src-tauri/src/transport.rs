@@ -110,9 +110,15 @@ impl PipeConnection {
             .ok_or(Failure("TRANSPORT_TIMEOUT"))?;
         self.outgoing
             .try_send((frame, receipt))
-            .map_err(|_| Failure("BUSY"))?;
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => Failure("BUSY"),
+                mpsc::TrySendError::Disconnected(_) => Failure("CORE_EXITED"),
+            })?;
         completion
             .recv_timeout(remaining.min(Duration::from_secs(PROFILE.write_timeout_seconds)))
-            .map_err(|_| Failure("TRANSPORT_TIMEOUT"))?
+            .map_err(|error| match error {
+                mpsc::RecvTimeoutError::Timeout => Failure("TRANSPORT_TIMEOUT"),
+                mpsc::RecvTimeoutError::Disconnected => Failure("CORE_EXITED"),
+            })?
     }
 }

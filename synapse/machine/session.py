@@ -74,8 +74,11 @@ class ControlSession:
         elif method == "machine.status":
             result = {"state": "ready", "domain_ready": False,
                       "profile": PROFILE["profile_id"], "max_frame_bytes": self.frame_limit}
-        else:
+        elif method == "machine.shutdown":
             self.closed = True
             self.phase = "stopped"
             result = {"status": "stopped", "pending_commands": 0}
+        else:
+            # A schema/dispatcher mismatch must never become a shutdown effect.
+            raise ProtocolError("INTERNAL_ERROR")
         return message("result", request_id=request_id, method=method, result=result)

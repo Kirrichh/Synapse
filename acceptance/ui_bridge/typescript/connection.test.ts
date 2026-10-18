@@ -10,7 +10,7 @@ test("foreign and stale deliveries cannot overwrite current bootstrap state", ()
     assert.deepEqual(receiveSnapshot(current,next),current);
   }
   const fresh = snapshot(5,{state:"ready"});
-  assert.deepEqual(receiveSnapshot(current,fresh),{snapshot:fresh,error:null});
+  assert.deepEqual(receiveSnapshot(current,fresh),{snapshot:fresh,error:null,delivery:"connected"});
 });
 test("failures preserve native identity; a newer native result clears a transient error", () => {
   const current = receiveSnapshot(initialConnection,snapshot(1));

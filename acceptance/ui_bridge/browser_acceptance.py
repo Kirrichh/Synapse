@@ -7,6 +7,7 @@ from pathlib import Path
 from threading import Thread
 
 from playwright.sync_api import sync_playwright
+from browser_recovery import check_recovery
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -64,7 +65,7 @@ def check(base_url, screenshot=None):
         component.get_by_role("button", name="Stop core", exact=True).click()
         component.get_by_role("heading", name="Local core stopped", exact=True).wait_for()
         assert component.evaluate("window.acceptancePeer.commands.includes('desktop_stop')")
-        component.evaluate("window.acceptancePeer.deliver({sequence: 4, state: 'fail', code: 'SHUTDOWN_TIMEOUT'})")
+        component.evaluate("window.acceptancePeer.set({sequence: 4, state: 'fail', code: 'SHUTDOWN_TIMEOUT'})")
         force = component.get_by_role("button", name="Force close desktop", exact=True)
         force.wait_for()
         component.once("dialog", lambda dialog: dialog.dismiss())
@@ -87,6 +88,7 @@ def check(base_url, screenshot=None):
         component.get_by_text("BUSY", exact=True).wait_for()
         component.get_by_role("button", name="Check connection again", exact=True).click()
         component.get_by_role("button", name="Stop core", exact=True).wait_for()
+        check_recovery(browser, base_url)
         browser.close()
     print("Browser and renderer component behavior passed; no installed-desktop claim.")
 

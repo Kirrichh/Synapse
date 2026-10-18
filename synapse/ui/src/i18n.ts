@@ -33,6 +33,8 @@ export const copy = {
     stoppedHint:
       "Shutdown was confirmed. Reopen the desktop to begin a new session.",
     retry: "Check connection again",
+    reconnect: "Reconnect display",
+    reconnecting: "Waiting for desktop status",
     stop: "Stop core",
     force: "Force close desktop",
     forceWarning:
@@ -90,6 +92,8 @@ export const copy = {
     stoppedHint:
       "Завершение подтверждено. Откройте приложение заново для нового сеанса.",
     retry: "Проверить подключение",
+    reconnect: "Восстановить отображение",
+    reconnecting: "Ожидание состояния приложения",
     stop: "Остановить ядро",
     force: "Принудительно закрыть",
     forceWarning:
@@ -120,6 +124,21 @@ export const copy = {
 
 export const errors: Record<Language, Record<DiagnosticCode, string>> = {
   en: {
+    INVALID_LENGTH: "The core refused an invalid frame length.",
+    FRAME_TOO_LARGE: "The core refused a frame exceeding the agreed bound.",
+    TRUNCATED_FRAME: "The core received an incomplete frame.",
+    INVALID_UTF8: "The core refused invalid text encoding.",
+    INVALID_JSON: "The core refused malformed JSON.",
+    JSON_LIMIT: "The core refused data exceeding the JSON limits.",
+    SCHEMA_INVALID: "The core refused data outside the control contract.",
+    SCHEMA_UNSUPPORTED: "The core does not support this schema version.",
+    PROFILE_UNSUPPORTED: "The core refused the proposed control profile.",
+    INVALID_SEQUENCE: "The core refused an out-of-sequence message.",
+    NOT_READY: "The core is not ready to accept this request.",
+    METHOD_UNSUPPORTED: "The core does not support this method.",
+    PARAMS_INVALID: "The core refused the request parameters.",
+    WRITE_TIMEOUT: "The core could not complete its reply in time.",
+    PIPE_CLOSED: "The core reported a closed control pipe.",
     DESKTOP_REQUIRED:
       "Open Synapse in the desktop application to connect to its local core.",
     CALLER_REFUSED:
@@ -152,6 +171,21 @@ export const errors: Record<Language, Record<DiagnosticCode, string>> = {
       "The connection could not complete the request. Diagnostic details were kept private.",
   },
   ru: {
+    INVALID_LENGTH: "Ядро отклонило недопустимую длину кадра.",
+    FRAME_TOO_LARGE: "Ядро отклонило кадр, превышающий согласованный предел.",
+    TRUNCATED_FRAME: "Ядро получило неполный кадр.",
+    INVALID_UTF8: "Ядро отклонило недопустимую кодировку текста.",
+    INVALID_JSON: "Ядро отклонило некорректный JSON.",
+    JSON_LIMIT: "Ядро отклонило данные, превышающие ограничения JSON.",
+    SCHEMA_INVALID: "Ядро отклонило данные вне служебного контракта.",
+    SCHEMA_UNSUPPORTED: "Ядро не поддерживает эту версию схемы.",
+    PROFILE_UNSUPPORTED: "Ядро отклонило предложенный служебный профиль.",
+    INVALID_SEQUENCE: "Ядро отклонило сообщение с нарушением порядка.",
+    NOT_READY: "Ядро не готово принять этот запрос.",
+    METHOD_UNSUPPORTED: "Ядро не поддерживает этот метод.",
+    PARAMS_INVALID: "Ядро отклонило параметры запроса.",
+    WRITE_TIMEOUT: "Ядро не успело передать ответ.",
+    PIPE_CLOSED: "Ядро сообщило о закрытом служебном канале.",
     DESKTOP_REQUIRED:
       "Откройте настольное приложение Synapse для подключения к локальному ядру.",
     CALLER_REFUSED: "Этому окну не разрешено управлять локальным подключением.",

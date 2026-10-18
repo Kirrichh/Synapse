@@ -52,7 +52,7 @@ Pending means the complete scenario has not been established. [P1 verification](
 | AC-40 | Controls | P6, P7 | MEM-14, MEM-15, MEM-16 | NOT_RUN | Pending / pending / none |
 | AC-41 | Chart | P6, P7 | MEM-10, MEM-17 | NOT_RUN | Pending / pending / none |
 | AC-42 | Memory units | P6, P7 | MEM-18 | NOT_RUN | Pending / pending / none |
-| AC-43 | Unsubscribe/UI restart | P2, P7 | MAP-8, SYN-21, SYN-22 | NOT_RUN | Pending / pending / none |
+| AC-43 | Unsubscribe/UI restart | P2, P7 | MAP-8, SYN-21, SYN-22 | NOT_RUN | [P1 recovery component evidence](P1_VERIFICATION.md): fresh bootstrap subscription after corruption without reload/spawn; complete domain unsubscribe/restart remains pending |
 | AC-44 | Bottom-panel sources | P2, P7 | DEL-7, DEL-8, DEL-9, LLM-5, SEC-10 | NOT_RUN | Pending / pending / none |
 
 ## Evidence to add when executing a case

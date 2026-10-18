@@ -31,7 +31,9 @@ def copy_subject(destination):
     core = ROOT / "synapse/ui/src-tauri/resources/core"
     if core.is_dir():
         (resource / "core").symlink_to(core, target_is_directory=True)
-    for name in ("pyproject.toml", "README.md", "LICENSE"):
+    (destination / "tests").mkdir()
+    shutil.copy2(ROOT / "tests/test_system_execution_path.py", destination / "tests")
+    for name in ("pyproject.toml", "README.md", "LICENSE", "main.py"):
         shutil.copy2(ROOT / name, destination / name)
 
 

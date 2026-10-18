@@ -43,7 +43,13 @@ impl Session {
             last: ready,
         })
     }
-    pub fn exchange(&mut self, method: &str, deadline: Instant) -> Result<(), Failure> {
+    /// None acknowledges the command; Some(code) is a correlated, nonfatal
+    /// refusal. It leaves the control session usable and proves no shutdown.
+    pub fn exchange(
+        &mut self,
+        method: &str,
+        deadline: Instant,
+    ) -> Result<Option<&'static str>, Failure> {
         let id = uuid::Uuid::new_v4().to_string();
         self.connection
             .send_before(&protocol::request(method, &id), deadline)?;
@@ -51,8 +57,16 @@ impl Session {
             .checked_duration_since(Instant::now())
             .ok_or(Failure("TRANSPORT_TIMEOUT"))?;
         let reply = self.connection.receive(remaining)?;
+        if let Some((code, fatal)) = protocol::check_refusal(&reply, Some(&id))? {
+            self.last = reply;
+            return if fatal {
+                Err(Failure(code))
+            } else {
+                Ok(Some(code))
+            };
+        }
         protocol::check_result(&reply, method, &id)?;
         self.last = reply;
-        Ok(())
+        Ok(None)
     }
 }

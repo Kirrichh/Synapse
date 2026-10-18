@@ -328,5 +328,38 @@
     "cases": [
       "acceptance/ui_bridge/test_transport_acceptance.py"
     ]
+  },
+  {
+    "id": "PY-explicit-shutdown-dispatch",
+    "kind": "python",
+    "target": "synapse/machine/session.py",
+    "before": "elif method == \"machine.shutdown\":",
+    "after": "elif True:",
+    "behavior": "new methods cannot silently become shutdown",
+    "cases": [
+      "acceptance/ui_bridge/test_session_acceptance.py"
+    ]
+  },
+  {
+    "id": "PY-canonical-delegation",
+    "kind": "python",
+    "target": "synapse/__main__.py",
+    "before": "raise SystemExit(main())",
+    "after": "raise SystemExit(0)",
+    "behavior": "canonical CLI delegation and exit propagation",
+    "cases": [
+      "tests/test_system_execution_path.py::test_package_entrypoint_only_delegates_to_cli_and_propagates_its_exit"
+    ]
+  },
+  {
+    "id": "PY-canonical-argument-owner",
+    "kind": "python",
+    "target": "synapse/__main__.py",
+    "before": "from .cli import main",
+    "after": "from .cli import main\nimport argparse",
+    "behavior": "canonical adapter cannot acquire argument ownership",
+    "cases": [
+      "tests/test_system_execution_path.py::test_package_entrypoint_only_delegates_to_cli_and_propagates_its_exit"
+    ]
   }
 ]

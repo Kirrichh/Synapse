@@ -4,8 +4,8 @@
   "build": "Tauri debug application with packaged custom protocol; native window execution not established",
   "runtime_version": "0.22.0-alpha3e",
   "sha256": {
-    "synapse/ui/src-tauri/target/debug/synapse-desktop": "a9a9dd21350a60eda171769a58628692f7c550fd423f3447eb530de0208bec80",
-    "synapse/ui/src-tauri/resources/core/bundle-manifest.json": "3f6b3f6bc79969849af885cf06210135aaa29b4761c9f885f0d0714e3434321c",
+    "synapse/ui/src-tauri/target/debug/synapse-desktop": "3be2c3056974d3cc04735c01c9338ec0de6a7b35433f04093f47d61c6cd38317",
+    "synapse/ui/src-tauri/resources/core/bundle-manifest.json": "fd9b9405db5e31d1dd6ed8041b43691c095efa9e99e172d9e0e2b6cc6ae84c60",
     "synapse/ui/package-lock.json": "ede1495b7321e075b4091b726abe27a54270f5edadfc6a68ef0763aca8de9833",
     "synapse/ui/src-tauri/Cargo.lock": "b6e168324c96b25a44598742a5013e6cf8af80db7715624c9f1385bf871fabba",
     "docs/ui/assets/bootstrap-browser.png": "2cb3d4ad2e3d7c6f896dcaa0a4b40b84b995f1a24431b6f1d06c6c4a1eb0ca92",

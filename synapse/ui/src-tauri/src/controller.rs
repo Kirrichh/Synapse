@@ -76,8 +76,8 @@ impl<H: Host> Owner<H> {
         });
     }
     fn fail(&mut self, failure: Failure) {
-        self.session = None;
         self.state("fail", Some(failure.0));
+        self.session = None;
     }
     fn connect(&mut self) -> Result<(), Failure> {
         if self.session.is_some() {
@@ -104,16 +104,34 @@ impl<H: Host> Owner<H> {
         self.state("ready", None);
         Ok(())
     }
-    fn stop(&mut self) -> Result<(), Failure> {
+    fn stop(&mut self) -> Result<bool, Failure> {
         if !self.launched || self.stopped {
-            return Ok(());
+            return Ok(true);
+        }
+        if self.session.is_none() {
+            return Err(Failure(
+                self.publication
+                    .snapshot()
+                    .code
+                    .unwrap_or("RESTART_REQUIRED"),
+            ));
         }
         let deadline = Instant::now() + Duration::from_secs(PROFILE.shutdown_timeout_seconds);
         self.state("stopping", None);
-        let session = self.session.as_mut().ok_or(Failure("SHUTDOWN_TIMEOUT"))?;
-        session
+        let session = self.session.as_mut().ok_or(Failure("RESTART_REQUIRED"))?;
+        let refusal = session
             .exchange("machine.shutdown", deadline)
-            .map_err(|_| Failure("SHUTDOWN_TIMEOUT"))?;
+            .map_err(|failure| {
+                if failure.0 == "TRANSPORT_TIMEOUT" {
+                    Failure("SHUTDOWN_TIMEOUT")
+                } else {
+                    failure
+                }
+            })?;
+        if let Some(code) = refusal {
+            self.state("ready", Some(code));
+            return Ok(false);
+        }
         loop {
             match self
                 .process
@@ -130,7 +148,7 @@ impl<H: Host> Owner<H> {
         self.stopped = true;
         self.state("stopped", None);
         self.session = None;
-        Ok(())
+        Ok(true)
     }
     fn heartbeat(&mut self) -> Result<(), Failure> {
         if let Some(session) = &mut self.session {
@@ -143,11 +161,11 @@ impl<H: Host> Owner<H> {
             {
                 return Err(Failure("CORE_EXITED"));
             }
-            session.exchange(
+            let refusal = session.exchange(
                 "machine.ping",
                 Instant::now() + Duration::from_secs(PROFILE.write_timeout_seconds),
             )?;
-            self.state("ready", None);
+            self.state("ready", refusal);
         } else {
             // Drain diagnostics after a protocol failure without preserving raw stderr.
             let diagnostics = self.diagnostics.snapshot();
@@ -172,14 +190,14 @@ impl<H: Host> Owner<H> {
                 .recv_timeout(heartbeat.saturating_duration_since(Instant::now()))
             {
                 Ok(Operation::Start) => self.connect(),
-                Ok(Operation::Stop) => self.stop(),
+                Ok(Operation::Stop) => self.stop().map(|_| ()),
                 Ok(Operation::Close) => {
                     let result = self.stop();
-                    if result.is_ok() {
+                    if matches!(result, Ok(true)) {
                         self.host.exit(0);
                         return;
                     }
-                    result
+                    result.map(|_| ())
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,

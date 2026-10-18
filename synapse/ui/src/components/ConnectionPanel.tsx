@@ -6,6 +6,7 @@ type Props = {
   connection: Connection;
   pending: boolean;
   start: () => void;
+  reconnect: () => void;
   stop: () => void;
   forceClose: () => void;
 };
@@ -15,12 +16,14 @@ export function ConnectionPanel({
   connection,
   pending,
   start,
+  reconnect,
   stop,
   forceClose,
 }: Props) {
   const t = copy[language];
   const snapshot = connection.snapshot;
-  const state = connection.error ? "fail" : (snapshot?.state ?? "native");
+  const connected = connection.delivery === "connected";
+  const state = connection.delivery === "failed" ? "fail" : (snapshot?.state ?? "native");
   const hint = connection.error
     ? errors[language][connection.error]
     : state === "ready"
@@ -50,7 +53,7 @@ export function ConnectionPanel({
           {state === "ready" ? "✓" : state === "fail" ? "!" : "↔"}
         </div>
         <div className="status-content">
-          <h2>{t[state]}</h2>
+          <h2>{connection.delivery === "connecting" ? t.reconnecting : t[state]}</h2>
           <p>{hint}</p>
           {connection.error && (
             <code className="error-code">{connection.error}</code>
@@ -59,14 +62,14 @@ export function ConnectionPanel({
       </div>
       <div className="connection-steps">
         <div>
-          <span className={`step-dot ${snapshot ? "complete" : ""}`} />
+          <span className={`step-dot ${connected ? "complete" : ""}`} />
           <strong>{t.desktop}</strong>
-          <small>{snapshot ? t.verified : t.waiting}</small>
+          <small>{connected ? t.verified : t.waiting}</small>
         </div>
         <div>
-          <span className={`step-dot ${state === "ready" ? "complete" : ""}`} />
+          <span className={`step-dot ${connected && snapshot?.state === "ready" ? "complete" : ""}`} />
           <strong>{t.core}</strong>
-          <small>{state === "ready" ? t.verified : t.waiting}</small>
+          <small>{connected && snapshot?.state === "ready" ? t.verified : t.waiting}</small>
         </div>
         <div>
           <span className="step-dot" />
@@ -75,19 +78,24 @@ export function ConnectionPanel({
         </div>
       </div>
       <div className="actions">
-        {state === "fail" &&
+        {connection.delivery === "failed" && connection.error !== "DESKTOP_REQUIRED" && (
+          <button className="primary" disabled={pending} onClick={reconnect}>
+            {t.reconnect}
+          </button>
+        )}
+        {connected && (state === "fail" || snapshot?.state === "native") &&
           !coreStarted &&
           connection.error !== "DESKTOP_REQUIRED" && (
             <button className="primary" disabled={pending} onClick={start}>
               {t.retry}
             </button>
           )}
-        {state === "ready" && (
+        {connected && snapshot?.state === "ready" && (
           <button disabled={pending} onClick={stop}>
             {t.stop}
           </button>
         )}
-        {state === "fail" && coreStarted && (
+        {connected && snapshot?.state === "fail" && coreStarted && (
           <button
             className="danger"
             disabled={pending}

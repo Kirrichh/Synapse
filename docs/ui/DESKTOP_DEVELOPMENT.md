@@ -30,6 +30,21 @@ The controller's host interface joins platform launch/exit with protocol ownersh
 the production Tauri host always verifies the bundled inventory and containment.
 There is no product test mode, alternative Gold entry, or renderer-supplied host.
 
+Renderer delivery has its own lifecycle, separate from the native process session.
+Malformed snapshots or failed ACKs close that observer. **Reconnect display**
+creates a fresh subscription and accepts its validated initial snapshot even when
+the native sequence has not advanced. The native publication atomically replaces
+its single subscriber/ACK slot; the renderer discards callbacks and late failures
+from the previous observer. The subscribe response does not occupy the ACK slot;
+only channel deliveries are acknowledged, including a duplicate initial delivery.
+
+Reconnecting never sends `desktop_start`. Initial mounting may start only a shell
+whose validated native state is `native`; remounting a running, failed, or stopped
+session does not request startup. A prelaunch retry remains a separate explicit
+action. While delivery is unavailable, core controls are hidden until a fresh
+snapshot arrives. Stop follows native `ready`; Force close requires native `fail`
+and the existing native caller/state checks remain authoritative.
+
 External acceptance, peers, fixtures, mutation seeds, and evidence live exclusively
 in `acceptance/ui_bridge`. Existing `tests/` is the legacy acceptance layer.
 Build tooling lives in `scripts/ui`. No production UI source, navigation, resource,

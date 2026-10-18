@@ -36,7 +36,7 @@ jobs:
         run: python -m pytest -q -p no:cacheprovider "$ACCEPTANCE_FILE"
 
   python-mutations:
-    if: fromJSON(inputs.plan).python || fromJSON(inputs.plan).reporting
+    if: fromJSON(inputs.plan).python_mutations
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

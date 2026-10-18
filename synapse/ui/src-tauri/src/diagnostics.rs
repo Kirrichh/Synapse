@@ -1,22 +1,13 @@
 //! Drain every stderr byte, retaining only bounded, declared diagnostic codes.
-use crate::protocol::SCHEMA;
-use serde_json::Value;
+use crate::protocol::ERROR_CODES;
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::VecDeque,
     io::Read,
-    sync::{Arc, LazyLock, Mutex},
+    sync::{Arc, Mutex},
     thread,
 };
 
-static CODES: LazyLock<HashSet<String>> = LazyLock::new(|| {
-    let schema: Value = serde_json::from_str(SCHEMA).expect("envelope schema");
-    schema["$defs"]["errorCode"]["enum"]
-        .as_array()
-        .expect("codes")
-        .iter()
-        .map(|value| value.as_str().expect("code").to_owned())
-        .collect()
-});
+const PREFIX: &str = "machine: ";
 
 #[derive(Clone, Default)]
 pub struct Diagnostics(Arc<Mutex<VecDeque<String>>>);
@@ -40,7 +31,9 @@ impl Diagnostics {
         let log = self.clone();
         thread::spawn(move || {
             let mut bytes = [0u8; 1024];
-            let mut line = Vec::with_capacity(97);
+            // The extra byte prevents truncating an overlong line to a valid code.
+            let limit = PREFIX.len() + ERROR_CODES.iter().map(String::len).max().unwrap_or(0) + 1;
+            let mut line = Vec::with_capacity(limit);
             loop {
                 match source.read(&mut bytes) {
                     Ok(0) | Err(_) => {
@@ -54,7 +47,7 @@ impl Diagnostics {
                             if *byte == b'\n' {
                                 log.record(safe_code(&line));
                                 line.clear();
-                            } else if line.len() < 97 {
+                            } else if line.len() < limit {
                                 line.push(*byte);
                             }
                         }
@@ -67,8 +60,10 @@ impl Diagnostics {
 
 pub fn safe_code(line: &[u8]) -> &'static str {
     let text = std::str::from_utf8(line).unwrap_or("");
-    match text.strip_prefix("machine: ") {
-        Some(code) if CODES.contains(code) => CODES.get(code).expect("declared code").as_str(),
+    match text.strip_prefix(PREFIX) {
+        Some(code) if ERROR_CODES.contains(code) => {
+            ERROR_CODES.get(code).expect("declared code").as_str()
+        }
         _ => "CORE_DIAGNOSTIC",
     }
 }

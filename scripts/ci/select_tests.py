@@ -58,7 +58,7 @@ def ui_selection(changed, selected):
     control = any(path.startswith('synapse/machine/') for path in paths)
     native = workflow or control or any(path.startswith(('synapse/ui/src-tauri/', 'acceptance/ui_bridge/native/', 'scripts/ui/')) for path in paths)
     native |= bool(paths & {'synapse/cli.py', 'synapse/__main__.py', 'synapse/__init__.py', 'pyproject.toml'})
-    frontend = workflow or any(path.startswith(('synapse/ui/src/', 'synapse/ui/contracts/', 'synapse/ui/tooling/', 'acceptance/ui_bridge/typescript/')) for path in paths)
+    frontend = workflow or any(path.startswith(('synapse/ui/src/', 'synapse/ui/contracts/', 'synapse/ui/tooling/', 'acceptance/ui_bridge/typescript/', 'acceptance/ui_bridge/browser_')) for path in paths)
     frontend |= bool(paths & {'synapse/ui/index.html', 'synapse/ui/vite.config.ts', 'synapse/ui/tsconfig.json', 'acceptance/ui_bridge/browser_acceptance.py', 'acceptance/ui_bridge/renderer_peer.js'})
     shared = bool(paths & {'synapse/ui/package.json', 'synapse/ui/package-lock.json', 'acceptance/ui_bridge/corpus.json'})
     native |= shared or any(path.startswith('synapse/ui/contracts/') for path in paths)
@@ -78,7 +78,7 @@ def build_plan(root, files, changed, workflow, *, environment_changed=False):
         if path.endswith('.py'):
             sources[path] = ''  # Keep edges to deleted owners resolvable.
     graph = python_graph(sources, files | changed)
-    add_runtime_edges(graph, files)
+    add_runtime_edges(graph, files | changed)
     mutation_catalog = root / 'acceptance/stage4/stage16/mutations.json'
     stage_mutants = json.loads(mutation_catalog.read_text())['cases'] if mutation_catalog.exists() else []
     reached = affected(graph, changed)
@@ -104,8 +104,13 @@ def build_plan(root, files, changed, workflow, *, environment_changed=False):
     additional = sorted(path for path in selected - SPECIAL if not path.startswith(('acceptance/ui_bridge/', 'acceptance/ci/'))
                         and not any(fnmatch.fnmatchcase(path, pattern) for pattern in owned))
     ui_changed = changed | ({'synapse/machine/release_profile.json'} if environment_changed else set())
+    ui = ui_selection(ui_changed, selected)
+    ui['mutation_files'] = sorted(selected)
+    catalogs = [root / f'acceptance/ui_bridge/mutation/{name}.json' for name in ('python', 'reporting')]
+    ui['python_mutations'] = any(selected.intersection(case.split('::')[0] for case in seed['cases'])
+                                 for catalog in catalogs if catalog.exists() for seed in json.loads(catalog.read_text()))
     return {'tests': sorted(selected), 'groups': groups, 'additional': additional,
-            'ui': ui_selection(ui_changed, selected), 'tooling': tooling,
+            'ui': ui, 'tooling': tooling,
             'durable': 'tests/test_durable_execution.py' in selected,
             'version': 'tests/test_version_sync.py' in selected}
 

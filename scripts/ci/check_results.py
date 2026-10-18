@@ -11,7 +11,7 @@ if __name__ == '__main__':
     plan = json.loads(os.environ['TEST_PLAN'])
     required = {'select'} | {name for name, group in plan['groups'].items() if group['enabled']}
     required.update(name for name, selected in {
-        'durable': plan['durable'], 'version': plan['version'], 'ui': any(plan['ui'][key] for key in ('python', 'native', 'renderer', 'reporting')),
+        'durable': plan['durable'], 'version': plan['version'], 'ui': any(plan['ui'].get(key, False) for key in ('python', 'native', 'renderer', 'reporting', 'python_mutations')),
         'additional-tests': bool(plan['additional']), 'selection-acceptance': plan['tooling']}.items() if selected)
     if not check(json.loads(os.environ['JOB_RESULTS']), required):
         raise SystemExit('A selected verification job did not succeed.')

@@ -100,6 +100,21 @@ or transport failure. If a peer no longer reads, an error reply is best effort
 within the output deadline; stderr still reports only its nonsecret error code.
 The shell must retain uncertainty about future domain operations independently.
 
+The native shell validates error envelopes and their correlation before displaying
+the declared code. During a request, only its exact `request_id` can establish a
+refusal; an unbound or foreign error fails the session as `PROTOCOL_ERROR`.
+Negotiation accepts only unbound errors and terminates negotiation with their
+declared code. A nonfatal, correlated refusal retains the control session and is
+published alongside native `ready`; it is neither a successful result nor a
+shutdown acknowledgment. A fatal refusal closes the session with its code.
+
+Ordinary Stop/Close still requires an acknowledged shutdown and successful process
+exit. A refusal leaves the window open and permits another explicit Stop. Protocol
+failure and process loss retain their own codes; a transport or process-exit timeout during
+shutdown maps to `SHUTDOWN_TIMEOUT`. After session loss, a later Close preserves the
+known failure and does not infer a successful shutdown from process disappearance.
+Confirmed shutdown, or closing before launch, can still exit normally.
+
 ## Acceptance and remaining integration
 
 External acceptance exercises exact bytes, fragmentation, malformed streams,

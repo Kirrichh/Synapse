@@ -4,7 +4,7 @@ use serde::{
     Deserialize, Deserializer,
 };
 use serde_json::{json, Map, Value};
-use std::{fmt, sync::LazyLock};
+use std::{collections::HashSet, fmt, sync::LazyLock};
 
 pub const SCHEMA: &str = include_str!("../../../machine/schemas/envelope.schema.json");
 pub const RELEASE: &str = include_str!("../../../machine/release_profile.json");
@@ -25,6 +25,15 @@ pub struct Profile {
 
 pub static PROFILE: LazyLock<Profile> =
     LazyLock::new(|| serde_json::from_str(RELEASE).expect("release profile"));
+pub static ERROR_CODES: LazyLock<HashSet<String>> = LazyLock::new(|| {
+    let schema: Value = serde_json::from_str(SCHEMA).expect("envelope schema");
+    schema["$defs"]["errorCode"]["enum"]
+        .as_array()
+        .expect("codes")
+        .iter()
+        .map(|code| code.as_str().expect("code").to_owned())
+        .collect()
+});
 static VALIDATOR: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
     let schema: Value = serde_json::from_str(SCHEMA).expect("envelope schema");
     jsonschema::options()
@@ -149,6 +158,9 @@ pub fn request(method: &str, id: &str) -> Value {
     json!({"schema_version":"1.0", "type":"request", "request_id":id, "method":method, "params":{}})
 }
 pub fn check_hello(value: &Value, runtime_version: &str) -> Result<usize, Failure> {
+    if let Some((code, _)) = check_refusal(value, None)? {
+        return Err(Failure(code));
+    }
     if value["type"] != "hello"
         || value["component"] != "core"
         || value["profile"] != PROFILE.profile_id
@@ -173,6 +185,9 @@ pub fn check_hello(value: &Value, runtime_version: &str) -> Result<usize, Failur
     Ok(limit)
 }
 pub fn check_ready(value: &Value, limit: usize) -> Result<(), Failure> {
+    if let Some((code, _)) = check_refusal(value, None)? {
+        return Err(Failure(code));
+    }
     if value["type"] != "ready"
         || value["profile"] != PROFILE.profile_id
         || value["protocol_version"] != PROFILE.protocol_version
@@ -183,6 +198,27 @@ pub fn check_ready(value: &Value, limit: usize) -> Result<(), Failure> {
         return Err(Failure("PROTOCOL_ERROR"));
     }
     Ok(())
+}
+
+/// An error is a reply only in its declared correlation context. An unbound
+/// error during a request is not evidence of that request's refusal or effect.
+pub fn check_refusal(
+    value: &Value,
+    id: Option<&str>,
+) -> Result<Option<(&'static str, bool)>, Failure> {
+    if value["type"] != "error" {
+        return Ok(None);
+    }
+    if !VALIDATOR.is_valid(value) || value.get("request_id").and_then(Value::as_str) != id {
+        return Err(Failure("PROTOCOL_ERROR"));
+    }
+    let code = ERROR_CODES
+        .get(value["code"].as_str().ok_or(Failure("PROTOCOL_ERROR"))?)
+        .ok_or(Failure("PROTOCOL_ERROR"))?;
+    Ok(Some((
+        code.as_str(),
+        value["fatal"].as_bool().ok_or(Failure("PROTOCOL_ERROR"))?,
+    )))
 }
 pub fn check_result(value: &Value, method: &str, id: &str) -> Result<(), Failure> {
     if value["type"] != "result" || value["method"] != method || value["request_id"] != id {

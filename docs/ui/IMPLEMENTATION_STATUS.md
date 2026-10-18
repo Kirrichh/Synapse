@@ -87,6 +87,13 @@ the product integration index. They are not product links or data feeds.
 
 ## Implemented in this increment
 
+- [x] Review corrections: declared ownership-manifest dependencies and conservative
+  governance-data selection; renderer recovery on a fresh channel without reload
+  or process restart; native-state-based controls; correlated fatal/nonfatal
+  refusal handling; precise writer/shutdown failures; explicit Python shutdown
+  dispatch; restored canonical-adapter acceptance. See the current
+  [verification record](P1_VERIFICATION.md) and [notebook](DEVELOPMENT_NOTES.md).
+
 - [x] Canonical `python -m synapse machine` with closed control methods, finite
   negotiation, strict framed JSON, bounded pipe workers, and confirmed shutdown.
 - [x] One product envelope schema/release profile shared by Python and Rust;

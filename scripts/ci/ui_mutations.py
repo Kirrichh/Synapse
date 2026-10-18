@@ -19,10 +19,10 @@ def selected_seeds(kind, seeds, plan):
             if kind == 'native':
                 return f"acceptance/ui_bridge/native/{seed['case']}.rs" in paths
             if seed['kind'] == 'browser':
-                return bool(paths & {'acceptance/ui_bridge/browser_acceptance.py', 'acceptance/ui_bridge/renderer_peer.js'})
+                return any(path.startswith('acceptance/ui_bridge/browser_') for path in paths) or 'acceptance/ui_bridge/renderer_peer.js' in paths
             return any(path.startswith('acceptance/ui_bridge/typescript/') for path in paths)
         return [seed['id'] for seed in seeds if selected(seed)] if plan[kind] else []
-    selected = set(plan['files'])
+    selected = set(plan.get('mutation_files', plan['files']))
     return [seed['id'] for seed in seeds if selected.intersection(case.split('::')[0] for case in seed['cases'])]
 
 

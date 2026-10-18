@@ -162,7 +162,7 @@ fn failed_prelaunch_can_retry_but_corrupt_launched_session_requires_restart() {
     failed.request(Operation::Start).unwrap();
     wait(&failed, "fail", Some("RESTART_REQUIRED"));
     failed.request(Operation::Close).unwrap();
-    wait(&failed, "fail", Some("SHUTDOWN_TIMEOUT"));
+    wait(&failed, "fail", Some("RESTART_REQUIRED"));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(exit.try_recv().is_err());
 }

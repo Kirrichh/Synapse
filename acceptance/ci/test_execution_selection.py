@@ -35,6 +35,16 @@ def test_selected_jobs_cannot_be_green_when_evidence_is_missing(result):
     assert check({'selected': {'result': 'success'}, 'unselected': {'result': 'skipped'}}, {'selected'})
 
 
+def test_mutation_only_ui_selection_is_required_by_the_final_gate():
+    gate = Path(__file__).resolve().parents[2] / 'scripts/ci/check_results.py'
+    plan = {'groups': {}, 'durable': False, 'version': False, 'additional': [], 'tooling': False,
+            'ui': {'python_mutations': True}}
+    results = {'select': {'result': 'success'}, 'ui': {'result': 'skipped'}}
+    rejected = subprocess.run([sys.executable, str(gate)], capture_output=True, text=True,
+                              env={**os.environ, 'TEST_PLAN': json.dumps(plan), 'JOB_RESULTS': json.dumps(results)})
+    assert rejected.returncode == 1 and 'did not succeed' in rejected.stderr
+
+
 def test_feature_push_uses_complete_branch_comparison():
     event = {'repository': {'default_branch': 'main'}, 'ref': 'refs/heads/work', 'before': 'previous'}
     assert comparison(event, 'push', 'current') == ('refs/remotes/origin/main', 'current', True)

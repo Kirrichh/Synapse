@@ -14,6 +14,17 @@ def ready_session(limit=65536):
     return session
 
 
+def test_declared_method_without_dispatch_never_becomes_shutdown(monkeypatch):
+    import synapse.machine.session as dispatch
+    session = ready_session()
+    monkeypatch.setattr(dispatch, "METHODS", dispatch.METHODS | {"machine.diagnostics"})
+    with pytest.raises(ProtocolError) as refused:
+        session.receive(request("machine.diagnostics"))
+    assert refused.value.code == "INTERNAL_ERROR"
+    assert session.phase == "ready" and not session.closed
+    assert session.receive(request())["result"] == {"status": "alive"}
+
+
 def test_early_mutation_is_refused_and_never_replayed():
     session = ControlSession()
     assert session.receive(request("task.submit"))["code"] == "NOT_READY"

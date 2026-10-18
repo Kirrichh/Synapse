@@ -6,6 +6,18 @@ from collections import defaultdict, deque
 from pathlib import PurePosixPath
 import re
 
+# Data readers must be registered here when their paths are assembled at runtime.
+# Keep the tool as a consumer too: its importers inherit the same dependency.
+OWNERSHIP_READERS = {
+    'tests/test_stage4_gold_canonical_entrypoint.py',
+    'tests/test_stage4_gold_architecture.py',
+    'tests/test_stage4_gold_dependency_direction.py',
+    'scripts/stage9_ownership_dag.py',
+}
+DATA_DEPENDENCIES = {
+    'governance/stage4_ownership_v2.json': OWNERSHIP_READERS,
+}
+
 
 def python_graph(sources: dict[str, str], files: set[str]) -> dict[str, set[str]]:
     modules = {path.removesuffix('.py').replace('/', '.').removesuffix('.__init__'): path
@@ -64,6 +76,15 @@ def python_graph(sources: dict[str, str], files: set[str]) -> dict[str, set[str]
 
 def add_runtime_edges(graph: dict[str, set[str]], files: set[str]) -> None:
     """Ownership edges for data, discovery, packaging, and child processes."""
+    for asset, consumers in DATA_DEPENDENCIES.items():
+        for consumer in consumers & graph.keys():
+            graph[consumer].add(asset)
+    # An unregistered governance data file may replace or supplement the manifest.
+    # Until its readers are declared, conservatively retain this ownership family.
+    unknown_governance = {path for path in files if path.startswith('governance/')
+                          and path.endswith('.json') and path not in DATA_DEPENDENCIES}
+    for consumer in OWNERSHIP_READERS & graph.keys():
+        graph[consumer].update(unknown_governance)
     for path in graph:
         if path.startswith('synapse/machine/'):
             graph[path].update(name for name in files if name.startswith('synapse/machine/') and not name.endswith('.py'))

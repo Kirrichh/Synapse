@@ -7,9 +7,9 @@
       "id": "RS-duplicate-properties",
       "behavior": "duplicate properties",
       "target": "synapse/ui/src-tauri/src/protocol.rs",
-      "source_sha256": "69c30d8109c2c7f6364a6025dfaf67d16d8d4a5f9a4f85323d0efc56f1b2fbc6",
+      "source_sha256": "8378c9b1cdb62e83350ff2343288c4e71b59aa2725f224a209d1ae19d8341abf",
       "result": "KILLED",
-      "seconds": 0.742,
+      "seconds": 0.62,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/protocol.rs"
       ]
@@ -18,9 +18,9 @@
       "id": "RS-integer-precision",
       "behavior": "integer precision",
       "target": "synapse/ui/src-tauri/src/protocol.rs",
-      "source_sha256": "69c30d8109c2c7f6364a6025dfaf67d16d8d4a5f9a4f85323d0efc56f1b2fbc6",
+      "source_sha256": "8378c9b1cdb62e83350ff2343288c4e71b59aa2725f224a209d1ae19d8341abf",
       "result": "KILLED",
-      "seconds": 1.4,
+      "seconds": 1.638,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/protocol.rs"
       ]
@@ -29,9 +29,9 @@
       "id": "RS-depth-limit",
       "behavior": "depth limit",
       "target": "synapse/ui/src-tauri/src/protocol.rs",
-      "source_sha256": "69c30d8109c2c7f6364a6025dfaf67d16d8d4a5f9a4f85323d0efc56f1b2fbc6",
+      "source_sha256": "8378c9b1cdb62e83350ff2343288c4e71b59aa2725f224a209d1ae19d8341abf",
       "result": "KILLED",
-      "seconds": 1.378,
+      "seconds": 1.604,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/protocol.rs"
       ]
@@ -40,9 +40,9 @@
       "id": "RS-schema-refusal",
       "behavior": "schema refusal",
       "target": "synapse/ui/src-tauri/src/protocol.rs",
-      "source_sha256": "69c30d8109c2c7f6364a6025dfaf67d16d8d4a5f9a4f85323d0efc56f1b2fbc6",
+      "source_sha256": "8378c9b1cdb62e83350ff2343288c4e71b59aa2725f224a209d1ae19d8341abf",
       "result": "KILLED",
-      "seconds": 1.398,
+      "seconds": 1.537,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/protocol.rs"
       ]
@@ -51,9 +51,9 @@
       "id": "RS-peer-version",
       "behavior": "peer version",
       "target": "synapse/ui/src-tauri/src/protocol.rs",
-      "source_sha256": "69c30d8109c2c7f6364a6025dfaf67d16d8d4a5f9a4f85323d0efc56f1b2fbc6",
+      "source_sha256": "8378c9b1cdb62e83350ff2343288c4e71b59aa2725f224a209d1ae19d8341abf",
       "result": "KILLED",
-      "seconds": 1.408,
+      "seconds": 1.444,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/protocol.rs"
       ]
@@ -62,9 +62,9 @@
       "id": "RS-peer-role",
       "behavior": "peer role",
       "target": "synapse/ui/src-tauri/src/protocol.rs",
-      "source_sha256": "69c30d8109c2c7f6364a6025dfaf67d16d8d4a5f9a4f85323d0efc56f1b2fbc6",
+      "source_sha256": "8378c9b1cdb62e83350ff2343288c4e71b59aa2725f224a209d1ae19d8341abf",
       "result": "KILLED",
-      "seconds": 1.339,
+      "seconds": 1.504,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/protocol.rs"
       ]
@@ -73,9 +73,9 @@
       "id": "RS-readiness-limit",
       "behavior": "readiness limit",
       "target": "synapse/ui/src-tauri/src/protocol.rs",
-      "source_sha256": "69c30d8109c2c7f6364a6025dfaf67d16d8d4a5f9a4f85323d0efc56f1b2fbc6",
+      "source_sha256": "8378c9b1cdb62e83350ff2343288c4e71b59aa2725f224a209d1ae19d8341abf",
       "result": "KILLED",
-      "seconds": 1.392,
+      "seconds": 1.457,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/protocol.rs"
       ]
@@ -84,9 +84,9 @@
       "id": "RS-result-id",
       "behavior": "result id",
       "target": "synapse/ui/src-tauri/src/protocol.rs",
-      "source_sha256": "69c30d8109c2c7f6364a6025dfaf67d16d8d4a5f9a4f85323d0efc56f1b2fbc6",
+      "source_sha256": "8378c9b1cdb62e83350ff2343288c4e71b59aa2725f224a209d1ae19d8341abf",
       "result": "KILLED",
-      "seconds": 1.333,
+      "seconds": 1.645,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/protocol.rs"
       ]
@@ -95,9 +95,9 @@
       "id": "RS-result-method",
       "behavior": "result method",
       "target": "synapse/ui/src-tauri/src/protocol.rs",
-      "source_sha256": "69c30d8109c2c7f6364a6025dfaf67d16d8d4a5f9a4f85323d0efc56f1b2fbc6",
+      "source_sha256": "8378c9b1cdb62e83350ff2343288c4e71b59aa2725f224a209d1ae19d8341abf",
       "result": "KILLED",
-      "seconds": 1.475,
+      "seconds": 1.575,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/protocol.rs"
       ]
@@ -106,9 +106,9 @@
       "id": "RS-frame-boundary",
       "behavior": "frame boundary",
       "target": "synapse/ui/src-tauri/src/transport.rs",
-      "source_sha256": "21ede509d460241b081c23c75cb6d7877aa701b47d72f4281c98022f26b8392f",
+      "source_sha256": "83c9449571921b8916a633240ee77ad21916a644ec0952b26a0de266bdcae611",
       "result": "KILLED",
-      "seconds": 0.819,
+      "seconds": 1.131,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/transport.rs"
       ]
@@ -117,9 +117,9 @@
       "id": "RS-prefetched-limit",
       "behavior": "prefetched limit",
       "target": "synapse/ui/src-tauri/src/transport.rs",
-      "source_sha256": "21ede509d460241b081c23c75cb6d7877aa701b47d72f4281c98022f26b8392f",
+      "source_sha256": "83c9449571921b8916a633240ee77ad21916a644ec0952b26a0de266bdcae611",
       "result": "KILLED",
-      "seconds": 1.756,
+      "seconds": 2.388,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/transport.rs"
       ]
@@ -128,9 +128,9 @@
       "id": "RS-write-completion",
       "behavior": "write completion",
       "target": "synapse/ui/src-tauri/src/transport.rs",
-      "source_sha256": "21ede509d460241b081c23c75cb6d7877aa701b47d72f4281c98022f26b8392f",
+      "source_sha256": "83c9449571921b8916a633240ee77ad21916a644ec0952b26a0de266bdcae611",
       "result": "KILLED",
-      "seconds": 1.732,
+      "seconds": 1.927,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/transport.rs"
       ]
@@ -141,7 +141,7 @@
       "target": "synapse/ui/src-tauri/src/bundle.rs",
       "source_sha256": "115bd9f156bc3a46ddbbf43d8efaef6a5c02bcf9aba210cbc024d9d0ad3d6df5",
       "result": "KILLED",
-      "seconds": 0.795,
+      "seconds": 0.797,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/bundle.rs"
       ]
@@ -152,7 +152,7 @@
       "target": "synapse/ui/src-tauri/src/bundle.rs",
       "source_sha256": "115bd9f156bc3a46ddbbf43d8efaef6a5c02bcf9aba210cbc024d9d0ad3d6df5",
       "result": "KILLED",
-      "seconds": 1.387,
+      "seconds": 1.581,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/bundle.rs"
       ]
@@ -163,7 +163,7 @@
       "target": "synapse/ui/src-tauri/src/bundle.rs",
       "source_sha256": "115bd9f156bc3a46ddbbf43d8efaef6a5c02bcf9aba210cbc024d9d0ad3d6df5",
       "result": "KILLED",
-      "seconds": 1.63,
+      "seconds": 1.627,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/bundle.rs"
       ]
@@ -174,7 +174,7 @@
       "target": "synapse/ui/src-tauri/src/bundle.rs",
       "source_sha256": "115bd9f156bc3a46ddbbf43d8efaef6a5c02bcf9aba210cbc024d9d0ad3d6df5",
       "result": "KILLED",
-      "seconds": 1.822,
+      "seconds": 1.629,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/bundle.rs"
       ]
@@ -185,7 +185,7 @@
       "target": "synapse/ui/src-tauri/src/caller.rs",
       "source_sha256": "b32e45fcddb877a73a6d7e480ba057a9c82f1429d2742deedfda96af325e2c46",
       "result": "KILLED",
-      "seconds": 0.687,
+      "seconds": 0.56,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/platform.rs"
       ]
@@ -196,7 +196,7 @@
       "target": "synapse/ui/src-tauri/src/caller.rs",
       "source_sha256": "b32e45fcddb877a73a6d7e480ba057a9c82f1429d2742deedfda96af325e2c46",
       "result": "KILLED",
-      "seconds": 1.274,
+      "seconds": 1.451,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/platform.rs"
       ]
@@ -207,7 +207,7 @@
       "target": "synapse/ui/src-tauri/src/caller.rs",
       "source_sha256": "b32e45fcddb877a73a6d7e480ba057a9c82f1429d2742deedfda96af325e2c46",
       "result": "KILLED",
-      "seconds": 1.44,
+      "seconds": 1.388,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/platform.rs"
       ]
@@ -216,9 +216,9 @@
       "id": "RS-renderer-acknowledgment",
       "behavior": "renderer acknowledgment",
       "target": "synapse/ui/src-tauri/src/publication.rs",
-      "source_sha256": "44554ed1fee6ee61cd4b4bd310f46c24ab24b9e1e9597f4b16a02401513e3259",
+      "source_sha256": "dec7a9f9991c90973cfdba4e2de695a254ee42eb1650e434ef24c96411eb285f",
       "result": "KILLED",
-      "seconds": 1.029,
+      "seconds": 0.782,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/publication.rs"
       ]
@@ -227,9 +227,9 @@
       "id": "RS-subscription-binding",
       "behavior": "subscription binding",
       "target": "synapse/ui/src-tauri/src/publication.rs",
-      "source_sha256": "44554ed1fee6ee61cd4b4bd310f46c24ab24b9e1e9597f4b16a02401513e3259",
+      "source_sha256": "dec7a9f9991c90973cfdba4e2de695a254ee42eb1650e434ef24c96411eb285f",
       "result": "KILLED",
-      "seconds": 1.706,
+      "seconds": 1.926,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/publication.rs"
       ]
@@ -238,9 +238,9 @@
       "id": "RS-acknowledgment-sequence",
       "behavior": "acknowledgment sequence",
       "target": "synapse/ui/src-tauri/src/publication.rs",
-      "source_sha256": "44554ed1fee6ee61cd4b4bd310f46c24ab24b9e1e9597f4b16a02401513e3259",
+      "source_sha256": "dec7a9f9991c90973cfdba4e2de695a254ee42eb1650e434ef24c96411eb285f",
       "result": "KILLED",
-      "seconds": 1.832,
+      "seconds": 1.723,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/publication.rs"
       ]
@@ -249,9 +249,9 @@
       "id": "RS-replaced-subscription",
       "behavior": "replaced subscription",
       "target": "synapse/ui/src-tauri/src/publication.rs",
-      "source_sha256": "44554ed1fee6ee61cd4b4bd310f46c24ab24b9e1e9597f4b16a02401513e3259",
+      "source_sha256": "dec7a9f9991c90973cfdba4e2de695a254ee42eb1650e434ef24c96411eb285f",
       "result": "KILLED",
-      "seconds": 1.828,
+      "seconds": 1.708,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/publication.rs"
       ]
@@ -260,9 +260,9 @@
       "id": "RS-snapshot-authority",
       "behavior": "snapshot authority",
       "target": "synapse/ui/src-tauri/src/publication.rs",
-      "source_sha256": "44554ed1fee6ee61cd4b4bd310f46c24ab24b9e1e9597f4b16a02401513e3259",
+      "source_sha256": "dec7a9f9991c90973cfdba4e2de695a254ee42eb1650e434ef24c96411eb285f",
       "result": "KILLED",
-      "seconds": 1.912,
+      "seconds": 1.796,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/publication.rs"
       ]
@@ -271,9 +271,9 @@
       "id": "RS-diagnostic-retention",
       "behavior": "diagnostic retention",
       "target": "synapse/ui/src-tauri/src/diagnostics.rs",
-      "source_sha256": "052bb9e355b229cc3870057b08a4aa5d0ff4756f0ddc6d9deeeb738a210a83fa",
+      "source_sha256": "eb06e3fb94c06432f520c5c0de1fe22a64e23aef63334ade68fa30b0f130800d",
       "result": "KILLED",
-      "seconds": 2.324,
+      "seconds": 1.895,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/publication.rs"
       ]
@@ -282,9 +282,9 @@
       "id": "RS-diagnostic-redaction",
       "behavior": "diagnostic redaction",
       "target": "synapse/ui/src-tauri/src/diagnostics.rs",
-      "source_sha256": "052bb9e355b229cc3870057b08a4aa5d0ff4756f0ddc6d9deeeb738a210a83fa",
+      "source_sha256": "eb06e3fb94c06432f520c5c0de1fe22a64e23aef63334ade68fa30b0f130800d",
       "result": "KILLED",
-      "seconds": 2.18,
+      "seconds": 2.529,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/publication.rs"
       ]
@@ -293,9 +293,9 @@
       "id": "RS-bridge-version-binding",
       "behavior": "bridge version binding",
       "target": "synapse/ui/src-tauri/src/bridge.rs",
-      "source_sha256": "81920761e698e493993404302c67aa3041edb94236018a5696cdbc1ff1326dc8",
+      "source_sha256": "3f308779a57200dd21d0b284b1aa8af23bee9ee2708065bac783d5d8919694cc",
       "result": "KILLED",
-      "seconds": 0.627,
+      "seconds": 1.001,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/bridge.rs"
       ]
@@ -304,9 +304,9 @@
       "id": "RS-bridge-ready-binding",
       "behavior": "bridge ready binding",
       "target": "synapse/ui/src-tauri/src/bridge.rs",
-      "source_sha256": "81920761e698e493993404302c67aa3041edb94236018a5696cdbc1ff1326dc8",
+      "source_sha256": "3f308779a57200dd21d0b284b1aa8af23bee9ee2708065bac783d5d8919694cc",
       "result": "KILLED",
-      "seconds": 1.604,
+      "seconds": 1.668,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/bridge.rs"
       ]
@@ -315,9 +315,9 @@
       "id": "RS-bridge-result-binding",
       "behavior": "bridge result binding",
       "target": "synapse/ui/src-tauri/src/bridge.rs",
-      "source_sha256": "81920761e698e493993404302c67aa3041edb94236018a5696cdbc1ff1326dc8",
+      "source_sha256": "3f308779a57200dd21d0b284b1aa8af23bee9ee2708065bac783d5d8919694cc",
       "result": "KILLED",
-      "seconds": 1.652,
+      "seconds": 1.762,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/bridge.rs"
       ]
@@ -326,9 +326,9 @@
       "id": "RS-replacement-admission",
       "behavior": "replacement admission",
       "target": "synapse/ui/src-tauri/src/controller.rs",
-      "source_sha256": "ed4a9aebdb5c672bcc6f26d596d9e266ff112e5e574a1bc766e2cb1707f3d67f",
+      "source_sha256": "4a6167002b2e89807b0dc67a50a18cc8d24f50c6bce4666704871cfe19a77a70",
       "result": "KILLED",
-      "seconds": 9.254,
+      "seconds": 9.791,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/controller.rs"
       ]
@@ -337,9 +337,9 @@
       "id": "RS-terminal-close",
       "behavior": "terminal close",
       "target": "synapse/ui/src-tauri/src/controller.rs",
-      "source_sha256": "ed4a9aebdb5c672bcc6f26d596d9e266ff112e5e574a1bc766e2cb1707f3d67f",
+      "source_sha256": "4a6167002b2e89807b0dc67a50a18cc8d24f50c6bce4666704871cfe19a77a70",
       "result": "KILLED",
-      "seconds": 4.055,
+      "seconds": 4.62,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/controller.rs"
       ]
@@ -348,9 +348,9 @@
       "id": "RS-heartbeat-deadline",
       "behavior": "heartbeat deadline",
       "target": "synapse/ui/src-tauri/src/controller.rs",
-      "source_sha256": "ed4a9aebdb5c672bcc6f26d596d9e266ff112e5e574a1bc766e2cb1707f3d67f",
+      "source_sha256": "4a6167002b2e89807b0dc67a50a18cc8d24f50c6bce4666704871cfe19a77a70",
       "result": "KILLED",
-      "seconds": 6.989,
+      "seconds": 7.177,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/controller.rs"
       ]
@@ -361,9 +361,119 @@
       "target": "synapse/ui/src-tauri/src/lifecycle/linux.rs",
       "source_sha256": "b13339a2faf2299935751474759f5ea9325d321388da8280917a0142a3c95f72",
       "result": "KILLED",
-      "seconds": 1.182,
+      "seconds": 1.256,
       "selected_acceptance": [
         "acceptance/ui_bridge/native/platform.rs"
+      ]
+    },
+    {
+      "id": "RS-writer-disconnected",
+      "behavior": "dead writer is terminal",
+      "target": "synapse/ui/src-tauri/src/transport.rs",
+      "source_sha256": "83c9449571921b8916a633240ee77ad21916a644ec0952b26a0de266bdcae611",
+      "result": "KILLED",
+      "seconds": 0.801,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/writer_failure.rs"
+      ]
+    },
+    {
+      "id": "RS-writer-overload",
+      "behavior": "full queue remains retryable",
+      "target": "synapse/ui/src-tauri/src/transport.rs",
+      "source_sha256": "83c9449571921b8916a633240ee77ad21916a644ec0952b26a0de266bdcae611",
+      "result": "KILLED",
+      "seconds": 1.516,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/writer_failure.rs"
+      ]
+    },
+    {
+      "id": "RS-writer-completion",
+      "behavior": "aborted receipt is terminal",
+      "target": "synapse/ui/src-tauri/src/transport.rs",
+      "source_sha256": "83c9449571921b8916a633240ee77ad21916a644ec0952b26a0de266bdcae611",
+      "result": "KILLED",
+      "seconds": 1.649,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/writer_failure.rs"
+      ]
+    },
+    {
+      "id": "RS-refusal-correlation",
+      "behavior": "errors cannot acknowledge a foreign request",
+      "target": "synapse/ui/src-tauri/src/protocol.rs",
+      "source_sha256": "8378c9b1cdb62e83350ff2343288c4e71b59aa2725f224a209d1ae19d8341abf",
+      "result": "KILLED",
+      "seconds": 2.796,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/refusals.rs"
+      ]
+    },
+    {
+      "id": "RS-refusal-fatal",
+      "behavior": "fatal refusal terminates the session",
+      "target": "synapse/ui/src-tauri/src/bridge.rs",
+      "source_sha256": "3f308779a57200dd21d0b284b1aa8af23bee9ee2708065bac783d5d8919694cc",
+      "result": "KILLED",
+      "seconds": 5.835,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/refusals.rs"
+      ]
+    },
+    {
+      "id": "RS-refusal-nonfatal",
+      "behavior": "nonfatal refusal preserves a usable session",
+      "target": "synapse/ui/src-tauri/src/bridge.rs",
+      "source_sha256": "3f308779a57200dd21d0b284b1aa8af23bee9ee2708065bac783d5d8919694cc",
+      "result": "KILLED",
+      "seconds": 5.803,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/refusals.rs"
+      ]
+    },
+    {
+      "id": "RS-shutdown-taxonomy",
+      "behavior": "shutdown retains failure identity",
+      "target": "synapse/ui/src-tauri/src/controller.rs",
+      "source_sha256": "4a6167002b2e89807b0dc67a50a18cc8d24f50c6bce4666704871cfe19a77a70",
+      "result": "KILLED",
+      "seconds": 5.838,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/refusals.rs"
+      ]
+    },
+    {
+      "id": "RS-close-requires-ack",
+      "behavior": "refused shutdown cannot exit cleanly",
+      "target": "synapse/ui/src-tauri/src/controller.rs",
+      "source_sha256": "4a6167002b2e89807b0dc67a50a18cc8d24f50c6bce4666704871cfe19a77a70",
+      "result": "KILLED",
+      "seconds": 3.903,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/refusals.rs"
+      ]
+    },
+    {
+      "id": "RS-heartbeat-refusal",
+      "behavior": "heartbeat refusal does not tear down the session",
+      "target": "synapse/ui/src-tauri/src/controller.rs",
+      "source_sha256": "4a6167002b2e89807b0dc67a50a18cc8d24f50c6bce4666704871cfe19a77a70",
+      "result": "KILLED",
+      "seconds": 5.848,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/refusals.rs"
+      ]
+    },
+    {
+      "id": "RS-diagnostic-overflow",
+      "behavior": "overlong diagnostics cannot become a valid code",
+      "target": "synapse/ui/src-tauri/src/diagnostics.rs",
+      "source_sha256": "eb06e3fb94c06432f520c5c0de1fe22a64e23aef63334ade68fa30b0f130800d",
+      "result": "KILLED",
+      "seconds": 0.802,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/native/diagnostics.rs"
       ]
     }
   ],

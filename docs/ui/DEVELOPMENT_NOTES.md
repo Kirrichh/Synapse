@@ -136,3 +136,50 @@ Implementation observations and verified outcomes will be appended below.
 - No product behavior changed for this privacy follow-up. The permanent-rule
   prose has mutation status N/A; the changed reporting behavior has its own
   acceptance and mutation evidence.
+
+## 2026-10-18 — PR review corrections
+
+- R-01 was reproduced on the real selector: a composition-root manifest change
+  altered the canonical-entry check but did not select it. `DATA_DEPENDENCIES` in
+  `scripts/ci/dependencies.py` now declares the manifest readers, including the DAG
+  tool and its importing acceptance. Unknown or removed JSON under `governance/`
+  conservatively selects that ownership family. Unrelated notes select no product
+  checks. Register new runtime data readers explicitly; a missing import edge does
+  not prove independence. Acceptance executes an unchanged copy of the existing
+  architecture check before/after changing a synthetic manifest, then checks the
+  execution plan. Mutations remove these dependencies and are detected.
+- R-02 was reproduced before any accepted snapshot and after a live-core snapshot.
+  Renderer delivery failure now closes only that observer. Recovery replaces the
+  native subscriber, validates a new initial snapshot, and accepts an unchanged
+  native sequence. Old deliveries and ACK failures cannot restore the old channel's
+  trust. Recovery never starts a process. The browser acceptance follows these
+  transitions without a page reload, including failed ACKs, stopped-session mounts,
+  and a separate explicit start after recovering an unstarted shell.
+- Local delivery errors are distinct from native session state. Stop/Force close
+  are hidden while delivery is unavailable; a nonfatal refusal on native `ready`
+  leaves Stop available and does not offer Force close. Native authorization and
+  the native force-close state guard were not weakened.
+- A disconnected writer and a dropped completion receipt now report `CORE_EXITED`;
+  a full queue remains `BUSY`. A declared Python method without a dispatcher branch
+  fails explicitly instead of taking the shutdown branch. Existing canonical-entry
+  acceptance again checks CLI delegation, exit propagation, and the thin adapter's
+  responsibility boundary without freezing the old help command list.
+- Rust now consumes validated machine error envelopes, requires the active request
+  ID, retains nonfatal refusals without discarding the session, and surfaces their
+  declared codes in the renderer. Fatal errors terminate the session. A refused
+  shutdown cannot close the window or become an acknowledgment. Stop preserves
+  protocol/process failures instead of relabeling every failure as a timeout.
+- The stderr retention bound comes from the schema's longest code plus the prefix
+  and one overflow byte. The overflow byte is necessary: truncating an unknown
+  longer line to a declared code would incorrectly make it trusted.
+- Review qualifications retained: Rust already rejects negative zero; all workflow
+  checkouts already use the requested head; the native launch guard already prevents
+  a second process. Heartbeat updates carry a new correlated reply ID visible in
+  session details, so they are retained as explicit liveness evidence, not treated
+  as identical snapshots. Initial subscription and channel delivery may duplicate
+  a snapshot, but only channel deliveries occupy/acknowledge the publication slot.
+- Cold Python startup and the current two-second ping budget remain considerations
+  for installed-platform acceptance and future domain concurrency. No observed cold
+  start failure or domain workload justifies changing the current release deadlines.
+  F-06, real WebView/Windows/systemd execution, installer and domain/JCS obligations
+  remain open; these corrections do not complete P1 or change the normative spec.

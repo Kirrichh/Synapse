@@ -1,4 +1,5 @@
 """Observe planned execution, rather than repository metadata conventions."""
+import json
 from select_tests import build_plan, matrices, ui_selection
 from ui_mutations import selected_seeds
 
@@ -42,6 +43,13 @@ def test_documentation_and_retained_evidence_start_no_ui_suites():
     assert not any(plan[key] for key in ('python', 'native', 'renderer', 'reporting'))
 
 
+def test_recovery_acceptance_selects_renderer_and_its_browser_mutations():
+    plan = ui_selection({'acceptance/ui_bridge/browser_recovery.py'}, set())
+    assert plan['renderer'] and not plan['native'] and not plan['python']
+    seeds = [{'id': 'channel', 'target': 'synapse/ui/src/connection/desktop.ts', 'kind': 'browser'}]
+    assert selected_seeds('renderer', seeds, plan) == ['channel']
+
+
 def test_dependency_environment_change_reaches_all_python_consumers_except_manual_providers(tmp_path):
     names = {'tests/test_old.py', 'acceptance/feature/test_new.py', 'acceptance/stage4/stage16/test_live_gemini_worker.py'}
     for name in names:
@@ -56,6 +64,21 @@ def test_python_mutations_follow_selected_behavior_cases():
     seeds = [{'id': 'selected', 'cases': ['acceptance/ui_bridge/test_codec.py::test_refusal']},
              {'id': 'unrelated', 'cases': ['acceptance/ui_bridge/test_reporting.py']}]
     assert selected_seeds('python', seeds, {'files': ['acceptance/ui_bridge/test_codec.py']}) == ['selected']
+
+
+def test_mutations_follow_existing_acceptance_without_duplicate_ui_execution(tmp_path):
+    case = 'tests/test_entry.py'
+    catalog = 'acceptance/ui_bridge/mutation/python.json'
+    seeds = [{'id':'entry', 'cases':[case + '::test_delegation']}]
+    for name, text in {case:'', catalog:json.dumps(seeds)}.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    plan = build_plan(tmp_path, {case, catalog}, {case}, {'jobs':{}})
+    assert plan['additional'] == [case]
+    assert plan['ui']['files'] == [] and not plan['ui']['python']
+    assert plan['ui']['python_mutations']
+    assert selected_seeds('python', seeds, plan['ui']) == ['entry']
 
 
 def test_native_mutations_follow_affected_owners_and_shared_contracts():

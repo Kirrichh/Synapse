@@ -98,7 +98,7 @@ jobs:
 
   ui:
     needs: select
-    if: fromJSON(needs.select.outputs.plan).ui.python || fromJSON(needs.select.outputs.plan).ui.native || fromJSON(needs.select.outputs.plan).ui.renderer || fromJSON(needs.select.outputs.plan).ui.reporting
+    if: fromJSON(needs.select.outputs.plan).ui.python || fromJSON(needs.select.outputs.plan).ui.native || fromJSON(needs.select.outputs.plan).ui.renderer || fromJSON(needs.select.outputs.plan).ui.python_mutations
     uses: ./.github/workflows/ui-tests.yml
     with:
       plan: ${{ toJSON(fromJSON(needs.select.outputs.plan).ui) }}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import runpy
 from pathlib import Path
 import subprocess
 import sys
@@ -37,6 +38,23 @@ def test_canonical_cli_entries_present_the_same_help():
     cli_help = run_cmd([sys.executable, "-m", "synapse.cli", "--help"])
     assert package_help.returncode == cli_help.returncode == 0
     assert package_help.stdout == cli_help.stdout
+
+
+def test_package_entrypoint_only_delegates_to_cli_and_propagates_its_exit(monkeypatch):
+    calls = []
+    def entry():
+        calls.append(tuple(sys.argv))
+        return 17
+    monkeypatch.setattr(cli, "main", entry)
+    monkeypatch.setattr(sys, "argv", ["synapse", "synthetic-command"])
+    with pytest.raises(SystemExit) as stopped:
+        runpy.run_module("synapse", run_name="__main__")
+    assert stopped.value.code == 17
+    assert calls == [("synapse", "synthetic-command")]
+    # The canonical adapter may not acquire argument parsing or execution owners.
+    source = (REPO_ROOT / "synapse/__main__.py").read_text(encoding="utf-8")
+    for forbidden in ("argparse", "Interpreter", "Lexer", "Parser", "record_source", "execute_controlled_change"):
+        assert forbidden not in source
 
 
 def test_synapse_cli_run_delegates_file_execution(monkeypatch, capsys, tmp_path):

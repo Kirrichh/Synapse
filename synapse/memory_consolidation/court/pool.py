@@ -36,6 +36,7 @@ from ..learning.behavior import (BindingUnavailable, check_binding, contracts_of
 from ..learning.dependencies import check_types
 from ..learning.provenance import independent_witnesses
 from ..learning.triggers import covers
+from ..tools.semantics import witness_exclusions
 from ..records import digest
 from .dependencies import retained_basis
 from .habit_state import ARCHIVED
@@ -205,10 +206,18 @@ def _completion(parameters, request, success, scope, contradictions, reasons) ->
 
 
 def independence_of(configuration, success, required) -> dict[str, Any]:
-    """Independent witnesses of one claim; witnesses of different claims never make a pair."""
+    """Independent witnesses of one claim; witnesses of different claims never make a pair.
+
+    A witness recorded in an earlier window counts only while the configuration in force still admits its
+    source: a declaration narrowed since (tool configuration v3 adopted by reassessment) judges the
+    accumulating candidates at once. A recorded witness is an action's answer, so only its source is judged
+    again; an answer excluded when it was recorded never becomes a witness later.
+    """
     by_claim: dict[str, set[str]] = {}
     for item in success:
         for witness in item["witnesses"]:
+            if witness_exclusions(configuration.tools, "action", witness["source"]):
+                continue
             by_claim.setdefault(witness["claim"]["tool"], set()).add(witness["source"])
     verdicts = [{**independent_witnesses(configuration.tools.provenance, sources, required), "claim": claim}
                 for claim, sources in sorted(by_claim.items())]

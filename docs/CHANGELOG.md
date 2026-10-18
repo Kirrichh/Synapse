@@ -1,5 +1,302 @@
 # Synapse Changelog
 
+## A live trial of the owner-decisions package: fixes — 2026-10-17
+
+Findings of a live trial of the package through the canonical CLI, installed
+from the working tree, fixed locally.
+
+- A durable run whose `--memory-config` the memory owner has not adopted is
+  refused before it starts, by name: exit `2`, the public `INVALID_CLI_INPUT`
+  error, and one stderr line `memory: this memory owner is bound to another
+  memory configuration; a new configuration is adopted only by 'synapse memory
+  reassess'`. It was refused before any effect already, but as `Artifact
+  validation failed` with an empty stderr. The owner makes the check
+  (`MemoryOwner.require_bindable`, which its binding uses too); the CLI asks
+  for it through `MemoryFactory.check_binding` before the run, where an exam
+  keeps its own check.
+  `RFC-ASYNC-EXECUTION-AMENDMENT-04` §2 names the line, and its §5 now says
+  that the program path and the reason are each cut at 512 characters (a line
+  stays under 1,100), not the whole line. Test:
+  `acceptance/memory/test_applicability_contrast_acceptance.py` pins the exit
+  code and the line.
+- `project recall` accepts a state directory named relative to the working
+  directory, as `connect`, `status` and `learn` do; it was refused with
+  `TYPE_MISMATCH`. Test: `test_source_recall_query_contract.py`.
+- The REPL banner is English and its frame is aligned. A REPL whose input or
+  output fails (a closed pipe such as `synapse repl | head`, a hung-up
+  terminal) ends with one `Error:` line on stderr and exit `1`; it printed
+  `Error: [Errno 32] Broken pipe` forever (5 GB in the trial). With a buffered
+  stdout the CLI drops what the closed pipe still holds, so the interpreter's
+  final flush reports nothing more and the exit code stays the REPL's. A
+  line's own errors still leave the session open. Test:
+  `tests/test_system_execution_path.py`, through `python -m synapse repl`.
+- The `fracture self` examples of `LANGUAGE_SPEC.md` (v1.5 and v1.5.1) bind
+  the base agent first, as every example and test does: at the top level of a
+  program `self` is an ordinary name, and inside an agent's method it is that
+  agent. Both run through `synapse run`; the first records and replays with
+  drift `0`.
+- `project connect` exits with `2` for import roots that name nothing at the
+  connected commit (not a directory of it, or a package), like the malformed
+  roots refused while the declaration is read; it exited with `1`. A state
+  root that is already connected still exits with `1`. Test:
+  `test_src_layout_project_refusal_acceptance.py`.
+- A Gold run's declaration is checked before the run's memory job is
+  requested. The job is keyed by the project, the run directory and the run
+  id, and it was requested before the experiment schema, the admitted agent
+  and the support files were checked, so a refused declaration held its run
+  id: the corrected retry was refused with `element-owner transition cannot be
+  rewritten` as soon as it read other knowledge. A run directory that already
+  exists is refused before the job as well (`the run directory already
+  exists; a new run needs a new directory ('project resume' continues the run
+  started there)`), where it failed after it with `[Errno 17] File exists`. A
+  run id whose job was requested with other inputs is refused by name: `run id
+  '<id>' was already used with other inputs for this run directory; a new run
+  needs another run id or run directory`. A retry with the same inputs still
+  resumes its job. Test: `acceptance/stage4/stage16/test_run_id_reuse_acceptance.py`,
+  its own `gold-stage16-heavy` shard.
+- Source knowledge verified in another runtime (a package installed after
+  `project learn`) is refused for that reason: its compatibility evidence names
+  `ENVIRONMENT_MISMATCH` for `task_contract_identity` and `oracle`, where it
+  named `SCOPE_EXPANSION` and `VALUE_MISMATCH` while the environment dimension
+  passed. Another revision, bindings outside the task's scope and changed
+  source bytes keep their reasons, and the decision stays
+  `INCOMPATIBLE_TASK_CONTRACT`. Evidence recorded earlier is unchanged and is
+  not evaluated again by this code (a frozen run resumes only under its own
+  runtime sources), and the reason is one `compatibility-evidence/v1` already
+  has. Test: `acceptance/stage4/stage16/test_source_runtime_drift_acceptance.py`,
+  its own `gold-stage16-heavy` shard.
+- `docs/GOLD_KNOWLEDGE_INGESTION.md` says when knowledge observed in another
+  runtime applies and what a run directory and a run id hold.
+- A mutation campaign covered the fixes
+  (`reports/live_trial_fixes_mutation_evidence_v1.json`): 33 mutants, one at a
+  time in a fresh copy of the working tree, each killer file run alone. 29 were
+  killed, each by a failing test of the mutated behavior. Four survive. They
+  make knowledge apply in the older branches of the source applicability check,
+  whose outcome the fix left as it was:
+  - another revision: knowledge learned at another commit never reached a
+    run's compatibility evaluation in two probes through the CLI (explicit
+    and automatic task targets);
+  - bindings outside the task's scope: `allowed_scope` refuses them by the
+    same paths;
+  - other source bytes, or sources that cannot be read again: a commit's tree
+    and bytes do not change after the claim was verified.
+
+## Owner decisions taken: named durable refusals, binding contract v2, witness accounting, recall profile v2 — 2026-10-16
+
+The four items the entry below left for an owner decision, refined against
+open sources (standards, the tools' documentation and source code, papers).
+
+- A refused durable run names the refusal on stderr in one line
+  (`RFC-ASYNC-EXECUTION-AMENDMENT-04`): `synapse: <path>:<line>:
+  UNSUPPORTED_DURABLE_OPERATION_OR_REASON: <reason>` for the durable-safety
+  validator and the cognitive profile (exit `25`), `synapse:
+  INVALID_CLI_INPUT: initial binding '<name>' <reason>` for an initial binding
+  the program cannot receive (exit `2`). The line is the innermost construct's
+  source line; only error codes, AST class names, registry constraints, source
+  identifiers, a line number, the program path as given and a binding's name
+  may appear, never a literal, a value, a signal or a prompt; non-printable
+  characters are escaped and the line is bounded. The public JSON is
+  unchanged; every other refusal and every successful run keeps an empty
+  stderr. The two P2 tests that pinned an empty stderr pin the exact line
+  now; new tests cover the innermost line, values and literals that never
+  appear, an escaped binding name, an escaped program path and a bounded
+  reason, resume refusals that never echo the signal and a cognitive-profile
+  refusal.
+- A src-layout project declares its Python import roots when it connects
+  (`"python_roots": ["src"]`, recorded in `project-record/v2`, shown by
+  `project status`) and binds Python symbols under
+  `binding-contract/v2`: `src/shapes/area.py` is `shapes.area`, named from
+  the longest declared root that contains it, and every other path from the
+  repository root (`tests/test_area.py` is `tests.test_area`), whatever order
+  the roots are declared in. A v2 binding records the chosen root and the
+  declared roots, so transport, consumption and retained bytes reproduce it
+  offline. At its commit a root is a directory and no package, and a module
+  name that two paths derive is refused (`IMPORT_ROOT_INVALID`,
+  `MODULE_AMBIGUOUS`). Learning, source study and automatic task targets
+  (`task-target-resolution/v2`, which records the roots it was frozen under
+  and is reproduced under them) bind under the
+  project's contract, so a task naming `shapes.area.circle` selects the symbol
+  and the project model resolves the tests' `import shapes`; a claim under the
+  other contract is refused before it is journaled. A project without roots
+  keeps record v1 and contract v1 byte for byte; renaming layouts
+  (`package_dir`, hatch `sources`, poetry `to`) stay outside the contract and
+  roots are never inferred from `pyproject.toml`. Tests: binding contract v2
+  in `tests/test_stage4_gold_bindings.py`, task targets in
+  `acceptance/stage4/stage10/test_task_target_resolution.py`, the project
+  model's import graph in `acceptance/stage4/stage16/test_project_model_contract.py`
+  and the canonical CLI end to end in
+  `acceptance/stage4/stage16/test_src_layout_project_acceptance.py` (learning
+  by import name), `test_src_layout_project_refusal_acceptance.py` (the
+  refusals, a record that lost its roots, a non-canonical declaration),
+  `test_src_layout_study_acceptance.py` (a study names modules by their import
+  names and binds no ambiguous one) and
+  `test_src_layout_gold_inputs_acceptance.py` (Gold run inputs freeze their
+  task targets under the roots), each its own `gold-stage16-heavy` shard.
+- The consolidation report says why an answer did not witness a birth
+  (`consolidation-report/v2`). Its new `witness_exclusions` section lists every
+  candidate of which the window set an answer apart: the independent witnesses
+  counted against those required and each answer of the window that attested
+  the failed operation's effect but could not witness it: its run, event,
+  gateway sequence, tool, source, how it attested, every reason code
+  (`agent_own_service`, `not_an_action`), whether it still settled the effect
+  (`resolves_effect`), and counts by reason. An answer from `ledger:erp`
+  therefore reads as excluded for `agent_own_service` instead of a bare
+  `independence_not_established`. Witnesses that count but depend on one
+  another are explained, as before, by the candidate's `independence` in
+  `pool_updates` (its pairs and `sources_dependent`). The section is
+  report-only: the attestations the court counts are unchanged, nothing reaches
+  a candidate's episodes, the `apply` section, state, digests or boundaries,
+  and court policy stays v6. `corroborating` is replaced by
+  `witness_exclusions`, which names the reasons. Tests:
+  `acceptance/memory/test_witness_exclusion_contract.py` (the rule and the
+  explanation) and one scenario per file,
+  `test_agent_own_witness_acceptance.py`,
+  `test_outside_service_witness_acceptance.py` and
+  `test_own_record_settles_effect_acceptance.py`, each its own
+  `memory-acceptance` shard.
+- Tool configuration `synapse.memory.tool-configuration/v3` replaces the
+  name heuristic with a declaration. `AGENT_OWN_SERVICES` is a denylist: it
+  drops an outside system whose service happens to be named `ledger` and
+  counts an own store under any other name. In v3 every provenance node
+  states `"outside": true` or `false`, and only an action's answer from a
+  source declared outside witnesses (otherwise `not_declared_outside`). The
+  agent's own service names cannot be declared outside (a configuration
+  error), and two outside sources of one service descend from one implicit
+  `#operator:<service>` node, so they are dependent and never two witnesses;
+  names beginning with `#` are reserved. v2 keeps working unchanged. An owner
+  adopts v3 by `synapse memory reassess --memory-config <v3>`; from then on
+  births and accumulating candidates are judged by the declaration: a witness
+  recorded in an earlier window counts only while the configuration in force
+  admits its source, and an answer excluded when it was recorded never counts
+  later. Habits already born keep their birth. Tests:
+  `acceptance/memory/test_outside_witness_declaration_contract.py` (the
+  declaration rules; recorded witnesses judged again) and one scenario per
+  file, `test_outside_witness_declaration_acceptance.py`,
+  `test_undeclared_source_witness_acceptance.py`,
+  `test_one_operator_witness_acceptance.py` and
+  `test_outside_declaration_adoption_acceptance.py`, each its own
+  `memory-acceptance` shard; the acceptance world takes a `tool_schema`.
+- `project recall` accepts query `source-recall-query/v2`, which names its
+  ranking profile. Profile `exact-revision-path-and-tiered-term-overlap/v2`
+  (answer `source-recall/v2`) compares integer tiers in order: matched paths,
+  task terms in the operation's own identity (its claimed paths and bound
+  qualified names), in its command's output, then in its sources' full text;
+  the operation id breaks what remains equal, and `match.tie_group` says how
+  many operations only the id ordered. Query v1, and delivery into a Gold run,
+  keep profile v1 byte for byte. Measured on 36 labelled queries over 36
+  operations learned from pallets/flask (`d086db8`, import root `src`) and
+  Synapse (`957b1ee`), tie-aware: MRR 0.566 → 0.818, Success@1 0.301 →
+  0.678, Success@3 0.874 → 0.979; 25 queries better, 7 equal, 4 worse
+  (paired randomization, p ≈ 5·10⁻⁵). Queries naming the relevant symbol:
+  MRR 0.499 → 0.982, none worse; queries naming no symbol: 0.614 → 0.750
+  (p = 0.033); queries naming another studied symbol, written to probe the
+  weakness: 0.598 → 0.637, 4 better and 3 worse (p = 0.70), the cost of
+  ranking an operation's own names first. The set is small and was written by
+  the profile's author, and fact checks run no command, so the output tier is
+  unmeasured there (`reports/source_recall_profile_v1.json`, produced by
+  `acceptance/stage4/stage16/source_recall_profile_measure.py`). Tests:
+  `acceptance/stage4/stage16/test_source_recall_profile_acceptance.py` (the
+  tiers, including command output) and `test_source_recall_query_contract.py`
+  (malformed queries), each its own `gold-stage16-heavy` shard.
+- The generated lifecycle acceptance
+  (`acceptance/memory/test_memory_lifecycle_sequence_acceptance.py`) waited
+  for a slow booking by reading the `flight` argument of every effect in the
+  world. A restart effect names no flight, so a generated sequence with a
+  restart before a slow booking failed with `KeyError` in the harness, on
+  `957b1ee` as well. The harness reads the flight of the effects that name
+  one.
+- A mutation campaign covered the package and the earlier local fixes of the
+  entry below (`reports/owner_decisions_mutation_evidence_v1.json`): 131
+  mutants, one at a time in a fresh copy of the working tree, each killer
+  file run alone. The first round left 14 survivors. Three of them had been
+  reported killed, but only by the durable file's two process races under the
+  load of four copies. Contract cases closed them, each checking behaviour:
+  - a refusal outside the allowlist writes nothing to stderr;
+  - a refusal line escapes the program path and bounds its reason;
+  - two excluded answers of one reason count twice;
+  - a command's output on either stream, and an operation over more of the
+    scope's paths, rank as declared;
+  - v1 counts a command's output;
+  - a record that lost its roots, and a non-canonical declaration, are
+    refused;
+  - a study names modules by their import names and binds no ambiguous one;
+  - Gold run inputs freeze their targets under the roots;
+  - an event of another type named like a builtin is no recorded draw;
+  - an integrate of only a reason records it.
+  The final round on the final tree killed all 131.
+- `docs/GOLD_KNOWLEDGE_INGESTION.md` and `acceptance/stage4/stage16/README.md`
+  are translated into English; their rules, commands, record names and
+  measurements are unchanged. Links to the document's sections name its
+  English headings, and the README's links to it no longer climb above the
+  repository root.
+
+## Replay serves recorded draws; failed runs keep their output — 2026-10-16
+
+Findings of a hands-on trial of the canonical CLI, fixed locally.
+
+- `replay --mock` served LLM answers from the artifact but drew `time`,
+  `random` and `uuid` again, so a program using them could never replay: the
+  same artifact failed differently on every attempt (an LLM cache miss for
+  another branch, or drift). `RecordedSideEffects` in `golden_replay.py` now
+  serves each builtin its recorded `side_effect` values in order, in the
+  tree-walker and in `run vm`; a draw beyond the record is a deterministic
+  failure, as an exhausted LLM cache entry is. Strict Layer 1 membership is
+  unchanged (determinism contract §9.1).
+- The fallback `trace_id` of VM and memory events derives from the run id,
+  which a snapshot does not carry, so every `compile vm`/`run vm` program
+  drifted in mock replay. The manifest now keeps `metadata.run_id` and the
+  replay restores it; a malformed value is a `ReplayArtifactError`. Artifacts
+  recorded without it replay as before. Palace `imprint_id` stays outside this
+  contract. An `intention cascade` still drifts in mock replay: its
+  `cascade_id` comes from `uuid.uuid4()` and its `created_at` from the host
+  clock, neither recorded. `GOLDEN_REPLAY.md` documents this as a known
+  limitation; it is not fixed here.
+- A broken history chain or a source that differs from its program hash is an
+  `ArtifactIntegrityError` (a `DeterministicReplayError`): `replay --mock` exits
+  `8`, as `debug compare` does for the same artifact, instead of the drift code
+  `1`.
+- `execute_loaded_source` discarded everything a program printed when it then
+  failed; the CLI showed only the error. A failed run now keeps the output it
+  produced before the failure, and the REPL prints each command's own output
+  instead of the whole session's output again after every line.
+- `fracture … integrate { reason "…" }`, the `LANGUAGE_SPEC.md` v1.5 example,
+  failed with `Undefined variable or function: 'reason'`. The reason is now the
+  integration's audit metadata, recorded as `reason` in `identity_integrated`
+  only when declared; an unset reason is left out of AST identities, so dream
+  bodies and habit declarations keep their identities. A nested fracture
+  cannot integrate with a reason either.
+- `--help` lists every top-level command (`resume`, `approve`,
+  `revoke-approval` were missing from its metavar); `memory forget/restore
+  --quantum` names the identifiers a court report actually uses (`sha256:…`).
+- `GOLD_KNOWLEDGE_INGESTION.md` names the source prefixes the court treats as
+  the agent's own services (`AGENT_OWN_SERVICES`): a witness under such a
+  prefix (for example `ledger:erp`) is silently not counted.
+- Tests for the fixes: `tests/test_golden_replay_recorded_side_effects.py`
+  (8), `tests/test_system_execution_path.py` (3 added, help surface updated),
+  `tests/test_fracture_self.py` (5 added).
+- Tests for behaviour the trial exercised that no test covered:
+  `tests/test_golden_replay_integrity_boundary.py` (a partial edit is drift; a
+  consistent forgery replays and `debug compare` with the original finds it),
+  `tests/test_durable_execution.py` (initial bindings refuse keyword, builtin,
+  bootstrap, reserved and source-owned names; an ordinary name reaches the
+  program; a durable LLM call is answered by the resume signal),
+  `tests/test_stage4_gold_bindings.py` (binding contract v1 names a src-layout
+  module by its repository path),
+  `acceptance/stage4/stage16/test_source_recipe_refusal_acceptance.py`
+  (sources outside the read scope; a recipe refused without `execute` never
+  runs), `acceptance/stage4/stage16/test_source_recall_scope_acceptance.py`
+  (a recall beyond the read scope) and
+  `acceptance/memory/test_agent_own_witness_acceptance.py` with
+  `test_outside_service_witness_acceptance.py` (a confirmation under an
+  agent-own service name is no witness; the same one under an outside name
+  teaches the procedure; each its own `memory-acceptance` shard).
+- Left for an owner decision, decided and done in the entry above: stderr
+  diagnostics of refused P2 durable runs (their tests pinned an empty stderr),
+  witness exclusion reasons in court reports, the saturating term ranking of
+  `project recall` (`exact-revision-path-and-term-overlap/v1`) and the
+  path-derived module identity of src-layout repositories in binding contract
+  v1.
+
 ## MemoryArena travel harness and LongMemEval script repair — 2026-10-15
 
 - `scripts/memoryarena_memory_server.py` serves MemoryArena's memory API
@@ -988,7 +1285,7 @@ Court policy `synapse.memory.court-policy/v2` (declared `raw_capacity`,
   hypothesis protocol and reuse, palace admission).
 
 Known limits are listed in
-[GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md#этап-4-хранение-опыта-гипотезы-и-допуск-дворца).
+[GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md#memory-stage-4-experience-retention-hypotheses-and-palace-admission).
 Stages 5–7 of the refinement (D1, D2, composition, semantic search, event-driven
 execution) are not part of this package. AS2 production readiness stays locked.
 
@@ -1027,7 +1324,7 @@ the composition root alone builds `synapse/memory_consolidation`.
   real MCP stdio servers); tripwire `tests/test_memory_dependency_direction.py`.
 
 Known limits are listed in
-[GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md#выученные-привычки-сессии-суд-консолидации-рождение-и-загрузка).
+[GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md#learned-habits-sessions-the-consolidation-court-birth-and-loading).
 This is not evidence of a live Baseline/Gold experiment; AS2 production
 readiness stays locked.
 
@@ -1147,7 +1444,7 @@ without waiting, so a second simultaneous run of one project can end in
 LOCK_BUSY. The memory journal itself queues concurrent writers. Lifecycle v1/v2
 jobs keep their original interpretation; the canonical `python -m synapse
 project run/approve/resume` path is unchanged. See
-[GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md#суд-памяти).
+[GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md#memory-court).
 
 ## CVM — byte-exact encoding reuse and execution-limit outcomes — 2026-09-20
 

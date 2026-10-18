@@ -57,7 +57,8 @@ Minimum manifest schema:
     "language_version": "2.2.0-alpha3e",
     "runtime_version": "0.22.0-alpha3e",
     "spec_version": "2.2.0-alpha3e",
-    "source_path": "..."
+    "source_path": "...",
+    "run_id": "run-..."
   },
   "environment": {
     "virtual_clock_start": "2026-01-01T00:00:00Z",
@@ -80,6 +81,30 @@ environment contract with `virtual_clock_start`, `clock_mode`, and `clock_step`.
 If future host symbols expose time/random-like values, record/replay must serve
 those values from `execution_history` or from this deterministic environment, not
 from the real host clock.
+
+The `time`, `random` and `uuid` builtins are such symbols. A recording appends
+every value they draw — in the tree-walker or in a `run vm` program — as a
+`side_effect` event, and `replay --mock` serves each builtin its recorded values
+in order: no value is drawn again. A builtin called more often than recorded is
+a deterministic failure, as an exhausted LLM cache entry is. Serving a recorded
+value does not make a program strict Layer 1 eligible: the strict suite still
+excludes user time/random/uuid values (determinism contract §9.1).
+
+## Run identity
+
+Identities a run derives from its run id — the fallback `trace_id` of VM and
+memory events — are reproduced only under the same run id. The manifest keeps
+the recording's `metadata.run_id` and the replay restores it; a value that is
+not a non-empty string is a fail-closed artifact error. An artifact recorded
+before the run id was kept replays under a fresh run id, as it always did, so a
+program whose history carries such a `trace_id` still drifts there. Palace
+record identities (`imprint_id`) are not derived from the run id and stay
+outside this contract.
+
+Known limitation: an `intention cascade` takes its `cascade_id` from
+`uuid.uuid4()` and its `created_at` from the host clock
+(`synapse/intention.py`), neither recorded as a `side_effect` nor derived from
+the run id. A program that declares a cascade therefore drifts in mock replay.
 
 ## Stable state validation
 

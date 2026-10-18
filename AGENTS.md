@@ -108,7 +108,35 @@ Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:
 No Linux full suite was run for Patch 2. A recorded baseline is evidence of an
 observed run, not a command to rerun the full suite before each patch.
 
-The latest observed Linux verification is the recheck package of PR #108 on
+The latest observed Linux verification is the owner-decisions package on
+`957b1ee` (named durable refusals on stderr, binding contract v2 for src
+layouts, witness exclusions in the consolidation report, tool configuration v3
+with declared outside witnesses, recall profile v2), with the same package's
+earlier fixes from a trial of the canonical CLI (recorded draws in mock replay,
+the recorded run id, the integrity exit code, a failed run's output, integrate
+reason). Python 3.11, every file in its own process, four files in parallel, on
+the uncommitted working tree; the whole `tests/` and `acceptance/memory`
+directories ran because the interpreter, the parser and the court changed, and
+in Stage 16 every file that uses the changed source harness except
+`test_gold_memory_slices_acceptance.py`, which reaches it through the unchanged
+defaults:
+
+```text
+tests/:              212 files, 5378 passed, 12 skipped
+acceptance/memory:   126 files, 732 passed
+acceptance/runtime:  13 files, 244 passed
+stage16 + stage10:   38 files, 98 passed
+```
+
+A mutation campaign over the package and its earlier fixes killed all 131
+mutants on the final tree (`reports/owner_decisions_mutation_evidence_v1.json`).
+The first round left 14 survivors. Three of them had been reported killed by
+the durable file's two process races, which lose their timing when four copies
+run at once; they count as survivors. All 14 were closed by contract cases that
+check behaviour. The recall profiles are measured in
+`reports/source_recall_profile_v1.json`.
+
+The previous observed Linux verification is the recheck package of PR #108 on
 `556624d`, findings R1–R12 (R1/P1-1 a check made before a correction another
 session consolidated first never establishes the claim, and an action's
 admission reads the basis itself; R2/P1-2 a reading made before the source said
@@ -162,7 +190,7 @@ the same plan and does not reproduce its case)
 The cost of the order of statements is measured in
 `docs/MEMORY_PERFORMANCE.md`.
 
-The previous observed Linux verification is the resilience review of PR #108 at
+An earlier observed Linux verification is the resilience review of PR #108 at
 `1b58d18` (M1 a check after a consolidation names the hypothesis its session
 declared; M2 checks decide in the gateway's order; M3 a window stating
 knowledge is consolidated; M4 a correction revises what was decided before it,

@@ -1783,19 +1783,23 @@ def test_stdin_input_binding_is_accepted_for_cross_node_promise(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    "source",
+    ("source", "reason"),
     [
-        'agent A { model "mock" }\nmemory.write("x") { reason "nope" }\n',
-        'let x = "abc"\nlet y = x.upper()\n',
+        (
+            'agent A { model "mock" }\nmemory.write("x") { reason "nope" }\n',
+            "unsupported durable AST node GovernedMemoryWrite: UNSUPPORTED_HOST_EFFECT: memory write effect",
+        ),
+        ('let x = "abc"\nlet y = x.upper()\n', "durable CallExpr rejects dynamic/member calls outside AwaitExpr"),
     ],
 )
-def test_validator_rejects_unsupported_operations_before_artifact(tmp_path: Path, source: str):
+def test_validator_rejects_unsupported_operations_before_artifact(tmp_path: Path, source: str, reason: str):
     program = _write(tmp_path / "bad.syn", source)
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     completed = _durable(program, state_dir, "run-bad", "--correlation-id", "corr-validator")
     assert completed.returncode == 25
-    assert completed.stderr == ""
+    # One line names the refused construct and its source line; the public JSON stays generic.
+    assert completed.stderr == f"synapse: {program}:2: UNSUPPORTED_DURABLE_OPERATION_OR_REASON: {reason}\n"
     _assert_error_payload(
         _json_stdout(completed),
         exit_code=25,
@@ -1911,7 +1915,11 @@ def test_assert_statement_rejects_suspension_descendants_before_artifact(
     completed = _durable(program, state_dir, "run-assert-async")
 
     assert completed.returncode == 25
-    assert completed.stderr == ""
+    assert completed.stderr == (
+        f"synapse: {program}:1: UNSUPPORTED_DURABLE_OPERATION_OR_REASON: "
+        "durable AssertStmt cannot contain suspension descendants\n"
+    )
+    assert "secret" not in completed.stderr  # A source literal is never named.
     _assert_error_payload(
         _json_stdout(completed),
         exit_code=25,
@@ -2380,3 +2388,200 @@ def test_ast_inventory_is_complete_and_explicitly_classified():
         "SpawnExpr",
         "SendStmt",
     } <= supported
+
+
+@pytest.mark.parametrize(
+    ("name", "reason"),
+    [
+        ("version", "collides with a keyword"),  # a soulprint field
+        ("print", "collides with a builtin"),
+        ("low", "collides with a bootstrap binding"),  # a bootstrap symbol of every interpreter
+        ("__synapse_state", "uses the reserved prefix __synapse_"),
+        ("approval", "collides with a binding the source owns"),
+        ("not-an-identifier", "is not an identifier"),
+    ],
+)
+def test_initial_bindings_refuse_reserved_and_source_owned_names_before_any_effect(
+    tmp_path: Path, name: str, reason: str
+):
+    program = _write(tmp_path / "program.syn", 'let approval = suspend await_human_approval("go")\nprint(approval)\n')
+    inputs = _write(tmp_path / "input.json", json.dumps({name: "VALUE-MARKER-41c7"}))
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+
+    completed = _durable(program, state_dir, "run-binding", "--input-file", str(inputs))
+
+    assert completed.returncode == 2, completed.stderr
+    # The refused binding is named; its value never reaches stdout or stderr.
+    assert completed.stderr == f"synapse: INVALID_CLI_INPUT: initial binding {name!r} {reason}\n"
+    assert "VALUE-MARKER-41c7" not in completed.stdout + completed.stderr
+    _assert_error_payload(
+        _json_stdout(completed),
+        exit_code=2,
+        code="INVALID_CLI_INPUT",
+        message="Invalid durable input",
+        run_id="run-binding",
+    )
+    assert list(state_dir.iterdir()) == []
+
+
+def test_initial_binding_with_an_ordinary_name_reaches_the_program(tmp_path: Path):
+    program = _write(tmp_path / "program.syn", "let approval = suspend await_human_approval(service)\nprint(approval)\n")
+    inputs = _write(tmp_path / "input.json", json.dumps({"service": "billing"}))
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+
+    completed = _durable(program, state_dir, "run-binding", "--input-file", str(inputs))
+
+    assert completed.returncode == 20, completed.stderr
+    assert _read_artifact(_artifact_path(_json_stdout(completed)))["initial_bindings"]["value"] == {"service": "billing"}
+
+
+def test_a_durable_llm_call_is_answered_by_the_resume_signal(tmp_path: Path):
+    program = _write(
+        tmp_path / "llm.syn",
+        'let p = prompt "Plan the rollout of {service}"\nlet answer = llm(p)\nprint("plan: " + answer)\n',
+    )
+    inputs = _write(tmp_path / "input.json", json.dumps({"service": "billing"}))
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+
+    pending = _durable(program, state_dir, "run-llm-answer", "--input-file", str(inputs))
+    payload = _json_stdout(pending)
+    assert pending.returncode == 20, pending.stderr
+    assert payload["suspension_reason"] == "awaiting_llm"
+    assert "Plan the rollout" not in pending.stdout  # The prompt never reaches the public result.
+
+    answer = "drain one node, deploy the canary, shift traffic"
+    completed = _resume(_artifact_path(payload), str(payload["suspension_id"]), _signal(tmp_path / "answer.json", answer))
+
+    assert completed.returncode == 0, completed.stderr
+    assert _json_stdout(completed)["output_delta"] == [f"plan: {answer}"]
+    history = _read_artifact(_artifact_path(payload))["replay_state"]["execution_history"]
+    assert [event["result"] for event in history if event["type"] == "llm_call"] == [answer]
+
+
+def test_a_refusal_inside_a_block_names_the_innermost_line_and_never_a_value(tmp_path: Path):
+    program = _write(
+        tmp_path / "flow.syn",
+        'let token = "LITERAL-MARKER-93d1"\nif true {\n    print(len(token))\n    planner(token)\n}\n',
+    )
+    inputs = _write(tmp_path / "input.json", json.dumps({"region": "BINDING-MARKER-5e2a"}))
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+
+    completed = _durable(program, state_dir, "run-nested", "--input-file", str(inputs))
+
+    assert completed.returncode == 25
+    assert completed.stderr == (
+        f"synapse: {program}:4: UNSUPPORTED_DURABLE_OPERATION_OR_REASON: "
+        "durable CallExpr rejects non-allowlisted callee: planner\n"
+    )
+    outputs = completed.stdout + completed.stderr
+    assert "LITERAL-MARKER-93d1" not in outputs
+    assert "BINDING-MARKER-5e2a" not in outputs
+    assert not (state_dir / "run-nested.json").exists()
+
+
+def test_a_binding_name_with_control_characters_is_named_on_one_escaped_line(tmp_path: Path):
+    program = _write(tmp_path / "program.syn", 'print("ok")\n')
+    inputs = _write(tmp_path / "input.json", json.dumps({"bad\nname\x1b[31m": 1}))
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+
+    completed = _durable(program, state_dir, "run-escape", "--input-file", str(inputs))
+
+    assert completed.returncode == 2
+    assert completed.stderr == "synapse: INVALID_CLI_INPUT: initial binding 'bad\\nname\\x1b[31m' is not an identifier\n"
+
+
+def test_resume_refusals_never_echo_the_signal(tmp_path: Path):
+    program = _write(tmp_path / "llm.syn", 'let p = prompt "Plan the rollout"\nlet answer = llm(p)\nprint(answer)\n')
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    pending = _durable(program, state_dir, "run-signal-leak")
+    payload = _json_stdout(pending)
+    assert pending.returncode == 20, pending.stderr
+
+    wrong_type = _resume(
+        _artifact_path(payload), str(payload["suspension_id"]),
+        _signal(tmp_path / "wrong-type.json", {"note": "SIGNAL-MARKER-0b6e"}),
+    )
+    unknown = _resume(_artifact_path(payload), "susp-unknown", _signal(tmp_path / "unknown.json", "SIGNAL-MARKER-0b6e"))
+
+    assert (wrong_type.returncode, unknown.returncode) == (2, 23)
+    for completed in (wrong_type, unknown):
+        assert "SIGNAL-MARKER-0b6e" not in completed.stdout + completed.stderr
+
+
+def test_a_refusal_that_belongs_to_no_construct_names_no_line():
+    refusal = app._DurableUnsupportedError("AST inventory mismatch: unclassified=['Imagined']; stale_registry=[]")
+    assert refusal.diagnostic(Path("flow.syn")) == (
+        "synapse: flow.syn: UNSUPPORTED_DURABLE_OPERATION_OR_REASON: "
+        "AST inventory mismatch: unclassified=['Imagined']; stale_registry=[]")
+
+
+def test_a_construct_without_a_source_position_is_never_reported_at_line_zero():
+    from synapse.durable_profile import CognitiveProfileViolation, validate_cognitive_program
+
+    def unplaced(source):
+        root = compile_to_ast(source)
+        for node in app._walk_ast(root):
+            if not isinstance(node, synapse_ast.Program):
+                node.line = 0
+        return root
+
+    with pytest.raises(app._DurableUnsupportedError) as refused:
+        app._validate_durable_ast(unplaced('let x = "abc"\nlet y = x.upper()\n'))
+    assert refused.value.line is None
+    with pytest.raises(CognitiveProfileViolation) as violation:
+        validate_cognitive_program(unplaced('dream {\n    tool("ship", {})\n}\n'))
+    assert violation.value.line is None
+
+
+def test_a_refusal_outside_the_allowlist_names_nothing_on_stderr(tmp_path: Path):
+    # Its reason could carry what the input held: a malformed input file is refused with an empty stderr.
+    program = _write(tmp_path / "program.syn", 'print("ok")\n')
+    inputs = _write(tmp_path / "input.json", '{"token": "VALUE-MARKER-5b1d", "n": NaN}')
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+
+    completed = _durable(program, state_dir, "run-malformed", "--input-file", str(inputs))
+
+    assert completed.returncode == 2
+    assert completed.stderr == ""
+    assert "VALUE-MARKER-5b1d" not in completed.stdout
+    _assert_error_payload(
+        _json_stdout(completed),
+        exit_code=2,
+        code="INVALID_CLI_INPUT",
+        message="Invalid durable input",
+        run_id="run-malformed",
+    )
+    assert list(state_dir.iterdir()) == []
+
+
+def test_a_refusal_line_escapes_the_program_path_and_bounds_its_reason(tmp_path: Path):
+    # A file name may hold a line separator and an identifier may be arbitrarily long: neither reaches stderr as is.
+    program = _write(tmp_path / "flow\u2028next.syn", f'{"p" * 600}("x")\n')
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+
+    completed = _durable(program, state_dir, "run-escaped")
+
+    assert completed.returncode == 25
+    line, = completed.stderr.splitlines()
+    escaped = str(program).replace("\u2028", "\\u2028")
+    prefix = f"synapse: {escaped}:1: UNSUPPORTED_DURABLE_OPERATION_OR_REASON: "
+    assert line.startswith(prefix) and "\u2028" not in completed.stderr
+    reason = line[len(prefix):]
+    assert reason.startswith("durable CallExpr rejects non-allowlisted callee: ppp")
+    assert len(reason) == 512 and reason.endswith("…")
+
+
+def test_diagnostics_are_bounded_lines():
+    assert app._diagnostic_text("x" * 600) == "x" * 511 + "…"
+    assert app._diagnostic_text("tab\there") == "tab\\there"
+    name = "n" * 100
+    assert app._DurableBindingRefusal(name, "is not an identifier").diagnostic(Path("flow.syn")) == (
+        f"synapse: INVALID_CLI_INPUT: initial binding {'n' * 63 + '…'!r} is not an identifier")

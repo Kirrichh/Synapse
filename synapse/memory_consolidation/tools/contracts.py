@@ -27,8 +27,19 @@ TOOL_CONFIGURATION_V1 = "synapse.memory.tool-configuration/v1"
 #: configuration read its contracts otherwise; it is refused, and an owner bound to one is migrated by
 #: ``synapse memory reassess`` with its v2 successor.
 TOOL_CONFIGURATION_V2 = "synapse.memory.tool-configuration/v2"
+#: v3 declares the outside witnesses instead of excluding service names: every provenance node states
+#: ``"outside": true`` or ``false``, and only an outside source's action answer witnesses (an allowlist,
+#: fail-closed). The agent's own service names are reserved and cannot be declared outside; two outside
+#: sources of one service are one operator. A memory owner adopts v3 by ``synapse memory reassess``.
+TOOL_CONFIGURATION_V3 = "synapse.memory.tool-configuration/v3"
 EFFECTS = ("none", "partial", "applied", "unknown")
 ROLES = ("action", "reason")
+#: The services the agent keeps its own record of itself in. Under configuration v2 an answer from one of them
+#: never witnesses; under v3 their names are reserved: such a source cannot be declared outside.
+AGENT_OWN_SERVICES = frozenset({"palace", "memory", "store", "scratchpad", "ledger", "journal", "log",
+                                "notes", "notebook", "cassette", "self", "agent", "internal"})
+#: The implicit provenance node of one service's operator under configuration v3 (``#`` names no source).
+OPERATOR_NODE_PREFIX = "#operator:"
 _NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}\Z")
 _SOURCE_RE = re.compile(r"[a-z0-9][a-z0-9_.-]*:[A-Za-z0-9@_.+-]+\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -142,6 +153,9 @@ class ToolConfiguration:
     tools: Mapping[str, ToolContract]
     provenance: Mapping[str, tuple[str, ...]]
     raw: Mapping[str, Any]
+    #: Configuration v3: the sources declared outside, the only ones whose answers witness; ``None`` under v2,
+    #: where the service names of ``AGENT_OWN_SERVICES`` are excluded instead.
+    outside: frozenset[str] | None = None
 
     @property
     def configuration_sha256(self) -> str:
@@ -289,14 +303,39 @@ def _parse_tool(item: Any, servers: Mapping[str, ToolServer], known: Mapping[str
                         **_parse_semantics(name, tool.get("contract", {})))
 
 
-def _parse_provenance(value: Any) -> dict[str, tuple[str, ...]]:
+def _parse_provenance(value: Any, *, declared: bool) -> tuple[dict[str, tuple[str, ...]], frozenset[str] | None]:
+    """The provenance graph and, under v3 (``declared``), the sources declared outside.
+
+    v3 states every node's ``outside`` explicitly. A source of one of the agent's own services cannot be
+    declared outside. Every outside source descends from its service's operator node, so two outside
+    sources of one service share an origin and are never two independent witnesses.
+    """
     if type(value) is not dict:
         raise _fail("provenance maps sources to their declared ancestors")
     graph: dict[str, tuple[str, ...]] = {}
+    outside: set[str] = set()
     for source, node in value.items():
-        node = _mapping(node, f"provenance {source}", required={"ancestors"})
+        node = _mapping(node, f"provenance {source}", required={"ancestors", "outside"} if declared else {"ancestors"})
         graph[source] = tuple(sorted(set(_names(node["ancestors"], f"provenance {source} ancestors are names"))))
-    return graph
+        if not declared:
+            continue
+        if source.startswith("#"):
+            raise _fail(f"provenance {source}: names beginning with '#' are reserved for operator nodes")
+        if type(node["outside"]) is not bool:
+            raise _fail(f"provenance {source} declares outside as true or false")
+        if node["outside"]:
+            if _SOURCE_RE.fullmatch(source) is None:
+                raise _fail(f"provenance {source}: an outside source is named 'service:account'")
+            service = source.partition(":")[0]
+            if service in AGENT_OWN_SERVICES:
+                raise _fail(f"provenance {source} cannot be declared outside: '{service}' is one of the agent's own "
+                            "services; name the outside system by its own service")
+            outside.add(source)
+    for source in sorted(outside):
+        operator = OPERATOR_NODE_PREFIX + source.partition(":")[0]
+        graph[source] = tuple(sorted({*graph[source], operator}))
+        graph.setdefault(operator, ())
+    return graph, (frozenset(outside) if declared else None)
 
 
 def parse_tool_configuration(value: Any) -> ToolConfiguration:
@@ -305,7 +344,7 @@ def parse_tool_configuration(value: Any) -> ToolConfiguration:
     if root["schema_version"] == TOOL_CONFIGURATION_V1:
         raise _fail("tool configuration v1 predates bound state checks and unknown undescribed refusals: "
                     "declare v2 and migrate the memory owner with 'synapse memory reassess'")
-    if root["schema_version"] != TOOL_CONFIGURATION_V2:
+    if root["schema_version"] not in (TOOL_CONFIGURATION_V2, TOOL_CONFIGURATION_V3):
         raise _fail("unsupported schema version")
     if type(root["servers"]) is not list or not root["servers"]:
         raise _fail("servers must be a non-empty list")
@@ -323,7 +362,9 @@ def parse_tool_configuration(value: Any) -> ToolConfiguration:
         for linked in (contract.compensates, contract.state_check_for):
             if linked is not None and linked not in tools:
                 raise _fail(f"tool {contract.name} links an unknown tool {linked}")
-    return ToolConfiguration(servers=servers, tools=tools, provenance=_parse_provenance(root["provenance"]), raw=value)
+    provenance, outside = _parse_provenance(root["provenance"],
+                                            declared=root["schema_version"] == TOOL_CONFIGURATION_V3)
+    return ToolConfiguration(servers=servers, tools=tools, provenance=provenance, raw=value, outside=outside)
 
 
 def read_tool_configuration(path: Path) -> ToolConfiguration:

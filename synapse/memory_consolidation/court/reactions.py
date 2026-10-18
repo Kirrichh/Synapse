@@ -52,6 +52,20 @@ def _witnesses(failure, attempts) -> list[dict[str, Any]]:
                                         "claim": claim} for item in failure["attestations"] if item["gw_seq"] in inside]
 
 
+def _excluded_witnesses(failure, attempts) -> list[dict[str, Any]]:
+    """Answers inside the slow path that attest the failed operation's effect but cannot witness it, with why.
+
+    They explain the report only; none reaches a candidate's episodes. ``resolves_effect`` says the answer
+    still settled what the operation did, which an answer that cannot witness may do.
+    """
+    if failure is None:
+        return []
+    inside = {item["gw_seq"] for item in attempts}
+    settled_by = (failure["resolution"] or {}).get("gw_seq")
+    return [{**item, "resolves_effect": item["gw_seq"] == settled_by}
+            for item in failure["excluded_attestations"] if item["gw_seq"] in inside]
+
+
 class Recorded:
     """How the court reads a session's learned bodies: its tool contracts, frozen records and loaded parts.
 
@@ -166,7 +180,7 @@ def _slow_view(slow_event, attempts, scope, failed, failure, seconds, knowledge,
                    "args": item["args"]} for item in called],
         "origins": origins([{"gw_seq": item["gw_seq"], "args": item["args"], "ok": item["op_result"] == "ok",
                              "payload": scope["payloads"].get(item["gw_seq"])} for item in called], knowledge, error),
-        "witnesses": _witnesses(failure, attempts),
+        "witnesses": _witnesses(failure, attempts), "excluded_witnesses": _excluded_witnesses(failure, attempts),
         "evidence": [item["evidence_ref"] for item in actions if item["evidence_ref"] is not None],
         "evidence_preexisting": _preexisting(actions),
         "gw_seqs": [item["gw_seq"] for item in attempts],

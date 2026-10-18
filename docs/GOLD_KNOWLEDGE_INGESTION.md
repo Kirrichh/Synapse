@@ -1,600 +1,623 @@
-# Наполнение памяти и библиотеки Gold
+# Gold memory and library ingestion
 
-Эта инструкция описывает сопровождаемый продуктовый процесс: как подключённый
-проект получает первые проверенные знания из собственного репозитория. Она
-дополняет контракты Stage 12–15 новым происхождением знания и не изменяет
-значение результатов задач. Stage 16 остаётся внешней приёмкой этого процесса.
+This instruction describes a maintained product process: how a connected
+project obtains its first verified knowledge from its own repository. It
+extends the Stage 12–15 contracts with a new knowledge provenance and does not
+change the meaning of task results. Stage 16 remains the external acceptance of
+this process.
 
-Каноничная операция наполнения — `python -m synapse project learn`.
-Она сохраняет опыт изучения независимо от результата. Для явно проверяемого
-утверждения об исходниках она также публикует знание через существующие
-admission, publication, retention и lineage. Последующий `project run` читает
-эту публикацию из тех же stores. Приёмка проходит через отдельные процессы CLI,
-настоящую проверку процедуры, replay и внешний процесс worker. Это подтверждает
-получение, проверку, хранение и доставку знания. Поддержанные профили
-локального применения и их приёмка описаны ниже. Полезность на живых задачах
-и экономия требуют отдельного сопоставимого эксперимента.
+The canonical ingestion operation is `python -m synapse project learn`.
+It retains the study experience regardless of the result. For an explicitly
+checkable claim about the source files it also publishes knowledge through the
+existing admission, publication, retention and lineage. A later `project run`
+reads this publication from the same stores. Acceptance goes through separate
+CLI processes, a real verification of the procedure, replay and an external
+worker process. This confirms the acquisition, verification, retention and
+delivery of knowledge. The supported profiles of local application and their
+acceptance are described below. Usefulness on live tasks and savings require a
+separate comparable experiment.
 
-Исполнение DSL и запуск CLI ускорены в рамках
-[оптимизации host-интерпретатора](INTERPRETER_PERFORMANCE.md). Там опубликованы
-границы ограничения циклов и замеры на фиксированных программах. Эти замеры
-не заменяют эксперимент полезности памяти и экономии вызовов модели.
+DSL execution and CLI startup are accelerated as part of the
+[host interpreter optimization](INTERPRETER_PERFORMANCE.md). The boundaries of
+loop limiting and measurements on fixed programs are published there. These
+measurements do not replace the experiment on memory usefulness and model call
+savings.
 
-### Область исходников в информации worker
+### Source scope in worker information
 
-Новая доставка использует профиль
-`synapse.stage4.gold.source-delivery/matched-paths-v2`. Из совместно изученной
-операции worker получает тела исходников, символы и сведения об отсутствии
-разбора только для `match.paths` текущего запроса. Зависимость попадает в эту
-выдачу, когда её путь входит в объявленную область задачи; импорт сам по себе
-не расширяет доступ.
+New delivery uses the profile
+`synapse.stage4.gold.source-delivery/matched-paths-v2`. From a jointly studied
+operation the worker receives source bodies, symbols and information about
+missing parses only for the `match.paths` of the current request. A dependency
+is included in this output when its path lies within the declared task scope;
+an import by itself does not widen access.
 
-Рецепт и результат команды относятся ко всей исходной операции. Если выбрана
-только часть её путей, эти два поля не доставляются:
-`operation_observation_scope=OMITTED_UNSELECTED_SOURCE_PATHS`. Это исключает
-обратное попадание постороннего кода через команду или её вывод. При выборе
-всей области исходные наблюдения доставляются без изменения. Полная операция
-остаётся у владельца доказательств; её сохранённые байты, происхождение,
-статус проверки и правила допуска не меняются.
+The recipe and the command result belong to the whole source operation. If
+only part of its paths is selected, these two fields are not delivered:
+`operation_observation_scope=OMITTED_UNSELECTED_SOURCE_PATHS`. This rules out
+unrelated code getting back in through the command or its output. When the
+whole scope is selected, the original observations are delivered unchanged.
+The full operation stays with the owner of the evidence; its retained bytes,
+provenance, verification status and admission rules do not change.
 
-Профиль связан с сохранённым контекстом worker. Новое построение контекста
-отвергает доставку без текущего профиля. Исторические конверты без профиля
-остаются проверяемыми по прежней точной проекции; этот режим используется
-только для проверки записанной истории. Новая доставка из старого frozen
-snapshot также ограничивается выбранными путями. Код нейтральной проекции
-находится в `source_delivery.py`; захват и физическое открытие доказательств
-остаются в `source_snapshot.py`.
+The profile is bound to the retained worker context. A new context build
+rejects a delivery without the current profile. Historical envelopes without a
+profile remain verifiable by the earlier exact projection; this mode is used
+only to verify recorded history. New delivery from an old frozen snapshot is
+also limited to the selected paths. The neutral projection code is in
+`source_delivery.py`; capture and physical opening of evidence remain in
+`source_snapshot.py`.
 
-Совместимость чтения старой доставки не разрешает автоматически продолжать
-старый Gold run после замены runtime. Его существующая привязка к исходникам
-runtime сохраняется: физическая проверка старого pending run на изменённом
-коде получила `GOLD_UNAVAILABLE` до вызова worker. Завершённая старая история
-при этом успешно открывается без изменения сохранённых байтов.
+Read compatibility for old delivery does not permit an old Gold run to be
+continued automatically after the runtime is replaced. Its existing binding to
+the runtime source files is kept: a physical verification of an old pending
+run on the changed code got `GOLD_UNAVAILABLE` before the worker call. At the
+same time, the completed old history opens successfully without changes to the
+retained bytes.
 
-## Подключение исследовательской памяти — точный профиль повторного использования
+## Connecting research memory — the exact reuse profile
 
-Новые задания владельцев используют `element-owner-lifecycle/v4` с
-`active-memory-frame/v4`. Профили v1–v3 сохраняются для ранее записанных
-заданий; resume не переводит их на новый профиль. После
-`OUTCOME_RECORDED` тот же владелец записывает `CONSOLIDATED` в существующий
-ProjectMemoryStore. Консолидация читает завершённый run, привязанные к попыткам
-публикации и их физические C1/oracle/lineage-доказательства. Она не создаёт
-второй движок, publisher, допуск или маршрут исполнения. Сбой этого суффикса
-не повторяет выполненную задачу; `project resume` завершает обслуживание.
-Повторная консолидация возвращает прежнюю неизменяемую запись.
+New owner jobs use `element-owner-lifecycle/v4` with
+`active-memory-frame/v4`. Profiles v1–v3 are kept for previously recorded
+jobs; resume does not move them to the new profile. After
+`OUTCOME_RECORDED` the same owner writes `CONSOLIDATED` to the existing
+ProjectMemoryStore. Consolidation reads the completed run, the publications
+bound to its attempts and their physical C1/oracle/lineage evidence. It does
+not create a second engine, publisher, admission or execution route. A failure
+of this suffix does not repeat the completed task; `project resume` completes
+the maintenance. A repeated consolidation returns the earlier immutable record.
 
-Четыре логических слоя, введённые в Active Memory Frame v2, сохраняются в v4
-рядом с восемью представлениями элементов:
+The four logical layers introduced in Active Memory Frame v2 are kept in v4
+alongside the eight element views:
 
-| Слой | Поддерживаемое содержание |
+| Layer | Supported content |
 | --- | --- |
-| declared | Явно объявленные рецепты из изученных источников |
-| learned | Точные утверждения опубликованных результатов с первичными ссылками |
-| working | Действующая задача; новая цель ожидает новой проверки |
-| episodic | Выбранные завершённые эпизоды |
+| declared | Explicitly declared recipes from studied sources |
+| learned | Exact claims of published results with primary references |
+| working | The current task; a new goal awaits fresh verification |
+| episodic | Selected completed episodes |
 
-Это проекции разных назначений, а не четыре независимых писателя одного
-опыта. `project_learning.build_memory_layers` получает проверенные утверждения
-из консолидации: запись эпизода, повторный вызов или счётчик владельца сами по
-себе не переводят содержимое в learned и не выдают допуск. Совпавшие
-assertion/origin объединяются в пределах проекции; новые самостоятельные
-эпизоды остаются историей. Это правило допуска не является гарантией
-постоянного размера журнала или всей памяти процесса.
+These are projections for different purposes, not four independent writers of
+one experience. `project_learning.build_memory_layers` receives verified claims
+from the consolidation: an episode record, a retry or an owner counter does not
+by itself move content into learned or grant admission. Matching
+assertion/origin pairs are merged within the projection; new independent
+episodes remain history. This admission rule is not a guarantee of a constant
+size of the journal or of the whole process memory.
 
-CONFIRMED означает подтверждение точного исторического утверждения о патче;
-REFUTED — независимый отрицательный результат для того же утверждения.
-Отсутствие подтверждённой публикации остаётся PROVISIONAL. Противоречивые
-наблюдения сохраняются как CONFLICTED. Повторы и копии не увеличивают
-уверенность и не становятся независимыми свидетелями. Этот профиль **не рождает
-обобщённую привычку**: `generalization=NOT_ESTABLISHED` сохраняется даже при
-множестве успешных повторов. Допуск обобщённых привычек по независимым
-первоисточникам, D1/D2 и семантический поиск остаются отдельными этапами.
+CONFIRMED means confirmation of an exact historical claim about a patch;
+REFUTED is an independent negative result for the same claim. The absence of a
+confirmed publication remains PROVISIONAL. Contradictory observations are
+retained as CONFLICTED. Repeats and copies do not increase confidence and do
+not become independent witnesses. This profile **does not give birth to a
+generalized habit**: `generalization=NOT_ESTABLISHED` is kept even after many
+successful repeats. Admission of generalized habits based on independent
+primary sources, D1/D2 and semantic search remain separate stages.
 
-Кандидата исправления формирует Synapse (`stage10/local_candidate.py`), а не
-подключаемый агент. Агент — обычный допущенный профиль реестра; встроенного агента нет.
-Он получает только нейтральные данные и возвращает лишь текст типизированного
-предложения своей модели (`local_edit_proposal`). Synapse разбирает этот текст
-по тем же байтам задачи и локальной информации, которые доставил, в
-замороженном профиле протокола и проверяет область. Так происходит для всех
-профилей v1–v6. Агент не может передать готовый интерпретированный результат:
-такой ответ отвергается. Неразборчивое предложение, предложение вместе с
-изменениями файлов или его отсутствие становятся явным отказом
+Synapse forms the fix candidate (`stage10/local_candidate.py`), not the
+pluggable agent. The agent is an ordinary admitted registry profile; there is
+no built-in agent. It receives only neutral data and returns only the text of
+its model's typed proposal (`local_edit_proposal`). Synapse parses this text
+against the same task and local information bytes that it delivered, under the
+frozen protocol profile, and checks the scope. This happens for all profiles
+v1–v6. The agent cannot pass on a ready interpreted result: such a response is
+rejected. An unparsable proposal, a proposal together with file changes, or
+its absence becomes an explicit refusal
 (`local_edit_refused`, `local_edit_proposal_absent_or_with_effects`).
 
-Точный повтор — тоже ход Synapse. Перед вызовом агента
-`Stage10WorkerContextAdapter.dispatch` интерпретирует те же байты. Если суд
-допустил ровно один точно применимый патч, Synapse сам формирует кандидата.
-Требуются одновременно: допуск суда (`procedural_memory`), актуальное
-admitted/replayed execution feedback, исходные байты, точное совпадение
-ревизии, разрешённые пути и полное покрытие ожидаемых изменений. Конкурирующие
-варианты, противоречие, изменение данных, отсутствие материала или неполное
-покрытие ведут к обычному вызову агента.
+An exact repeat is also a Synapse move. Before the agent is called,
+`Stage10WorkerContextAdapter.dispatch` interprets the same bytes. If the court
+admitted exactly one exactly applicable patch, Synapse forms the candidate
+itself. All of the following are required at once: court admission
+(`procedural_memory`), current admitted/replayed execution feedback, the
+original bytes, an exact revision match, allowed paths and full coverage of
+the expected changes. Competing variants, a contradiction, a data change,
+missing material or incomplete coverage lead to an ordinary agent call.
 
-Такой кандидат несёт `planning_route=EXACT_MEMORY`, доставка — явный статус
-`SYNAPSE_EXACT_MEMORY` с транспортом `synapse.exact-memory/v1` и нулевым
-потреблением токенов. Процесс агента не запускается, записей
-`agent-executions` и захвата вызова нет. Транспорт агента не может заявить этот
-статус или имя, а Synapse — выдать свой ход за запуск процесса. Дальше
-проверка прежняя: одобренный план → C1 → независимый oracle. Gold независимо
-воспроизводит выбор по доставленным данным, сверка учёта принимает такую
-попытку только без вызовов агента. Экономика наблюдается и не управляет
-допуском или выбором процедуры.
+Such a candidate carries `planning_route=EXACT_MEMORY`, and the delivery
+carries the explicit status `SYNAPSE_EXACT_MEMORY` with the transport
+`synapse.exact-memory/v1` and zero token consumption. The agent process is not
+started; there are no `agent-executions` records and no call capture. The
+agent transport cannot claim this status or name, and Synapse cannot pass its
+own move off as a process run. From there, verification is as before: approved
+plan → C1 → independent oracle. Gold independently reproduces the choice from
+the delivered data, and the accounting reconciliation accepts such an attempt
+only without agent calls. The economics are observed and do not govern
+admission or the choice of procedure.
 
-Решения запуска объявлены возможностями протокола Synapse
-(`PROTOCOL_CAPABILITIES` в `synapse/worker/local_edits.py`), а не именем
-агента:
+Run decisions are declared by Synapse protocol capabilities
+(`PROTOCOL_CAPABILITIES` in `synapse/worker/local_edits.py`), not by the
+agent's name:
 
-| Профиль | Полная положительная обратная связь | Проверенный частичный патч | Автоматический ход памяти |
+| Profile | Full positive feedback | Checked partial patch | Automatic memory move |
 | --- | --- | --- | --- |
 | v1 | — | — | — |
-| v2, v3 | да | — | — |
-| v4 | да | да | — |
-| v5, v6 | да | да | да |
+| v2, v3 | yes | — | — |
+| v4 | yes | yes | — |
+| v5, v6 | yes | yes | yes |
 
-Идентификаторы v1–v5 (`mini-2.4.6-local-edit-proposals/vN`) — замороженные
-данные прежних результатов; их написание ничего не связывает с каким-либо
-агентом. Любой допущенный агент может нести любую версию; новый нейтральный
-профиль v6 интерпретируется как v5. Профиль только разрешает маршрут; решает и
-исполняет его Synapse. Агент объявляет протокол своей замороженной
-конфигурацией (`native.protocol` STDIO-профиля, `local_edit_protocol`
-адаптера). Агент, который сам возвращает готовые патчи, протокола не объявляет
-и получает все три возможности.
+The identifiers v1–v5 (`mini-2.4.6-local-edit-proposals/vN`) are frozen data
+of earlier results; their spelling ties nothing to any agent. Any admitted
+agent can carry any version; the new neutral profile v6 is interpreted as v5.
+The profile only permits the route; Synapse decides and executes it. The agent
+declares the protocol in its frozen configuration (`native.protocol` of an
+STDIO profile, `local_edit_protocol` of an adapter). An agent that returns
+ready patches itself declares no protocol and gets all three capabilities.
 
 ```json
 {"native": {"protocol": "synapse.worker.local-edit-proposals/v6"}}
 ```
 
-Учёт вызовов провайдера тоже не читает частную траекторию агента. Захват
-HTTP-вызовов остаётся независимым свидетельством Synapse. Агент на своей
-границе сдаёт нейтральный перечень ответов
-`synapse.agent.response-inventory/v1` (`synapse/llm/capture.py`): профиль
-учёта, заявленное число вызовов и для каждого ответа логический идентификатор
-захвата и использование. Перечень сохраняется при закрытии вызова
-(`inventory_ref`) рядом с сырым ответом агента. Сверка stage15 сравнивает его с
-захватом: профиль, число вызовов, отсутствующие, лишние и повторные ответы,
-совпадение использования. Агент сдаёт перечень в диагностике своего STDIO-ответа
-(`response_inventory`). Захваты, сохранённые до этого контракта, не имеют
-перечня и честно остаются непроверяемыми: отсутствующий или нечитаемый перечень
-даёт `worker_response_inventory_missing_or_unreadable`.
+Provider call accounting does not read the agent's private trajectory either.
+The capture of HTTP calls remains Synapse's independent evidence. At its
+boundary the agent submits a neutral response inventory
+`synapse.agent.response-inventory/v1` (`synapse/llm/capture.py`): the
+accounting profile, the declared number of calls and, for each response, the
+logical capture identifier and the usage. The inventory is retained when the
+call is closed (`inventory_ref`), next to the agent's raw response. The stage15
+reconciliation compares it with the capture: profile, number of calls, missing,
+extra and repeated responses, matching usage. The agent submits the inventory
+in the diagnostics of its STDIO response (`response_inventory`). Captures
+retained before this contract have no inventory and honestly remain
+unverifiable: a missing or unreadable inventory gives
+`worker_response_inventory_missing_or_unreadable`.
 
-Команды остаются `project run` и `project resume`. Для сравнения режимов:
+The commands remain `project run` and `project resume`. To compare the modes:
 
-| Режим | Протокол агента | knowledge-input/v4: run_memory_selection |
+| Mode | Agent protocol | knowledge-input/v4: run_memory_selection |
 | --- | --- | --- |
-| Автоматическое локальное предложение | v6 (или исторический v5) | ALL |
-| Та же память, обязательное обращение к модели | v4 | ALL |
-| Без памяти выполненных задач | v6 | NONE |
+| Automatic local proposal | v6 (or historical v5) | ALL |
+| Same memory, mandatory model call | v4 | ALL |
+| No memory of completed tasks | v6 | NONE |
 
-Последняя строка сохраняет изученные исходники; это абляция памяти запусков,
-а не эксперимент с полностью пустой памятью. Старые профили v1–v4 и сохранённые
-задания owner v1 не получают новых правил задним числом. Новый снимок фиксирует
-как историю эпизодов, так и соответствующий срез консолидации.
+The last row keeps the studied source files; it is an ablation of run memory,
+not an experiment with completely empty memory. The old profiles v1–v4 and the
+retained owner v1 jobs do not get the new rules retroactively. A new snapshot
+pins both the episode history and the matching consolidation cut.
 
-Проверки разделены: чистые контракты локального выбора, слоёв памяти и
-статуса доставки; отдельный тяжёлый сценарий
-`test_exact_memory_cycle_acceptance.py` через CLI, перезапуск, сравнение режимов
-и новый oracle для каждого выполненного исправления. Сценарий использует
-контролируемый ответ провайдера и не доказывает качество модели на новых задачах
-или денежную экономию на производственной нагрузке. AS2 остаётся закрыт.
+The checks are split: pure contracts of local selection, memory layers and
+delivery status; a separate heavy scenario
+`test_exact_memory_cycle_acceptance.py` through the CLI, with a restart, a mode
+comparison and a new oracle for every completed fix. The scenario uses a
+controlled provider response and does not prove model quality on new tasks or
+monetary savings under production load. AS2 remains locked.
 
-Локальная проверка реализации от 20 сентября 2026 (Python 3.12, установленный
-Mini 2.4.6): 815 проверок затронутых контрактов, памяти, Mini и архитектурных
-границ прошли за 51.44 с. Отдельный полный цикл прошёл за 2322.35 с:
+Local verification of the implementation on 20 September 2026 (Python 3.12,
+Mini 2.4.6 installed): 815 checks of the affected contracts, memory, Mini and
+architectural boundaries passed in 51.44 s. A separate full cycle passed in
+2322.35 s:
 
-| Запуск | Память запусков / профиль | Результат | Вызовы модели | Новые исполнения oracle |
+| Run | Run memory / profile | Result | Model calls | New oracle executions |
 | --- | --- | --- | --- | --- |
-| Первое решение и консолидация | ALL / v5 | FULL | 1 | 1 |
-| Точный повтор после перезапуска | ALL / v5 | FULL, EXACT_MEMORY | 0 | 1 |
-| Сохранённая память, медленный режим | ALL / v4 | FULL | 1 | 1 |
-| Контроль без памяти запусков | NONE / v5 | Нет кандидата | 1 | 0 |
+| First solution and consolidation | ALL / v5 | FULL | 1 | 1 |
+| Exact repeat after restart | ALL / v5 | FULL, EXACT_MEMORY | 0 | 1 |
+| Retained memory, slow mode | ALL / v4 | FULL | 1 | 1 |
+| Control without run memory | NONE / v5 | No candidate | 1 | 0 |
 
-Повторное `project resume` автоматического запуска после последующих задач
-вернул тот же результат: новые вызовы модели, исполнения oracle и записи
-памяти отсутствовали. Контроль без кандидата оставил непроверенные наблюдения
-PROVISIONAL и не создал подтверждённого утверждения. Исходный репозиторий и
-ранее замороженные входы сохранились. Проверки ownership/dependency и
-pre-commit прошли: 45 примеров Synapse разобраны; покрытие CVM-корпуса
-0.935620 при пороге 0.9332. Это целевая проверка, не полный прогон репозитория.
-Экономия одного обращения к модели измерена; ускорение всего процесса не
-установлено — физическая проверка цепочек доказательств остаётся затратной.
-Запуски последовательны, история между ними пополняется. Этот сценарий
-проверяет жизненный цикл и границы режимов; сравнение качества трёх режимов
-на одном неизменном снимке требует отдельного эксперимента.
+A repeated `project resume` of the automatic run after later tasks returned
+the same result: there were no new model calls, oracle executions or memory
+records. The control without a candidate left the unverified observations
+PROVISIONAL and created no confirmed claim. The original repository and the
+previously frozen inputs were preserved. The ownership/dependency and
+pre-commit checks passed: 45 Synapse examples were parsed; CVM corpus coverage
+is 0.935620 with a threshold of 0.9332. This is a targeted check, not a full
+repository run. The saving of one model call was measured; a speedup of the
+whole process was not established — physical verification of the evidence
+chains remains costly. The runs are sequential, and the history grows between
+them. This scenario checks the lifecycle and the mode boundaries; comparing
+the quality of the three modes on one unchanged snapshot requires a separate
+experiment.
 
-## Кодирующий агент — подключаемый профиль; встроенного исполнителя нет
+## Coding agent — a pluggable profile; no built-in executor
 
-Встроенный исполнитель Mini удалён из Synapse целиком: его адаптеры, модели,
-окружения, транспорт провайдера, политика запросов, фабрика `mini`, обёртка
-Baseline `MiniInvocationConfig`, extra `gold-worker` (mini-swe-agent, LiteLLM,
-OpenAI SDK) и связанные тесты. Кодирующий агент — только допущенный профиль
-реестра (`synapse.agent.configuration/v1`), выбранный через
-`agent_selection.select_coding_agent`. Единственный путь исполнения —
-`AgentExecutionPort` для Gold и для Baseline; параллельного пути нет.
+The built-in Mini executor is removed from Synapse entirely: its adapters,
+models, environments, provider transport, request policy, the `mini` factory,
+the Baseline wrapper `MiniInvocationConfig`, the `gold-worker` extra
+(mini-swe-agent, LiteLLM, OpenAI SDK) and the related tests. The coding agent
+is only an admitted registry profile (`synapse.agent.configuration/v1`)
+selected through `agent_selection.select_coding_agent`. The only execution path
+is `AgentExecutionPort`, for Gold and for Baseline; there is no parallel path.
 
-| Ответственность | Владелец |
+| Responsibility | Owner |
 | --- | --- |
-| Доступ агента к модели, ключ провайдера, capability вызова | `synapse/agents/model_broker.py` (`ModelBroker`) |
-| Публичная беседа протокола при локальной информации | `model_broker.PublicConversation` + `local_edits.public_messages` |
-| Протокол и интерпретация предложения | `synapse/worker/local_edits.py`, `stage10/local_candidate.py` |
-| Жизненный цикл брокера в вызове агента | `synapse/agents/stdio_adapter.py` (`LOCAL_BROKER` профили) |
-| Durable-учёт физических вызовов | `stage15/worker_accounting.py` (`WorkerAccounting.open_capture`) |
-| Baseline-arm | `synapse/experiments/swebench/baseline.py` через `AgentExecutionPort` |
+| Agent access to the model, provider key, call capability | `synapse/agents/model_broker.py` (`ModelBroker`) |
+| Public protocol conversation with local information | `model_broker.PublicConversation` + `local_edits.public_messages` |
+| Protocol and proposal interpretation | `synapse/worker/local_edits.py`, `stage10/local_candidate.py` |
+| Broker lifecycle in an agent call | `synapse/agents/stdio_adapter.py` (`LOCAL_BROKER` profiles) |
+| Durable accounting of physical calls | `stage15/worker_accounting.py` (`WorkerAccounting.open_capture`) |
+| Baseline-arm | `synapse/experiments/swebench/baseline.py` through `AgentExecutionPort` |
 
-Новые запуски принимают только experiment input v4 (`agents`). Выбор агента
-ортогонален способу разрешения целей: v4 допускает и явные `target_records`,
-и автоматическое задание; frozen input v7 несёт `target_resolution`,
-`planning_profile` и снимок памяти только когда их выбрала декларация.
-Профиль с `native.model_access` дополнительно фиксирует `resource_profile`.
-Запуски, замороженные с прежним встроенным `worker`, остаются читаемыми
-записями (память, суд, наблюдения), но исполнение и resume отказывают явной
-ошибкой конфигурации. Их захваты без перечня ответов агента остаются
-непроверяемыми, а не угаданными.
+New runs accept only experiment input v4 (`agents`). Agent selection is
+orthogonal to the way targets are resolved: v4 admits both explicit
+`target_records` and an automatic task; frozen input v7 carries
+`target_resolution`, `planning_profile` and a memory snapshot only when the
+declaration selected them. A profile with `native.model_access` additionally
+pins `resource_profile`. Runs frozen with the earlier built-in `worker` remain
+readable records (memory, court, observations), but execution and resume refuse
+with an explicit configuration error. Their captures without an agent response
+inventory remain unverifiable, not guessed.
 
-Операторская настройка профиля и контракт процесса агента описаны в
-`docs/UNIVERSAL_AGENT_EXECUTION.md`. В приёмке используется приёмочный агент
-`acceptance/agents/coding_agents.py`: детерминированный процесс без модели и
-модельный агент через брокер. Ни один из них не входит в продукт.
+The operator configuration of a profile and the agent process contract are
+described in `docs/UNIVERSAL_AGENT_EXECUTION.md`. Acceptance uses the
+acceptance agent `acceptance/agents/coding_agents.py`: a deterministic process
+without a model and a model agent through the broker. Neither of them is part
+of the product.
 
-Проверка пакета 24 сентября 2026 (Linux, Python 3.11, без установленного
-Mini): все 114 приёмочных файлов stage12–16, `acceptance/agents` и
-`acceptance/runtime` прошли по одному процессу на файл; стадия 10 — 256 passed,
-стадия 11 — 84 passed за 28 мин 58 с. Самый долгий сценарий
-`test_gold_memory_slices_acceptance.py` — 1 ч 35 мин, `test_court_acceptance.py`
-— 43 мин 42 с. Одиннадцать файлов, упавших в первом прогоне, повторены после
-исправлений: приёмочный агент явно сообщает пустое предложение; реплики парного
-эксперимента используют одного агента; учёт ресурсов ожидает одно измерение
-брокера на физический вызов вместо трёх HTTP-операций прежнего исполнителя.
-`tests/` по файлам: 5069 passed, 12 skipped, 3 failed. Падение
-`test_swebench_gold_production_tripwire.py` воспроизводится на исходной ревизии
-без этого пакета; два падения `test_swebench_measurement_output_boundary.py`
-сравнивают незакоммиченное дерево с фиксированным списком файлов и проверяются
-на чистом дереве после коммита. Живой вызов провайдера не выполнялся.
+Package verification on 24 September 2026 (Linux, Python 3.11, without Mini
+installed): all 114 acceptance files of stage12–16, `acceptance/agents` and
+`acceptance/runtime` passed with one process per file; stage 10 — 256 passed,
+stage 11 — 84 passed in 28 min 58 s. The longest scenario,
+`test_gold_memory_slices_acceptance.py`, took 1 h 35 min;
+`test_court_acceptance.py` took 43 min 42 s. Eleven files that failed in the
+first run were rerun after fixes: the acceptance agent explicitly reports an
+empty proposal; the replicas of the paired experiment use one agent; resource
+accounting expects one broker measurement per physical call instead of the
+three HTTP operations of the earlier executor. `tests/` per file: 5069 passed,
+12 skipped, 3 failed. The `test_swebench_gold_production_tripwire.py` failure
+reproduces on the base revision without this package; the two
+`test_swebench_measurement_output_boundary.py` failures compare the
+uncommitted tree with a fixed list of files and are checked on a clean tree
+after the commit. No live provider call was made.
 
-Разделы-журналы ниже сохраняют прошлые наблюдения; упоминания Mini в них
-относятся к удалённому исполнителю. Переименованные тяжёлые файлы:
+The journal sections below keep past observations; mentions of Mini in them
+refer to the removed executor. Renamed heavy files:
 `test_*_mini_acceptance.py` → `test_*_agent_acceptance.py`,
 `test_mini_local_edit*_acceptance.py` → `test_agent_local_edit*_acceptance.py`.
-Сценарии, проверявшие внутреннее устройство Mini (FormatError, Environment,
-доставка через `mini -t`, продолжение по tool state Gemini), заменены
-`test_public_conversation_acceptance.py`; дублирующий
-`test_agent_profile_gold_acceptance.py` удалён — каждый тяжёлый сценарий теперь
-идёт через допущенный профиль.
+Scenarios that checked the internals of Mini (FormatError, Environment,
+delivery through `mini -t`, continuation by Gemini tool state) are replaced by
+`test_public_conversation_acceptance.py`; the duplicating
+`test_agent_profile_gold_acceptance.py` is removed — every heavy scenario now
+goes through an admitted profile.
 
-## Действующие профили PR108
+## Current PR108 profiles
 
-Канонические команды остаются `project connect/learn/run/resume`.
-Новый вход `experiment-input/v4` с допущенным агентом замораживается как
-`frozen-input/v7`; прежний `experiment-input/v3` использовал frozen-input v6.
-Старые task, source request и frozen-input версии сохраняют свои правила;
-они не получают новых разрешений при чтении.
+The canonical commands remain `project connect/learn/run/resume`.
+A new `experiment-input/v4` input with an admitted agent is frozen as
+`frozen-input/v7`; the earlier `experiment-input/v3` used frozen-input v6.
+Old task, source request and frozen-input versions keep their rules;
+they get no new permissions when read.
 
-### Архив D4–D6: создание, причины отказа, допуск по объектам
+### Archive D4–D6: creation, refusal reasons, per-object admission
 
-`PATH_CREATED` разрешается через `CreationBinding`: точный путь должен
-отсутствовать в объявленном Git-коммите. Существующий путь, сочетание создания
-с модификацией того же пути или выход за scope отклоняются. Модель проекта
-представляет такой объект как элемент `CREATION` уровня пути: ещё не
-существующему исходнику не приписываются символы и содержимое.
+`PATH_CREATED` is resolved through `CreationBinding`: the exact path must be
+absent from the declared Git commit. An existing path, a combination of
+creation with a modification of the same path, or going outside the scope is
+rejected. The project model represents such an object as a path-level
+`CREATION` element: no symbols or content are attributed to a source file that
+does not exist yet.
 
-Для task v3 контролируемое изменение может покрывать несколько явно
-перечисленных `PATH_MODIFIED`/`PATH_CREATED` эффектов. Область должна точно
-совпадать с их путями; выбор профиля агента и запрос worker получают классы
-эффектов задачи, C1 применяет один проверяемый патч. Это расширение контракта
-целей, а не обещание генерации нового файла любым агентом: например,
-`synapse.worker.local-edit-proposals/v6` требует непустой `old` в каждой замене.
+For task v3 a controlled change may cover several explicitly listed
+`PATH_MODIFIED`/`PATH_CREATED` effects. The scope must exactly match their
+paths; agent profile selection and the worker request receive the task's
+effect classes, and C1 applies one verifiable patch. This is an extension of
+the target contract, not a promise that any agent generates a new file: for
+example, `synapse.worker.local-edit-proposals/v6` requires a non-empty `old`
+in every replacement.
 
-Материализатор кандидата сохраняет `worker_report.summary`,
-`worker_report.failure_reason` и `worker_diagnostics`, в том числе при
-`NO_PATCH`. Причина отказа доступна в истории попытки, но остаётся сообщением
-worker: она не заменяет oracle, суд или проверку результата.
+The candidate materializer retains `worker_report.summary`,
+`worker_report.failure_reason` and `worker_diagnostics`, including for
+`NO_PATCH`. The refusal reason is available in the attempt history but remains
+a worker message: it does not replace the oracle, the court or the
+verification of the result.
 
-Совместимость решается по каждому объекту. `assemble_run_environment`
-сначала записывает evidence для всей объявленной совокупности кандидатов;
-при наличии совместимых в снимок потребления попадают только `COMPATIBLE`
-с `COMPLETE` evidence. Если совместимых нет, исходный набор проходит gates
-для сохранения решения об отказе: запуск возвращает `NOT_ADMITTED`,
-исполнитель не вызывается.
+Compatibility is decided per object. `assemble_run_environment` first records
+evidence for the whole declared set of candidates; when compatible ones exist,
+only `COMPATIBLE` candidates with `COMPLETE` evidence enter the consumption
+snapshot. If there are no compatible ones, the original set passes the gates
+to retain the refusal decision: the run returns `NOT_ADMITTED`, and the
+executor is not called.
 
-Retrieval использует единый `gate_subject_refs`: совместимые кандидаты,
-если они есть; иначе — все разрешённые дескрипторы для записанного отказа.
-Перед гейтом канонический запуск требует разрешённого результата нового
-conflict scan. Неполный scan или неразрешённый конфликт дают соответственно
-`CONFLICT_SCAN_INCOMPLETE` или `CONFLICT_UNRESOLVED`; сохранённое evidence
-остаётся в истории. Более ранний scan из сборки окружения не может заменить
-эту проверку.
-Загрузчик требует точного совпадения subjects verdict с этим набором до
-чтения содержимого кандидатов. Неполный verdict или дополнительные subjects
-дают `CANDIDATE_SET_INCOMPLETE`. Полное перечисление, причины исключений
-и исходный frozen set сохраняются в аудите; исключённый объект не блокирует
-совместимые объекты. Действительно пустое перечисление или отсутствие
-разрешённых дескрипторов не создаёт искусственного решения gates.
-Последующие gates, freshness и проверка конкретного использования обязательны
-для каждого прошедшего объекта. Все gates сохраняют требование одинаковых
-subjects с предыдущим решением: изменение набора после начала цепочки
-отклоняется, а не переписывает уже записанное решение.
-Форматы сохранённых решений и их исторические читатели этим исправлением
-не меняются.
+Retrieval uses a single `gate_subject_refs`: the compatible candidates if there
+are any; otherwise all resolved descriptors for the recorded refusal. Before
+the gate the canonical run requires a resolved result of a new conflict scan.
+An incomplete scan or an unresolved conflict gives `CONFLICT_SCAN_INCOMPLETE`
+or `CONFLICT_UNRESOLVED` respectively; the retained evidence stays in the
+history. An earlier scan from the environment assembly cannot replace this
+check.
+The loader requires the verdict subjects to match this set exactly before it
+reads the content of the candidates. An incomplete verdict or additional
+subjects give `CANDIDATE_SET_INCOMPLETE`. The full enumeration, the exclusion
+reasons and the original frozen set are retained in the audit; an excluded
+object does not block compatible objects. A genuinely empty enumeration or the
+absence of resolved descriptors does not create an artificial gates decision.
+Subsequent gates, freshness and the check of the specific use are mandatory
+for every object that passed. All gates keep the requirement of the same
+subjects as the previous decision: a change of the set after the chain has
+started is rejected rather than rewriting the already recorded decision.
+The formats of retained decisions and their historical readers are not
+changed by this fix.
 
-Владельцы контракта: `bindings.py`, `task_targets.py`, `project_model.py`,
-`run_environment.py`, `run_retrieval.py`, `runner_composition.py` в
-`synapse/experiments/gold/`; причины попытки —
+Contract owners: `bindings.py`, `task_targets.py`, `project_model.py`,
+`run_environment.py`, `run_retrieval.py`, `runner_composition.py` in
+`synapse/experiments/gold/`; attempt reasons —
 `synapse/worker/candidate_materializer.py`.
 
-### Процедуры и выбор плана
+### Procedures and plan selection
 
-Новый source-publication-request v3 сохраняет проверенное содержание и
-типизированную процедуру `source-task-coverage/v1`. Входы процедуры вычисляются
-из реально разрешённых bindings задачи и источника. CVM выполняет ветвление
-и арифметику; возврат описывает применимость, покрытие и остаток. Фактические
-входы, activity и terminal snapshot удерживаются и проверяются при повторном
-чтении. Это поддержанный структурный профиль, а не исполнение произвольной
-процедуры, извлечённой из естественного языка.
+The new source-publication-request v3 retains the verified content and the
+typed procedure `source-task-coverage/v1`. The procedure inputs are computed
+from the actually resolved bindings of the task and the source. The CVM
+performs the branching and the arithmetic; the return value describes
+applicability, coverage and the remainder. The actual inputs, activity and
+terminal snapshot are retained and verified on a repeated read. This is a
+supported structural profile, not the execution of an arbitrary procedure
+extracted from natural language.
 
-План operation-plan v2 хранит все рассмотренные методы, ссылки на физические
-наблюдения, выбранное разбиение путей и границы поиска: до 128 методов и 32
-путей. Правило выбирает наибольшее ещё не покрытое множество путей; равенство
-разрешается каноническим порядком ссылок. Пути без подходящего метода явно
-передаются публичному предложению. Выбор меняет операции, их входы и семантику
-плана. Сохранённая основа проверяется по исходным наблюдениям при resume.
+The operation-plan v2 plan stores all considered methods, references to
+physical observations, the selected path partition and the search boundaries:
+up to 128 methods and 32 paths. The rule selects the largest set of paths not
+yet covered; a tie is resolved by the canonical order of references. Paths
+without a suitable method are explicitly passed to the public proposal. The
+selection changes the operations, their inputs and the plan semantics. The
+retained basis is verified against the original observations on resume.
 
-Approval request v4 разрешает конкретное правило разбиения в пределах
-неизменных эффектов задачи, capabilities, условий, участников и упорядоченных
-проверочных команд. Разрешение не заменяет admission, compatibility,
-point-of-use freshness или C1. Структурное покрытие не доказывает исправность
-кода; её проверяют C1 и независимый oracle после нового исполнения.
+Approval request v4 permits a specific partition rule within the unchanged
+task effects, capabilities, conditions, participants and ordered verification
+commands. The permission does not replace admission, compatibility,
+point-of-use freshness or C1. Structural coverage does not prove the
+correctness of the code; C1 and the independent oracle check it after a new
+execution.
 
-### Элементы и постоянные владельцы памяти
+### Elements and persistent memory owners
 
-`project_model.py` строит System, Subsystem и Element из разрешённых целей
-и изученных источников. Контракт явно ограничивает покрытие изученными и
-целевыми элементами; неизвестные зависимости сохраняются как UNRESOLVED.
-Идентичность элемента привязана к проекту, пути, имени и виду символа и
-сохраняется между запусками.
+`project_model.py` builds System, Subsystem and Element from the resolved
+targets and the studied sources. The contract explicitly limits coverage to
+studied and target elements; unknown dependencies are retained as UNRESOLVED.
+An element's identity is bound to the project, path, name and symbol kind and
+is kept between runs.
 
-`project_agents.py` обслуживает постоянных владельцев элементов через
-задания REQUESTED → STARTED → FRAME_COMPLETED → OUTCOME_RECORDED.
-`project_memory_store.py` сохраняет переходы существующим механизмом
-атомарных immutable snapshots и отдельным координатором памяти.
-Незавершённая подготовка не становится опубликованной записью.
-Повторное обслуживание читает исходное задание и завершает чистую сборку
-контекста; эффекты репозитория при этом не повторяются.
+`project_agents.py` maintains persistent element owners through jobs
+REQUESTED → STARTED → FRAME_COMPLETED → OUTCOME_RECORDED.
+`project_memory_store.py` retains the transitions with the existing mechanism
+of atomic immutable snapshots and a separate memory coordinator.
+Unfinished preparation does not become a published record.
+Repeated maintenance reads the original job and completes a clean context
+build; repository effects are not repeated.
 
-Active Memory Frame содержит восемь маршрутов каждого владельца:
+The Active Memory Frame contains eight routes of each owner:
 
-| Память | Источник и назначение |
+| Memory | Source and purpose |
 | --- | --- |
-| Identity | Устойчивая идентичность и состояние известности элемента |
-| Structural | Родитель, разрешённый binding и известные связи |
-| Goal | Неизменяемая задача, ожидаемые эффекты и критерии |
-| Context | Исходная ревизия и разрешённая область |
-| Episodic | Удержанные исходы изучения и физически открытые результаты запусков |
-| Decision | Правило recall и причины выбора записей |
-| Defect | Наблюдавшиеся неудачи с их исходными условиями |
-| Evidence | Ссылки на исходные материалы, задачу и результаты |
+| Identity | Stable identity and the element's state of being known |
+| Structural | Parent, resolved binding and known links |
+| Goal | Immutable task, expected effects and criteria |
+| Context | Base revision and allowed scope |
+| Episodic | Retained study outcomes and physically opened run results |
+| Decision | Recall rule and reasons for selecting records |
+| Defect | Observed failures with their original conditions |
+| Evidence | References to the source materials, the task and the results |
 
-Target State содержит требуемые эффекты; Current State — evidence исходной ревизии.
-Development Delta нового запуска остаётся AWAITING_FRESH_VERIFICATION даже
-при наличии успешного прошлого опыта: рабочая копия начинает с исходной базы.
-Завершённый исход сохраняется отдельным событием и становится эпизодом
-следующего задания. Статус FULL не переписывает состояние исходной ветки.
+Target State contains the required effects; Current State contains the
+evidence of the base revision. The Development Delta of a new run stays
+AWAITING_FRESH_VERIFICATION even when there is successful past experience: the
+working copy starts from the original base. A completed outcome is retained as
+a separate event and becomes an episode of the next job. The FULL status does
+not rewrite the state of the original branch.
 
-Source snapshot v3 связывает исходный срез истории с реальным событием
-FRAME_COMPLETED. Читатель открывает REQUESTED, STARTED, результат и прошлые
-эпизоды, воспроизводит модель и сверяет frame. Нейтральная проекция frame
-попадает только в локальный информационный вход подключаемого агента.
-Внутренние доказательства
-и полномочия остаются в Gold.
+Source snapshot v3 binds the original history cut to the actual
+FRAME_COMPLETED event. The reader opens REQUESTED, STARTED, the result and the
+past episodes, reproduces the model and reconciles the frame. The neutral
+projection of the frame enters only the local information input of the
+pluggable agent. Internal evidence and authority remain in Gold.
 
-Этот жизненный цикл обслуживает память по каноническим заданиям. Он не вводит
-второй контроллер исполнения, второго издателя knowledge или отдельную связь
-с LLM. Постоянство владельца означает сохранённые задания, состояние и опыт;
-не заявляется универсальный фоновый агент для произвольных задач.
+This lifecycle maintains memory through canonical jobs. It does not introduce
+a second execution controller, a second knowledge publisher or a separate
+connection to the LLM. Owner persistence means retained jobs, state and
+experience; no universal background agent for arbitrary tasks is claimed.
 
-Границы рабочего профиля: до 1024 узлов модели. Исторические задания v1/v2
-отказывают при превышении 128 прошлых эпизодов; v3/v4 показывают последние
-128 засуженных эпизодов с числом пропущенных (см. «Суд памяти»).
-Прежний предел 4096 транзакций журнала снят: это не бюджет всей долгоживущей
-памяти. Форматы хранения, чтение и оставшиеся ресурсные ограничения описаны в
-[MEMORY_STORAGE.md](MEMORY_STORAGE.md).
+Working profile boundaries: up to 1024 model nodes. Historical v1/v2 jobs
+refuse when 128 past episodes are exceeded; v3/v4 show the latest 128 judged
+episodes with the number omitted (see "Memory court"). The earlier limit of
+4096 journal transactions is removed: this is not a budget for the whole
+long-lived memory. Storage formats, reading and the remaining resource limits
+are described in [MEMORY_STORAGE.md](MEMORY_STORAGE.md).
 
-### Архив D8/D9: долгоживущий владелец в кадре v4
+### Archive D8/D9: the long-lived owner in frame v4
 
-`owner_profiles.py` выводит `element-owner-registry/v1` из **всей** засуженной
-истории закреплённого решения, а не из последних 128 эпизодов кадра. Для
-нового проекта без решения история пуста. Идентичность долгоживущего
-владельца задаётся проектом и путём; более подробные элементы кадра
-присоединяются к нему по пути.
+`owner_profiles.py` derives `element-owner-registry/v1` from the **entire**
+judged history of the pinned decision, not from the latest 128 episodes of the
+frame. For a new project without a decision the history is empty. The
+identity of a long-lived owner is set by the project and the path; the more
+detailed frame elements are attached to it by path.
 
-Target State накапливает декларации требований и ожидаемые эффекты текущей
-задачи. Current State удерживает исходы, утверждения с их происхождением,
-предложенные патчи и ссылки на решение суда. Development Delta различает
-`VERIFIED_EARLIER`, `PARTIAL_VERIFIED_EARLIER`, `DEFECT_ESTABLISHED`,
-`TASK_FAILED_NO_EVIDENCE`, `DEFERRED_NO_BASIS` и ожидаемые свежие проверки.
-Для `DEFECT_ESTABLISHED` нужны одновременно засчитанный `NOT_FULFILLED` и
-утверждение со статусом `CONFIRMED` или `REFUTED`. Один предложенный патч,
-сбой инфраструктуры или непроверенный отказ этого не устанавливает.
-Это исторические оценки на своих ревизиях: они не подтверждают текущую
-рабочую копию, не обобщают привычку и не обходят суд.
+Target State accumulates requirement declarations and the expected effects of
+the current task. Current State retains outcomes, claims with their
+provenance, proposed patches and references to the court decision.
+Development Delta distinguishes `VERIFIED_EARLIER`, `PARTIAL_VERIFIED_EARLIER`,
+`DEFECT_ESTABLISHED`, `TASK_FAILED_NO_EVIDENCE`, `DEFERRED_NO_BASIS` and the
+awaited fresh verifications. `DEFECT_ESTABLISHED` requires both a counted
+`NOT_FULFILLED` and a claim with the status `CONFIRMED` or `REFUTED`. A single
+proposed patch, an infrastructure failure or an unverified refusal does not
+establish it. These are historical assessments at their own revisions: they do
+not confirm the current working copy, do not generalize a habit and do not
+bypass the court.
 
-Полный roster включает не более 1024 путей. Если исторических путей больше,
-он оставляет активных владельцев и сводки подсистем по всей истории; слишком
-большая активная область отказывает. Публикация registry отдельно ограничена
-8 MiB: сначала история неактивных владельцев, затем при необходимости всех
-владельцев заменяется точными счётчиками и ссылкой на закреплённое решение.
-Если и эта форма не помещается, получается отказ. Полные основания остаются
-в истории суда. Это ограничение публикуемого представления: построение
-полного registry и сводок всё ещё читает историю, поэтому постоянные RAM и
-время открытия не гарантированы.
+The full roster includes at most 1024 paths. If there are more historical
+paths, it keeps the active owners and subsystem summaries over the whole
+history; an active scope that is too large is refused. Publication of the
+registry is separately limited to 8 MiB: first the history of inactive owners,
+then, if necessary, that of all owners is replaced by exact counters and a
+reference to the pinned decision. If this form does not fit either, the result
+is a refusal. The full bases remain in the court history. This is a limit of
+the published representation: building the full registry and summaries still
+reads the history, so constant RAM and opening time are not guaranteed.
 
-Общий конверт FRAME_COMPLETED сохраняет бюджет 16 MiB. Кадр получает только
-счётчики владельца; `_memory_information` в `source_delivery.py` передаёт их
-worker как нейтральный `owner_profile`, без раскрытия ссылок на доказательства.
-Физическое `compact-active-memory-frame/v1` — отдельная версия упаковки:
-оно поддерживает логические кадры v1–v4, восстанавливает точные байты и
-разрешает слоты только внутри привязанного кадра. Упаковка не меняет профиль
-старого задания и не создаёт нового владельца допуска.
+The common FRAME_COMPLETED envelope keeps the 16 MiB budget. The frame gets
+only the owner's counters; `_memory_information` in `source_delivery.py` passes
+them to the worker as a neutral `owner_profile`, without disclosing references
+to evidence. The physical `compact-active-memory-frame/v1` is a separate
+packing version: it supports logical frames v1–v4, restores the exact bytes and
+resolves slots only inside the bound frame. Packing does not change the profile
+of an old job and does not create a new admission owner.
 
-### Архив D7: мягкие ключевые слова
+### Archive D7: soft keywords
 
-Лексер сохраняет исходное имя keyword-токена; `Parser.consume_name` принимает
-его в позиции имени. Исключения: `true`, `false`, `null`, `and`, `or`, `not`.
-Это касается объявлений, параметров, ключей, членов и поддержанных ссылочных
-позиций, включая `under target` для `policy target`. Специальная грамматика
-имеет приоритет: наличие слова в наборе мягких keywords не означает, что оно
-становится переменной в любом месте программы. Прежняя команда на старте
-statement или специальная форма выражения сохраняет своё значение.
+The lexer keeps the original name of a keyword token; `Parser.consume_name`
+accepts it in a name position. Exceptions: `true`, `false`, `null`, `and`,
+`or`, `not`. This applies to declarations, parameters, keys, members and
+supported reference positions, including `under target` for `policy target`.
+Special grammar takes precedence: a word being in the set of soft keywords
+does not mean that it becomes a variable anywhere in the program. An earlier
+command at the start of a statement or a special form of an expression keeps
+its meaning.
 
-### Golden replay: формат повторных ответов модели
+### Golden replay: format of repeated model answers
 
-Артефакт `run --record` / `replay --mock` хранит manifest schema 2; schema 1
-остаётся читаемой с проверкой только наблюдавшихся в ней полей состояния.
-Это отдельный контракт golden replay, не формат ProjectMemoryStore или
-решение суда. Изменение вложенного кэша не повышало версию manifest.
+The `run --record` / `replay --mock` artifact stores manifest schema 2;
+schema 1 remains readable, with a check of only the state fields observed in
+it. This is a separate golden replay contract, not the ProjectMemoryStore
+format or a court decision. The change to the nested cache did not raise the
+manifest version.
 
-В `llm_cache.mock.json` ключ по-прежнему состоит из хэша prompt и модели.
-Новая запись несёт `prompt_hash`, `model`, `results` — список ответов всех
-повторений. Записанные `llm_call` и шаги `thought` объединяются по позициям
-в общей истории; при одинаковой позиции thought предшествует событию
-`llm_call`. Если позиции не записаны, сохраняется прежний порядок слияния:
-сначала `llm_call`, затем thought. Историческая запись с одиночным `result`
-сохраняет прежнее многократное использование этого ответа.
+In `llm_cache.mock.json` the key still consists of the prompt hash and the
+model. A new record carries `prompt_hash`, `model`, `results` — the list of
+answers of all repetitions. Recorded `llm_call` events and `thought` steps are
+merged by position in the common history; at the same position the thought
+precedes the `llm_call` event. If positions are not recorded, the earlier merge
+order is kept: first `llm_call`, then thought. A historical record with a
+single `result` keeps the earlier multiple use of that answer.
 
-Для нового `results` каждый запрос потребляет ровно одно повторение;
-отсутствие записи или исчерпание списка даёт `DeterministicReplayError` без
-обращения к провайдеру. Нечитаемые JSON/текст и неподдержанная версия manifest
-дают `ReplayArtifactError`; несовпадение программы, цепочки или воспроизведения
-остаётся ошибкой детерминизма. Владельцы — `synapse/golden_replay.py`, backend
-в `synapse/builtins.py` и привязка порядка в `synapse/interpreter.py`.
-Кэш воспроизводит наблюдения модели; он не доказывает их истинность и не
-добавляет оснований допуска в четыре слоя памяти.
+For a new `results`, each request consumes exactly one repetition; a missing
+record or an exhausted list gives `DeterministicReplayError` without a call to
+the provider. Unreadable JSON/text and an unsupported manifest version give
+`ReplayArtifactError`; a mismatch of the program, the chain or the replay
+remains a determinism error. The owners are `synapse/golden_replay.py`, the
+backend in `synapse/builtins.py` and the order binding in
+`synapse/interpreter.py`. The cache replays model observations; it does not
+prove their truth and does not add admission bases to the four memory layers.
 
-### Исход эпизода для суда
+### Episode outcome for the court
 
-Для каждого завершённого запуска суд сохраняет рядом с OUTCOME_RECORDED
-события CONSOLIDATED (проверенные утверждения обучения) и OBSERVED —
-типизированный исход эпизода `episode-outcome/v1`. Его вычисляет
-`project_episode_outcome.py` только из запечатанного исхода Stage 12
-физически открытого запуска. Сообщение worker, код выхода команды и метка
-оператора входом не являются.
+For every completed run the court retains, next to OUTCOME_RECORDED, the
+events CONSOLIDATED (verified learning claims) and OBSERVED — the typed episode
+outcome `episode-outcome/v1`. It is computed by `project_episode_outcome.py`
+only from the sealed Stage 12 outcome of the physically opened run. A worker
+message, a command exit code and an operator label are not inputs.
 
-Исход разделяет три факта: что установила каждая попытка (статус Stage 12,
-вердикт oracle, проверенный кандидат и ссылки на результат C1, отчёт команд,
-oracle и публикации), выполнила ли требование более поздняя самостоятельная
-попытка (recovery) и выполнено ли объявленное требование:
+The outcome separates three facts: what each attempt established (Stage 12
+status, oracle verdict, the verified candidate and references to the C1
+result, the command report, the oracle and the publications), whether a later
+independent attempt fulfilled the requirement (recovery), and whether the
+declared requirement was fulfilled:
 
-| Класс | Статус Stage 12 | Значение для памяти |
+| Class | Stage 12 status | Meaning for memory |
 | --- | --- | --- |
-| FULFILLED | FULL | единственное успешное основание |
-| PARTIAL | VERIFIED_REUSABLE_PARTIAL | установленное невыполнение с проверенной частью |
-| NOT_FULFILLED | UNRESOLVED, NO_CANDIDATE, FAIL | установленное невыполнение |
-| UNCERTAIN | INFRA_ERROR | неизвестный эффект: не успех и не неудача |
-| UNVERIFIABLE | INVALID_CONTRACT | недействительное доказательство: не успех и не неудача |
+| FULFILLED | FULL | the only success basis |
+| PARTIAL | VERIFIED_REUSABLE_PARTIAL | established non-fulfilment with a verified part |
+| NOT_FULFILLED | UNRESOLVED, NO_CANDIDATE, FAIL | established non-fulfilment |
+| UNCERTAIN | INFRA_ERROR | unknown effect: neither success nor failure |
+| UNVERIFIABLE | INVALID_CONTRACT | invalid evidence: neither success nor failure |
 
-UNCERTAIN и UNVERIFIABLE не попадают ни в SUCCESS_ONLY, ни в FAILURE_ONLY и не
-считаются дефектами элемента; выбор ALL показывает их как неопределённость.
-Основание (`basis`) есть только у установленных исходов. Утверждения обучения
-в кадре выбираются по собственному проверенному статусу, поэтому неопределённый
-итог запуска не стирает независимо проверенную попытку. Нейтральная проекция
-для подключаемого агента получает только класс исхода, без ссылок на
-доказательства.
+UNCERTAIN and UNVERIFIABLE fall into neither SUCCESS_ONLY nor FAILURE_ONLY and
+are not counted as element defects; the ALL selection shows them as
+uncertainty. Only established outcomes have a basis (`basis`). Learning claims
+in the frame are selected by their own verified status, so an uncertain
+overall result of a run does not erase an independently verified attempt. The
+neutral projection for the pluggable agent gets only the outcome class,
+without references to evidence.
 
-### Суд памяти
+### Memory court
 
-Единственный владелец решений — суд памяти `synapse/memory_consolidation`
-(см. «Выученные привычки» ниже). Gold владеет форматом цепочки решений,
-чистым правилом точных патчей (`project_court.judge`) и примитивом
-дописывания (`establish_tail`, `append_decision`), но сам не решает и не
-импортирует подсистему памяти. Проектный запуск получает суд как порт
-`consolidate(store, guard, project_identity=)`: его передаёт корень композиции
-CLI (`ProjectMemoryCourt`) через `execute_gold_project_run` → `freeze_gold_inputs`
-→ `capture_project_source_snapshot`. Суд вызывается в двух местах. При записи
-исхода (`record_project_outcome`) он работает в той же сессии владельца. Перед
-тем как новое задание закрепит свой срез (`capture_active_memory`), он судит
-незасуженный хвост. Отдельного фонового процесса нет. Без связанной
-конфигурации памяти порт выносит решение только по разделу точных патчей;
-со связанной — это сводная (summary) консолидация того же суда.
+The only owner of decisions is the memory court `synapse/memory_consolidation`
+(see "Learned habits" below). Gold owns the format of the decision chain, the
+pure exact-patch rule (`project_court.judge`) and the append primitive
+(`establish_tail`, `append_decision`), but it neither decides by itself nor
+imports the memory subsystem. A project run receives the court as the port
+`consolidate(store, guard, project_identity=)`: the CLI composition root
+(`ProjectMemoryCourt`) passes it through `execute_gold_project_run` →
+`freeze_gold_inputs` → `capture_project_source_snapshot`. The court is called
+in two places. When an outcome is recorded (`record_project_outcome`), it
+works in the same owner session. Before a new task pins its cut
+(`capture_active_memory`), it judges the unjudged tail. There is no separate
+background process. Without a bound memory configuration, the port decides
+only on the exact-patch section; with one, it is a summary consolidation of
+the same court.
 
-1. **Окно.** Все OUTCOME_RECORDED текущей идентичности проекта, которых ещё нет
-   ни в одном решении. Это и есть незавершённый хвост после сбоя: он
-   обнаруживается по журналу, а не по памяти процесса.
-2. **Основание.** Запуск открывается физически, CONSOLIDATED и OBSERVED
-   выводятся заново и сохраняются. Если записи запуска недоступны
-   (`BASIS_UNAVAILABLE`), противоречивы (`BASIS_INVALID`) или сохранённое
-   событие расходится с новым выводом (`RETAINED_DIFFERS`), исход остаётся
-   PENDING: не теряется, ничего не начисляет и остаётся в хвосте до
-   следующего суда.
-3. **Суждение** — чистая функция `judge` от предыдущего состояния и входов.
-   Установленный исход (COUNTED) начисляет каждому точному патчу задачи и
-   ревизии по одному голосу на происхождение публикации. Копия того же
-   происхождения исключается с причиной `REPEATED_ORIGIN`. UNCERTAIN и
-   UNVERIFIABLE получают DEFERRED и ничего не начисляют ни в поддержку, ни в
-   опровержение.
-4. **Применение** — одно неизменяемое событие JUDGED (`court-decision/v2`;
-   `v1` читается как прежде). В нём входы, вердикты, начисления, исключения,
-   переходы состояний, `state_sha256` и `consolidation`: идентичность, режим
-   и квитанция отчёта консолидации, записанного до решения. Ключ события выводится из предыдущего решения, поэтому у
-   каждого решения может быть только один преемник. Два параллельных потока
-   задач проходят через одну исключительную сессию владельца и продолжают
-   одну цепочку; вторая версия доверия невозможна.
+1. **Window.** All OUTCOME_RECORDED of the current project identity that are
+   not yet in any decision. This is the unfinished tail after a crash: it is
+   found from the journal, not from the process's memory.
+2. **Basis.** The run is opened physically; CONSOLIDATED and OBSERVED are
+   derived again and retained. If the run's records are unavailable
+   (`BASIS_UNAVAILABLE`) or contradictory (`BASIS_INVALID`), or the retained
+   event differs from the new derivation (`RETAINED_DIFFERS`), the outcome
+   stays PENDING: it is not lost, credits nothing and stays in the tail until
+   the next judgment.
+3. **Judgment** is the pure function `judge` of the previous state and the
+   inputs. An established outcome (COUNTED) credits each exact patch of a task
+   and revision with one vote per publication origin. A copy of the same
+   origin is excluded with the reason `REPEATED_ORIGIN`. UNCERTAIN and
+   UNVERIFIABLE get DEFERRED and credit nothing to either support or
+   refutation.
+4. **Application** is one immutable JUDGED event (`court-decision/v2`; `v1` is
+   read as before). It holds the inputs, verdicts, credits, exclusions, state
+   transitions, `state_sha256` and `consolidation`: the identity, the mode and
+   the receipt of the consolidation report recorded before the decision. The
+   event key is derived from the previous decision, so each decision can have
+   only one successor. Two concurrent task streams pass through one exclusive
+   owner session and continue one chain; a second version of trust is
+   impossible.
 
-Политика `court-policy/v1` объявлена заранее и записана в каждое решение:
+The policy `court-policy/v1` is declared in advance and recorded in every
+decision:
 
-| Состояние | Условие |
+| State | Condition |
 | --- | --- |
-| ADMITTED | поддержка ≥ 1, опровержений нет, суд в режиме FULL |
-| OBSERVED | поддержка есть, но допуск удержан (аварийный режим) |
-| REFUTED | только опровержения |
-| SLOW_ONLY | есть и поддержка, и опровержение; политика v1 запрет не снимает |
+| ADMITTED | support ≥ 1, no refutations, the court in FULL mode |
+| OBSERVED | support exists, but admission is withheld (emergency mode) |
+| REFUTED | refutations only |
+| SLOW_ONLY | both support and refutation; policy v1 does not lift the ban |
 
-Аварийный режим (EMERGENCY) действует, пока в хвосте есть PENDING. Начисления
-и ограничения применяются, но новый автоматический допуск не выдаётся
-(`withheld: PENDING_OUTCOMES`), рождений и удалений нет. Когда основание
-возвращается, следующий суд засчитывает исход один раз и выдаёт удержанный
-допуск. Если хвост состоит из тех же PENDING с теми же причинами, новое
-решение не создаётся. Повтор суда на тех же входах возвращает прежнее
-решение: `project resume` завершённого запуска не меняет журнал.
+Emergency mode (EMERGENCY) holds while the tail contains a PENDING outcome.
+Credits and restrictions apply, but no new automatic admission is granted
+(`withheld: PENDING_OUTCOMES`), and there are no births or removals. When the
+basis returns, the next judgment counts the outcome once and grants the
+withheld admission. If the tail consists of the same PENDING outcomes with the
+same reasons, no new decision is created. A repeated judgment on the same
+inputs returns the earlier decision: `project resume` of a completed run does
+not change the journal.
 
-Задания v3/v4 закрепляют в REQUESTED решение суда, которое они читают. Кадр
-строится только из засуженной истории этого решения: при каждом чтении
-цепочка проверяется от корня, а каждое решение пересчитывается из записанных
-входов. Физически открываются только входы нового суда, поэтому удалённый
-позже каталог запуска не блокирует следующие запуски. Кадр показывает
-последние 128 засуженных эпизодов и явно считает пропущенные
-(`omitted_episodes`). Он содержит раздел `court`: режим, PENDING, состояния
-патчей задачи и `automatic_patches`. Автоматический ход Synapse
-(`procedural_memory`) получает только патчи ADMITTED закреплённого решения,
-если выбор оператора сохраняет положительный опыт (ALL, SUCCESS_ONLY).
-Нейтральная проекция также получает `episode_coverage` — число засуженных,
-пропущенных и PENDING эпизодов. Возобновлённое задание видит своё прежнее
-решение, новые сведения входят в следующее задание.
+In REQUESTED, v3/v4 tasks pin the court decision they read. The frame is
+built only from the judged history of that decision: on every read the chain
+is verified from its root, and every decision is recomputed from its recorded
+inputs. Only the inputs of a new judgment are opened physically, so a run
+directory deleted later does not block subsequent runs. The frame shows the
+last 128 judged episodes and counts the omitted ones explicitly
+(`omitted_episodes`). It contains a `court` section: the mode, PENDING, the
+states of the task's patches and `automatic_patches`. The automatic Synapse
+move (`procedural_memory`) receives only the ADMITTED patches of the pinned
+decision, if the operator's selection keeps positive experience (ALL,
+SUCCESS_ONLY). The neutral projection also receives `episode_coverage` — the
+number of judged, omitted and PENDING episodes. A resumed task sees its
+earlier decision; new information enters the next task.
 
-Задания профилей v1 и v2 читаются по своим прежним правилам, в том числе
-прежнее правило подсказки патчей для кадров v2. Любой завершённый запуск
-передаётся суду независимо от профиля задания, которое его записало.
-Результат `project run`/`project resume` в поле `project_memory.court`
-показывает вердикт суда по исходу именно этого запуска, его причины и решение,
-которое его вынесло (для PENDING решения нет). Поэтому повторный `project
-resume` возвращает тот же результат, даже если суд уже продвинулся.
+Tasks of profiles v1 and v2 are read by their earlier rules, including the
+earlier patch hint rule for v2 frames. Every completed run is passed to the
+court regardless of the profile of the task that recorded it. The result of
+`project run`/`project resume` shows in the field `project_memory.court` the
+court's verdict on the outcome of exactly this run, its reasons and the
+decision that issued it (PENDING has no decision). So a repeated `project
+resume` returns the same result even if the court has already moved on.
 
-Ограничения: раздел точных патчей не обобщает и не проверяет независимость
-происхождения сверх различия публикаций; обобщение и рождение касаются только
-процедур инструментов (раздел ниже), а не патчей кода. Если записи запуска потеряны навсегда, суд
-остаётся в аварийном режиме: явного оператора отказа от наблюдения пока нет.
-Аварийный режим спасает только память. Чтение опубликованного знания заново
-проверяет линию производителя, включая записи его запуска. Поэтому потеря
-каталога запуска, который что-то опубликовал, по-прежнему делает знание
-проекта нечитаемым, независимо от суда.
-Суд и журнал памяти принимают параллельных писателей: координатор ждёт очереди,
-а цепочка решений не ветвится. Но хранилища ядра Gold (library, lifecycle,
-provenance, taint) берут замок записи без ожидания. Поэтому второй
-одновременный запуск того же проекта может получить `LOCK_BUSY` на публикации
-и завершиться как GOLD_UNAVAILABLE.
-Журнал ограничен 4096 событиями.
+Limitations: the exact-patch section does not generalize and does not check
+the independence of origins beyond distinct publications; generalization and
+birth concern only tool procedures (section below), not code patches. If a
+run's records are lost for good, the court stays in emergency mode: there is
+no explicit operator for abandoning an observation yet. Emergency mode saves
+only memory. Reading published knowledge re-verifies the producer's lineage,
+including the records of its run. So the loss of the directory of a run that
+published something still makes the project's knowledge unreadable,
+regardless of the court.
+The court and the memory journal accept concurrent writers: the coordinator
+waits for its turn, and the decision chain does not branch. But the Gold core
+stores (library, lifecycle, provenance, taint) take the write lock without
+waiting. So a second simultaneous run of the same project can get `LOCK_BUSY`
+at publication and finish as GOLD_UNAVAILABLE.
+The journal is limited to 4096 events.
 
-### Объявляемый выбор памяти
+### Declared memory selection
 
-Обычный knowledge-input v3 выбирает весь доступный опыт. Для управляемого
-контекста можно использовать knowledge-input v4:
+An ordinary knowledge-input v3 selects all available experience. For a
+controlled context, knowledge-input v4 can be used:
 
 ```json
 {
@@ -605,30 +628,33 @@ provenance, taint) берут замок записи без ожидания. �
 }
 ```
 
-`files` по-прежнему содержит необходимые конкретной задаче внешние evidence.
-Выбор `ALL`, `SUCCESS_ONLY`, `FAILURE_ONLY` или `NONE` относится к
-подтверждённому опыту запусков. Исходное изученное содержание сохраняется
-отдельно. Полная исходная inventory публикаций остаётся в снимке, а выбранные
-кандидаты проходят прежние gates. Архив, происхождение и проверки не изменяются.
+`files` still contains the external evidence a specific task needs. The
+selection `ALL`, `SUCCESS_ONLY`, `FAILURE_ONLY` or `NONE` applies to the
+confirmed experience of runs. The original studied content is retained
+separately. The full original inventory of publications stays in the
+snapshot, and the selected candidates pass the same gates as before. The
+archive, provenance and checks do not change.
 
-Значение выбора фиксируется до начала запуска и применяется также к эпизодам
-Active Memory Frame; в профилях v3/v4 — по классу исхода эпизода. Выбор сужает
-кандидатов, но не выдаёт и не отзывает допуск суда. Изменение выбора
-требует нового запуска; resume использует прежний срез. Неизвестные классы
-опыта не классифицируются догадкой.
+The selection value is fixed before the run starts and also applies to the
+episodes of the Active Memory Frame; in profiles v3/v4, by the episode's
+outcome class. The selection narrows the candidates but neither grants nor
+revokes the court's admission. Changing the selection requires a new run;
+resume uses the earlier cut. Unknown experience classes are not classified by
+guesswork.
 
-### Выученные привычки: сессии, суд консолидации, рождение и загрузка
+### Learned habits: sessions, the consolidation court, birth and loading
 
-Этап 3 плана памяти работает только через штатный запуск. Программа Synapse с
-`tool`, `task_plan`, сегментами `context` и медленным путём
-`try { … } catch (ACTION_FAILED as refusal) { … }` исполняется в durable-профиле
-`synapse.durable.cognitive/v1` (см. `RFC-ASYNC-EXECUTION-AMENDMENT-03.md`).
-Сессия связывается с подключённым проектом Gold. Суд — один для сессий Synapse
-и для проектных запусков Gold, решения идут одной цепочкой JUDGED.
+Stage 3 of the memory plan works only through the canonical launch. A Synapse
+program with `tool`, `task_plan`, `context` segments and the slow path
+`try { … } catch (ACTION_FAILED as refusal) { … }` executes in the durable
+profile `synapse.durable.cognitive/v1` (see
+`RFC-ASYNC-EXECUTION-AMENDMENT-03.md`). The session is bound to a connected
+Gold project. There is one court for Synapse sessions and for Gold project
+runs; decisions form one JUDGED chain.
 
-Конфигурация памяти — строгий JSON, фиксируемый до запуска (дайджест
-записывается в каждый прогон и отчёт; владелец привязывается к одной
-конфигурации и отвергает другую):
+The memory configuration is strict JSON fixed before the run (its digest is
+recorded in every run and report; the owner binds itself to one configuration
+and rejects any other):
 
 ```json
 {
@@ -636,7 +662,7 @@ Active Memory Frame; в профилях v3/v4 — по классу исход�
   "tools": {
     "schema_version": "synapse.memory.tool-configuration/v2",
     "servers": [{"id": "airline", "argv": ["airline-mcp"], "env": {}, "cwd": "/abs/path"}],
-    "tools": [{"name": "flights", "server": "airline", "descriptor_sha256": "<sha256 дескриптора MCP>",
+    "tools": [{"name": "flights", "server": "airline", "descriptor_sha256": "<sha256 of the MCP descriptor>",
                "input_schema": {"type": "object"}, "output_schema": {"type": "object"},
                "source": "flights:acct1", "event_fields": ["route_kind"],
                "contract": {"effect_on_err": {"BUSY": "none"}}}],
@@ -647,172 +673,241 @@ Active Memory Frame; в профилях v3/v4 — по классу исход�
 }
 ```
 
-`descriptor_sha256` — дайджест MCP-дескриптора инструмента, допущенного
-оператором; изменённый дескриптор отвергается при каждом вызове. Контракт
-инструмента задаёт эффект отказа по коду (`effect_on_err`: none, partial,
-applied, unknown), идемпотентность, компенсацию (`compensates`,
-`compensation_signs`), проверку состояния (`state_check_for`, `resolve_state`),
-отказы среды (`environmental_errors`) и, для инструмента-проверяющего гипотез,
-привязку проверки к утверждению (`verifies`). Класс HTTP ответа эффект не
-устанавливает.
+`descriptor_sha256` is the digest of the MCP descriptor of a tool the operator
+admitted; a changed descriptor is rejected on every call. The tool contract
+sets the effect of a refusal by its code (`effect_on_err`: none, partial,
+applied, unknown), idempotency, compensation (`compensates`,
+`compensation_signs`), the state check (`state_check_for`, `resolve_state`),
+environment refusals (`environmental_errors`) and, for a tool that checks
+hypotheses, the binding of the check to the claim (`verifies`). The HTTP class
+of a response does not establish the effect.
 
-Команды оператора:
+Operator commands:
 
 ```bash
 python -m synapse run task.syn --durable --state-dir runs --run-id r1 \
   --input-file r1.json --project-state <state> --memory-config memory.json
-python -m synapse resume --state-file runs/r1.json        # восстановление RUNNING после сбоя
+python -m synapse resume --state-file runs/r1.json        # recovery of RUNNING after a crash
 python -m synapse run task.syn --durable --state-dir runs --run-id exam-b \
   --input-file exam.json --project-state <state> --memory-config memory.json \
-  --exam-mode B --exam-snapshot bnd_…                      # экзамен на зафиксированном снимке
+  --exam-mode B --exam-snapshot bnd_…                      # exam on a fixed snapshot
 python -m synapse run task.syn --durable --state-dir runs --run-id arm-a \
   --input-file arm.json --project-state <state> --memory-config memory.json \
-  --exam-mode B --exam-snapshot bnd_… --exam-trial hab_…   # плечо пробы: одна выученная привычка
-python -m synapse project run --state-dir <state> …       # порт суда передаётся автоматически
+  --exam-mode B --exam-snapshot bnd_… --exam-trial hab_…   # trial arm: one learned habit
+python -m synapse project run --state-dir <state> …       # the court port is passed automatically
 ```
 
-Контур:
+The loop:
 
-1. **Сессия.** Каждый вызов инструмента проходит через шлюз владельца
-   (`<state>/memory-gateway`: цепочка журнала, журнал времени, хранилище
-   улик) и записывается до использования результата. Потерянный ответ даёт
-   эффект unknown; повтор с `retry_of` разрешён только при известном
-   отсутствии эффекта, повторяемом частичном эффекте или идемпотентной
-   операции. Скрытый повтор неурегулированной операции отвергается.
-2. **Окно.** Консолидация берёт хвост каждой зарегистрированной сессии после
-   её курсора. Живая сессия консолидируется только до начала сегмента,
-   который она ещё исполняет: вердикт, реакция и эпизод никогда не
-   разрезаются между окнами.
-3. **dream** (`court/evaluate`): целостность, вердикты сегментов (этап 1 —
-   среда, требование, якорь; 1b — проверенное повторное исполнение сессии;
-   2–3 — оценщик и двойной совет, если объявлены), сигналы срабатываний,
-   реакции и кандидаты. Без советчика свободный маркер остаётся uncertain.
-4. **integrate** (`court/decide`, `court/apply`): доверие по дельта-правилу с
-   минимальным числом свидетельств, лестница конфликтов, пул и рождения,
-   границы, автомат эффективности, квантование; отчёт записывается до
-   решения, затем решение JUDGED и граница снимка.
-5. **Рождение** требует всех шести критериев: повторяемость (≥ 3 различных
-   наблюдений), ≥ 2 задач, только успехи, выводимая привязка аргументов,
-   проверяемость (replay_verified или совпавшая улика якоря) и независимые
-   свидетели того же утверждения. Свидетель — внешний ответ, который
-   подтверждает эффект именно упавшей операции: её успешный повтор или
-   проверка состояния, установившая applied. Ответ о другом (например, о
-   квоте) — свидетель другого утверждения и не учитывается. Независимость
-   трёхзначна (independent, dependent, not_established) и решается только
-   объявленным графом происхождения. Наблюдение — это запрос вместе с
-   ответом источника; копия того же наблюдения голосует один раз.
-6. **Легитимность.** Поведение рождения проходит гейты Gold INGESTION и
-   PUBLICATION (`learned-habit-request/v1`, область жизненного цикла BINDING).
-   Отказанное рождение остаётся в пуле с причиной. Загружается только
-   поведение в потребляемом состоянии при неизменной привязке инструментов.
-   Преемник вытесняет предшественника решением SUPERSEDE полномочия
-   вытеснения; оператор может отозвать поведение
-   (`learned_habit_lifecycle.withdraw_learned_habit`, решение WITHDRAW).
-7. **Загрузка.** Новая сессия закрепляет последнюю полную границу снимка и
-   загружает допущенные Gold привычки; возобновлённая сессия сохраняет свой
-   срез. Выученная привычка срабатывает только внутри своей типизированной
-   области.
+1. **Session.** Every tool call goes through the owner's gateway
+   (`<state>/memory-gateway`: the journal chain, the time journal, the
+   evidence store) and is recorded before its result is used. A lost answer
+   gives the effect unknown; a retry with `retry_of` is allowed only when the
+   effect is known to be absent, the partial effect is repeatable or the
+   operation is idempotent. A hidden retry of an unsettled operation is
+   rejected.
+2. **Window.** A consolidation takes the tail of every registered session
+   after its cursor. A live session is consolidated only up to the start of
+   the segment it is still executing: a verdict, a reaction and an episode are
+   never split between windows.
+3. **dream** (`court/evaluate`): integrity, segment verdicts (stage 1 —
+   environment, requirement, anchor; 1b — verified re-execution of the
+   session; 2–3 — the scorer and double advice, if declared), fire signals,
+   reactions and candidates. Without an advisor, a free marker stays
+   uncertain.
+4. **integrate** (`court/decide`, `court/apply`): trust by the delta rule
+   with minimum evidence, the conflict ladder, the pool and births,
+   boundaries, the effectiveness automaton, quantization; the report is
+   recorded before the decision, then the JUDGED decision and the snapshot
+   boundary.
+5. **Birth** requires all six criteria: repeatability (≥ 3 distinct
+   observations), ≥ 2 tasks, successes only, a derivable argument binding,
+   verifiability (replay_verified or matching anchor evidence) and independent
+   witnesses of the same claim. A witness is an external answer that confirms
+   the effect of exactly the failed operation: its successful retry or a state
+   check that established applied. An answer about something else (for
+   example, about a quota) is a witness of another claim and is not counted.
+   Independence is three-valued (independent, dependent, not_established) and
+   is decided only by the declared provenance graph. An observation is a
+   request together with the source's answer; a copy of the same observation
+   votes once.
+   In tool configuration v2, an external witness can only be the answer of a
+   tool with the role `action` whose source is not named as a service of the
+   agent itself: the source prefix before the colon is not in
+   `AGENT_OWN_SERVICES` (`synapse/memory_consolidation/tools/contracts.py`) —
+   `palace`, `memory`, `store`, `scratchpad`, `ledger`, `journal`, `log`,
+   `notes`, `notebook`, `cassette`, `self`, `agent`, `internal`. An answer
+   from such a source is the agent's record about itself, not an external
+   confirmation, and the court does not include it among the witnesses: an
+   external registry with the source `ledger:erp` will not witness the
+   operation, while `erp:ledger` will. Such an answer still resolves the
+   uncertainty of the operation's effect; it just does not serve as a witness
+   for a birth.
+   The consolidation report `synapse.memory.consolidation-report/v2` explains
+   the exclusion in the `witness_exclusions` section. For a candidate of which
+   the window set an answer apart, it shows:
+   - how many independent witnesses were counted (`counted`) against the
+     number required (`required`), and the independence verdict;
+   - every answer of the window that confirmed the effect but did not become
+     a witness: `run_id`, `event_id`, `gw_seq`, `tool`, `source`, `by`, all
+     reason codes (`agent_own_service` in v2, `not_declared_outside` in v3,
+     `not_an_action`) and `resolves_effect` — whether this answer resolved
+     the uncertainty of the effect;
+   - a summary of the number of answers per reason (`reasons`).
 
-Режимы экзамена (раздел 17 доработки) — параметры запуска, а не политика
-памяти, поэтому все три идут на одной памяти и одном снимке: A — накопленный
-опыт выключен, B — допущенные привычки снимка, C — те же привычки, каждая в
-устойчивом slow_only (отбирается и сообщается `habit_suppressed` с причиной
-`slow_only`, но не исполняется). Экзамен не регистрируется как сессия, не
-консолидируется и после сбоя не проходит аварийную консолидацию: результаты
-экзамена не учат следующие задачи.
+   Witnesses that count but depend on one another (for example two outside
+   sources of one service) are not listed there: the candidate's
+   `independence` in `pool_updates` names the dependent pairs and the reason
+   `sources_dependent`.
 
-Проверенные ограничения:
+   The section only explains. No decision reads it, and it does not enter
+   `apply`, the state, the digest or the snapshot boundary. So the court's
+   decisions stay the same as in report v1, and the court policy stays v6.
 
-- Автомат эффективности с политики суда v3 не считает окна: нехватка опыта
-  никогда не понижает привычку (раздел «Разбор PR108» ниже). Неиспользование
-  по-прежнему измеряется числом консолидаций без срабатываний (`m_idle`,
-  `n_t9`, `k_extinct`).
-- Отзыв поведения доступен только через API Gold; отдельной команды CLI нет.
-- Транспорт MCP не перезапускает умерший stdio-сервер внутри процесса:
-  все последующие вызовы его инструментов теряются до следующего запуска.
-  Таймаут одного вызова — 30 секунд.
-- Выучиваются процедуры инструментов; патчи кода остаются в разделе точной
-  памяти.
-- Это не доказательство живого эксперимента Baseline/Gold и не
-  производственный допуск AS2.
+   Tool configuration `synapse.memory.tool-configuration/v3` replaces the
+   name heuristic with a declaration. The name list is a deny list: it
+   silently discards an external system with a "forbidden" name and would
+   count the agent's own store under any other name. In v3 an allow list
+   applies:
+   - Every node of the provenance graph must state `"outside": true` or
+     `false` explicitly.
+   - Only the answer of a tool with the role `action` whose source is
+     declared external can be a witness. Any other source, including the
+     agent's own stores under any names, does not become a witness (reason
+     `not_declared_outside`).
+   - The service names in `AGENT_OWN_SERVICES` are reserved. Declaring such a
+     source external is a configuration error; declaring it as what it is,
+     `outside: false`, is allowed.
+   - Two external sources of one service (for example `gds:search` and
+     `gds:bookings`) are one operator. Their answers are dependent and do not
+     give two independent witnesses. The `#operator:<service>` nodes are
+     derived automatically, and names with the `#` prefix are forbidden in
+     the graph.
 
-### Этап 4: хранение опыта, гипотезы и допуск дворца
+   The operator writes the declarations in the frozen configuration; the
+   agent does not change them. Configuration v2 works as before. The memory
+   owner moves to v3 with the command
+   `synapse memory reassess --memory-config <v3 configuration>`. From then on,
+   new births and accumulating candidates are judged by the declaration: a
+   witness recorded in a candidate in earlier windows counts only while the
+   configuration in force admits its source. Narrowing the declaration takes
+   effect at once. An answer excluded when it was recorded does not become a
+   witness later, even after the declaration is widened: later answers count.
+   Habits already born keep their birth: a reassessment checks their basis as
+   before, and the independence of witnesses remains a criterion of the
+   moment of birth.
+6. **Legitimacy.** The behavior of a birth passes Gold's INGESTION and
+   PUBLICATION gates (`learned-habit-request/v1`, lifecycle scope BINDING).
+   A refused birth stays in the pool with its reason. Only a behavior in the
+   consumable state with an unchanged tool binding is loaded. A successor
+   supersedes its predecessor by a SUPERSEDE decision of the supersession
+   authority; the operator can withdraw a behavior
+   (`learned_habit_lifecycle.withdraw_learned_habit`, a WITHDRAW decision).
+7. **Loading.** A new session pins the latest complete snapshot boundary and
+   loads the habits Gold admitted; a resumed session keeps its cut. A learned
+   habit fires only inside its typed scope.
 
-Политика суда — `synapse.memory.court-policy/v2`: добавлены объявленные
-параметры `raw_capacity` (0 — без предела) и `hypothesis_fresh_windows`;
-прежние отчёты не переписываются.
+Exam modes (section 17 of the refinement) are run parameters, not memory
+policy, so all three run on one memory and one snapshot: A — accumulated
+experience off, B — the snapshot's admitted habits, C — the same habits, each
+in a persistent slow_only (selected and reported as `habit_suppressed` with
+the reason `slow_only`, but not executed). An exam is not registered as a
+session, is not consolidated and does not go through emergency consolidation
+after a crash: exam results do not teach later tasks.
 
-**Хранение по значимости (раздел 9 доработки).**
+Verified limitations:
 
-- На подэтапе 7а владелец берёт в опеку, в хранилище D
-  (`<state>/memory-gateway/evidence`), сырой трейс каждого случая (его события
-  и их позиции в истории сессии) и данные переисполнения сессии (программа,
-  привязки, открытие сессии, исполнитель). Квант ссылается на них; опыт больше
-  не зависит от артефакта запуска.
-- Степень определяется таблицей спецификации (ч. 3 §8.1). Известный квант,
-  ставший основанием живой привычки, сразу поднимается в высокую; утративший
-  основание возвращается в среднюю через `grace_windows`.
-- Проход хранения — отдельный шаг после применённой консолидации под той же
-  сессией владельца (`court/retention.py`, логика `retention.py`
-  исследовательского движка v43). Средний случай в срок покидает опеку только
-  после того, как его сессия, заново исполненная из данных переисполнения и
-  одних записанных результатов шлюза (`reproduce_cognitive_session`, без живых
-  эффектов), воспроизвела его события точно в записанных позициях
-  (`replay_only`). Иначе трейс остаётся, а случай поднимается в высокую степень
-  с причиной. Низкий случай сводится к хвостовой форме; хвосты старше
-  `k_rollup` сворачиваются в агрегат со списком qid.
-- Основание живой привычки не удаляется никогда (`blocked`). `raw_capacity`
-  уплотняет допустимые случаи раньше срока и публикует потерю (`capacity`:
-  `limit`, `held`, `compacted_early`, `over_limit`); основание решения лимитом
-  не оплачивается.
-- Факты прохода записываются в журнал проекта (`MEMORY_RETENTION`) до удаления
-  любого тела; удалённое тело оставляет метку (`compacted` или `forgotten` с
-  надгробием). Прерванный проход доводится до конца следующим проходом по
-  записи и не решается заново; следующий отчёт применяет факты (раздел
-  `retention`).
+- Since court policy v3, the effectiveness automaton does not count windows:
+  a lack of experience never demotes a habit (section "Review of PR108" below).
+  Disuse is still measured by the number of consolidations without fires
+  (`m_idle`, `n_t9`, `k_extinct`).
+- Withdrawing a behavior is available only through the Gold API; there is no
+  separate CLI command.
+- The MCP transport does not restart a dead stdio server inside the process:
+  all later calls of its tools are lost until the next run. The timeout of
+  one call is 30 seconds.
+- Tool procedures are learned; code patches stay in the exact memory section.
+- This is not evidence of a live Baseline/Gold experiment and not AS2
+  production admission.
+
+### Memory stage 4: experience retention, hypotheses and palace admission
+
+The court policy is `synapse.memory.court-policy/v2`: the declared parameters
+`raw_capacity` (0 means no limit) and `hypothesis_fresh_windows` are added;
+earlier reports are not rewritten.
+
+**Retention by significance (section 9 of the refinement).**
+
+- At substage 7a the owner takes into custody, in store D
+  (`<state>/memory-gateway/evidence`), the raw trace of every case (its events
+  and their positions in the session history) and the session's replay data
+  (the program, bindings, the session's opening, the executor). The quantum
+  refers to them; experience no longer depends on the run artifact.
+- The tier is determined by the specification's table (part 3 §8.1). A known
+  quantum that became the basis of a live habit rises to high at once; one
+  that lost its basis returns to medium after `grace_windows`.
+- The retention pass is a separate step after an applied consolidation, under
+  the same owner session (`court/retention.py`, the logic of `retention.py` of
+  the research engine v43). A medium case leaves custody when due only after
+  its session, re-executed from the replay data and the gateway's recorded
+  results alone (`reproduce_cognitive_session`, without live effects), has
+  reproduced its events exactly at their recorded positions (`replay_only`).
+  Otherwise the trace stays, and the case rises to the high tier with a
+  reason. A low case is reduced to its tail form; tails older than `k_rollup`
+  are rolled up into an aggregate with the list of qids.
+- The basis of a live habit is never removed (`blocked`). `raw_capacity`
+  compacts eligible cases before their time and publishes the loss
+  (`capacity`: `limit`, `held`, `compacted_early`, `over_limit`); the limit is
+  not paid for with a decision basis.
+- The facts of a pass are recorded in the project journal (`MEMORY_RETENTION`)
+  before any body is removed; a removed body leaves a marker (`compacted` or
+  `forgotten` with a tombstone). An interrupted pass is completed by the next
+  pass from its record and is not decided again; the next report applies the
+  facts (the `retention` section).
 
 ```bash
 python -m synapse memory restore --project-state <state> --memory-config memory.json --quantum <qid>
 python -m synapse memory forget --project-state <state> --memory-config memory.json --quantum <qid> \
-  --reason "<причина>" --operator <оператор>
+  --reason "<reason>" --operator <operator>
 python -m synapse memory trial --project-state <state> --memory-config memory.json \
-  --arm runs/arm-a.json --arm runs/arm-b.json --stand <стенд> \
+  --arm runs/arm-a.json --arm runs/arm-b.json --stand <stand> \
   --scope '{"fields": {"route_kind": ["intl"], "tool": ["flights"]}}'
 ```
 
-`restore` возвращает уплотнённый случай: воспроизведённый трейс пишется по
-тому же адресу, нового голоса нет. `forget` — юридически значимое удаление:
-сырой трейс и записанные результаты случая (и каждого случая с теми же
-результатами) удаляются за надгробием с причиной и полномочием
-`GOVERNING_HUMAN`; шлюз отдаёт для такого результата явный конец
-(`forgotten`), а не нарушение целостности.
+`restore` returns a compacted case: the reproduced trace is written to the
+same address, and there is no new vote. `forget` is a legally significant
+removal: the raw trace and the recorded results of the case (and of every case
+with the same results) are removed behind a tombstone with a reason and the
+authority `GOVERNING_HUMAN`; for such a result the gateway returns an explicit
+end (`forgotten`), not an integrity violation.
 
-**Гипотезы (раздел 10).** Встроенные функции долговечной сессии:
-`hypothesis(claim)`, `probe(h)`, `established(h)`; опция
-`tool(…, {"requires": [h, …]})`; флаг контракта инструмента
+**Hypotheses (section 10).** Built-in functions of a durable session:
+`hypothesis(claim)`, `probe(h)`, `established(h)`; the option
+`tool(…, {"requires": [h, …]})`; the tool contract flag
 `requires_established`.
 
 - `claim`: `{"aspect": "entity" | "content" | "version", "subject",
   "statement": {…}, "scope", "source": {"tool", "args"}, "check": {"tool",
-  "args"}}`. Источник — записанное успешное наблюдение того же прогона; адрес
-  его ответа — версия источника и часть идентичности записи (`hyp_…`).
-- Статус начинается с `provisional`. Решает только объявленная проверка через
-  шлюз, только независимым от источника (по графу происхождения)
-  проверяющим и только когда проверка ответила об этом самом утверждении
-  (правило `synapse.memory.hypothesis-check/v2`): контракт проверяющего
-  (`verifies`) связывает аргумент запроса и/или поле ответа с субъектом
-  (`subject`), область (`scope`: аргумент, поле или единственное значение
-  `value`, за которое отвечает служба) и каждое условие (`conditions`).
-  Субъект сравнивается по точным правилам идентичности (пространство имён,
-  тип, инкарнация), область и условия — по значению. Затем все поля совпали —
-  `confirmed`; поле присутствует и отличается — `refuted`. Проверка без
-  привязки (`check_unbound`), ответ о другом субъекте или области
-  (`check_about_another:…`), условие, которое привязка не связывает или с
-  другим значением, условие, под которым проверка ответила, а утверждение его
-  не называет (`check_under_condition:…`), отказ, потеря, отсутствующее поле,
-  `"determinable": false`, зависимый или неустановленный проверяющий,
-  отсутствующий источник — `provisional` с причиной: ни подтверждения, ни
-  опровержения. Подтверждение сущности ничего не говорит о содержании.
+  "args"}}`. The source is a recorded successful observation of the same run;
+  the address of its answer is the source version and part of the record's
+  identity (`hyp_…`).
+- The status starts as `provisional`. Only the declared check decides it,
+  through the gateway, only with a checking tool independent of the source (by
+  the provenance graph) and only when the check answered about this very claim
+  (rule `synapse.memory.hypothesis-check/v2`): the checking tool's contract
+  (`verifies`) binds a request argument and/or an answer field to the subject
+  (`subject`), the scope (`scope`: an argument, a field or the single value
+  `value` the service answers for) and each condition (`conditions`). The
+  subject is compared by the exact identity rules (namespace, type,
+  incarnation), the scope and conditions by value. Then: all fields matched —
+  `confirmed`; a field is present and differs — `refuted`. A check without a
+  binding (`check_unbound`), an answer about another subject or scope
+  (`check_about_another:…`), a condition the binding does not bind or one with
+  another value, a condition the check answered under that the claim does not
+  name (`check_under_condition:…`), a refusal, a loss, a missing field,
+  `"determinable": false`, a dependent or unestablished checking tool, a
+  missing source — `provisional` with a reason: neither confirmation nor
+  refutation. A confirmation of the entity says nothing about the content.
 
   ```json
   {"name": "ledger", "source": "ledger:bank", "contract": {"verifies": {
@@ -820,1177 +915,1228 @@ python -m synapse memory trial --project-state <state> --memory-config memory.js
     "scope": {"value": "bank"},
     "conditions": {"currency": {"request": "currency"}}}}}
   ```
-- Действие с `requires` (и любой инструмент с `requires_established`)
-  отказывается шлюзом до эффекта (`REJECTED`), пока хоть одна названная
-  гипотеза не установлена.
-- Суд записывает статусы (решает последняя проверка; основание — случай с
-  ответом проверки); граница снимка v2 переносит их вместе с окном и последней
-  проверенной версией источника по утверждению и правилом, по которому
-  решён статус. Повторное использование — только для той же версии источника,
-  не старше `hypothesis_fresh_windows` и только для статуса, решённого по
-  текущему правилу проверки; смена источника (`source_changed`), неизвестная
-  свежесть или статус, решённый до привязки проверок к утверждениям
-  (`checked_under_another_rule`), требуют проверки заново. Экзамен A статусов
-  не видит, B и C — видят.
+- An action with `requires` (and any tool with `requires_established`) is
+  refused by the gateway before its effect (`REJECTED`) while any named
+  hypothesis is not established.
+- The court records the statuses (the latest check decides; the basis is the
+  case with the check's answer); snapshot boundary v2 carries them together
+  with the window, the last checked source version per claim and the rule the
+  status was decided by. Reuse applies only to the same source version, no
+  older than `hypothesis_fresh_windows`, and only to a status decided by the
+  current check rule; a source change (`source_changed`), unknown freshness
+  or a status decided before checks were bound to claims
+  (`checked_under_another_rule`) require a new check. Exam A does not see the
+  statuses; B and C do.
 
-**Допуск записей дворца (раздел 11).** `recall` возвращает кандидатов по
-лексическому совпадению только содержательных полей (оценщик
-`palace-lexical/v2`; он записан в каждой строке и в событии
-`memory_recalled`). Уверенность, время вставки и метаданные в оценку не входят,
-ноль совпадений — не кандидат, равные оценки упорядочены по идентичности.
-Допуск факта — отдельная встроенная `admit(candidates, claim)`
-(`synapse/palace_admission.py`, событие `memory_admission`): сущность, атрибут,
-вид, область, срок действия, происхождение, статус `confirmed` (живой статус
-гипотезы, если запись её называет, иначе заявленный самой записью — это
-сообщается), не меньше двух разных нормализованных ключевых токенов вместе с
-порогом. Противоречие допустимых значений — конфликт без допуска; копии одного
-утверждения считаются один раз.
+**Admission of palace records (section 11).** `recall` returns candidates by
+a lexical match of content fields only (scorer `palace-lexical/v2`; it is
+recorded in every row and in the `memory_recalled` event). Confidence,
+insertion time and metadata do not enter the score, zero matches means no
+candidate, and equal scores are ordered by identity. Admission of a fact is a
+separate built-in `admit(candidates, claim)` (`synapse/palace_admission.py`,
+event `memory_admission`): entity, attribute, kind, scope, validity period,
+provenance, the status `confirmed` (the live status of the hypothesis if the
+record names one, otherwise the one the record itself states — this is
+reported), at least two different normalized key tokens together with the
+threshold. A contradiction of admissible values is a conflict without
+admission; copies of one claim count once.
 
-Смена правила — изменение версии поведения. Разбор дельты на размеченных
-зондах `test_palace_admission_acceptance.py` при пороге 0.5. Прежнее правило
-(верхний кандидат по `(вхождение подстроки + уверенность) / 2`, при равенстве —
-более поздняя запись) отвечало отравленной копией на вопрос о команде
-перезапуска и на перефраз, отвечало от имени другой сущности и выбирало
-победителя конфликта. Новое правило ни на одном зонде не допускает ошибочный
-факт. Потеряна одна полезная находка: запись со слабым совпадением (один
-ключевой токен) и уверенностью 0.99 больше не допускается — это требование
-минимума ключей. Решётка чувствительности (порог 0.34 / 0.5 / 0.67 / 1.0 ×
-уверенность 0.1 / 0.5 / 0.99): доля ошибочных допусков 0.0 во всех клетках;
-доля потерянного полезного знания 1/3 при пороге до 0.5 и 1/2 от 0.67;
-уверенность не меняет ни одной клетки. Существующие тесты дворца пересмотрены:
-их запросы совпадают со словами содержимого, результаты не изменились.
+Changing the rule is a change of the behavior version. Delta analysis on the
+labeled probes of `test_palace_admission_acceptance.py` at threshold 0.5. The
+earlier rule (the top candidate by `(substring occurrence + confidence) / 2`,
+on a tie the later record) answered the question about the restart command
+and its paraphrase with a poisoned copy, answered on behalf of another entity
+and picked a winner of a conflict. The new rule admits no wrong fact on any
+probe. One useful find is lost: a record with a weak match (one key token) and
+confidence 0.99 is no longer admitted — this is the minimum-keys requirement.
+Sensitivity grid (threshold 0.34 / 0.5 / 0.67 / 1.0 × confidence 0.1 / 0.5 /
+0.99): the share of wrong admissions is 0.0 in every cell; the share of lost
+useful knowledge is 1/3 at thresholds up to 0.5 and 1/2 from 0.67; confidence
+changes no cell. The existing palace tests were revised: their queries match
+words of the content, and the results did not change.
 
-**Требование сегмента с ресурсом (раздел 8).** Требование `execute` может
-назвать ресурс: `"resource": {"argument": "job_id", "from": {"tool":
-"create_job", "field": "job_id"}}`. Требуемая операция засчитывается, только
-если её аргумент равен полю успешного более раннего результата указанного
-инструмента в той же области; успех над другим ресурсом —
-`required_operation_on_another_resource`. Без этого ключа идентичность
-контракта задачи не меняется.
+**Segment requirement with a resource (section 8).** An `execute` requirement
+can name a resource: `"resource": {"argument": "job_id", "from": {"tool":
+"create_job", "field": "job_id"}}`. The required operation counts only if its
+argument equals a field of an earlier successful result of the named tool in
+the same scope; a success on another resource is
+`required_operation_on_another_resource`. Without this key, the identity of
+the task contract does not change.
 
-Проверенные ограничения этапа:
+Verified limitations of the stage:
 
-- Исполнитель закреплён за владельцем целиком: суд отказывает журналу с
-  эпизодами другого исполнителя, поэтому случай без сырья всегда
-  воспроизводится тем же исполнителем. Процедура перехода на новую версию
-  рантайма (спецификация ч. 3 §8.4 п. 5) не реализована.
-- Случаи аварийного окна (provisional) не получают плана хранения и остаются в
-  опеке.
-- Воспроизведение для хранения точно только для программ без `time`, `random`
-  и вызовов модели вне шлюза; иначе случай не уплотняется и поднимается в
-  высокую степень.
-- `forget` не удаляет данные переисполнения сессии (программу и привязки).
-- `imprint` и `recall` не входят в долговечный когнитивный профиль
-  (идентичности записей дворца недетерминированы). Дворцовый путь допуска
-  работает в обычном `python -m synapse run`; в долговечной сессии `admit`
-  применяется к записям, построенным из записанных ответов. Перефраз без общих
-  слов лексический допуск не решает — это семантический поиск (этап 6).
-- D1 и D2 реализованы следующим пакетом (ниже); композиция, семантический
-  поиск и событийное исполнение (этапы 5б–7 доработки) в пакет не входят.
+- The executor is pinned to the owner as a whole: the court refuses a journal
+  with episodes of another executor, so a case without raw material is always
+  reproduced by the same executor. The procedure for moving to a new runtime
+  version (specification part 3 §8.4 item 5) is not implemented.
+- Cases of an emergency window (provisional) get no retention plan and stay in
+  custody.
+- Replay for retention is exact only for programs without `time`, `random`
+  and model calls outside the gateway; otherwise the case is not compacted and
+  rises to the high tier.
+- `forget` does not remove the session's replay data (the program and
+  bindings).
+- `imprint` and `recall` are not part of the durable cognitive profile (the
+  identities of palace records are nondeterministic). The palace admission
+  path works in an ordinary `python -m synapse run`; in a durable session
+  `admit` applies to records built from recorded answers. Lexical admission
+  does not resolve a paraphrase without shared words — that is semantic
+  search (memory stage 6).
+- D1 and D2 are implemented by the next package (below); composition, semantic
+  search and event-driven execution (stages 5b–7 of the refinement) are not
+  part of the package.
 
-### Этап 5а: обобщение условий применения (D1) и передача результатов (D2)
+### Memory stage 5a: generalizing applicability (D1) and passing results (D2)
 
-**Условия применения (раздел 12).** Триггер выученной привычки — запись
-схемы 1.2 (`habit_trigger`): к прежним полям добавлено `applicability`,
-объяснение области применения, входящее в идентичность; записи 1.1 остаются
-проверяемыми. Обобщение (`learning/applicability.py`) детерминировано и не
-использует модель:
+**Applicability (section 12).** The trigger of a learned habit is a schema 1.2
+record (`habit_trigger`): `applicability`, an explanation of the scope of
+application that is part of the identity, is added to the earlier fields; 1.1
+records stay verifiable. Generalization (`learning/applicability.py`) is
+deterministic and uses no model:
 
-- база — наименьшее общее обобщение положительных эпизодов: поле с одним
-  значением во всех — условие `==`, меняющееся поле отбрасывается, общие
-  метки контекста обязательны;
-- контраст — проверенный отказ той же процедуры (тот же ключ кандидата,
-  сегмент признан `failed`, сессия подтверждена переисполнением). Каждый
-  контраст сравнивается только с базой, поэтому итог не зависит от порядка
-  эпизодов. Дискриминаторы контраста — нарушенные им условия базы и
-  меняющиеся поля со значением, которого не было ни у одного положительного.
-  Ровно один дискриминатор — поле **существенно** (с контрастом в
-  объяснении). Контраст внутри базы получает границу из значений
-  положительных: число за одним краем их диапазона — граница этого края
-  (`<=`/`>=`), иначе — множество виденных значений (`in`). Несколько
-  дискриминаторов ограничивают каждый, не доказывая ни один (`bounded`).
-  Контраст без дискриминатора — необъяснённое противоречие, рождение
-  блокируется, как раньше;
-- поле события, которое читает связывание, без собственного условия
-  получает условие присутствия вида `is` (`string`, `number`, `bool`,
-  `object`, `array`, `null`): отсутствующее поле или значение другого вида
-  автоматизма не даёт; разные виды у положительных — рождение невозможно
+- the base is the least general generalization of the positive episodes: a
+  field with one value in all of them is an `==` condition, a field that varies
+  is dropped, and shared context labels are required;
+- a contrast is a verified failure of the same procedure (the same candidate
+  key, the segment judged `failed`, the session confirmed by re-execution).
+  Each contrast is compared with the base alone, so the result does not depend
+  on the order of the episodes. The discriminators of a contrast are the base
+  conditions it violates and the varying fields with a value that no positive
+  had. With exactly one discriminator the field is **essential** (with the
+  contrast in the explanation). A contrast inside the base gets a boundary from
+  the values of the positives: a number beyond one edge of their range gives a
+  boundary at that edge (`<=`/`>=`), otherwise the boundary is the set of
+  values seen (`in`). Several discriminators bound each one of them without
+  proving any (`bounded`). A contrast without a discriminator is an unexplained
+  contradiction, and birth is blocked, as before;
+- an event field that the binding reads and that has no condition of its own
+  gets an `is` presence condition (`string`, `number`, `bool`, `object`,
+  `array`, `null`): a missing field or a value of another kind does not trigger
+  automation; when the positives have different kinds, birth is impossible
   (`boundary_not_derivable`);
-- объяснение: `essential` (с контрастами), `bounded`, `irrelevant`
-  (менялись — несущественность доказана вариацией), `unproven` (постоянны,
-  контраста не было), `required` (читаемые поля и их вид). Условия хранятся
-  в одном каноническом порядке, множества значений — упорядоченно, поэтому
-  эквивалентные триггеры — одна запись.
+- the explanation: `essential` (with contrasts), `bounded`, `irrelevant` (the
+  fields varied: irrelevance is proven by variation), `unproven` (constant,
+  there was no contrast), `required` (the fields read and their kind).
+  Conditions are stored in one canonical order and value sets in sorted order,
+  so equivalent triggers are one record.
 
-Критерий завершённости рождения считается внутри области привычки:
-`all_success` — все эпизоды внутри неё успешны, объяснённые контрасты
-отдельно (`criteria.contrasts`). Проверка Gold не изменилась.
+The completion criterion of birth is judged inside the habit's scope:
+`all_success` means that every episode inside it succeeded, and explained
+contrasts are counted separately (`criteria.contrasts`). Gold's verification
+did not change.
 
-Граница движется только по свидетельствам. Три близких промаха одного
-условия в окне, восстановленные тем же действием, расширяют это условие
-значениями, на которых они восстановлены (`==` → `in`, `in` дополняется,
-граница сдвигается), — условие никогда не удаляется, остальные условия
-сохраняются. Расширение, которое допустило бы значение записанного контраста,
-отказывается с причиной (раздел отчёта `boundary_refusals`). Сужение по
-проверенным отказам добавляет их как контрасты поля. Преемник рождается в
-`probation` и вытесняет предшественника в Gold, как прежде. Метки контекста
-и запреты `not_when` по-прежнему снимаются целиком.
+A boundary moves only on evidence. Three near misses of one condition in a
+window, recovered by the same action, widen that condition by the values at
+which they were recovered (`==` → `in`, `in` is extended, a boundary shifts);
+the condition is never removed, and the other conditions are kept. A widening
+that would admit the value of a recorded contrast is refused with a reason
+(report section `boundary_refusals`). Narrowing on verified failures adds them
+as contrasts of the field. The successor is born in `probation` and supersedes
+its predecessor in Gold, as before. Context labels and `not_when` prohibitions
+are still lifted as a whole.
 
-Событие `habit_activated` несёт `matched` — каждое проверенное условие с
-фактическим значением; близкий промах по-прежнему называет одно условие с
-фактическим значением.
+The `habit_activated` event carries `matched`: every checked condition with its
+actual value; a near miss still names one condition with its actual value.
 
-Смена схемы или контракта инструмента — другая конфигурация памяти: владелец
-привязан к одной конфигурации и отказывает любой другой до эффекта, а Gold
-сверяет привязку инструментов при каждом допуске. Старая привычка не
-встречается с новой схемой; перенос опыта через смену схемы не реализован.
+A change of a tool's schema or contract is a different memory configuration:
+the owner is bound to one configuration and refuses any other before any
+effect, and Gold verifies the tool binding at every admission. An old habit
+does not meet a new schema; carrying experience over a schema change is not
+implemented.
 
-**Передача результатов (раздел 13).** Правило связывания получает источник
-`{"result": {"step", "path", "kind"}}` — поле успешного ответа более раннего
-вызова того же тела (`learning/dependencies.py`):
+**Passing results (section 13).** The binding rule gets the source
+`{"result": {"step", "path", "kind"}}`, a field of the successful answer of an
+earlier call of the same body (`learning/dependencies.py`):
 
-- значение аргумента связывается с ответом производителя только там, где
-  появилось впервые. Всё, что было известно до ответа, — литералы программы
-  (по лексеру), входы сессии, поля реактивного события, аргументы
-  отказавшего действия, все аргументы и ответы журнала до ответа
-  производителя, — делает совпадение эхом, а не зависимостью. Эхо в ответе
-  промежуточного шага (статус, повторяющий идентификатор) целью не
-  становится;
-- ссылка выводится первой по приоритету, только если во всех эпизодах
-  основания она одна и та же, а значения различаются; неизменное значение
-  остаётся константой. Аргумент, который меняется от задачи к задаче и
-  совпадает с ответом только как эхо заранее известного значения (литерал
-  драйвера), не выводится: рождение невозможно, отчёт называет причину
+- an argument value is linked to a producer's answer only where the value first
+  appeared. Everything known before the answer — the program's literals (by the
+  lexer), the session inputs, the fields of the reactive event, the arguments
+  of the failed action, every argument and answer in the journal before the
+  producer's answer — makes a match an echo, not a dependency. An echo in the
+  answer of an intermediate step (a status that repeats an identifier) does not
+  become a target;
+- a reference is derived with first priority only if it is the same in every
+  basis episode and the values differ; a value that does not change stays a
+  constant. An argument that changes from task to task and matches an answer
+  only as an echo of a value known in advance (a driver literal) is not
+  derived: birth is impossible, and the report names the reason
   (`pool_updates[].unavailable.binding`);
-- ссылка допустима только на успешный ответ собственного действия более
-  раннего шага; объявленные схемы входа и выхода инструментов проверяются на
-  вид (`dependency_type_incompatible`). Ссылки входят в правило связывания,
-  а значит в идентичность привычки;
-- исполнение связывает все аргументы, не ждущие ответа, до первого эффекта
-  (`binding_not_applicable` без вызовов). Ссылка разрешается по записанному
-  ответу, когда приходит её вызов: отказ или неизвестный эффект
-  производителя (`producer_failed`, `producer_uncertain`, остановка
-  `diverged_from_basis` с перечнем зависимых шагов), отсутствующее поле,
-  пустое значение, другой вид (`field_missing`, `field_empty`,
-  `type_mismatch`) — различимые причины в `habit_activated.detail`;
-  зависимый вызов не выполняется;
-- суд пересчитывает исход быстрого пути тем же исполнителем по записанным
-  ответам журнала (`run_recorded`), а не по метке рантайма: остановленное
-  тело — `failure`, хотя последний ответ был успешным. Переисполнение и
-  возобновление читают записанный идентификатор и не создают нового объекта.
+- a reference may point only to the successful answer of an earlier step's own
+  action; the declared input and output schemas of the tools are checked for
+  kind (`dependency_type_incompatible`). References are part of the binding
+  rule and therefore of the habit's identity;
+- before the first effect, execution binds every argument that does not wait
+  for an answer (`binding_not_applicable` with no calls). A reference is
+  resolved from the recorded answer when its call is reached: a failure or an
+  unknown effect of the producer (`producer_failed`, `producer_uncertain`, a
+  `diverged_from_basis` stop listing the dependent steps), a missing field, an
+  empty value, another kind (`field_missing`, `field_empty`, `type_mismatch`)
+  are distinct reasons in `habit_activated.detail`; the dependent call is not
+  made;
+- the court recomputes the outcome of the fast path with the same executor from
+  the journal's recorded answers (`run_recorded`), not from the runtime's
+  label: a stopped body is a `failure` even though the last answer succeeded.
+  Re-execution and resumption read the recorded identifier and create no new
+  object.
 
-Проверенные ограничения этапа:
+Verified limitations of the stage:
 
-- Ссылка покрывает аргумент верхнего уровня целиком; значение внутри
-  составного аргумента ссылкой не выражается.
-- Производитель, всегда отвечающий одним значением, неотличим по
-  свидетельствам от константы и связывается константой.
-- Граница по контрасту строится из значений положительных: значения между
-  краем положительных и контрастом остаются непроверенными и закрыты, пока
-  восстановленные близкие промахи не расширят границу.
-- Композиция привычек (раздел 14) реализована следующим пакетом (ниже).
+- A reference covers a whole top-level argument; a value inside a composite
+  argument cannot be expressed by a reference.
+- A producer that always answers with one value is indistinguishable from a
+  constant by the evidence and is bound as a constant.
+- A boundary from a contrast is built from the values of the positives: values
+  between the edge of the positives and the contrast remain unchecked and
+  closed until recovered near misses widen the boundary.
+- Habit composition (section 14) is implemented by the next package (below).
 
-### Этап 5б: композиция привычек
+### Memory stage 5b: habit composition
 
-Композиция иерархическая: базовая процедура исполняется, и на шаге, который
-отказал иначе, чем в её основаниях (тупик), к событию отказа этого шага может
-быть присоединена часть — другая допущенная выученная процедура
-(`learning/composition.py`). Решения опираются на первичные источники: навык
-как кортеж (применимость, политика, условие завершения, интерфейс) и
-иерархическая композиция, когда политика вызывает навык (SoK Agentic Skills,
-arXiv 2602.20867 — без условия завершения навык не компонуется); подцель
-Soar, сворачиваемая в новое правило, и риск переобобщения (поэтому составная
-процедура проверяется целиком); методы HTN с предусловиями; допуск в
-библиотеку только проверенной программы (Voyager); компенсации саг
-(Garcia-Molina, Salem) как источник конфликта эффектов; снятие производного
-знания вместе с посылкой (TMS, Doyle) для пересмотра композиции; перебор
-применимых планов при отказе плана в агентах BDI (Sardina, Padgham, язык CAN,
-Autonomous Agents and Multi-Agent Systems, 2011) и повтор другим методом в
-исполнителе уточнений (Retry в RAE: Ghallab, Nau, Traverso, «Automated Planning
-and Acting», 2016); выбор более специфичного правила при разрешении конфликта
-(OPS5); ограничение глубины вложенности, без которого иерархическое
-планирование не завершается.
+Composition is hierarchical: a base procedure runs, and at a step that failed
+otherwise than in its basis (an impasse), a part, another admitted learned
+procedure, may be attached to that step's failure event
+(`learning/composition.py`). The decisions rest on primary sources: a skill as
+a tuple (applicability, policy, termination condition, interface) and
+hierarchical composition where a policy calls a skill (SoK Agentic Skills,
+arXiv 2602.20867: without a termination condition a skill does not compose); a
+Soar subgoal folded into a new rule, and the risk of overgeneralization (which
+is why a composite procedure is verified as a whole); HTN methods with
+preconditions; admission into the library of a verified program only (Voyager);
+saga compensations (Garcia-Molina, Salem) as a source of effect conflicts;
+retraction of derived knowledge together with its premise (TMS, Doyle) for the
+review of a composition; trying the applicable plans in turn when a plan fails
+in BDI agents (Sardina, Padgham, the CAN language, Autonomous Agents and
+Multi-Agent Systems, 2011) and retry with another method in a refinement
+executor (Retry in RAE: Ghallab, Nau, Traverso, "Automated Planning and
+Acting", 2016); choosing the more specific rule in conflict resolution (OPS5);
+a limit on the nesting depth, without which hierarchical planning does not
+terminate.
 
-- **Интерфейс части** читается из её замороженных записей и контрактов
-  инструментов: применимость (типизированный триггер), входы (аргументы
-  отказавшего действия и поля события, которые читает связывание, с видами),
-  гарантия и завершение (повтор отказавшей операции успешен —
-  `failed_operation_recovered`), эффекты (инструменты тела и их
-  `idempotent`/`compensates`), ограничения.
-- **Соединение** допускается, только если триггер части применим к событию
-  отказа шага (условия всех частей сохраняются и проверяются заново при каждом
-  исполнении), её входы связываются из этого события, она завершается
-  повтором операции шага, и ни она не компенсирует эффект, уже сделанный
-  базой, ни оставшиеся шаги базы не компенсируют её эффекты. Каждый
-  отвергнутый кандидат записывается с причиной (`conditions_not_met`,
-  `inputs_unavailable`, `no_termination`, `effect_conflict`).
-- **Исполнитель** (тот же, что у быстрого пути): при успешном повторе части
-  ответ шага заменяется этим повтором, и база продолжается (ссылки на
-  результат шага читают успешный ответ); итог каждой части записывается
-  отдельно от итога тела. Повтор операции — объявленный повтор той же
-  операции, который шлюз проверяет до эффекта.
-- **Альтернативы.** Соединение хранит части тупика по порядку. Часть, не
-  восстановившая шаг, уступает следующей допустимой; та проверяется против
-  текущего отказа шага (если часть повторила операцию и получила другой
-  отказ, следующая должна быть применима уже к нему), и эффекты, уже
-  применённые предыдущими попытками, участвуют в проверке конфликтов. Каждая
-  часть пробуется в тупике один раз; когда ни одна не восстановила шаг, тело
-  останавливается (`component_failed` с перечнем опробованных частей и
-  отказов). Шаг или часть с неизвестным эффектом прекращает перебор
-  (`component_uncertain`): ничего не выбирается поверх неизвестного
-  состояния. Планировщик ранжирует части по доверию, затем по
-  специфичности триггера (больше условий — раньше), затем по идентичности.
-  Каждый вызов части, кроме самого повтора, объявляет в запросе шлюзу
-  отказавшую операцию, которой служит (`serves`), пока та не урегулирована;
-  шлюз до эффекта отвергает объявление, не называющее неурегулированную
-  операцию той же области, а программа такое объявление сделать не может.
-  Отказ такого вызова без эффекта урегулирован, когда обслуживаемая операция
-  затем прошла (`served_operation_settled`): оставленная альтернатива,
-  ничего не изменившая, не проваливает предметный итог сегмента, как
-  прерванная альтернатива гибкой транзакции (Zhang, Nodine, Bhargava,
-  Bukhres, SIGMOD 1994). Любой другой эффект или неурегулированная
-  обслуживаемая операция оставляют отказ провалом.
-- **Вложенность.** Тупик внутри части разрешается так же: сначала
-  собственные соединения части (если она сама составная), затем части,
-  присоединённые внутри неё. Часть никогда не присоединяется внутри себя или
-  процедуры, частью которой она является (`component_cycle`), поэтому
-  глубина ограничена числом различных частей и исполнение конечно. Эффекты
-  частей проверяются на конфликт и с оставшимися шагами всех объемлющих
-  процедур.
-- **Последовательность.** Процедура, чей повтор операции отказал по новой
-  причине, заканчивается этим новым отказом; часть, чей триггер применим к
-  нему, присоединяется к этому повтору. Выход первой процедуры —
-  типизированное событие отказа её повтора — становится входом второй; вторая
-  повторяет ту же операцию, и первая продолжается. Так соединяются процедуры
-  с разными целями (например, дренаж и миграция схемы).
-- **Три статуса.** Гипотеза плана — медленный планировщик: встроенная
-  `recover(failure)` в медленном пути продолжает остановленное тело быстрого
-  пути от его записанных ответов и уже опробованных частей (без повторения
-  сделанных вызовов) или берёт базой первую допущенную часть, чей триггер
-  применим к отказу; в тупике пробует известные альтернативы, затем
-  подходящие части по рангу. События `composition_planned` (место во
-  вложенности, соединение или отказ с перечнем кандидатов) и
-  `composition_executed` (база, соединения, дерево попыток частей с итогами,
-  восстановлен ли отказ) записываются и сверяются при переисполнении.
-  Проверенная композиция — суд переисполняет каждый такой эпизод тем же
-  исполнителем по записанным ответам, пробуя части в записанном порядке и
-  заново проверяя каждое соединение (части — только те, что сессия загрузила
-  при открытии); идентичность композиции суд выводит из этого
-  переисполнения, а не из отчёта среды исполнения, и учитывает эпизод, лишь
-  если запись содержит ровно вызовы композиции; повторное чтение
-  свидетельства, полученного в том же эпизоде (часть и её процедура
-  подтверждают один выпуск), копией не считается; цель
-  судится целиком (отказ урегулирован журналом, сегмент не провален); часть,
-  восстановившая шаг при проваленной цели, — частичный успех, отдельно
-  (`compositions`, `criteria.partial`) и никогда не опора. Допущенная
-  привычка — при тех же критериях рождения, что и у любой (повторяемость,
-  разные задачи, проверенность, независимость свидетелей, успех всех
-  эпизодов), и пока каждая часть жива, рождается составная привычка: запись
-  `learned_habit` схемы 1.2 с полем `composition`: база и соединения — шаг,
-  класс отказа и альтернативы по порядку, каждая со своими вложенными
-  соединениями. Она
-  вытесняет живую процедуру той же базы; Gold проверяет её как отдельное
-  рождение с установленными критериями.
-- **Пересмотр.** Каждое окно живые составные привычки сверяются с частями:
-  часть в архиве, вытеснена или не допущена Gold (альтернатива или часть,
-  вложенная в другую) — раздел `composition_reviews` (часть, шаг базы,
-  причина) и переход TC в `probation`; во время исполнения недопущенная часть
-  не вызывается (`component_unavailable`).
-- При выключенном автоматизме (режим экзамена C) выученные процедуры остаются
-  материалом медленного планирования: `recover` составляет их, быстрого пути
-  нет. Цепочка, полностью прописанная программой, учится как обычная
-  процедура и композицией не считается.
+- **A part's interface** is read from its frozen records and the tool
+  contracts: applicability (the typed trigger), inputs (the arguments of the
+  failed action and the event fields the binding reads, with their kinds),
+  guarantee and termination (the retry of the failed operation succeeds:
+  `failed_operation_recovered`), effects (the body's tools and their
+  `idempotent`/`compensates`), limits.
+- **A join** is admitted only if the part's trigger applies to the step's
+  failure event (the conditions of all parts are kept and checked again at
+  every execution), its inputs are bound from that event, it terminates with a
+  retry of the step's operation, and neither does it compensate an effect the
+  base has already made nor do the base's remaining steps compensate its
+  effects. Every rejected candidate is recorded with a reason
+  (`conditions_not_met`, `inputs_unavailable`, `no_termination`,
+  `effect_conflict`).
+- **The executor** (the same as the fast path's): when a part's retry succeeds,
+  the step's answer is replaced by that retry and the base continues
+  (references to the step's result read the successful answer); the result of
+  each part is recorded separately from the result of the body. A retry of the
+  operation is a declared retry of the same operation, which the gateway checks
+  before any effect.
+- **Alternatives.** A join keeps the parts of an impasse in order. A part that
+  did not recover the step yields to the next admissible one; that one is
+  checked against the step's current failure (if the part retried the operation
+  and got a different failure, the next one must apply to that failure), and
+  the effects already applied by earlier attempts take part in the conflict
+  check. Each part is tried once in an impasse; when none has recovered the
+  step, the body stops (`component_failed`, listing the parts tried and the
+  failures). A step or a part with an unknown effect ends the search
+  (`component_uncertain`): nothing is chosen over an unknown state. The planner
+  ranks parts by trust, then by trigger specificity (more conditions first),
+  then by identity. Every call of a part other than the retry itself declares,
+  in its request to the gateway, the failed operation it serves (`serves`)
+  while that operation is unsettled; before any effect the gateway rejects a
+  declaration that does not name an unsettled operation of the same scope, and
+  a program cannot make such a declaration. A refusal of such a call with no
+  effect is settled when the served operation then succeeded
+  (`served_operation_settled`): an abandoned alternative that changed nothing
+  does not fail the segment's substantive result, like an aborted alternative
+  of a flexible transaction (Zhang, Nodine, Bhargava, Bukhres, SIGMOD 1994).
+  Any other effect, or an unsettled served operation, keeps the refusal a
+  failure.
+- **Nesting.** An impasse inside a part is resolved the same way: first the
+  part's own joins (if the part is itself composite), then the parts attached
+  inside it. A part is never attached inside itself or inside a procedure it is
+  a part of (`component_cycle`), so the depth is bounded by the number of
+  distinct parts and execution is finite. The effects of parts are also checked
+  for conflicts with the remaining steps of all enclosing procedures.
+- **Sequence.** A procedure whose retry of the operation failed for a new
+  reason ends with that new failure; a part whose trigger applies to it is
+  attached to that retry. The output of the first procedure, the typed failure
+  event of its retry, becomes the input of the second; the second retries the
+  same operation, and the first continues. This is how procedures with
+  different goals are joined (for example, a drain and a schema migration).
+- **Three statuses.** Plan hypothesis — the slow planner: the built-in
+  `recover(failure)` on the slow path continues the stopped body of the fast
+  path from its recorded answers and the parts already tried (without repeating
+  the calls made), or takes as its base the first admitted part whose trigger
+  applies to the failure; at an impasse it tries the known alternatives, then
+  the matching parts by rank. The events `composition_planned` (the place in
+  the nesting, the join or a refusal listing the candidates) and
+  `composition_executed` (the base, the joins, the tree of part attempts with
+  their results, whether the failure was recovered) are recorded and checked at
+  re-execution. Verified composition — the court re-executes each such episode
+  with the same executor from the recorded answers, trying the parts in the
+  recorded order and checking every join again (the parts are only those the
+  session loaded when it opened); the court derives the composition's identity
+  from this re-execution, not from the execution environment's report, and
+  counts an episode only if the record contains exactly the composition's
+  calls; re-reading evidence obtained in the same episode (a part and its
+  procedure confirm one release) does not count as a copy; the goal is judged
+  as a whole (the failure is settled by the journal, the segment did not fail);
+  a part that recovered a step while the goal failed is a partial success,
+  reported separately (`compositions`, `criteria.partial`), and never support.
+  Admitted habit — under the same birth criteria as any habit (repeatability,
+  different tasks, verification, independence of witnesses, success of every
+  episode), and while every part is live, a composite habit is born: a
+  `learned_habit` record of schema 1.2 with a `composition` field holding the
+  base and the joins (the step, the failure class and the alternatives in
+  order, each with its own nested joins). It supersedes the live procedure of
+  the same base; Gold verifies it as a separate birth with the established
+  criteria.
+- **Review.** Every window, live composite habits are checked against their
+  parts: a part that is archived, superseded or not admitted by Gold (an
+  alternative, or a part nested in another) yields an entry in the
+  `composition_reviews` section (part, base step, reason) and a TC transition
+  to `probation`; during execution a part that is not admitted is not called
+  (`component_unavailable`).
+- With automation off (exam mode C), learned procedures remain material for
+  slow planning: `recover` composes them, and there is no fast path. A chain
+  spelled out in full by the program is learned as an ordinary procedure and
+  does not count as a composition.
 
-Проверенные ограничения этапа:
+Verified limitations of the stage:
 
-- Часть присоединяется к отказу шага, который она восстанавливает повтором
-  операции; последовательность строится через отказ повтора. Планирование по
-  постусловиям (регрессия от цели) не реализовано: процедура, не
-  урегулирующая отказ (например, только поиск), не рождается привычкой по
-  критериям опоры и потому не бывает поставщиком входов.
-- Быстрый путь составной привычки пробует только альтернативы, проверенные в
-  её эпизодах; новые части присоединяет лишь медленный планировщик, и такая
-  композиция снова проходит проверку целиком.
+- A part is attached to the failure of a step that it recovers by retrying the
+  operation; a sequence is built through the failure of a retry. Planning by
+  postconditions (regression from the goal) is not implemented: a procedure
+  that does not settle a failure (for example, a search only) is not born as a
+  habit under the support criteria and therefore is never a supplier of inputs.
+- The fast path of a composite habit tries only the alternatives verified in
+  its episodes; only the slow planner attaches new parts, and such a
+  composition is verified as a whole again.
 
-### Этап 6: смысловой поиск и обновление знаний
+### Memory stage 6: semantic search and knowledge updates
 
-Знание памяти — утверждения (`synapse.memory.statement-record/v1`, запись
-вида `statement`, `knowledge/statements.py`): субъект, свойство, значение,
-полярность (источник утверждает или отрицает), условия, время действия
-(`valid.from`/`valid.until`, ISO 8601 в одной канонической форме UTC), текст и
-источник — инструмент, аргументы и адрес записанного ответа той же сессии.
-Встроенная `know(statement)` записывает утверждение, прочитанное из
-наблюдения этой сессии (`knowledge_declared`); утверждение никогда не
-является установленным фактом. Суд — единственный писатель — сворачивает
-утверждения окна в память (`court/knowledge.py`, раздел отчёта `knowledge`):
+Memory's knowledge consists of statements
+(`synapse.memory.statement-record/v1`, a record of kind `statement`,
+`knowledge/statements.py`): a subject, a property, a value, a polarity (whether
+the source asserts or denies), conditions, a valid time
+(`valid.from`/`valid.until`, ISO 8601 in one canonical UTC form), a text and a
+source (the tool, the arguments and the address of the recorded answer of the
+same session). The built-in `know(statement)` records a statement read from an
+observation of this session (`knowledge_declared`); a statement is never an
+established fact. The court, the only writer, folds the window's statements
+into memory (`court/knowledge.py`, report section `knowledge`):
 
-- **Два времени.** Время действия — из утверждения; время знания — окна, в
-  которых память держала версию (`known_from`, после исправления
-  `known_until` и `corrected_by`). Противоречие ничего не удаляет: исправление
-  закрывает время знания, поэтому отвечаются оба вопроса — «что было верно в
-  момент T» и «что память знала в окне K» (`known_as_of`).
-- **Тождество и исправление.** Слот — субъект, свойство и условия. Та же
-  запись или тот же источник (инструмент и аргументы) с тем же содержанием —
-  копия: повтор не добавляет ни знания, ни уверенности. Тот же источник с
-  другим содержанием для того же начала — исправление. Другой источник с
-  другим содержанием — конфликт: обе версии действуют, ни одна не побеждает по
-  времени вставки, похожести или заявленной уверенности; решает допуск.
-- **Актуальность по видам свойств** (открытое решение §15, объявляется в
-  конфигурации памяти схемы v2, `knowledge.properties`): `state` верно от
-  начала до следующего начала того же слота или своего конца (инерция
-  исчисления событий); `bounded` — то же в пределах `ttl_days`, после них
-  актуальность неизвестна, а не ложна; `event` верно в свой момент;
-  необъявленное свойство — неизвестной актуальности. Поздний отчёт о прошлом
-  занимает место по своему началу и не перекрывает более позднее состояние.
-  Универсального таймера забывания нет.
-- **Пересмотр зависимых.** Исправление возвращает в `provisional` гипотезы,
-  прочитанные из исправленной версии (`source_corrected:`) или проверенные ею
-  (`check_source_corrected:`), и переводит в `probation` (TC) живые привычки,
-  в основаниях которых сессия допустила исправленную версию; раздел
-  `revisions` называет их.
-- **Поиск по смыслу** (`knowledge/search.py`, `search_knowledge(query,
-  options)`, событие `knowledge_searched`): лексический канал
-  (`palace-lexical/v2`) и смысловой — модель встраивания, объявленная в
-  конфигурации (`knowledge.embedder`, инструмент роли `reason` через шлюз;
-  выбор модели не меняет полномочий памяти, ответы записаны и
-  переисполняются), с общим бюджетом кандидатов; ранги сливаются взаимным
-  ранговым слиянием (k = 60), баллы разных каналов не сравниваются. Кандидат —
-  версия, действующая в `valid_at` по знанию на `known_as_of`, с каналами,
-  которые его нашли. Каждый поиск публикует цену смыслового канала: вызовы
-  модели, её задержку, число и размерность векторов, размер индекса.
-- **Допуск** (`palace_admission.admit`) читает структуру утверждения, а не
-  текст: другая сущность, другая полярность, другие условия, неизвестная
-  актуальность, время вне действия и подтверждение гипотезой другого
-  утверждения (другой субъект или значение) — причины отказа.
+- **Two times.** Valid time comes from the statement; transaction time is the
+  windows in which memory held the version (`known_from`, and after a
+  correction `known_until` and `corrected_by`). A contradiction deletes
+  nothing: a correction closes the transaction time, so both questions are
+  answered — "what was true at moment T" and "what memory knew in window K"
+  (`known_as_of`).
+- **Identity and correction.** A slot is the subject, the property and the
+  conditions. The same record, or the same source (tool and arguments) with the
+  same content, is a copy: a repetition adds neither knowledge nor confidence.
+  The same source with different content for the same start is a correction. A
+  different source with different content is a conflict: both versions are in
+  force, and neither wins by insertion time, similarity or declared confidence;
+  admission decides.
+- **Currency by property kind** (open decision §15, declared in the schema v2
+  memory configuration, `knowledge.properties`): `state` holds from its start
+  until the next start of the same slot or its own end (the inertia of the
+  event calculus); `bounded` is the same within `ttl_days`, after which
+  currency is unknown, not false; `event` holds at its moment; an undeclared
+  property is of unknown currency. A late report about the past takes its place
+  by its start and does not override a later state. There is no universal
+  forget timer.
+- **Revision of dependents.** A correction returns to `provisional` the
+  hypotheses read from the corrected version (`source_corrected:`) or checked
+  by it (`check_source_corrected:`), and moves to `probation` (TC) the live
+  habits in whose basis a session admitted the corrected version; the
+  `revisions` section names them.
+- **Semantic search** (`knowledge/search.py`, `search_knowledge(query,
+  options)`, event `knowledge_searched`): a lexical channel
+  (`palace-lexical/v2`) and a semantic one, the embedding model declared in the
+  configuration (`knowledge.embedder`, a tool of the `reason` role through the
+  gateway; the choice of model does not change memory's authority, and its
+  answers are recorded and go through re-execution), with a shared candidate
+  budget; ranks are merged by reciprocal rank fusion (k = 60), and the scores
+  of different channels are not compared. A candidate is a version valid at
+  `valid_at` according to knowledge as of `known_as_of`, with the channels that
+  found it. Every search publishes the cost of the semantic channel: the model
+  calls, the model's latency, the number and dimension of the vectors, the size
+  of the index.
+- **Admission** (`palace_admission.admit`) reads the structure of a statement,
+  not its text: a different entity, a different polarity, different conditions,
+  unknown currency, a time outside the valid time, and confirmation by a
+  hypothesis about a different statement (a different subject or value) are
+  reasons for refusal.
 
-Решения опираются на первичные источники: слияние рангов без калибровки
-баллов (Cormack, Clarke, Buettcher, SIGIR 2009); слабость плотного поиска на
-отрицании (NevIR, EACL 2024) и на редких сущностях (EntityQuestions, EMNLP
-2021) — поэтому эмбеддинг только предлагает; отравление поиска близкими
-текстами (PoisonedRAG, USENIX Security 2025) — поэтому близость, уверенность
-и новизна не дают приоритета; двухвременная модель (Snodgrass; SQL:2011;
-Zep/Graphiti, arXiv 2501.13956); инерция и завершение состояний событиями
-(Kowalski, Sergot, 1986); снятие выводов вместе с посылкой (TMS, Doyle, 1979).
+The decisions rest on primary sources: rank fusion without score calibration
+(Cormack, Clarke, Buettcher, SIGIR 2009); the weakness of dense retrieval on
+negation (NevIR, EACL 2024) and on rare entities (EntityQuestions, EMNLP 2021),
+which is why an embedding only proposes; retrieval poisoning with similar texts
+(PoisonedRAG, USENIX Security 2025), which is why similarity, confidence and
+recency give no priority; the bitemporal model (Snodgrass; SQL:2011;
+Zep/Graphiti, arXiv 2501.13956); inertia and the termination of states by
+events (Kowalski, Sergot, 1986); retraction of conclusions together with their
+premise (TMS, Doyle, 1979).
 
-Проверенные ограничения этапа:
+Verified limitations of the stage:
 
-- В приёмке модель встраивания сценарная (понятия со синонимами и
-  переводами, отрицание и имя ничего не меняют — как у плотных моделей);
-  живая модель не проверялась. Смысловой канал перебирает все векторы
-  (без приближённого индекса): цена линейна по числу утверждений и
-  публикуется.
-- Время знания измеряется окнами суда; утверждения без начала действуют с
-  начала шкалы. Условия сравниваются на равенство.
+- In acceptance the embedding model is scripted (concepts with synonyms and
+  translations; negation and a name change nothing, as with dense models); a
+  live model was not checked. The semantic channel scans all vectors (no
+  approximate index): the cost is linear in the number of statements and is
+  published.
+- Transaction time is measured in court windows; statements without a start
+  hold from the start of the timeline. Conditions are compared for equality.
 
-### Этап 7: событийное исполнение языка
+### Language stage 7: event-driven language execution
 
-Конструкция `parallel NAME [limit N] { node X [on "e"] = выражение;
-signal "e" when условие; commit X [=> эффект] }` исполняет граф узлов по
-готовности (`synapse/runtime/dataflow.py`). Узел зависит от узлов, которые
-называет его выражение. Чистый узел вычисляется в потоке интерпретатора;
-узел-вызов `tool(имя, аргументы)` — наблюдение, выполняемое на рабочем потоке
-через тот же шлюз, со своей областью операции и порядковым номером
-`df:<экземпляр>:<узел>:<попытка>`. Шлюз до эффекта отвергает вызов графа, если
-контракт инструмента не объявляет `observation` (наблюдение также
-`idempotent`, его отказ не оставляет эффекта и оно ничего не компенсирует).
-Транспорт MCP отправляет каждый вызов отдельным запросом сессии, поэтому
-вызовы параллельных вызывающих перекрываются.
+The construct `parallel NAME [limit N] { node X [on "e"] = expression;
+signal "e" when condition; commit X [=> effect] }` executes a graph of nodes as
+they become ready (`synapse/runtime/dataflow.py`). A node depends on the nodes
+its expression names. A pure node is evaluated on the interpreter thread; a
+call node `tool(name, arguments)` is an observation made on a worker thread
+through the same gateway, with its own operation scope and ordinal
+`df:<instance>:<node>:<attempt>`. Before any effect the gateway rejects a graph
+call if the tool's contract does not declare `observation` (an observation is
+also `idempotent`, its failure leaves no effect, and it compensates nothing).
+The MCP transport sends each call as a separate session request, so the calls
+of parallel callers overlap.
 
-- **Готовность без смешения версий.** Каждое значение имеет версию, каждое
-  вычисление — версии прочитанного. Узел запускается, когда каждый его вход
-  установлен: не выполняется и не устарел, как и всё, из чего он вычислен.
-  Поэтому узел не сочетает новую цену с проверкой, сделанной для старой.
-- **Пересмотр.** Вычисление, чьи входы сдвинулись во время работы, сразу
-  замещается новым; его ответ записывается как `stale` и не используется.
-- **События.** Сигнал вычисляется один раз на сочетание установленных версий
-  своих входов, поэтому повторное наблюдение не поднимает событие дважды;
-  узлы `on "e"` читаются заново. Отсутствие события — не отрицательный факт.
-- **Фиксация и эффект.** Фиксация ждёт фиксируемый узел, его входы и
-  источники событий, которые их обновляют, — и ничего больше; медленный
-  посторонний узел её не задерживает. Эффект действует только на
-  зафиксированное значение, один раз, в потоке интерпретатора (единственный
-  писатель); что ещё выполняется после него, дожидается и записывается как
-  `cancelled` — учтено один раз и не использовано. Предел `limit` (1–64)
-  ограничивает одновременные вызовы; петля обратной связи останавливается
-  границей числа вычислений узла (32).
-- **Запись и воспроизведение.** История содержит `dataflow_started`,
-  `dataflow_step` на каждое вычисление (узел, попытка, статус, прочитанные и
-  полученная версии, время), `dataflow_signal`, `dataflow_commit` (версии, на
-  которых основана фиксация) и `external_action` каждого вызова в порядке
-  интеграции. Вживую ответы интегрируются в порядке журнала шлюза, поэтому
-  воспроизведение хранения из журнала повторяет тот же порядок. Суд
-  переисполняет сессию по записи (`replay_verified`); после падения прогон
-  следует записи до её конца и продолжается вживую, а наблюдение, чей ответ
-  потерян, запрашивается снова под той же идентичностью.
+- **Readiness without mixing versions.** Every value has a version, and every
+  computation has the versions of what it read. A node starts when each of its
+  inputs is settled: not in flight and not outdated, as is everything that
+  input was computed from. So a node does not combine a new price with a check
+  made for the old one.
+- **Revision.** A computation whose inputs moved while it ran is superseded at
+  once by a new one; its answer is recorded as `stale` and not used.
+- **Events.** A signal is evaluated once per combination of the settled
+  versions of its inputs, so a repeated observation does not raise the event
+  twice; `on "e"` nodes are read again. The absence of an event is not a
+  negative fact.
+- **Commit and effect.** The commit waits for the committed node, its inputs
+  and the event sources that update them, and for nothing else; a slow
+  unrelated node does not delay it. The effect acts only on the committed
+  value, once, on the interpreter thread (the single writer); whatever is still
+  running after it is awaited and recorded as `cancelled`: accounted for once
+  and not used. The `limit` (1–64) bounds concurrent calls; a feedback loop is
+  stopped by the bound on the number of computations of a node (32).
+- **Recording and replay.** The history contains `dataflow_started`, a
+  `dataflow_step` for each computation (node, attempt, status, the versions
+  read and the version produced, time), `dataflow_signal`, `dataflow_commit`
+  (the versions the commit is based on) and the `external_action` of each call
+  in integration order. Live, answers are integrated in the order of the
+  gateway's journal, so the retention replay from the journal repeats the same
+  order. The court re-executes the session from the record (`replay_verified`);
+  after a crash the run follows the record to its end and continues live, and
+  an observation whose answer was lost is requested again under the same
+  identity.
 
-Решения опираются на первичные источники: процессы Кана (детерминированные
-узлы дают результат, не зависящий от порядка исполнения; Kahn, IFIP 1974);
-распространение без промежуточных несогласованных состояний (FrTime: Cooper,
+The decisions rest on primary sources: Kahn processes (deterministic nodes give
+a result that does not depend on the execution order; Kahn, IFIP 1974);
+propagation without intermediate inconsistent states (FrTime: Cooper,
 Krishnamurthi, ESOP 2006; REScala: Salvaneschi, Hintz, Mezini, 2014);
-оптимистическая проверка прочитанных версий (Kung, Robinson, TODS 1981);
-пересчёт по трассам входов (Mokhov, Mitchell, Peyton Jones, «Build systems à
-la carte», ICFP 2018); детерминированное воспроизведение по истории событий
-(Temporal); отмена в MCP — только уведомление, сервер мог уже выполнить
-запрос, поэтому начатый вызов не прерывается, а дожидается и учитывается.
+optimistic validation of the versions read (Kung, Robinson, TODS 1981);
+recomputation from input traces (Mokhov, Mitchell, Peyton Jones, "Build systems
+à la carte", ICFP 2018); deterministic replay from the event history
+(Temporal); cancellation in MCP is only a notification, and the server may
+already have executed the request, so a started call is not interrupted but
+awaited and accounted for.
 
-Проверенные ограничения этапа:
+Verified limitations of the stage:
 
-- Параллельны наблюдения программы; чистые узлы вычисляются в одном потоке
-  интерпретатора (GIL), ускорение вычислений не обещается и измеряется только
-  на ожиданиях внешних вызовов. На машине приёмки два наблюдения по 1 с с
-  запуском сервера зафиксированы примерно за 2,3–2,5 с при `limit 4`, а
-  пересмотр с немедленным замещением — за 4,0 с вместо 5,4 с с ожиданием
-  устаревшего вызова; это наблюдения одного прогона, а не гарантия.
-- Узлы-вызовы только наблюдают; эффект графа один — при фиксации. Граф —
-  оператор программы: события и сигналы действуют внутри одного графа.
-  Начатый вызов не прерывается.
+- The program's observations run in parallel; pure nodes are evaluated on one
+  interpreter thread (GIL); no speedup of computation is promised, and speedup
+  is measured only on waits for external calls. On the acceptance machine, two
+  observations of 1 s each, including the server start, were committed in about
+  2.3–2.5 s with `limit 4`, and a revision with immediate superseding in 4.0 s
+  instead of 5.4 s with the stale call awaited; these are observations of one
+  run, not a guarantee.
+- Call nodes only observe; a graph has one effect, at the commit. A graph is a
+  program statement: events and signals act inside one graph. A started call is
+  not interrupted.
 
-### Разбор PR108: идентичность, подтверждения, повторы, конфликты, автомат, пересмотр
+### Review of PR108: identity, attestations, retries, conflicts, automaton, reassessment
 
-Политика суда — `synapse.memory.court-policy/v3`, конфигурация инструментов —
-`synapse.memory.tool-configuration/v2`: смысл правил изменился, поэтому это
-новые версии, а не переосмысление старых отчётов. Конфигурация инструментов v1
-отклоняется с указанием пути миграции.
+The court policy is `synapse.memory.court-policy/v3`, the tool configuration is
+`synapse.memory.tool-configuration/v2`: the meaning of the rules changed, so
+these are new versions, not a reinterpretation of old reports. Tool
+configuration v1 is rejected with a pointer to the migration path.
 
-**Идентичность и основания допуска (R4, R3).** Сущность — точная ссылка
-`{namespace, type, id, uid}` (`synapse/entity_identity.py`): `"1"`, `1` и
-`true` — разные значения; регистр складывается только в пространстве имён,
-которое оператор объявил нечувствительным (`identity.namespaces` в
-конфигурации памяти v2); удалённый и заново созданный объект — другое
-воплощение (`uid`). Псевдоним — подтверждённая гипотеза аспекта `entity` со
-сказуемым `{"same_as": …}`, а не сходство имён; опровергнутая связь ничего не
-допускает. Карточка знания не подтверждает себя сама: допуск читает основание
-из журнала гипотез и требует, чтобы оно покрывало всё утверждение — сущность,
-свойство, значение, условия, область и версию; чужая гипотеза, другое
-свойство, другая версия и отозванное основание называются причиной отказа.
+**Identity and admission bases (R4, R3).** An entity is an exact reference
+`{namespace, type, id, uid}` (`synapse/entity_identity.py`): `"1"`, `1` and
+`true` are different values; case is folded only in a namespace the operator
+declared case-insensitive (`identity.namespaces` in memory configuration v2);
+an object deleted and created again is another incarnation (`uid`). An alias is
+a confirmed hypothesis of aspect `entity` with the statement `{"same_as": …}`,
+not a similarity of names; a refuted link admits nothing. A knowledge record
+does not confirm itself: admission reads the basis from the hypothesis journal
+and requires it to cover the whole claim — entity, property, value, conditions,
+scope and version; a foreign hypothesis, another property, another version and
+a revoked basis are named as the reason for the refusal.
 
-**Подтверждения и повторы (R1, R2).** Проверка состояния привязывается к
-операции контрактом (`binds` — аргументы запроса и поля ответа, `attests` —
-`state` или `operation`, `operation_field` — эхо ключа операции). «Состояние
-есть» не значит «его создала моя операция»: чужой объект, другая операция и
-наблюдение, сделанное до операции, оставляют неопределённость и не дают
-привычке кредита. Цель вида `reach_state` подтверждается привязанной
-проверкой состояния. Код отказа, не описанный контрактом, оставляет эффект
-неизвестным. Шлюз сам выдаёт ключ идемпотентности на операцию (повтор несёт
-тот же ключ, новая независимая операция — новый; ключ от агента отклоняется),
-повтор неизвестного эффекта допускается только с живым ключом поставщика,
-повтор с изменёнными аргументами отклоняется до эффекта; после сбоя процесса
-операция с ключом повторяется с тем же ключом, операция без ключа — нет.
+**Attestations and retries (R1, R2).** A state check is bound to the operation
+by its contract (`binds` — request arguments and answer fields, `attests` —
+`state` or `operation`, `operation_field` — the echo of the operation key).
+"The state exists" does not mean "my operation created it": a foreign object,
+another operation and an observation made before the operation leave
+uncertainty and give the habit no credit. A goal of kind `reach_state` is
+confirmed by a bound state check. A refusal code the contract does not describe
+leaves the effect unknown. The gateway itself issues the idempotency key per
+operation (a retry carries the same key, a new independent operation a new one;
+a key from the agent is rejected), a retry of an unknown effect is admitted
+only with a live provider key, and a retry with changed arguments is rejected
+before the effect; after a process crash, an operation with a key is retried
+with the same key, an operation without a key is not.
 
-**Конфликты (R5).** Совет модели — только предложение. Вердикт ступени 2 —
-проверенное сравнение записанных исходов (`court/comparison.py`): пары только
-в одной записанной ситуации; неопределённые эпизоды, копии, повторно
-указанный эпизод и ситуация, где процедура и успела, и провалилась, парой не
-считаются; равенство победителя не даёт. Проигравший записывает `yields_to`,
-результат держится, пока новые исходы ему не противоречат; исходы медленного
-пути копятся между окнами (`compared`). Конкурент, рождённый при равном
-доверии, закрывает общий триггер в той же консолидации (ступень 3 при
-рождении). При исполнении конкуренты, применимые к одному событию, без
-проверенного разрешения удерживаются оба до внешнего эффекта — и при частично
-пересекающихся условиях; суд затем записывает такой конфликт «на пересечении»,
-не отнимая у привычек их собственные триггеры.
+**Conflicts (R5).** A model's advice is only a proposal. The verdict of step 2
+is a verified comparison of recorded outcomes (`court/comparison.py`): pairs
+are made only within one recorded situation; uncertain episodes, copies, an
+episode listed again and a situation where the procedure both succeeded and
+failed do not count as a pair; a tie gives no winner. The loser records
+`yields_to`; the result holds while new outcomes do not contradict it;
+slow-path outcomes accumulate across windows (`compared`). A competitor born at
+equal trust closes the shared trigger in the same consolidation (step 3 at
+birth). During execution, competitors applicable to one event without a
+verified resolution are both held back before the external effect — also when
+their conditions overlap only partly; the court then records such a conflict
+"on the overlap", without taking their own triggers away from the habits.
 
-**Автомат (R6).** Причины разделены и названы в каждом переходе (`cause`):
-достаточный опыт, подтверждённые ошибки (последние `t3_fires` учтённых
-сигналов в состоянии ниже `t3_signal`), неиспользование, изменённое основание
-(TS, TC, TR), холодное совпадение. При правиле `threshold` срабатывания окна
-читаются по одному в порядке суда, переход происходит на том срабатывании,
-которое его достигло (`at`), с доверием, достигнутым к нему; доверие
-обновляется фиксированными порциями по `min_evidence`. Поэтому один поток при
-любой нарезке на окна даёт те же переходы в том же порядке. Повторно
-доставленное событие учитывается один раз.
+**Automaton (R6).** Causes are kept apart and named in every transition
+(`cause`): sufficient experience, confirmed errors (the last `t3_fires` counted
+signals in the state below `t3_signal`), disuse, a changed basis (TS, TC, TR),
+a cold match. Under the `threshold` rule, the window's fires are read one by
+one in the court's order; a transition happens at the fire that reached it
+(`at`), with the trust reached by that fire; trust is updated in fixed batches
+of `min_evidence`. So one stream gives the same transitions in the same order
+however it is cut into windows. An event delivered again is counted once.
 
-**Пересмотр записанной памяти.** `synapse memory reassess --project-state …
---memory-config NEW.json` — единственный путь принять новую конфигурацию:
-пока владелец привязан к прежней, сессия с новой отклоняется до любых
-действий. Пересмотр — консолидация режима `reassess` без окна сессий, без
-вызовов инструментов и моделей: основание каждой живой выученной привычки
-судится заново по записанным историям, журналу шлюза и доказательствам при
-текущих контрактах (якорь первой стадии; допустимость каждого повтора
-записанного отказа); запись, которую уже не прочитать, ничего не
-подтверждает. Привычка без проверенного основания архивируется (TR, причина
-`changed_basis`); сохранившая основание публикуется в Gold заново под новой
-привязкой инструментов с проверенными доказательствами (отказ Gold —
-тоже TR). Отсутствующие в старых метаданных поля дополняются нейтрально
-(`yields_to`, `compared`, `tail` — пустые) и перечисляются; конкуренты
-судятся заново. Отчёт публикует раздел `reassessment`: версии конфигурации и
-политики «было/стало», каждую привычку и каждый эпизод с записанным и
-текущим статусом и причиной, переопубликования, дополненные поля и новые
-slow-only. Лишь после этого владелец принимает конфигурацию (цепочка
-привязок `synapse.memory.owner-binding/v2`); повторный пересмотр при той же
-конфигурации и политике ничего не меняет. Память, решённая при другой
-политике суда, до пересмотра не открывается и не консолидируется.
+**Reassessment of recorded memory.** `synapse memory reassess --project-state …
+--memory-config NEW.json` is the only way to adopt a new configuration: while
+the owner is bound to the previous one, a session with the new one is rejected
+before any action. A reassessment is a consolidation in `reassess` mode without
+a window of sessions and without tool or model calls: the basis of every live
+learned habit is judged again from the recorded histories, the gateway journal
+and the evidence under the current contracts (the anchor of the first stage;
+the admissibility of every retry of a recorded refusal); a record that can no
+longer be read confirms nothing. A habit without a verified basis is archived
+(TR, cause `changed_basis`); one that kept its basis is published to Gold again
+under the new tool binding with verified evidence (a Gold refusal is also TR).
+Fields missing from the old metadata are completed neutrally (`yields_to`,
+`compared`, `tail` empty) and listed; competitors are judged again. The report
+publishes the `reassessment` section: the "before/after" configuration and
+policy versions, every habit and every episode with its recorded and current
+status and reason, the republications, the completed fields and the new
+slow-only triggers. Only then does the owner adopt the configuration (the
+binding chain `synapse.memory.owner-binding/v2`); a repeated reassessment under
+the same configuration and policy changes nothing. Memory decided under another
+court policy is neither opened nor consolidated before a reassessment.
 
-**Испытания последовательностей и парный экзамен.** Hypothesis гоняет шлюз по
-сгенерированным последовательностям (новые запросы, повторы, изменённые
-аргументы, потерянные ответы, сбои процесса) против независимой модели
-поставщика: ни одна операция не бронирует дважды, решения и классы эффекта
-совпадают с моделью. Автомат проверяется на сгенерированных потоках и двух
-случайных нарезках против независимой модели правил, включая живую динамику
-доверия. Парный экзамен A/B/C прогоняет одни и те же задачи в трёх режимах,
-восстанавливая окружение к исходному состоянию перед каждым режимом.
+**Sequence tests and the paired exam.** Hypothesis drives the gateway through
+generated sequences (new requests, retries, changed arguments, lost answers,
+process crashes) against an independent model of the provider: no operation
+books twice, and the decisions and effect classes match the model. The
+automaton is checked on generated streams and two random window cuts against an
+independent model of the rules, including the live trust dynamics. The paired
+A/B/C exam runs the same tasks in three modes, restoring the environment to its
+initial state before each mode.
 
-Проверенные ограничения пакета:
+Verified limitations of the package:
 
-- Пересмотр не переисполняет записанное и не вызывает модели: вердикты
-  поздних стадий (сходство, двойной совет) остаются записанными; они не
-  зависят от контрактов инструментов.
-- Живость ключа идемпотентности измеряется настенным временем побочного
-  журнала; поставщик должен хранить ключ не меньше объявленного
+- A reassessment does not re-execute what was recorded and does not call
+  models: the verdicts of the later stages (similarity, double advice) stay as
+  recorded; they do not depend on tool contracts.
+- The liveness of an idempotency key is measured by the wall-clock time of the
+  side log; the provider must keep the key for at least the declared
   `retention_s`.
-- Сравнение конкурентов наблюдательное: это записанные исходы в одинаковой
-  записанной ситуации, а не эксперимент в независимых копиях одного
-  состояния; порог пар (`counterfactual_min_pairs`) объявляет оператор.
-- При переходе внутри окна последующие пакеты доверия того же окна
-  рассчитаны с коэффициентом состояния на начало окна; на переходы автомата
-  это не влияет (доверие входит только в T1, пока привычка рождена).
+- The comparison of competitors is observational: these are recorded outcomes
+  in the same recorded situation, not an experiment in independent copies of
+  one state; the operator declares the pair threshold
+  (`counterfactual_min_pairs`).
+- When a transition happens inside a window, the later trust batches of the
+  same window are computed with the state's rate at the start of the window;
+  this does not affect the automaton's transitions (trust enters only T1, while
+  the habit is in the born state).
 
-**Повторное ревью PR108 (5580007): относимость проверки, область стенда,
-противоречивые пробы, опыт для повышения.**
+**Second review of PR108 (5580007): check relevance, stand scope,
+contradicting trials, experience for promotion.**
 
-- *Проверка решает только своё утверждение (F1).* Независимый источник ещё не
-  источник, ответивший об этом утверждении: проверка о счёте B больше не
-  подтверждает утверждение о счёте A, даже когда значение совпало. Контракт
-  проверяющего обязан объявить `verifies`; без него проверка ничего не решает.
-  Статус, записанный по правилу v1, сессия не переиспользует, а переоценка
-  решает заново по записанной проверке (см. ниже). Конфигурация оператора, где у проверяющих нет
-  `verifies`, после этого пакета оставляет гипотезы `provisional`: привязку
-  нужно объявить для каждого инструмента, указанного в `check`.
-- *Область стенда покрывает триггер целиком (F2).* Проба говорит о триггере,
-  только если всё, что триггер допускает, лежит внутри проверенной области:
-  каждое поле триггера воспроизведено стендом, и каждое поле стенда триггер
-  ограничивает (`==`, `in`) проверенными значениями. Триггер, открытый по полю,
-  которое стенд ограничил (стенд в ясную погоду, привычка — в любую), шире
-  стенда: запрет быстрого пути остаётся.
-- *Противоречивая проба не теряется (F3).* Одинаковые результаты одной
-  ситуации считаются один раз; разные — противоречие (`contradicting_trials`,
-  `mixed_situations`), победителя нет, порядок записей ничего не решает.
-- *Повышение — только по подтверждённому опыту (F4).* T1 читает подсчитанные
-  срабатывания с рождения (`counted_since_birth`) и задачи с подсчитанным
-  срабатыванием (`counted_tasks_since_birth`), T4 — подсчитанные сигналы в
-  состоянии; срабатывание с нерешённым исходом — использование
-  (`fires_since_birth`), а не опыт: квоту не заполняет и ошибкой не
-  становится. Подтверждённый опыт привычек, записанных раньше, переоценка
-  пересчитывает из записанных срабатываний (см. ниже).
+- *A check decides only its own claim (F1).* An independent source is not yet a
+  source that answered about this claim: a check about account B no longer
+  confirms a claim about account A, even when the value matched. The checking
+  tool's contract must declare `verifies`; without it a check decides nothing.
+  A session does not reuse a status recorded under the v1 rule; a reassessment
+  decides it again from the recorded check (see below). After this package, an
+  operator configuration in which the checking tools have no `verifies` leaves
+  hypotheses `provisional`: the binding must be declared for every tool named
+  in `check`.
+- *The stand's scope covers the whole trigger (F2).* A trial says something
+  about a trigger only if everything the trigger admits lies inside the tested
+  scope: every field of the trigger is reproduced by the stand, and the trigger
+  restricts every field of the stand (`==`, `in`) to tested values. A trigger
+  open on a field the stand restricted (the stand in clear weather, the habit
+  in any weather) is wider than the stand: the fast-path ban stays.
+- *A contradicting trial is not lost (F3).* Identical results of one situation
+  count once; different ones are a contradiction (`contradicting_trials`,
+  `mixed_situations`): there is no winner, and the order of the records decides
+  nothing.
+- *Promotion only on confirmed experience (F4).* T1 reads the fires counted
+  since birth (`counted_since_birth`) and the tasks with a counted fire
+  (`counted_tasks_since_birth`), T4 the counted signals in the state; a fire
+  with an undecided outcome is use (`fires_since_birth`), not experience: it
+  does not fill the quota and does not become an error. For habits recorded
+  earlier, a reassessment recounts the confirmed experience from the recorded
+  fires (see below).
 
-- *Переоценка уже записанной памяти (политика суда v4).* Исправления меняют
-  смысл решений, поэтому версия политики суда поднята до
-  `synapse.memory.court-policy/v4`: память, решённая под v3, не читается и не
-  расширяется, пока её не переоценят (`synapse memory reassess`). Переоценка
-  не вызывает ни инструментов, ни моделей и решает заново по записанному:
-  статус гипотезы прежнего правила — по ответу проверки, который хранят
-  журнал шлюза и свидетельства (ответ о другом объекте становится
-  `provisional`, недоступная запись — `check_record_unavailable`); повышение
-  T1/T4, решённое прежней политикой, — по подтверждённому опыту записанных
-  срабатываний привычки (`recent`), засчитывая только нижнюю оценку: не
-  подтверждённое повышение возвращает привычку в испытательный режим (`TU`),
-  где она продолжает действовать; решению конфликта возвращается основание,
-  на котором его нашли (сравнение исходов или пробы), и дальше его судит
-  обычная лестница (решение по пробам на стенде, не покрывшем триггер,
-  возвращает запрет). Подтверждённый опыт с рождения (`counted_since_birth`,
-  `counted_tasks_since_birth`) пересчитывается из записанных срабатываний.
-  Всё это — раздел `reassessment` отчёта (`hypotheses`, `promotions`,
-  `resolutions`, схема `synapse.memory.reassessment/v2`), а состояние
-  после неё — свёртка журнала, которую владелец читает из проверенного снимка
-  и хвоста. Порядок для оператора: сначала объявить `verifies` у каждого
-  проверяющего, затем один раз выполнить `synapse memory reassess` — иначе
-  подтверждения проверок без привязки станут `provisional`
-  (`check_unbound`). Похоже на аудит в Kubernetes (Gatekeeper audit, фоновое
-  сканирование Kyverno): допуск проверяет только новые объекты, а уже
-  сохранённые перепроверяет аудит. Отличие — там аудит лишь сообщает о
-  нарушениях, а здесь переоценка отзывает неподтверждённые полномочия, потому
-  что сохранённая память сама разрешает действия.
+- *Reassessment of memory already recorded (court policy v4).* The fixes change
+  the meaning of decisions, so the court policy version is raised to
+  `synapse.memory.court-policy/v4`: memory decided under v3 is neither read nor
+  extended until it is reassessed (`synapse memory reassess`). A reassessment
+  calls neither tools nor models and decides again from what was recorded: a
+  hypothesis status of the earlier rule — from the check answer that the
+  gateway journal and the evidence keep (an answer about another object becomes
+  `provisional`, an unavailable record `check_record_unavailable`); a T1/T4
+  promotion the earlier policy decided — from the confirmed experience of the
+  habit's recorded fires (`recent`), counting only the lower bound: a promotion
+  that is not confirmed returns the habit to probation (`TU`), where it keeps
+  acting; a conflict resolution gets back the basis it was found on (an outcome
+  comparison or trials), and from then on the ordinary ladder judges it (a
+  resolution from trials on a stand that did not cover the trigger brings the
+  ban back). The confirmed experience since birth (`counted_since_birth`,
+  `counted_tasks_since_birth`) is recounted from the recorded fires. All of
+  this is the report's `reassessment` section (`hypotheses`, `promotions`,
+  `resolutions`, schema `synapse.memory.reassessment/v2`), and the state after
+  it is a fold of the journal that the owner reads from a verified snapshot and
+  tail. The order for the operator: first declare `verifies` on every checking
+  tool, then run `synapse memory reassess` once — otherwise confirmations by
+  checks without a binding become `provisional` (`check_unbound`). This
+  resembles audit in Kubernetes (Gatekeeper audit, Kyverno background
+  scanning): admission checks only new objects, and audit rechecks the ones
+  already stored. The difference is that there audit only reports violations,
+  while here a reassessment revokes unconfirmed authority, because stored
+  memory itself permits actions.
 
-Приёмка: `acceptance/memory/test_hypothesis_binding_contract.py`,
-`test_hypothesis_binding_acceptance.py` (канонический запуск: проверка о
-другом счёте не открывает перевод), `test_reassessment_rules_contract.py`
-(переоценка статусов, повышений и решений по пробам на чистых данных),
-`test_earlier_policy_reassessment_acceptance.py` (память суда v3: отказ до
-переоценки, переоценка без вызовов, чтение свежим владельцем из снимка,
-сессии после неё), новые случаи в `test_stand_trial_contract.py` и
-`test_automaton_experience_contract.py`.
+Acceptance: `acceptance/memory/test_hypothesis_binding_contract.py`,
+`test_hypothesis_binding_acceptance.py` (canonical run: a check about another
+account does not unlock a transfer), `test_reassessment_rules_contract.py`
+(reassessment of statuses, promotions and trial-based resolutions on plain
+data), `test_earlier_policy_reassessment_acceptance.py` (memory of court v3:
+refusal before reassessment, reassessment without calls, reading by a fresh
+owner from the snapshot, sessions after it), new cases in
+`test_stand_trial_contract.py` and `test_automaton_experience_contract.py`.
 
-**Третий проход ревью PR108 (4905d47): основание проверки, решения по пробам.**
+**Third review pass of PR108 (4905d47): check basis, trial-based resolutions.**
 
-- *Подтверждение держится на основании проверки (N2).* Версия правила проверки
-  ничего не говорит о контракте проверяющего, графе происхождения и правилах
-  идентичности, а решение зависит от них. Статус гипотезы записывается вместе с
-  основанием проверки (`check_basis`: контракт проверяющего, источник
-  утверждения, отношение происхождения источника и проверяющего, правила
-  идентичности). Сессия переиспользует статус только на основании текущей
-  конфигурации, иначе проверяет заново (`check_basis_changed`). Переоценка
-  решает заново каждый записанный статус, каким бы правилом он ни был решён,
-  по записанному ответу проверки и без вызовов: после смены контракта
-  проверяющего (`verifies`) или графа происхождения подтверждение, которое
-  новая конфигурация не даёт, становится `provisional`; при неизменной
-  конфигурации действующее подтверждение сохраняется.
-- *Решение по пробам держится, пока пробы его дают (N1).* Решение конфликта
-  помнит своё основание (`resolved_by` у уступающей привычки: сравнение
-  записанных исходов или пробы на стенде). Решение по пробам стоит, только
-  пока все записанные пробы называют того же победителя. Проба, противоречащая
-  прежним (та же ситуация с другим результатом или победа соперника в своей
-  ситуации), снимает решение в обычной консолидации, без переоценки: ступень 3,
-  обе привычки в испытательном режиме, триггер снова только медленный. Повтор
-  с тем же результатом решение сохраняет; решение, найденное по сравнению
-  исходов, держится на сравнении; решение с неизвестным основанием не стоит.
-  Похоже на подписанные утверждения in-toto/SLSA: решение несёт ссылку на своё
-  основание, и его действительность проверяется по основанию, а не по факту
-  записи.
+- *A confirmation rests on the check basis (N2).* The version of the check rule
+  says nothing about the checking tool's contract, the provenance graph and the
+  identity rules, yet the decision depends on them. A hypothesis status is
+  recorded together with the check basis (`check_basis`: the checking tool's
+  contract, the claim's source, the provenance relation between the source and
+  the checking tool, the identity rules). A session reuses a status only on the
+  basis of the current configuration; otherwise it checks again
+  (`check_basis_changed`). A reassessment decides every recorded status again,
+  whatever rule decided it, from the recorded check answer and without calls:
+  after a change of the checking tool's contract (`verifies`) or of the
+  provenance graph, a confirmation that the new configuration does not give
+  becomes `provisional`; under an unchanged configuration a valid confirmation
+  is kept.
+- *A trial-based resolution holds while the trials give it (N1).* A conflict
+  resolution remembers its basis (`resolved_by` on the yielding habit: a
+  comparison of recorded outcomes or stand trials). A trial-based resolution
+  stands only while all recorded trials name the same winner. A trial that
+  contradicts the earlier ones (the same situation with another result, or a
+  rival's win in its own situation) takes the resolution away in an ordinary
+  consolidation, without a reassessment: step 3, both habits on probation, the
+  trigger slow-only again. A repeat with the same result keeps the resolution;
+  a resolution found by an outcome comparison rests on the comparison; a
+  resolution with an unknown basis does not stand. This resembles signed
+  in-toto/SLSA statements: a resolution carries a reference to its basis, and
+  its validity is checked against the basis, not by the fact that it was
+  recorded.
 
-Приёмка: новые случаи в `test_stand_trial_contract.py`,
+Acceptance: new cases in `test_stand_trial_contract.py`,
 `test_hypothesis_binding_contract.py`, `test_reassessment_rules_contract.py`;
-`test_stand_trial_revocation_acceptance.py` (канонический запуск: пробы
-решают конфликт, повтор сохраняет решение, проба на стенде с оставшимся
-резервом противоречит прежним — следующая обычная сессия снимает решение,
-свежий владелец читает это из снимка, сессия после неё идёт медленным путём);
-`test_check_basis_reassessment_acceptance.py` (смена области проверяющего,
-смена графа происхождения и неизменная конфигурация: отказ до переоценки,
-переоценка без вызовов, сессия после неё).
+`test_stand_trial_revocation_acceptance.py` (canonical run: trials resolve the
+conflict, a repeat keeps the resolution, a trial on a stand with a reservation
+left over contradicts the earlier ones — the next ordinary session takes the
+resolution away, a fresh owner reads this from the snapshot, the session after
+it takes the slow path); `test_check_basis_reassessment_acceptance.py` (a
+change of the checking tool's scope, a change of the provenance graph and an
+unchanged configuration: refusal before reassessment, reassessment without
+calls, a session after it).
 
-**Перепроверка PR108 (c4999a4): история, результаты parallel, порядок, допуск, индекс.**
+**Recheck of PR108 (c4999a4): history, parallel results, order, admission, index.**
 
-- *Забывание закрывает прошлое (R2).* Forget завершает период, в котором
-  применён, и все предыдущие; повторное чтение держит знание только со своего
-  окна — окно забывания остаётся без этого знания.
-- *Исторический период (R3).* Кандидат и attestation исторического запроса
-  несут период, в котором память держала версию в запрошенном окне.
-- *Область видимости (R1).* Долговечный профиль проверяет имя там, где граф
-  исполняется: параметр посторонней функции графу не мешает.
-- *Источник — только принятый ответ (DEEP-1).* Ответ узла-вызова становится
-  источником утверждения или гипотезы, только когда граф его принял;
-  устаревший или отменённый ответ источником не бывает.
-- *Результат — копия программы (DEEP-2).* Изменение результата графа не
-  переписывает записанные шаги, фиксацию и ответы.
-- *Порядок наблюдений (DEEP-3).* Общая консолидация нескольких сессий
-  сворачивает утверждения в порядке наблюдения их источников (последовательность
-  шлюза), а не по именам запусков.
-- *Допуск по записи (DEEP-4).* Утверждение памяти допускается так, как
-  записано: действие во времени и период заново определяются по записи и
-  правилу актуальности оператора; копия кандидата с изменённым содержанием
-  отвергается (`candidate_not_as_recorded`).
-- *Индекс (DEEP-5, DEEP-6).* Повторное чтение не добавляет доверия, но
-  восстанавливает отсутствующий вектор. Вектор помнит свой эмбеддер (инструмент,
-  объявленная версия, контракт); смысловой канал сравнивает только векторы
-  действующего эмбеддера. После смены эмбеддера старые векторы не сравниваются,
-  пока утверждение не прочитают снова под новым — переоценка модель не вызывает.
+- *A forget closes the past (R2).* A forget ends the period in which it was
+  applied and all earlier ones; a repeated reading holds the knowledge only
+  from its own window — the window of the forget stays without that knowledge.
+- *Historical period (R3).* The candidate and the attestation of a historical
+  query carry the period in which memory held the version in the requested
+  window.
+- *Name scope (R1).* The durable profile checks a name where the graph
+  executes: a parameter of an unrelated function does not interfere with the
+  graph.
+- *Only an accepted answer is a source (DEEP-1).* A call node's answer becomes
+  the source of a statement or a hypothesis only once the graph has accepted
+  it; a stale or cancelled answer is never a source.
+- *The result is the program's copy (DEEP-2).* Changing the graph's result does
+  not rewrite the recorded steps, the commit or the answers.
+- *Order of observations (DEEP-3).* A joint consolidation of several sessions
+  folds statements in the order their sources were observed (the gateway
+  sequence), not by run names.
+- *Admission as recorded (DEEP-4).* A statement of memory is admitted as it was
+  recorded: its validity in time and its period are determined again from the
+  record and the operator's currency rule; a copy of a candidate with changed
+  content is rejected (`candidate_not_as_recorded`).
+- *Index (DEEP-5, DEEP-6).* A repeated reading adds no confidence but restores
+  a missing vector. A vector remembers its embedder (tool, declared version,
+  contract); the semantic channel compares only vectors of the embedder in
+  force. After a change of embedder, old vectors are not compared until the
+  statement is read again under the new one — a reassessment does not call the
+  model.
 
-Приёмка: новые случаи в `test_knowledge_contract.py` и `test_dataflow_contract.py`;
-`test_forget_relearn_history_acceptance.py`, `test_dataflow_source_acceptance.py`,
-`test_knowledge_order_acceptance.py`, `test_knowledge_index_acceptance.py`, новые
-случаи в `test_event_admission_acceptance.py` и
-`test_knowledge_return_acceptance.py` (канонический запуск).
+Acceptance: new cases in `test_knowledge_contract.py` and
+`test_dataflow_contract.py`; `test_forget_relearn_history_acceptance.py`,
+`test_dataflow_source_acceptance.py`, `test_knowledge_order_acceptance.py`,
+`test_knowledge_index_acceptance.py`, new cases in
+`test_event_admission_acceptance.py` and `test_knowledge_return_acceptance.py`
+(canonical run).
 
-**Независимый аудит PR108 (746967d): AUD-1…AUD-5.**
+**Independent audit of PR108 (746967d): AUD-1…AUD-5.**
 
-- *Чистота графа — свойство вызываемой функции (AUD-1).* Вызов в чистом узле,
-  условии сигнала или аргументах узла-вызова должен называть чистую встроенную
-  функцию, и её имя там, где граф исполняется, должно разрешаться именно в неё.
-  Имя встроенной функции, занятое функцией пользователя (`fn len`,
-  `let len = change`) или узлом графа, отвергается до исполнения — исполнителем
-  и долговечным профилем.
-- *Событие допускается только в свой момент (AUD-2).* Допуск и временная линия
-  знаний размещают время одним правилом: утверждение о другом моменте —
-  `outside_validity`, как бы кандидат ни был найден (в том числе из истории
-  поиска без времени); утверждение без времени — `freshness_unknown`.
-- *Возврат к прежнему ответу (AUD-3).* Если источник исправляет значение обратно
-  (20 → 25 → 20), память снова держит прежнюю версию: она исправляет текущую, а
-  периоды, когда её держали раньше, остаются в `earlier_known` — каждое прошлое
-  окно отвечает так же, как отвечало тогда.
-- *Явная консолидация применяет forget (AUD-4).* Операторская программа
-  обслуживания (`consolidate palace`) применяет записанные и ещё не применённые
-  акты хранения без новой рабочей сессии: случай становится забытым, знание из
-  его результатов снимается с поиска. Без неприменённых актов консолидация
-  ничего не решает заново.
-- *Маркер удаления только усиливается (AUD-5).* Forget уже сжатого тела
-  заменяет `compacted` на `forgotten` со своим надгробием; сжатие не понижает
-  `forgotten`; забытое тело хранит надгробие того forget, с которым ушло.
+- *A graph's purity is a property of the called function (AUD-1).* A call in a
+  pure node, in a signal condition or in a call node's arguments must name a
+  pure built-in function, and where the graph executes, its name must resolve
+  to exactly that function. A built-in function's name taken by a user function
+  (`fn len`, `let len = change`) or by a graph node is rejected before
+  execution — by the executor and by the durable profile.
+- *An event is admitted at its moment only (AUD-2).* Admission and the
+  knowledge timeline place time by one rule: a claim about another moment is
+  `outside_validity`, however the candidate was found (including from the
+  history listed by a search without a time); a claim without a time is
+  `freshness_unknown`.
+- *A return to an earlier answer (AUD-3).* If the source corrects a value back
+  (20 → 25 → 20), memory holds the earlier version again: it corrects the
+  current one, and the periods when it was held before stay in `earlier_known`
+  — every past window answers as it answered then.
+- *An explicit consolidation applies a forget (AUD-4).* The operator's
+  maintenance program (`consolidate palace`) applies retention acts that are
+  recorded and not yet applied, without a new business session: the case
+  becomes forgotten, and the knowledge from its results is withdrawn from
+  search. Without unapplied acts, the consolidation decides nothing again.
+- *A removal marker only strengthens (AUD-5).* A forget of an already compacted
+  body replaces `compacted` with `forgotten`, with its own tombstone;
+  compaction does not lower `forgotten`; a forgotten body keeps the tombstone
+  of the forget it left with.
 
-Приёмка: новые случаи в `test_dataflow_contract.py` и
+Acceptance: new cases in `test_dataflow_contract.py` and
 `test_knowledge_contract.py`, `test_evidence_marker_contract.py`;
 `test_event_admission_acceptance.py`, `test_knowledge_return_acceptance.py`,
 `test_forget_maintenance_acceptance.py`, `test_forget_compacted_acceptance.py`
-(канонический запуск).
+(canonical run).
 
-**Ревью устойчивости PR108 (1b58d18): порядок проверок, знание окна, допуск, действующее основание.**
+**Resilience review of PR108 (1b58d18): the order of checks, a window's knowledge, admission, the basis in force.**
 
-- *Объявление гипотезы видно всей сессии (M1).* Проверка, сделанная после
-  консолидации, называет гипотезу, объявленную раньше в той же сессии:
-  объявление разрешается по проверенной истории сессии до конца окна, а окно
-  применяет только свои проверки — повторная консолидация ничего не решает
-  дважды.
-- *Порядок — последовательность шлюза (M2).* Статус гипотезы ставит позднейшая
-  проверка по месту её ответа в журнале шлюза (`at`), а не имя запуска или
-  номер окна: более ранняя проверка, консолидированная позже, только
-  отмечается (`superseded`); проверка без записанного ответа не вытесняет
-  записанную.
-- *Знание после границы окна (M3).* Окно, в котором сессия объявила знание
-  (`know`), консолидируется, даже если других значимых событий в нём нет:
-  утверждение входит в память один раз.
-- *Исправление в том же окне (M4).* Исправление источника возвращает в
-  `provisional` статусы, решённые до него по исправленному ответу или
-  проверенные против исправленного источника, — и когда обе сессии
-  сворачиваются в одном окне. Проверка на месте исправления или позже стоит;
-  исправление без известного места достигает всех статусов.
-- *Допуск в протоколе воспроизведения (M5).* Решение `admit` — записанное
-  событие: проверка воспроизведения сессии и восстановление после сбоя
-  потребляют его на своём месте и сравнивают байт в байт; иное решение —
-  нарушение целостности, а не вторая запись.
-- *Основание действия перечитывается перед эффектом (M6).* Требование действия
-  (`requires`) несёт, как было прочитано решение: собственная проверка сессии
-  или запись суда, наблюдение источника и ответ проверки (`gw_seq`,
-  свидетельство). Перед эффектом допуск сверяет его с памятью сейчас —
-  состоянием и ещё не применёнными операторскими актами: более поздняя
-  проверка, исправление того, на чём решение стоит, или forget его наблюдений
-  отказывают действию до эффекта. Решение, принятое после такого изменения,
-  стоит; экзамен читает свой фиксированный снимок. Отправленное действие не
-  отменяется: раздел `relied` отчёта говорит, отозван ли статус до допуска
-  действия или после (`before_admission` / `after_admission`). Forget
-  записывает голову журнала шлюза (`after`), и «решено до forget» определяется
-  по ней, а по окнам — только для неразмещённых записей.
-- *Политика суда v5.* Правила меняют смысл записанных статусов: память,
-  решённая под v4, не читается, пока её не переоценят (`synapse memory
-  reassess`). Переоценка (`synapse.memory.reassessment/v3`) без вызовов заново
-  сворачивает все консолидированные проверки всех сессий и исправления
-  временной линии в порядке шлюза; статус, проверку которого не показывает ни
-  одна читаемая сессия (её история удалена), решается заново по ответу этой
-  проверки, записанному в журнале шлюза. Акты хранения пишутся по схеме
-  `synapse.memory.retention-pass/v2` (поле `after`).
-- *Блокировка запуска с владельцем (LOCK).* Блокировка когнитивного запуска
-  появляется сразу с записью владельца (подготовленный каталог переименовывается
-  на место), а решение о блокировке принимается под блокировкой ОС каталога
-  состояний (`.synapse-run-locks.guard`), которую ядро снимает при гибели
-  держателя. Процесс, убитый при взятии блокировки, её не оставляет; живой
-  процесс в той же точке удерживает запуск один; блокировку погибшего владельца
-  снимает следующий запуск или восстановление. Блокировка без владельца
-  (профиль P2a или версия до этого протокола) по-прежнему не считается
-  устаревшей наугад: её снимает только оператор, убедившись, что живого
-  владельца нет.
+- *A hypothesis declaration is visible to the whole session (M1).* A check made
+  after a consolidation names a hypothesis declared earlier in the same
+  session: the declaration is resolved from the session's verified history up
+  to the end of the window, and a window applies only its own checks — a
+  repeated consolidation decides nothing twice.
+- *The order is the gateway's sequence (M2).* The latest check by the place of
+  its answer in the gateway's journal (`at`) sets a hypothesis status, not the
+  run's name or the window's number: an earlier check consolidated later is
+  only marked (`superseded`); a check without a recorded answer does not
+  displace a recorded one.
+- *Knowledge after a window boundary (M3).* A window in which a session
+  declared knowledge (`know`) is consolidated even when it holds no other
+  significant events: the statement enters memory once.
+- *A correction in the same window (M4).* A source correction returns to
+  `provisional` the statuses decided before it on the corrected answer or
+  checked against the corrected source — also when both sessions fold in one
+  window. A check at the place of the correction or later stands; a correction
+  without a known place reaches all statuses.
+- *Admission in the replay protocol (M5).* An `admit` decision is a recorded
+  event: session replay verification and crash recovery consume it in its
+  place and compare it byte for byte; a different decision is an integrity
+  violation, not a second record.
+- *An action's basis is read again before its effect (M6).* An action's
+  requirement (`requires`) carries how the decision was read: the session's
+  own check or the court's record, the source observation and the check's
+  answer (`gw_seq`, evidence). Before the effect, admission compares it with
+  memory now — the state and the operator acts not yet applied: a later
+  check, a correction of what the decision rests on, or a forget of its
+  observations refuses the action before the effect. A decision made after
+  such a change stands; an exam reads its fixed snapshot. An action already
+  sent is not undone: the report section `relied` says whether the status was
+  revoked before the action's admission or after it (`before_admission` /
+  `after_admission`). A forget records the head of the gateway's journal
+  (`after`), and "decided before the forget" is determined by it, and by
+  windows only for unplaced records.
+- *Court policy v5.* The rules change the meaning of recorded statuses: memory
+  decided under v4 is not read until it is reassessed (`synapse memory
+  reassess`). The reassessment (`synapse.memory.reassessment/v3`) folds again,
+  without calls, all consolidated checks of all sessions and the timeline's
+  corrections in the gateway's order; a status whose check no readable session
+  shows (its history was deleted) is decided again from that check's answer
+  recorded in the gateway's journal. Retention acts are written under the
+  schema `synapse.memory.retention-pass/v2` (field `after`).
+- *A run lock with its owner (LOCK).* A cognitive run lock appears at once
+  with its owner record (a prepared directory is renamed into place), and the
+  decision on the lock is made under an OS lock of the state directory
+  (`.synapse-run-locks.guard`), which the kernel releases when its holder
+  dies. A process killed while taking the lock does not leave it behind; a
+  live process at the same point holds the run alone; the lock of a dead
+  owner is cleared by the next run or by recovery. A lock without an owner
+  (profile P2a or a version before this protocol) is still never guessed
+  stale: only an operator clears it, after making sure that no live owner
+  exists.
 
-Ограничения: проверка того же утверждения о другой версии источника — другая
-гипотеза (другой идентификатор), и решение по старой версии она не отзывает;
-причинный порядок задан журналом шлюза проекта, и события вне него им не
-упорядочены; допуск перечитывает основание в момент отправки эффекта, но
-изменение, записанное после допуска, уже отправленное действие не отменяет.
+Limitations: a check of the same claim about another version of the source is
+another hypothesis (another identifier), and it does not revoke the decision on
+the old version; the causal order is given by the project gateway's journal,
+and events outside it are not ordered by it; admission reads the basis again at
+the moment the effect is sent, but a change recorded after the admission does
+not undo an action already sent.
 
-Приёмка: `acceptance/memory/test_causal_order_contract.py` (порядок шлюза,
-исправления, `changed_since`, forget по голове журнала, раздел `relied` на
-чистых данных); канонический запуск — `test_hypothesis_order_acceptance.py`
+Acceptance: `acceptance/memory/test_causal_order_contract.py` (the gateway's
+order, corrections, `changed_since`, a forget by the journal head, the `relied`
+section on pure data); canonical run — `test_hypothesis_order_acceptance.py`
 (M1, M2), `test_knowledge_window_acceptance.py` (M3, M4),
-`test_admission_record_acceptance.py` (M5, включая восстановление после
-сбоя), `test_relied_revocation_acceptance.py` (M6: опровержение и forget при
-собственной проверке и записи суда, контроль без изменений, проверка после
-изменения, экзамен, неповторение отправленного действия),
-`test_run_lock_acceptance.py` (погибший и живой процесс в точке именования
-владельца, погибший владелец, сбой восстановления, блокировка без владельца).
+`test_admission_record_acceptance.py` (M5, including crash recovery),
+`test_relied_revocation_acceptance.py` (M6: a refutation and a forget with the
+session's own check and with the court's record, a control without changes, a
+check after the change, an exam, the sent action not repeated),
+`test_run_lock_acceptance.py` (a dead and a live process at the point of
+naming the owner, a dead owner, a crashed recovery, a lock without an owner).
 
-**Повторное ревью PR108 (556624d): порядок мира держится между окнами; forget, обучение, переоценка и восстановление (R1–R12).** P1-1 и P1-2 — находки R1 и R2 пакета ревью.
+**Recheck of PR108 (556624d): the world's order holds across windows; forget, learning, reassessment and recovery (R1–R12).** P1-1 and P1-2 are findings R1 and R2 of the review package.
 
-- *Порядок утверждений (P1-2).* Для каждого источника, слота и начала действия
-  память хранит место в журнале шлюза каждого свёрнутого утверждения, копии
-  тоже (`knowledge.stated`). Слот держит то, что источник сказал последним, в
-  каком бы окне ни закончилась сессия: утверждение, сделанное источником до
-  того, что память держит, и свёрнутое позже (сессия закончилась позже),
-  остаётся историей со своим происхождением — закрыто в том же окне, где стало
-  известно (`known_from = known_until`, `corrected_by` — то, что память
-  держит), в отчёте отмечено `late`, — и каждое прошлое окно отвечает так же,
-  как отвечало. Повтор того же содержимого держит текущим то, что память
-  держит, против задержанного промежуточного чтения; источник, действительно
-  вернувшийся к прежнему ответу, говорит его снова позже и держит его снова.
-- *Исправления выводятся из порядка.* Утверждение, чьё содержимое отличается
-  от предыдущего, исправляет каждый ответ серии равных утверждений, которую
-  оно заканчивает, на своём месте. Исправления окна — те, что его утверждения
-  добавляют к порядку: позднее утверждение между двумя другими даёт те же
-  исправления, что и в одном окне.
-- *Задержанная проверка (P1-1).* Статус гипотезы хранит, что решила её
-  позднейшая проверка (`checked`), и равен этому решению, пересмотренному
-  каждым исправлением, которое его достигает. Проверка, сделанная до
-  исправления, которое другая сессия консолидировала первой, остаётся
-  `provisional` на месте последнего исправления — была ли у памяти запись
-  гипотезы, `confirmed` или `provisional`; исправление передвигает на своё
-  место и уже `provisional` статус. Проверка после исправлений стоит. Когда
-  утверждения окна меняют порядок источника, каждый статус, опирающийся на
-  этот источник, решается заново: передвигается на более раннее место или
-  снова принадлежит своей проверке (`hypotheses.restored`); исправление, уже
-  известное памяти и достигшее поздней проверки, названо в
-  `hypotheses.corrected`. Отзыв по forget не отменяется.
-- *Допуск читает само основание.* Перед эффектом допуск ищет исправления,
-  которые порядок памяти делает с ответом, из которого прочитана гипотеза, или
-  с источником, против которого она проверена, после решения, на котором
-  стоит действие, — есть ли у памяти статус гипотезы или нет. Одно правило
-  (`reaches`) решает для свёртки, допуска и переоценки. Отправленное действие
-  не отменяется; восстановленная сессия берёт его из своей записи и заново не
-  допускает.
-- *Отчёт несёт только добавленное.* Раздел `apply.knowledge.stated` отчёта
-  несёт утверждения, которые окно добавило к каждому порядку; проекция
-  присоединяет их тем же правилом, что и суд (`placed_in`), поэтому порядок
-  источника, читаемого в каждом окне, не переписывается целиком.
-- *Политика суда v6.* Память, решённая под v5, не читается, пока её не
-  переоценят (`synapse memory reassess`). Переоценка
-  (`synapse.memory.reassessment/v4`) восстанавливает порядок из
-  консолидированных объявлений всех сессий, чья запись проверяется
-  (`reassessment.knowledge.order`), держит каждый слот тем, что источник сказал
-  последним (версия, свёрнутая поздно под v5, исправляется с окна переоценки,
-  прежние окна отвечают как отвечали), и сворачивает статусы с исправлениями
-  этого порядка; исправление, которое временная линия записала, а
-  восстановленный порядок не размещает, достигает каждого статуса, которого
-  может. Снимок состояния — проекция `synapse.memory.state-projection/v2`:
-  снимки v1 не используются, состояние сворачивается заново из цепи отчётов.
+- *The order of statements (P1-2).* For each source, slot and start of
+  validity, memory keeps the place in the gateway's journal of every folded
+  statement, copies too (`knowledge.stated`). The slot holds what the source
+  said last, whatever window the session finished in: a statement the source
+  made before the one memory holds, and folded later (the session finished
+  later), stays history with its provenance — closed in the same window in
+  which it became known (`known_from = known_until`, `corrected_by` is what
+  memory holds), marked `late` in the report — and every past window answers
+  as it answered. A restatement of the same content keeps what memory holds
+  current against a delayed intermediate reading; a source that really
+  returned to an earlier answer says it again later and holds it again.
+- *Corrections are derived from the order.* A statement whose content differs
+  from the previous one corrects every answer of the series of equal
+  statements that it ends, at its own place. A window's corrections are those
+  that its statements add to the order: a late statement between two others
+  gives the same corrections as in one window.
+- *A delayed check (P1-1).* A hypothesis status keeps what its latest check
+  decided (`checked`) and equals that decision revised by every correction
+  that reaches it. A check made before a correction that another session
+  consolidated first stays `provisional` at the place of the last correction —
+  whether or not memory had a record of the hypothesis, `confirmed` or
+  `provisional`; a correction also moves an already `provisional` status to
+  its place. A check after the corrections stands. When a window's statements
+  change a source's order, every status resting on that source is decided
+  again: it moves to an earlier place or belongs to its check again
+  (`hypotheses.restored`); a correction already known to memory that reached
+  a late check is named in `hypotheses.corrected`. A revocation by a forget is
+  not undone.
+- *Admission reads the basis itself.* Before the effect, admission looks for
+  the corrections that memory's order makes to the answer the hypothesis was
+  read from, or to the source it was checked against, after the decision the
+  action rests on — whether or not memory has a status for the hypothesis.
+  One rule (`reaches`) decides for the fold, the admission and the
+  reassessment. An action already sent is not undone; a recovered session
+  takes it from its record and does not admit it again.
+- *A report carries only what was added.* The report section
+  `apply.knowledge.stated` carries the statements that the window added to
+  each order; the projection joins them by the same rule as the court
+  (`placed_in`), so the order of a source read in every window is not
+  rewritten whole.
+- *Court policy v6.* Memory decided under v5 is not read until it is
+  reassessed (`synapse memory reassess`). The reassessment
+  (`synapse.memory.reassessment/v4`) restores the order from the consolidated
+  declarations of all sessions whose record verifies
+  (`reassessment.knowledge.order`), holds each slot by what the source said
+  last (a version folded late under v5 is corrected from the reassessment's
+  window, earlier windows answer as they answered), and folds the statuses
+  with the corrections of that order; a correction that the timeline recorded
+  but the restored order does not place reaches every status it can. The
+  state snapshot is the projection `synapse.memory.state-projection/v2`: v1
+  snapshots are not used, the state is folded again from the chain of
+  reports.
 
-- *Forget и новое наблюдение (R3).* Акт forget удаляет записанные результаты,
-  наблюдённые до головы журнала шлюза, которую он называет (`after`). Store D
-  адресует результат по содержимому, поэтому тот же ответ, полученный после
-  forget, — новое наблюдение: следующий проход хранения, который снова
-  завершает forget, его тело не удаляет, а забытый случай остаётся забытым.
-- *Политика forget (R4).* Оператор забывает названный случай и каждый случай,
-  несущий его записанные результаты. Результат, который несёт и сохранённый
-  случай, остаётся в store D, и этот случай по-прежнему точно воспроизводится.
-- *Forget и исправление в одном окне (R5).* Забытый случай основы больше не
-  называет запуск (`dependencies.basis_runs`), и окно, где применяются forget и
-  исправление знания, решает без него.
-- *Забытый пример в кандидате (R6).* Забытый пример уходит из кандидата — и в
-  пуле, и в композиции (`pool.retained`): он не участвует ни в критериях, ни в
-  свидетельствах, которые проверяет Gold. Свежие примеры учат; тот же ответ,
-  полученный после forget, — самостоятельный пример.
-- *Спрос не возвращает утраченную основу (R7).* Привычку, у которой сохранённых
-  оснований меньше, чем нужно для рождения, спрос не будит
-  (`cold_checks`, `refused: basis_not_retained`). Её кандидат копит примеры
-  заново, только свежие, и процедура рождается отдельной привычкой (типовая
-  проверка `archived_unfounded`). Архивная привычка сохраняет основу, на которой
-  родилась, и больше не просыпается. Привычка, архивированная за неиспользование,
-  по спросу просыпается как прежде.
-- *Идентичность события (R8).* Пробуждение потребляет события, которые
-  совпали, по паре «запуск, событие»; отчёт называет совпадение обоими. Номер
-  события уникален только внутри запуска.
-- *Переоценка после частичного забывания (R9).* У недоступного эпизода основы
-  свидетельств нет. Повторная публикация несёт свидетельства только проверенных
-  эпизодов, а отказ Gold записывается с причиной.
-- *Переоценка из store D (R10).* Переоценка читает каждый эпизод основы из
-  собственного хранения владельца: сессия переисполняется по данным
-  воспроизведения и записанным результатам и обязана нести точные события
-  случая на их местах. Внешний файл запуска не нужен. Если store D уже не держит
-  данных воспроизведения или переисполнение не воспроизводит случай, эпизод
-  ничего не подтверждает.
-- *Аварийное окно (R11).* Аварийная консолидация перед продолжением упавшей
-  сессии ничего не применяет: ни курсора, ни случая, ни сигнала, ни рождения, ни
-  границы. Её отчёт называет увиденный хвост в `window.deferred`, а
-  `window.sessions` пуст. Следующее окно сессии оценивает этот хвост один раз, с
-  переисполнением: сегмент, завершённый до сбоя, учит, а срабатывание до сбоя
-  засчитывается один раз. Окно, не прошедшее проверку целостности, по-прежнему
-  закрыто: его курсоры проходят дальше.
-- *Новое решение пары (R12).* Решение по разрыву доверия (ступень 1) снимает
-  прежнюю резолюцию пары (`yields_to`, `resolved_by`): отчёт, граница и рантайм
-  называют одного победителя.
+- *A forget and a new observation (R3).* A forget act removes the recorded
+  results observed up to the head of the gateway's journal that it names
+  (`after`). Store D addresses a result by its content, so the same answer
+  received after the forget is a new observation: the next retention pass
+  that completes the forget again does not remove its body, and the forgotten
+  case stays forgotten.
+- *The forget policy (R4).* The operator forgets the named case and every
+  case carrying its recorded results. A result that a retained case also
+  carries stays in store D, and that case still reproduces exactly.
+- *A forget and a correction in one window (R5).* A forgotten basis case no
+  longer names a run (`dependencies.basis_runs`), and the window in which a
+  forget and a correction of knowledge are applied decides without it.
+- *A forgotten example in a candidate (R6).* A forgotten example leaves the
+  candidate — both in the pool and in a composition (`pool.retained`): it
+  takes part neither in the criteria nor in the evidence that Gold verifies.
+  Fresh examples teach; the same answer received after the forget is an
+  example of its own.
+- *Demand does not bring back a lost basis (R7).* Demand does not wake a
+  habit that has fewer retained bases than a birth requires (`cold_checks`,
+  `refused: basis_not_retained`). Its candidate accumulates examples again,
+  fresh ones only, and the procedure is born as a separate habit (typed check
+  `archived_unfounded`). The archived habit keeps the basis it was born on
+  and no longer wakes. A habit archived for disuse wakes on demand as before.
+- *Event identity (R8).* A wake consumes the events that matched by the pair
+  "run, event"; the report names a match by both. An event number is unique
+  only within a run.
+- *A reassessment after a partial forget (R9).* An unavailable basis episode
+  has no evidence. A republication carries the evidence of verified episodes
+  only, and Gold's refusal is recorded with its reason.
+- *A reassessment from store D (R10).* A reassessment reads every basis
+  episode from the owner's own custody: the session is re-executed from the
+  replay data and the recorded results and must carry the case's exact events
+  at their places. An external run file is not needed. If store D no longer
+  holds the replay data or the re-execution does not reproduce the case, the
+  episode confirms nothing.
+- *An emergency window (R11).* An emergency consolidation before a crashed
+  session continues applies nothing: no cursor, no case, no signal, no birth,
+  no boundary. Its report names the tail it saw in `window.deferred`, and
+  `window.sessions` is empty. The session's next window judges that tail
+  once, with re-execution: a segment completed before the crash teaches, and
+  a fire before the crash counts once. A window that failed the integrity
+  check is still closed: its cursors move on.
+- *A new decision for a pair (R12).* A decision by trust gap (step 1) clears
+  the pair's earlier resolution (`yields_to`, `resolved_by`): the report, the
+  boundary and the runtime name one winner.
 
-Ограничения: версия, которую память держит, но ни одно свёрнутое утверждение
-не размещает (решена до того, как порядок хранился, и не восстановлена
-записью), упорядочена по поступлению; порядок хранит одну запись на чтение
-(около 160 байт состояния), и стоимость окна растёт с порядком читаемых им
-источников и числом статусов на них (`docs/MEMORY_PERFORMANCE.md`);
-утверждение, чьё наблюдение забыто, сохраняет место в порядке — forget снимает
-прочитанное, но не факт, что источник потом сказал другое: сделанное им
-исправление стоит, чтение, сделанное до него, остаётся историей, а переоценка
-забытую версию снова не удерживает; из двух чтений, говорящих одно и то же
-разными ответами, версией остаётся свёрнутое первым, а другое — копия, какое
-бы ни было прочитано раньше (значение то же; допуск, называющий ответ копии,
-отказывает как другой версии); причинный порядок задан журналом шлюза
-проекта. Переоценка один раз переисполняет из store D сессию каждого случая
-основы живой привычки; привычка, которой forget оставил меньше оснований, чем
-нужно для рождения, больше не просыпается, а её процедура учится заново только
-на свежих примерах.
+Limitations: a version that memory holds but no folded statement places
+(decided before the order was kept, and not restored from the record) is
+ordered by arrival; the order keeps one record per reading (about 160 bytes of
+state), and a window's cost grows with the orders of the sources it reads and
+the number of statuses resting on them (`docs/MEMORY_PERFORMANCE.md`); a
+statement whose observation was forgotten keeps its place in the order — a
+forget withdraws what was read, but not the fact that the source later said
+something else: the correction it made stands, a reading made before it stays
+history, and a reassessment does not hold the forgotten version again; of two
+readings that say the same thing in different answers, the one folded first
+stays the version and the other is a copy, whichever was read earlier (the
+value is the same; an admission naming the copy's answer refuses as for
+another version); the causal order is given by the project gateway's journal.
+A reassessment re-executes once from store D the session of every basis case
+of a live habit; a habit that a forget left with fewer bases than a birth
+requires no longer wakes, and its procedure is learned again only from fresh
+examples.
 
-Приёмка: `acceptance/memory/test_causal_schedule_contract.py` (свойство: любое
-расписание одних наблюдений — одно окно или несколько, сессии в любом
-порядке, поздняя публикация утверждений и проверок — даёт то же, что
-независимое чтение порядка мира, через проекцию отчётов; целевые случаи);
-канонический запуск — `test_delayed_check_acceptance.py` (нет записи,
-`confirmed`, `provisional` × одно и два исправления, контроль без изменений,
-проверка после исправлений, восстановление после сбоя, бронь уже отправлена,
-переоценка), `test_delayed_statement_acceptance.py` (прямой и обратный
-порядок завершения, повтор против задержанного промежуточного чтения,
-истинный возврат, гипотеза из вытесненного ответа, восстановление,
-переоценка), `test_earlier_order_reassessment_acceptance.py` (память суда v5);
-находки R3–R12 — `test_forget_scope_acceptance.py` (R3, R4),
+Acceptance: `acceptance/memory/test_causal_schedule_contract.py` (a property:
+any schedule of the same observations — one window or several, sessions in
+any order, late publication of statements and checks — gives the same as an
+independent reading of the world's order, through the projection of the
+reports; targeted cases); canonical run — `test_delayed_check_acceptance.py`
+(no record, `confirmed`, `provisional` × one and two corrections, a control
+without changes, a check after the corrections, crash recovery, a booking
+already sent, reassessment), `test_delayed_statement_acceptance.py` (forward
+and reverse order of completion, a restatement against a delayed intermediate
+reading, a true return, a hypothesis from a superseded answer, recovery,
+reassessment), `test_earlier_order_reassessment_acceptance.py` (memory of
+court v5); findings R3–R12 — `test_forget_scope_acceptance.py` (R3, R4),
 `test_forget_correction_window_acceptance.py` (R5),
-`test_forget_learning_acceptance.py` и `test_forget_composition_acceptance.py`
+`test_forget_learning_acceptance.py` and `test_forget_composition_acceptance.py`
 (R6, R7), `test_cold_event_identity_acceptance.py` (R8),
-`test_reassessment_custody_acceptance.py` (R9, R10; контрактный случай в
+`test_reassessment_custody_acceptance.py` (R9, R10; a contract case in
 `test_reassessment_rules_contract.py`), `test_crash_closed_segment_acceptance.py`
-(R11, рядом с обновлённым `test_crash_recovery_acceptance.py`),
-`test_conflict_decision_execution_acceptance.py` (R12); у каждого
-положительный контроль и свой шард CI.
+(R11, beside the updated `test_crash_recovery_acceptance.py`),
+`test_conflict_decision_execution_acceptance.py` (R12); each has a positive
+control and its own CI shard.
 
-**Доделка ревью PR108: основания, зависимости, пробы, измерения.**
+**Completion of the PR108 review: bases, dependencies, trials, measurements.**
 
-- *Нарушение контракта телом привычки (R6).* Шлюз помечает отказ, который
-  контракты запрещают безусловно (скрытый повтор неизвестного эффекта,
-  повтор с изменёнными аргументами, ключ идемпотентности от агента), полем
-  `breach`; невыполненное предусловие (неустановленная гипотеза) нарушением не
-  считается. Выученная привычка, чьё тело совершило такую попытку, в той же
-  консолидации уходит в `dormant` по правилу TV (причина
-  `contract_violation`) независимо от доверия; для объявленной привычки суд
-  публикует рекомендацию её автору. Раздел отчёта `contract_violations`.
-- *Основание допуска (R3, in-toto/SLSA).* Каждый кандидат с известным
-  основанием несёт `attestation` (`synapse.memory.admission-attestation/v1`):
-  утверждение с типом значения, версию (версия источника, период
-  действия, момент вопроса), проверку (метод `probe` или `court_record`,
-  правило `synapse.memory.hypothesis-check/v1`, `contract_ref` проверяющего
-  инструмента, записанные наблюдения, сессия и окно суда), происхождение
-  (запись, источник, связь тождества, копии), итог для этого утверждения
-  (`confirmed`, `refuted`, `undecided` — истёкшая свежесть ничего не
-  опровергает) и зависимости. Допущенный факт несёт аттестацию утверждения;
-  событие `memory_admission` её записывает. Запись, называющая другой
-  источник, чем прочитанный гипотезой, — подменённый источник
-  (`basis_from_another_source`).
-- *Граф зависимостей (§8.2, W3C PROV).* `court/dependencies.py` строит из
-  состояния памяти проекцию: случай `hadMember` наблюдения, статус гипотезы
-  `wasDerivedFrom` ответа-источника и ответа проверки и `wasGeneratedBy`
-  случая, версия знания `wasDerivedFrom` ответа, исправление
-  `wasRevisionOf`, привычка `wasDerivedFrom` случаев основания и `used`
-  версий, допущенных её сессиями. Неизвестные связи перечисляются, а не
-  считаются отсутствием. После `forget` суд разделяет три акта: данные
-  удалены (сам акт), версии, прочитанные из забытых ответов, сняты с поиска
-  (`withdrawn`, история сохраняется), полномочия отозваны (статусы гипотез,
-  решённые до забвения, — в `provisional`; привычка без достаточного
-  сохранённого основания — TR; привычка, чьё основание допустило снятую
-  версию, — TC). Раздел отчёта `dependencies`. Новое чтение того же ответа
-  после забвения — новое наблюдение.
-- *Проверка версии основания перед эффектом (§8.2, по образцу
-  `resourceVersion`).* Перед действием, требующим гипотез, каждое основание,
-  прочитанное из записи суда, читается заново: статус, пересмотренный судом
-  после окна, в котором его прочитали, или опирающийся на забытые
-  результаты (в том числе по ещё не применённому акту `forget`), отклоняет
-  эффект до его начала. Проверка этого же запуска свежа; экзамен читает свой
-  снимок.
-- *Объяснение обобщения и версии контрактов (§8.1).* Рождение публикует
-  `generalization` (`synapse.memory.generalization/v1`): проверенные условия,
-  происхождение каждого аргумента и причину, по которой он переменная
-  (значения различались и объяснены одним источником в каждом эпизоде;
-  неизменное значение остаётся константой), проверки каждого эпизода
-  основания и версии контрактов. Метаданные привычки хранят
-  `verified_under.contracts`; сессия не загружает привычку, у которой
-  контракт вызываемого инструмента не тот, под которым она проверена
-  (`unverified` в открытии сессии), пока пересмотр не проверит её заново
-  (`contracts_changed` в отчёте пересмотра).
-- *Пробы на стенде (R5 §4–5).* Плечо пробы — экзамен режима B на одном
-  снимке с `--exam-trial hab_…`: привычка исполняется одна, на стенде,
-  восстановленном перед каждым плечом. `synapse memory trial` судит два
-  плеча по записанному (первая реакция на одну ситуацию, одинаковые
-  наблюдения до действия привычки, исход по якорю и результату тела без
-  советника, нарушение контракта — неуспех) и записывает пробу с основанием
-  `stand_trial`, стендом и заявленной областью переноса. Сравнение проб
-  (`compare_trials`) учитывает решённые пробы внутри области, каждую ситуацию
-  один раз, и только для триггера, все значения которого область
-  воспроизводит; вне области проба ничего не доказывает. Победитель проб —
-  проверенный результат второй ступени лестницы, когда записанные исходы
-  победителя не дают.
-- *Снимок состояния и хвост журнала (§8.3).* Суд каждые восемь отчётов
-  записывает снимок состояния (`MEMORY_STATE`: версия проекции, срез —
-  решение и отчёт, — дайджест состояния). Владелец читает последний снимок,
-  совпавший по версии, срезу и дайджесту, и сворачивает только хвост; иначе —
-  весь журнал. Решение, назвавшее квитанцию отчёта, отличную от записанного
-  отчёта его консолидации, отвергается: состояние никогда не сворачивается из
-  отчёта, которого решение не назвало. Отчёты читаются из уже проверенного
-  скана журнала, новейшая граница снимка ищется с головы цепочки,
-  проверенные байты события не проверяются на каноничность повторно (хэш и
-  маркер проверяются при каждом чтении). Смысловое ранжирование точное: каждый вектор, норма
-  запроса один раз, те же числа с плавающей точкой, равные оценки по
-  идентичности. Измерения — `docs/MEMORY_PERFORMANCE.md`.
-- *Правило `confidence_sequence` (R6, следующий этап).* Необязательное
-  правило автомата: временно-равномерная граница (normal mixture, Howard и
-  др., 2021) на средний сигнал различных задач состояния, читается на
-  каждом срабатывании; одна задача — одно наблюдение. Повышение при нижней
-  границе не ниже `cs.promote`, понижение при верхней ниже `cs.demote`. При
-  `alpha = 0.05` повышение требует около тридцати различных задач — цена
-  непрерывного наблюдения. По умолчанию остаётся `threshold`.
+- *A contract violation by a habit's body (R6).* The gateway marks a refusal
+  of what the contracts forbid unconditionally (a hidden retry of an unknown
+  effect, a retry with changed arguments, an idempotency key from the agent)
+  with the field `breach`; an unmet precondition (an unestablished
+  hypothesis) does not count as a violation. A learned habit whose body made
+  such an attempt goes to `dormant` in the same consolidation by rule TV
+  (reason `contract_violation`) regardless of trust; for a declared habit the
+  court publishes a recommendation to its author. Report section
+  `contract_violations`.
+- *The admission basis (R3, in-toto/SLSA).* Every candidate with a known
+  basis carries `attestation` (`synapse.memory.admission-attestation/v1`):
+  the statement with its value type, the version (the source's version, the
+  validity period, the moment asked about), the verification (method `probe`
+  or `court_record`, rule `synapse.memory.hypothesis-check/v1`, the checking
+  tool's `contract_ref`, the recorded observations, the session and the court
+  window), the provenance (the record, the source, the identity link, the
+  copies), the outcome for this statement (`confirmed`, `refuted`,
+  `undecided` — expired freshness refutes nothing) and the dependencies. An
+  admitted fact carries the statement's attestation; the `memory_admission`
+  event records it. A record that names a source other than the one the
+  hypothesis read is a substituted source (`basis_from_another_source`).
+- *The dependency graph (§8.2, W3C PROV).* `court/dependencies.py` builds a
+  projection from the memory state: a case `hadMember` observations, a
+  hypothesis status `wasDerivedFrom` the source answer and the check's answer
+  and `wasGeneratedBy` a case, a knowledge version `wasDerivedFrom` an answer,
+  a correction `wasRevisionOf`, a habit `wasDerivedFrom` its basis cases and
+  `used` the versions its sessions admitted. Unknown relations are listed,
+  not taken as absence. After `forget` the court separates three acts: the
+  data are removed (the act itself), the versions read from forgotten answers
+  are withdrawn from search (`withdrawn`, the history is kept), the
+  authorities are revoked (hypothesis statuses decided before the forget — to
+  `provisional`; a habit without a sufficient retained basis — TR; a habit
+  whose basis admitted a withdrawn version — TC). Report section
+  `dependencies`. A new reading of the same answer after the forget is a new
+  observation.
+- *A check of the basis version before the effect (§8.2, modeled on
+  `resourceVersion`).* Before an action that requires hypotheses, every basis
+  read from a court record is read again: a status that the court revised
+  after the window in which it was read, or one that rests on forgotten
+  results (including by a `forget` act not yet applied), rejects the effect
+  before it starts. A check of this same run is fresh; an exam reads its
+  snapshot.
+- *An explanation of the generalization and contract versions (§8.1).* A
+  birth publishes `generalization` (`synapse.memory.generalization/v1`): the
+  verified conditions, the provenance of every argument and the reason it is
+  a variable (the values differed and are explained by one source in every
+  episode; an unchanging value stays a constant), the checks of every basis
+  episode and the contract versions. The habit's metadata keep
+  `verified_under.contracts`; a session does not load a habit whose called
+  tool's contract is not the one it was verified under (`unverified` in the
+  session opening) until a reassessment verifies it again
+  (`contracts_changed` in the reassessment report).
+- *Stand trials (R5 §4–5).* A trial arm is a mode B exam on one snapshot with
+  `--exam-trial hab_…`: the habit runs alone, on a stand restored before
+  every arm. `synapse memory trial` judges the two arms by what was recorded
+  (the first reaction to one situation, identical observations before the
+  habit's action, the outcome by the anchor and the body's result without
+  the advisor, a contract violation is a failure) and records the trial with
+  the basis `stand_trial`, the stand and the declared transfer scope. The
+  trial comparison (`compare_trials`) counts decided trials inside the scope,
+  each situation once, and only for a trigger all of whose values the scope
+  reproduces; outside the scope a trial proves nothing. The trials' winner is
+  a verified result of the ladder's second step when the recorded outcomes
+  give no winner.
+- *The state snapshot and the journal tail (§8.3).* Every eight reports the
+  court records a state snapshot (`MEMORY_STATE`: the projection version, the
+  cut — the decision and the report — and the state digest). The owner reads
+  the latest snapshot that matches by version, cut and digest, and folds only
+  the tail; otherwise the whole journal. A decision that named a report
+  receipt different from the recorded report of its consolidation is
+  rejected: the state is never folded from a report the decision did not
+  name. Reports are read from the already verified journal scan, the newest
+  snapshot boundary is searched from the head of the chain, verified event
+  bytes are not checked for canonicity again (the hash and the marker are
+  checked on every read). The semantic ranking is exact: every vector, the
+  query norm once, the same floating-point numbers, equal scores ordered by
+  identity. Measurements are in `docs/MEMORY_PERFORMANCE.md`.
+- *The `confidence_sequence` rule (R6, next stage).* An optional automaton
+  rule: a time-uniform bound (normal mixture, Howard et al., 2021) on the
+  mean signal of the state's distinct tasks, read at every fire; one task is
+  one observation. Promotion when the lower bound is not below `cs.promote`,
+  demotion when the upper bound is below `cs.demote`. With `alpha = 0.05` a
+  promotion requires about thirty distinct tasks — the price of continuous
+  monitoring. The default remains `threshold`.
 
-Проверенные ограничения этой доделки:
+Verified limitations of this completion:
 
-- Проба не создаёт стенд: восстановление окружения перед каждым плечом —
-  обязанность оператора стенда; суд проверяет лишь, что наблюдения обоих
-  плеч до действия привычки совпали.
-- После `forget` производные версии уходят из поиска и полномочий, но
-  исторические отчёты суда (неизменяемые записи) содержат прочитанные
-  утверждения; `forget` удаляет тела из хранилища D.
-- Внешние батареи: LongMemEval измерен только в части поиска
-  (`scripts/benchmark_longmemeval_retrieval.py`, лексический канал, без
-  модели-читателя и судьи); точность ответов и смысловой канал не
-  измерены; MemoryArena не запускался (нужны агентная среда и модель).
+- A trial does not create the stand: restoring the environment before every
+  arm is the stand operator's duty; the court only checks that the
+  observations of both arms before the habit's action matched.
+- After `forget`, derived versions leave search and authorities, but the
+  court's historical reports (immutable records) contain the statements that
+  were read; `forget` removes the bodies from store D.
+- External batteries: LongMemEval is measured only in its retrieval part
+  (`scripts/benchmark_longmemeval_retrieval.py`, the lexical channel, without
+  a reader model and a judge); answer accuracy and the semantic channel are
+  not measured; MemoryArena was not run (an agent environment and a model are
+  needed).
 
-### Приёмка и границы доказательства
+### Acceptance and evidence boundaries
 
-Приёмка выученных привычек — `acceptance/memory/` (отдельное задание CI
-`memory-acceptance` с `.[agent-mcp]`). Каждый сценарий запускает
-`python -m synapse run --durable --project-state --memory-config` против
-настоящих MCP stdio-серверов (`acceptance/memory/tool_server.py`), а
-проверяющий читает три независимых места: артефакты прогонов, журнал проекта
-и собственный журнал среды сервера инструментов. Файлы:
-`test_habit_learning_acceptance.py` (консолидация, рождение, загрузка,
-применимость, доверие, отзыв, копии), `test_provenance_acceptance.py`
-(контрольные случаи раздела 7), `test_operation_outcome_acceptance.py`
-(ошибка операции, компенсация, чужой ресурс, потерянный ответ, проверка
-состояния), `test_crash_recovery_acceptance.py`,
-`test_two_streams_acceptance.py`, `test_conflict_acceptance.py`,
-`test_experiment_modes_acceptance.py`. Этап 4: `test_court_decision_table_contract.py`
-(таблица решений суда на чистых данных — каждый порог доверия и автомата ниже,
-на уровне и выше; равное доверие и перестановка записей),
-`test_conflict_trust_gap_acceptance.py` и
-`test_conflict_counterfactual_acceptance.py` (ступени 1 и 2 лестницы),
-`test_operation_identity_acceptance.py` (отмена именно созданного, две
-самостоятельные операции, подмена аргументов при повторе),
-`test_fast_path_outcome_acceptance.py` (те же правила в теле объявленной
-привычки), `test_retention_compaction_acceptance.py`,
-`test_retention_crash_acceptance.py`, `test_retention_substitution_acceptance.py`,
+Acceptance of learned habits is `acceptance/memory/` (a separate CI job
+`memory-acceptance` with `.[agent-mcp]`). Each scenario runs
+`python -m synapse run --durable --project-state --memory-config` against real
+MCP stdio servers (`acceptance/memory/tool_server.py`), and the checker reads
+three independent places: the run artifacts, the project journal and the tool
+server environment's own journal. Files: `test_habit_learning_acceptance.py`
+(consolidation, birth, loading, applicability, trust, withdrawal, copies),
+`test_provenance_acceptance.py` (the control cases of section 7),
+`test_operation_outcome_acceptance.py` (an operation error, compensation, a
+foreign resource, a lost answer, a state check),
+`test_crash_recovery_acceptance.py`, `test_two_streams_acceptance.py`,
+`test_conflict_acceptance.py`, `test_experiment_modes_acceptance.py`.
+Memory stage 4: `test_court_decision_table_contract.py` (the court's decision
+table over pure data — each trust and automaton threshold below, at and above
+it; equal trust and permuted records), `test_conflict_trust_gap_acceptance.py`
+and `test_conflict_counterfactual_acceptance.py` (steps 1 and 2 of the ladder),
+`test_operation_identity_acceptance.py` (cancelling exactly what was created,
+two independent operations, argument substitution on a retry),
+`test_fast_path_outcome_acceptance.py` (the same rules in the body of a
+declared habit), `test_retention_compaction_acceptance.py`,
+`test_retention_crash_acceptance.py`,
+`test_retention_substitution_acceptance.py`,
 `test_retention_capacity_acceptance.py`, `test_forget_acceptance.py`,
 `test_hypothesis_protocol_acceptance.py`, `test_hypothesis_reuse_acceptance.py`
-(разбор PR108: `test_admission_basis_contract.py`,
-`test_admission_identity_acceptance.py`, `test_effect_uncertainty_acceptance.py`,
+(PR108 review: `test_admission_basis_contract.py`,
+`test_admission_identity_acceptance.py`,
+`test_effect_uncertainty_acceptance.py`,
 `test_idempotency_crash_acceptance.py`, `test_gateway_sequence_contract.py`,
 `test_conflict_resolution_contract.py`, `test_conflict_overlap_acceptance.py`,
 `test_automaton_experience_contract.py`, `test_automaton_sequence_contract.py`,
 `test_automaton_experience_acceptance.py`, `test_reassessment_contract.py`,
 `test_memory_reassessment_acceptance.py`, `test_paired_exam_acceptance.py`;
-доделка: `test_contract_violation_acceptance.py`, `test_fast_path_attestation_acceptance.py`,
+completion: `test_contract_violation_acceptance.py`,
+`test_fast_path_attestation_acceptance.py`,
 `test_partial_effect_acceptance.py`, `test_hypothesis_expiry_acceptance.py`,
 `test_dependency_graph_contract.py`, `test_forget_dependencies_acceptance.py`,
 `test_forget_knowledge_acceptance.py`, `test_basis_version_acceptance.py`,
-`test_generalization_explanation_acceptance.py`, `test_state_snapshot_acceptance.py`,
-`test_memory_lifecycle_sequence_acceptance.py` (сквозные последовательности со
-сбоями против независимой модели), `test_stand_trial_contract.py`,
-`test_stand_trial_acceptance.py`, `test_automaton_confidence_sequence_contract.py`,
-`test_order_outage_acceptance.py` (порядок обучения и отказ среды раздельно,
-план 2 × 2), `test_held_out_domain_acceptance.py` и
-`test_held_out_knowledge_acceptance.py` (отложенный домен; карточка, копия и
-перефраз — в одной части разбиения))
-и `test_palace_admission_acceptance.py` (решётка чувствительности публикуется
-свойством `admission_lattice` отчёта pytest). Этап 5а:
-`test_applicability_generalization_contract.py` и
-`test_result_dependency_contract.py` (правила на чистых данных),
-`test_applicability_contrast_acceptance.py` (граница по контрастам, новая
-допустимая, близкая недопустимая и неизвестная ситуации, непроверенный
-промежуток, смена контракта инструмента), `test_applicability_widening_acceptance.py`
-(расширение по восстановленным промахам и отказ над контрастом),
-`test_result_dependency_acceptance.py` (отмена именно созданного задания
-при чужом похожем, переисполнение и возобновление без нового задания),
-`test_result_dependency_refusal_acceptance.py` (отказ производителя,
-отсутствующее, пустое поле и поле другого вида) и
-`test_result_dependency_driver_literal_acceptance.py` (литерал драйвера не
-получает зависимости). Этап 5б: `test_composition_contract.py` (правила
-соединения, интерфейс, идентичность, исполнитель на чистых данных),
-`test_composition_acceptance.py` (новая процедура из двух проверенных частей,
-учёт повтора операции, рождение и быстрый путь составной привычки),
-`test_composition_refusal_acceptance.py` (несовместимые условия, частичный
-успех, прописанная цепочка не засчитывается),
-`test_composition_conflict_acceptance.py` (конфликт компенсации),
-`test_composition_review_acceptance.py` (режим C как материал медленного
-планирования, отзыв части и пересмотр композиции),
-`test_composition_alternatives_acceptance.py` (следующая альтернатива
-восстанавливает то, что не восстановила первая),
-`test_composition_nested_acceptance.py` (часть внутри части, отзыв вложенной
-части) и `test_composition_sequence_acceptance.py` (процедура, закончившаяся
-новым отказом, и следующая за ней). Этап 6: `test_knowledge_contract.py`
-(шкала, слияние рангов, свёртка суда и проверки допуска на чистых данных),
-`test_knowledge_search_acceptance.py` (перефраз без общих слов, отрицание и
-другая сущность, полнота при одинаковом бюджете и цена канала),
-`test_knowledge_timeline_acceptance.py` (поздний отчёт, знание на прошлое
-окно, ограниченная и событийная актуальность) и
-`test_knowledge_correction_acceptance.py` (исправление с пересмотром и
-историей, повтор, ядовитое зеркало). Этап 7: `test_dataflow_contract.py`
-(форма графа, профиль, контракт наблюдения, согласованные версии, граница
-петли), `test_dataflow_overlap_acceptance.py` (перекрытие и `limit 1`,
-посторонний медленный узел, другой порядок ответов, отказ действия из узла),
-`test_dataflow_revision_acceptance.py` (замещение устаревшего предложения,
-ожидание вместо смешения версий, воспроизведение хранением) и
-`test_dataflow_crash_acceptance.py` (падение посреди графа и возобновление).
+`test_generalization_explanation_acceptance.py`,
+`test_state_snapshot_acceptance.py`,
+`test_memory_lifecycle_sequence_acceptance.py` (end-to-end sequences with
+crashes against an independent model), `test_stand_trial_contract.py`,
+`test_stand_trial_acceptance.py`,
+`test_automaton_confidence_sequence_contract.py`,
+`test_order_outage_acceptance.py` (the training order and an environment outage
+separately, a 2 × 2 design), `test_held_out_domain_acceptance.py` and
+`test_held_out_knowledge_acceptance.py` (a held-out domain; a card, a copy and
+a paraphrase in one part of the split)) and
+`test_palace_admission_acceptance.py` (the sensitivity lattice is published as
+the `admission_lattice` property of the pytest report). Memory stage 5a:
+`test_applicability_generalization_contract.py` and
+`test_result_dependency_contract.py` (rules over pure data),
+`test_applicability_contrast_acceptance.py` (a boundary from contrasts, the new
+admissible, near inadmissible and unknown situations, an unverified gap, a
+change of the tool contract), `test_applicability_widening_acceptance.py`
+(widening by recovered misses and a refusal over a contrast),
+`test_result_dependency_acceptance.py` (cancelling exactly the created job
+while a similar foreign one exists, re-execution and resumption without a new
+job), `test_result_dependency_refusal_acceptance.py` (a producer refusal, a
+missing field, an empty field and a field of another kind) and
+`test_result_dependency_driver_literal_acceptance.py` (a driver literal gets no
+dependency). Memory stage 5b: `test_composition_contract.py` (join rules,
+interface, identity, executor over pure data), `test_composition_acceptance.py`
+(a new procedure from two verified parts, accounting for an operation retry,
+the birth and fast path of a composite habit),
+`test_composition_refusal_acceptance.py` (incompatible conditions, partial
+success, a spelled-out chain is not counted),
+`test_composition_conflict_acceptance.py` (a compensation conflict),
+`test_composition_review_acceptance.py` (mode C as material for slow planning,
+withdrawal of a part and review of the composition),
+`test_composition_alternatives_acceptance.py` (the next alternative recovers
+what the first did not), `test_composition_nested_acceptance.py` (a part inside
+a part, withdrawal of a nested part) and
+`test_composition_sequence_acceptance.py` (a procedure that ended in a new
+refusal, and the one that follows it). Memory stage 6:
+`test_knowledge_contract.py` (the timeline, rank fusion, the court's fold and
+admission checks over pure data), `test_knowledge_search_acceptance.py` (a
+paraphrase with no shared words, a negation and another entity, recall at the
+same budget and the channel's cost), `test_knowledge_timeline_acceptance.py` (a
+late report, knowledge as of a past window, bounded and event currency) and
+`test_knowledge_correction_acceptance.py` (a correction with revision and
+history, a repetition, a poisoned mirror). Language stage 7:
+`test_dataflow_contract.py` (the graph's shape, the profile, the observation
+contract, consistent versions, the loop bound),
+`test_dataflow_overlap_acceptance.py` (overlap and `limit 1`, an unrelated slow
+node, another order of answers, the refusal of an action from a node),
+`test_dataflow_revision_acceptance.py` (superseding a stale proposal, waiting
+instead of mixing versions, replay by retention) and
+`test_dataflow_crash_acceptance.py` (a crash in the middle of a graph and
+resumption).
 
-Тяжёлые сценарии выделены в независимые файлы и отдельные задания CI:
+Heavy scenarios are split out into independent files and separate CI jobs:
 `test_procedural_source_plan_acceptance.py`,
 `test_project_memory_lifecycle_acceptance.py`,
-`test_episode_outcome_acceptance.py`, `test_court_acceptance.py` и
-`test_gold_memory_slices_acceptance.py`. Проверка суда проводит через CLI
-прерывание перед решением, удалённые и возвращённые записи запуска, закреплённый
-срез и два последующих потока задач; параллельные писатели журнала проверяются
-контрактом четырьмя процессами; контракт суда на чистых данных —
-`test_project_court_contract.py`. Проверка исхода эпизода проводит
-через канонический CLI настоящий инфраструктурный отказ oracle и выполненный
-запуск. `test_gold_memory_slices_acceptance.py` использует настоящие
-канонические публикации, установленный Mini, C1 и исполняемый oracle, включая
-контрольные запуски без положительного и без отрицательного опыта.
-Контролируемый HTTP endpoint выдаёт только нейтральные предложения редактирования.
+`test_episode_outcome_acceptance.py`, `test_court_acceptance.py` and
+`test_gold_memory_slices_acceptance.py`. The court check takes an interruption
+before the decision, removed and restored run records, a pinned slice and two
+subsequent task streams through the CLI; parallel journal writers are checked
+by a contract with four processes; the court's contract over pure data is
+`test_project_court_contract.py`. The episode outcome check takes a real
+infrastructure failure of the oracle and a completed run through the canonical
+CLI. `test_gold_memory_slices_acceptance.py` uses real canonical publications,
+the installed Mini, C1 and the executing oracle, including control runs without
+positive and without negative experience. The controlled HTTP endpoint returns
+only neutral edit proposals.
 
-Проверки информационной границы состоят из анализа кода, чистых контрактов
-и обычных успешных запросов Mini. Отказы формата проверяются чистыми
-контрактами в test_local_edit_contract и test_public_request_policy_contract;
-сценарий реального Mini отправляет обычные типизированные предложения. Активные эксперименты по обходу ограничений
-по просьбе пользователя не выполняются. Проверка с контролируемым endpoint
-не является запуском живого Gemini и не устанавливает экономию на реальных
-задачах. AS2 production readiness остаётся закрытой.
+The information boundary checks consist of code analysis, pure contracts and
+ordinary successful Mini requests. Format refusals are checked by pure
+contracts in test_local_edit_contract and test_public_request_policy_contract;
+the real Mini scenario sends ordinary typed proposals. Active experiments in
+bypassing the restrictions are not run at the user's request. The check with
+the controlled endpoint is not a live Gemini run and does not establish savings
+on real tasks. AS2 production readiness stays locked.
 
-### Проверки GitHub и стоимость чтения доказательств
+### GitHub checks and the cost of reading evidence
 
-В GitHub Actions на исходном head `8beef0d5` обнаружены две первичные
-причины отказа: карта узкой C1-границы не учитывала уже существующее чистое
-сравнение fingerprint среды oracle; повторное использование успешной памяти
-превысило лимит отдельной CLI-команды в 3600 секунд. Итоговый `gold-slow`
-отказал вслед за этим сценарием.
+In GitHub Actions on the original head `8beef0d5`, two primary causes of
+failure were found: the map of the narrow C1 boundary did not account for the
+already existing pure comparison of the oracle environment fingerprint; the
+reuse of successful memory exceeded the 3600-second limit of an individual CLI
+command. The aggregate `gold-slow` job failed following this scenario.
 
-Список C1 сверяется с фактическим read-only сравнением удержанной конфигурации.
-Оно не запускает oracle и не добавляет исполнителю полномочий.
-Карта владения отдельно объявляет общие контракты `source_procedures.py` и
-`stage10/planning_basis.py`; `runner/procedural_observations.py` — адаптер
-физических публикаций и replay к контракту planning basis. Общие контракты
-не маскируются под внутренние части одного потребителя.
+The C1 list is checked against the actual read-only comparison of the retained
+configuration. It does not run the oracle and adds no authority to the
+executor. The ownership map separately declares the shared contracts
+`source_procedures.py` and `stage10/planning_basis.py`;
+`runner/procedural_observations.py` is the adapter from physical publications
+and replay to the planning basis contract. Shared contracts are not disguised
+as internal parts of a single consumer.
 
-Профилирование подтвердило повторную компиляцию одной и той же неизменяемой
-пары behavior/manifest при чтении delivery evidence. Владелец `behavior.py`
-теперь удерживает результат этого чистого вычисления по полным bytes
-доказательства и content ref: до 64 записей, каждая с proof до 256 KiB.
-Большие proof проходят тот же полный вычислительный путь без удержания
-результата. Читатель получает новый типизированный ref из неизменяемых bytes.
+Profiling confirmed repeated compilation of one and the same immutable
+behavior/manifest pair when delivery evidence is read. The owner `behavior.py`
+now retains the result of this pure computation keyed by the full bytes of the
+evidence and the content ref: up to 64 entries, each with a proof of up to
+256 KiB. Larger proofs go through the same full computation path without the
+result being retained. The reader gets a new typed ref from the immutable
+bytes.
 
-Этот результат не является admission. Физические файлы, происхождение,
-lifecycle, текущая совместимость и point-of-use gates открываются и проверяются
-своими владельцами заново. Изменённые bytes или другой content ref требуют
-отдельной проверки; исключения не удерживаются как успешные результаты.
-Таймауты сценариев сохранены.
+This result is not an admission. Physical files, provenance, lifecycle, current
+compatibility and point-of-use gates are opened and checked again by their
+owners. Changed bytes or another content ref require a separate check;
+exceptions are not retained as successful results. Scenario timeouts are kept.
 
-На двух одинаковых физических публикациях локальное чтение под cProfile
-заняло 22,72 секунды до изменения и 10,44 после; хеш полного транспортного
-результата совпал. Это измерение участка чтения на одной машине, не оценка
-общей производительности Gold. Дополнительное чтение пары публикаций,
-включающей успешный результат, заняло 33,68 и 11,59 секунды соответственно;
-полное транспортное содержимое также совпало.
+On two identical physical publications, the local read under cProfile took
+22.72 seconds before the change and 10.44 after; the hash of the full transport
+result matched. This is a measurement of the reading stage on one machine, not
+an estimate of Gold's overall performance. An additional read of a pair of
+publications that includes a successful result took 33.68 and 11.59 seconds
+respectively; the full transport content matched as well.
 
-Полный локальный повтор gold-fast завершился: 2086 passed за 297,04 секунды.
-Ранее упавший test_partial_memory_loop_acceptance завершился: 1 passed за
-1594,15 секунды. Его реальные исходы — VERIFIED_REUSABLE_PARTIAL → FULL → FULL;
-три вызова провайдера, независимый oracle и resume без повторных эффектов.
-Это локальные результаты исправленного кода; новый статус GitHub будет
-известен после push и выполнения workflow.
+A full local rerun of gold-fast completed: 2086 passed in 297.04 seconds. The
+previously failed test_partial_memory_loop_acceptance completed: 1 passed in
+1594.15 seconds. Its real outcomes are VERIFIED_REUSABLE_PARTIAL → FULL → FULL;
+three provider calls, an independent oracle and a resume without repeated
+effects. These are local results of the fixed code; the new GitHub status will
+be known after the push and the workflow run.
 
-### Итоговая локальная приёмка до push
+### Final local acceptance before push
 
-Пятизапусковый test_gold_memory_slices_acceptance завершился: 1 passed за
-3955,25 секунды. Исходы: VERIFIED_REUSABLE_PARTIAL →
-VERIFIED_REUSABLE_PARTIAL → FULL → NO_CANDIDATE → FULL.
-Контроль без отрицательной памяти сохраняет публичный выбор; полный опыт
-выбирает проверенную частичную память. Без положительной памяти пустое
-предложение не даёт кандидата; с положительной — использует сохранённый метод.
-Соответствующие публичные запросы равны при разных локальных срезах памяти.
+The five-run test_gold_memory_slices_acceptance completed: 1 passed in
+3955.25 seconds. Outcomes: VERIFIED_REUSABLE_PARTIAL →
+VERIFIED_REUSABLE_PARTIAL → FULL → NO_CANDIDATE → FULL. The control without
+negative memory keeps the public choice; full experience selects the verified
+partial memory. Without positive memory, an empty proposal yields no candidate;
+with positive memory, it uses the stored method. The corresponding public
+requests are equal under different local memory slices.
 
-Зафиксированы пять обращений к контролируемому провайдеру и четыре настоящих
-независимых oracle-проверки. Исходные файлы и frozen inputs не изменились.
-Повторный resume вернул прежний результат без новых запросов, oracle-эффектов
-или событий памяти. После уточнения сравнения публичных полей Mini отдельно
-прошли 13 чистых SDK-контрактов и четыре обычных сценария установленного Mini.
+Five calls to the controlled provider and four real independent oracle checks
+were recorded. The source files and frozen inputs did not change. A repeated
+resume returned the earlier result without new requests, oracle effects or
+memory events. After the comparison of Mini's public fields was refined, 13
+pure SDK contracts and four ordinary scenarios of the installed Mini passed
+separately.
 
-Сводка сохранённых успешных JUnit содержит 2363 уникальных случая без двойного
-подсчёта: 0 failed, 0 errors, 0 skipped. В неё входят полный gold-fast, связанные
-контракты, архитектура, источник, планы, память и названные тяжёлые сценарии.
-Это целевая приёмка изменений, а не повтор всего suite репозитория.
-Штатный pre-commit прошёл: 45 примеров Synapse разбираются, покрытие CVM-корпуса
-0,935620 при пороге 0,9332, 47 из 47 файлов.
+The summary of the saved successful JUnit reports contains 2363 unique cases
+without double counting: 0 failed, 0 errors, 0 skipped. It includes the full
+gold-fast, the related contracts, architecture, source, plans, memory and the
+named heavy scenarios. This is targeted acceptance of the changes, not a rerun
+of the whole repository suite. The standard pre-commit passed: 45 Synapse
+examples parse, CVM corpus coverage is 0.935620 against a threshold of 0.9332,
+47 of 47 files.
 
-Воспроизводимые отдельные запуски тяжёлых сценариев:
+Reproducible separate runs of the heavy scenarios:
 
 ```bash
 python -B -m pytest -q acceptance/stage4/stage16/test_partial_memory_loop_acceptance.py
@@ -1998,735 +2144,874 @@ python -B -m pytest -q acceptance/stage4/stage16/test_gold_memory_slices_accepta
 python -B -m pytest -q acceptance/stage4/stage16/test_procedural_source_plan_acceptance.py
 ```
 
-Сценарии выполнялись на Python 3.12 в Linux с закреплёнными зависимостями
-gold-worker; отдельные файлы позволяют назначать им независимые CI jobs.
-Сырые отчёты и evidence сохранены локально. Статус нового GitHub run проверяется
-после push и не выводится из локального PASS.
+The scenarios ran on Linux with Python 3.12 and the pinned gold-worker
+dependencies; separate files allow independent CI jobs to be assigned to them.
+Raw reports and evidence are stored locally. The status of the new GitHub run
+is checked after the push and is not inferred from the local PASS.
 
-### Чтение координатора, памяти и доказательств — 13 сентября 2026
+### Reading the coordinator, memory and evidence — 13 September 2026
 
-Доработка сохраняет существующих владельцев и файловые контракты. При чтении
-уже созданного coordinator identity функция `create_coordinator_metadata_once`
-открывает и проверяет фактические bytes без нового staging, записи или `fsync`.
-Это не кэш значения в процессе: следующее обращение снова читает физический
-файл. Первичное создание сохраняет синхронизацию и публикацию без перезаписи;
-при конкуренции создателей используется физическая идентичность победителя.
-Ошибка чтения существующей идентичности не считается отсутствием файла и не
-разрешает создать другую идентичность.
+The refinement keeps the existing owners and file contracts. When an already
+created coordinator identity is read, the function
+`create_coordinator_metadata_once` opens and checks the actual bytes without
+new staging, writing or `fsync`. This is not an in-process value cache: the
+next access reads the physical file again. The initial creation keeps
+synchronization and publication without overwrite; when creators compete, the
+winner's physical identity is used. An error reading an existing identity does
+not count as the file's absence and does not permit creating another identity.
 
-`ProjectMemoryStore` читает исходную inventory один раз при входе в собственную
-exclusive session и удерживает её только для этого живого guard. Успешно
-сохранённое новое событие сначала физически открывается и проверяется, затем
-добавляется в представление владельца. Возвращаемые записи и receipt отделены
-от удержанного состояния, поэтому изменение объекта вызывающим кодом не
-изменяет память владельца. Новая session, inventory без guard и read-only
-читатель снова открывают физические события. Явный `read` и идемпотентный `put`
-также проверяют удержанные bytes.
+`ProjectMemoryStore` reads the initial inventory once on entering its own
+exclusive session and retains it only for this live guard. A successfully saved
+new event is first physically opened and checked, then added to the owner's
+view. The returned records and receipt are separate from the retained state, so
+a change to an object by the calling code does not change the owner's memory. A
+new session, an inventory without a guard and a read-only reader open the
+physical events again. An explicit `read` and an idempotent `put` also check
+the retained bytes.
 
-Ошибка во время staging, commit или последующего readback инвалидирует
-представление session, даже если вызывающий код перехватил исключение.
-Продолжить его использование нельзя; новая session сначала проверяет
-фактически видимые события и только затем восстанавливает незавершённый epoch.
-Неподтверждённые подготовки не становятся видимыми событиями, но учитываются
-в лимите транзакций. Прежние ограничения размеров, неизменность событий и
-порядок их durable-публикации сохраняются.
+An error during staging, commit or the subsequent readback invalidates the
+session's view, even if the calling code caught the exception. It cannot be
+used further; a new session first checks the actually visible events and only
+then recovers the unfinished epoch. Unconfirmed preparations do not become
+visible events, but they count toward the transaction limit. The earlier size
+limits, the immutability of events and the order of their durable publication
+are kept.
 
-`stage14/read_traversal.py` задаёт срок жизни общего обхода публикаций.
-Он может охватывать несколько корней одного внешнего синхронного readonly
-восстановления: `read_project_run_knowledge`, `read_source_snapshot`,
-`read_frozen_source_experience`, `execution_graph`, `read_input_graph` и `_attempt_graph`.
-`PublicationResult` удерживает только bytes, уже проверенные своим физическим
-reader, до 128 записей / 32 MiB на такой обход. Результаты, не помещающиеся
-в лимит, не удерживаются: их следующее чтение снова выполняется полностью.
-Активный и исторический профили имеют разные ключи;
-каждый потребитель получает отдельный JSON-объект. Следующий внешний вызов
-читает заново. Выход по исключению также закрывает scope; завершённые copied
-contexts и другие потоки не используют его результаты. Эта граница не
-охватывает исполнение, публикацию или решение о допуске.
+`stage14/read_traversal.py` sets the lifetime of a shared traversal of
+publications. It can span several roots of one outer synchronous readonly
+reconstruction: `read_project_run_knowledge`, `read_source_snapshot`,
+`read_frozen_source_experience`, `execution_graph`, `read_input_graph` and
+`_attempt_graph`. `PublicationResult` retains only bytes already checked by
+their physical reader, up to 128 entries / 32 MiB per such traversal. Results
+that do not fit in the limit are not retained: their next read is done in full
+again. The active and historical profiles have different keys; each consumer
+gets a separate JSON object. The next outer call reads afresh. An exit by
+exception also closes the scope; completed copied contexts and other threads do
+not use its results. This boundary does not cover execution, publication or the
+admission decision.
 
-В `compatibility_store` повторно используется только чистое декодирование
-отдельного кадра истории: ключом служат полные исходные bytes, результатом —
-неизменяемый `_HistoryFrame`. Кадры до 64 KiB включительно допускаются в LRU
-на 1024 записи; более крупные каждый раз проходят прежний decoder без
-удержания. Суммарный размер исходных ключей ограничен 64 MiB; размер
-удержанных `canonical_bytes` не превышает размер исходных кадров. Это не
-лимит всей памяти Python: объекты и служебные структуры требуют памяти
-дополнительно. Изменённые bytes получают другой ключ, а ошибка декодирования
-не сохраняется как успешный результат.
+In `compatibility_store`, only the pure decoding of an individual history frame
+is reused: the full raw bytes serve as the key, an immutable `_HistoryFrame` as
+the result. Frames of up to 64 KiB inclusive may enter an LRU of 1024 entries;
+larger ones go through the same decoder every time, without retention. The
+total size of the raw keys is limited to 64 MiB; the size of the retained
+`canonical_bytes` does not exceed the size of the raw frames. This is not a
+limit on all of Python's memory: objects and auxiliary structures need
+additional memory. Changed bytes get a different key, and a decoding error is
+not stored as a successful result.
 
-Этот LRU может переживать отдельное чтение, поскольку хранит результат
-разбора конкретных неизменяемых bytes, а не прочитанную версию журнала.
-Каждое обращение по-прежнему физически сканирует журнал и проверяет его
-целостность, sequence, точный parent anchor, coordinator и дубликаты.
-Синхронизация append, readback и проверка истории после записи сохранены;
-кэш не создаёт receipt и не предоставляет допуск. Профилирование выявило
-как минимум четыре повторных полных разбора старой compatibility history
-при append. В исследованном срезе 18 журналов содержали 588 кадров,
-максимальный размер кадра составил 47 758 bytes. Это описание измеренного
-среза, а не новый предел продуктового формата.
+This LRU may outlive an individual read, because it holds the result of parsing
+specific immutable bytes, not a read version of the journal. Every access still
+physically scans the journal and checks its integrity, sequence, exact parent
+anchor, coordinator and duplicates. Append synchronization, readback and the
+history check after a write are kept; the cache creates no receipt and grants
+no admission. Profiling found at least four repeated full parses of the old
+compatibility history on append. In the examined slice, 18 journals contained
+588 frames, and the maximum frame size was 47 758 bytes. This is a description
+of the measured slice, not a new limit of the product format.
 
-Приёмка переиспользует уже восстановленный результат только между assertions
-одной неизменной фазы. В automatic-negative каждый завершённый запуск
-восстанавливается один раз для проверки его попыток; после `approve`
-consumer открывается заново. Общий `completed_attempt` расположен в
-`acceptance/stage4/stage16/_completed_attempt.py` и остаётся только приёмочным
-reader. Пять тяжёлых сценариев сохраняют отдельные файлы и CI shards:
-automatic-negative-replay, positive-replay, retained-patch-mini,
-partial-memory-loop и gold-memory-slices. Число и порядок запусков, причинные
-контроли памяти, настоящий Mini, C1, независимый oracle, отдельный процесс
-`resume` и проверка физически изменённых удержанных bytes не сокращены.
+Acceptance reuses an already reconstructed result only between the assertions
+of one unchanged phase. In automatic-negative, each completed run is
+reconstructed once to check its attempts; after `approve` the consumer is
+opened again. The shared `completed_attempt` is located in
+`acceptance/stage4/stage16/_completed_attempt.py` and remains an
+acceptance-only reader. The five heavy scenarios keep separate files and CI
+shards: automatic-negative-replay, positive-replay, retained-patch-mini,
+partial-memory-loop and gold-memory-slices. The number and order of runs, the
+causal memory controls, the real Mini, C1, the independent oracle, the separate
+`resume` process and the check of physically changed retained bytes are not
+reduced.
 
-В явный список `gold-fast` включены
+The explicit `gold-fast` list includes
 `tests/test_stage4_gold_coordinator_read_io.py`,
-`tests/test_stage4_gold_compatibility_decode_reuse.py` и
+`tests/test_stage4_gold_compatibility_decode_reuse.py` and
 `acceptance/stage4/stage16/test_project_memory_session_inventory_contract.py`.
-Они проверяют короткие операции над настоящими файлами и отдельные
-смоделированные ошибки сохранения. Уже включённый
-`acceptance/stage4/stage13/test_publication_read_contract.py` дополнен
-контрактами нескольких корней и исключения внешнего scope; в этом файле
-физический reader заменён, поэтому он доказывает только жизненный цикл обхода.
+They check short operations on real files and individual simulated save errors.
+The already included
+`acceptance/stage4/stage13/test_publication_read_contract.py` is extended with
+contracts for several roots and for an exception in the outer scope; in this
+file the physical reader is replaced, so it demonstrates only the traversal's
+lifecycle.
 
-Первоначальная тяжёлая приёмка этой доработки намеренно остановлена после
-выявления повторного CPU-разбора compatibility history. Остановка не является
-ни PASS, ни FAIL из-за регрессии. Окончательных результатов пяти тяжёлых
-сценариев пока нет. Проценты ускорения и итоговое снижение физической записи
-на SSD не заявляются; физические записи, необходимые для сохранения новых
-событий и доказательств, остаются. Приведённые выше завершённые результаты
-относятся к предыдущему проверенному срезу, а не к приёмке этой доработки.
+The initial heavy acceptance of this refinement was deliberately stopped after
+the repeated CPU parsing of the compatibility history was found. The stop is
+neither a PASS nor a FAIL caused by a regression. There are no final results
+for the five heavy scenarios yet. Speed-up percentages and an overall reduction
+of physical writes to the SSD are not claimed; the physical writes needed to
+save new events and evidence remain. The completed results given above refer to
+the previous verified slice, not to the acceptance of this refinement.
 
-Локальная проверка этой доработки: до последней оптимизации декодера прошли
-837 архитектурных проверок на Windows, 93 коротких файловых контракта на
-Linux и существующий corpus gate. После правки декодера прошли ровно два
-затронутых файла: 16 тестов на Windows. Эти группы не объявляются новым
-полным прогоном репозитория. По указанию оператора дальнейшие локальные
-тесты остановлены; окончательная проверка пяти тяжёлых сценариев передана
-штатному GitHub CI после push существующей ветки PR #108.
+Local verification of this refinement: before the last decoder optimization,
+837 architecture checks on Windows, 93 short file contracts on Linux and the
+existing corpus gate passed. After the decoder fix, exactly the two affected
+files passed: 16 tests on Windows. These groups are not declared a new full
+repository run. On the operator's instruction, further local tests were
+stopped; the final verification of the five heavy scenarios is handed over to
+the standard GitHub CI after a push of the existing PR #108 branch.
 
-### Решения, сверенные с первичными открытыми источниками
+### Decisions checked against primary open sources
 
-Сопоставление выполнено 12 сентября 2026 года. Применимость подходов к
-Synapse — вывод из контрактов проекта и приёмки, а не результат сравнения
-производительности этих систем. Новые инфраструктурные зависимости не нужны.
+The comparison was made on 12 September 2026. The applicability of the
+approaches to Synapse is a conclusion drawn from the project's contracts and
+acceptance, not the result of a performance comparison of these systems. No new
+infrastructure dependencies are needed.
 
-| Участок | Подтверждённый механизм | Принятое решение и предел |
+| Area | Confirmed mechanism | Adopted decision and limit |
 | --- | --- | --- |
-| Повторное чистое вычисление | [Python functools.lru_cache](https://docs.python.org/3/library/functools.html#functools.lru_cache) удерживает ограниченное число результатов по аргументам; документация отличает это от функций с побочными эффектами и изменяемым состоянием. | Полные неизменяемые proof/content bytes и результат в bytes позволяют повторно использовать только вычисление структурной привязки. Этот кэш не заменяет чтение stores или решения о полномочиях; отдельное удержание проверенных bytes публикаций ограничено readonly-обходом, описанным выше. |
-| Mini Environment | [Официальная документация Mini](https://mini-swe-agent.com/latest/advanced/environments/) предусматривает выбор класса Environment; стандартный local запускает subprocess непосредственно на хосте. | Профиль Mini 2.4.6 подключает собственный Environment через штатный порт. Он завершает типизированное предложение, а изменения и проверки выполняет C1. Это контракт возможностей установленного расширения; изоляция произвольного изменённого процесса средствами ОС здесь не заявляется. |
-| Состояние владельца | [Orleans: lifecycle](https://learn.microsoft.com/en-us/dotnet/orleans/grains/grain-lifecycle) загружает состояние перед активацией и предупреждает, что завершение lifecycle при аварии может не произойти. | Задание и каждый видимый переход сохраняются до завершения обслуживания. Повтор читает исходный срез; корректность не зависит от вызова финализатора. Orleans не добавляется как второй runtime. |
-| Восстановление плана | [Temporal: Workflow Execution](https://docs.temporal.io/workflow-execution) описывает сопоставление команд replay с удержанной историей. | Сохранённый выбор методов сверяется с физическими CVM observations, а затем с графом операций. Историческое внешнее действие не повторяется для получения удобного результата. Используются существующие CVM, activity records и контроллер Gold. |
-| Граница локальных данных | [CaMeL, авторская статья](https://arxiv.org/abs/2503.18813) разделяет данные и управление и ограничивает потоки через capabilities. | Выход Mini строится из фиксированных публичных корней и фактической публичной истории SDK. Локальный информационный порт не становится provider message. Заимствован принцип явного происхождения данных; гарантии всей системы CaMeL не приписываются Synapse. |
-| Точный контракт SDK | [Jinja API](https://jinja.palletsprojects.com/en/stable/api/) документирует удаление завершающего перевода строки по умолчанию. | Публичный шаблон сверяется с фактическим рендерингом Mini/Jinja. Нормализация касается одного предусмотренного перевода строки; проверка содержания исходящего запроса остаётся точной. |
+| Repeated pure computation | [Python functools.lru_cache](https://docs.python.org/3/library/functools.html#functools.lru_cache) retains a bounded number of results keyed by arguments; the documentation distinguishes this from functions with side effects and mutable state. | Full immutable proof/content bytes and a result in bytes allow only the computation of the structural binding to be reused. This cache does not replace reading stores or decisions about authority; the separate retention of checked publication bytes is limited to the readonly traversal described above. |
+| Mini Environment | [The official Mini documentation](https://mini-swe-agent.com/latest/advanced/environments/) provides for choosing the Environment class; the standard local one runs a subprocess directly on the host. | The Mini 2.4.6 profile plugs in its own Environment through the standard port. It completes a typed proposal, while C1 performs the changes and the checks. This is a capability contract of the installed extension; OS-level isolation of an arbitrary modified process is not claimed here. |
+| Owner state | [Orleans: lifecycle](https://learn.microsoft.com/en-us/dotnet/orleans/grains/grain-lifecycle) loads state before activation and warns that lifecycle completion may not happen on a crash. | The task and every visible transition are saved before servicing completes. A retry reads the original slice; correctness does not depend on a finalizer being called. Orleans is not added as a second runtime. |
+| Plan recovery | [Temporal: Workflow Execution](https://docs.temporal.io/workflow-execution) describes matching replay commands against the retained history. | The saved choice of methods is checked against the physical CVM observations, and then against the operation graph. A historical external action is not repeated to get a convenient result. The existing CVM, activity records and the Gold controller are used. |
+| Local data boundary | [CaMeL, the authors' paper](https://arxiv.org/abs/2503.18813) separates data and control and restricts flows through capabilities. | Mini's output is built from fixed public roots and the actual public SDK history. The local information port does not become a provider message. The principle of explicit data provenance is borrowed; the guarantees of the whole CaMeL system are not attributed to Synapse. |
+| Exact SDK contract | [Jinja API](https://jinja.palletsprojects.com/en/stable/api/) documents the removal of the trailing newline by default. | The public template is checked against the actual Mini/Jinja rendering. The normalization concerns one expected newline; the check of the outgoing request's content stays exact. |
 
-Принятые версии mini-swe-agent, LiteLLM и OpenAI SDK закреплены в runtime
-profile. При их обновлении нужно повторить проверку формата фактического
-запроса и обычные сценарии Mini. Наблюдение API не даёт Gold права самостоятельно
-обращаться к LLM.
+The adopted versions of mini-swe-agent, LiteLLM and the OpenAI SDK are pinned
+in the runtime profile. When they are updated, the format check of the actual
+request and the ordinary Mini scenarios must be repeated. Observing the API
+gives Gold no right to call an LLM on its own.
 
-## Назначение и границы
+## Purpose and boundaries
 
-`project connect` создаёт пустую библиотеку. Пустота допустима, но запуск Gold
-требует ранее допущенных, совместимых знаний. Первичное наполнение устраняет
-этот разрыв настоящим изучением источников. Оно не создаёт фиктивную попытку
-Gold, C1-результат, прежний успешный запуск или `FULL`.
+`project connect` creates an empty library. Emptiness is allowed, but a Gold
+run requires previously admitted, compatible knowledge. Initial ingestion
+closes this gap by actually studying the sources. It does not create a
+fictitious Gold attempt, a C1 result, an earlier successful run or `FULL`.
 
-Начальные профили — проверяемые факты репозитория
-(`REPOSITORY_FACT_CHECK`) и проверенные процедуры работы с ним
-(`VERIFICATION_RECIPE`). Тип поведения сам по себе не означает, что профиль
-реализован или что конкретная запись получила допуск.
+The initial profiles are checkable repository facts (`REPOSITORY_FACT_CHECK`)
+and verified procedures for working with it (`VERIFICATION_RECIPE`). A behavior
+type by itself does not mean that the profile is implemented or that a
+particular record was admitted.
 
-Наблюдение, кандидат и допущенное знание имеют разные полномочия. Текст модели
-или документация могут предложить кандидата; автор предложения не утверждает
-его правильность и не записывает его непосредственно в поисковый индекс.
-Подтверждение ограничено проверенным утверждением и его условиями. Например,
-наличие определения символа не доказывает правильность функции, а успешный
-запуск проверки не доказывает корректность всей программы.
+An observation, a candidate and admitted knowledge have different authority.
+Model text or documentation can propose a candidate; the author of the proposal
+does not certify its correctness and does not write it directly into the search
+index. Confirmation is limited to the checked claim and its conditions. For
+example, the presence of a symbol's definition does not prove that the function
+is correct, and a successful run of a check does not prove that the whole
+program is correct.
 
-## Владельцы и направление зависимостей
+## Owners and dependency direction
 
-| Ответственность | Владелец |
+| Responsibility | Owner |
 | --- | --- |
-| Операторский вход | `python -m synapse` → `synapse.cli.main` |
-| Конфигурация проекта, общий fence и открытие stores | `knowledge_environment.py` |
-| Привязка структурного факта к committed bytes | существующий `bindings.py` |
-| Тип и исполнимый контракт знания | существующие `behavior.py` и compiler binding |
-| Проверка исходного утверждения | `source_verification.py` |
-| Сборка операции наполнения и её журнал | `source_ingestion.py` |
-| Выбор сохранённого опыта изучения по задаче | `source_experience.py`, сборка чтения того же журнала |
-| Область допустимого повторного использования | существующий `compatibility.py` |
-| Решение о публикации | существующий `stage13/publication.py` |
-| Атомарная запись и восстановление | существующий `stage13/publication_store.py` |
-| Типизированная lineage и физическая реконструкция | существующий `stage14/` |
-| Измерения и сверка источников | существующие владельцы resource usage и Stage 15 |
-| Испытание механизма | внешние `acceptance/` и `tests/` |
+| Operator entry point | `python -m synapse` → `synapse.cli.main` |
+| Project configuration, the shared fence and opening stores | `knowledge_environment.py` |
+| Binding a structural fact to committed bytes | existing `bindings.py` |
+| Knowledge type and executable contract | existing `behavior.py` and compiler binding |
+| Checking the source claim | `source_verification.py` |
+| Assembling the ingestion operation and its journal | `source_ingestion.py` |
+| Selecting stored study experience for a task | `source_experience.py`, a read assembly over the same journal |
+| Scope of permitted reuse | existing `compatibility.py` |
+| Publication decision | existing `stage13/publication.py` |
+| Atomic write and recovery | existing `stage13/publication_store.py` |
+| Typed lineage and physical reconstruction | existing `stage14/` |
+| Measurements and source reconciliation | existing resource usage and Stage 15 owners |
+| Testing the mechanism | external `acceptance/` and `tests/` |
 
-Новый профиль происхождения расширяет существующий конвейер публикации.
-Второй publisher, альтернативный runtime, отдельная библиотека памяти или
-импорт приёмочных фикстур в продукт запрещены. Общую семантику нельзя копировать
-в новый профиль. Если ответственность переносится, прежнее владение удаляется.
-Python-модули разделяются по контрактам и ответственности; лимит LOC отсутствует.
+The new provenance profile extends the existing publication pipeline. A second
+publisher, an alternative runtime, a separate memory library or importing
+acceptance fixtures into the product are forbidden. Shared semantics must not
+be copied into the new profile. If a responsibility is transferred, the
+previous ownership is removed. Python modules are split by contracts and
+responsibility; there is no LOC limit.
 
-## Процесс
+## Process
 
-1. Оператор задаёт точный Git commit, разрешённые источники и профиль среды.
-   Читаются committed bytes. Изменённый working tree не подменяет источник.
-   Пути, symlinks и выход за разрешённую область проверяются до чтения/исполнения.
-2. Сохраняются материалы, достаточные для повторного открытия источника и
-   проверки его identity: исходные bytes, revision и привязки. Одна ссылка или
-   строка SHA-256 без retained bytes недостаточна.
-3. Формируется типизированный кандидат с узким утверждением, входами,
-   предусловиями, ожидаемыми эффектами и областью применимости.
-4. Независимый продуктовый verifier проверяет факты. Для процедур он выполняет
-   реальные действия в зафиксированной среде и проверяет заранее определённые
-   условия. Нулевой exit code без проверки заявленного результата недостаточен.
-   Неисполненное, прерванное и неизвестное не превращаются в успех.
-5. Существующий владелец публикации проверяет полномочия, provenance, taint,
-   lifecycle и ingestion/publication gates. Проверяющий независим от источника,
-   автора кандидата, builder, worker и publisher.
-6. Исполнимое знание становится доступным в библиотечном индексе после атомарного commit всех
-   необходимых участников, включая удержание физических доказательств и lineage.
-   Материалы и неуспешные наблюдения доступны отдельно через чтение журнала;
-   их сохранение и поиск не являются допуском исполнимого поведения.
-7. Последующее использование проходит обычные retrieval/consumption gates,
-   compatibility, snapshot и replay. Смена commit, среды или политики не
-   наследует старое разрешение автоматически.
+1. The operator sets the exact Git commit, the allowed sources and the
+   environment profile. Committed bytes are read. A modified working tree does
+   not substitute for the source. Paths, symlinks and escapes from the allowed
+   scope are checked before reading/execution.
+2. Materials sufficient to reopen the source and check its identity are saved:
+   the source bytes, the revision and the bindings. A reference or a SHA-256
+   string alone, without retained bytes, is not enough.
+3. A typed candidate is formed with a narrow claim, inputs, preconditions,
+   expected effects and a scope of applicability.
+4. An independent product verifier checks the facts. For procedures it performs
+   real actions in the fixed environment and checks predefined conditions. A
+   zero exit code without a check of the stated result is not enough. What was
+   not executed, was interrupted or is unknown does not turn into success.
+5. The existing publication owner checks authority, provenance, taint,
+   lifecycle and the ingestion/publication gates. The checker is independent of
+   the source, the candidate's author, the builder, the worker and the
+   publisher.
+6. Executable knowledge becomes available in the library index after an atomic
+   commit of all required participants, including the retention of physical
+   evidence and lineage. Materials and unsuccessful observations are available
+   separately by reading the journal; saving and searching them is not an
+   admission of executable behavior.
+7. Later use goes through the ordinary retrieval/consumption gates,
+   compatibility, snapshot and replay. A change of commit, environment or
+   policy does not inherit the old permission automatically.
 
-Ограниченная практика может предлагать новые задания, чтобы исследовать ещё не
-проверенные возможности среды. Её бюджет задаётся заранее; повторение уже
-подтверждённых утверждений не считается новым знанием. Модель не определяет
-собственную правильность оценкой своего ответа. Неподдерживаемые утверждения
-остаются недопущенными с явной причиной.
+Bounded practice can propose new tasks to explore capabilities of the
+environment that have not been checked yet. Its budget is set in advance;
+repeating already confirmed claims does not count as new knowledge. The model
+does not determine its own correctness by grading its own answer. Unsupported
+claims stay unadmitted with an explicit reason.
 
-## Контракт повторного использования
+## Reuse contract
 
-Прежний профиль `compatibility.py` по-прежнему сравнивает точную идентичность
-задачи и полный `OracleObservation`. Для проверенных исходников введена отдельная
-проверяемая связь источника с потребителем: тот же commit, сохранённые исходники,
-восстановленные bindings, разрешённая область, наблюдавшаяся Python-среда,
-политика и инструменты. Наличие имени профиля не заменяет физические проверки.
-Бюджет replay должен совпасть с бюджетом, при котором сертифицирован его след.
+The earlier `compatibility.py` profile still compares the exact task identity
+and the full `OracleObservation`. For verified source files, a separate
+checkable link from the source to the consumer is introduced: the same commit,
+the saved source files, the reconstructed bindings, the allowed scope, the
+observed Python environment, the policy and the tools. The presence of a
+profile name does not replace the physical checks. The replay budget must match
+the budget under which its trace was certified.
 
-Оба поддержанных вида знания проходят следующий контракт:
+Both supported kinds of knowledge go through the following contract:
 
-- У структурного факта проверяются исходный commit, точная binding, заявленное
-  утверждение и принадлежность разрешённому контексту потребителя. Факт о
-  существовании функции не становится разрешением её изменить или вызвать.
-- У процедуры дополнительно проверяются среда, инструменты, входы,
-  предусловия и допустимые эффекты. Успех в одной среде не даёт разрешения
-  воспроизводить процедуру в другой.
-- Исторический verifier знания и oracle новой задачи сохраняют свои разные
-  роли. Нельзя записать будущий oracle в provenance как уже наблюдавшийся.
-- Результат проверки применимости содержит физические доказательства и причины
-  по каждой обязательной оси. Нельзя пропускать сравнение только по значению
-  `behavior_kind`, имени профиля или наличию записи в библиотеке.
-- Существующий профиль точного совпадения сохраняет своё поведение. Его отказы
-  не превращаются в разрешения из-за добавления другого профиля.
+- For a structural fact, the source commit, the exact binding, the stated claim
+  and membership in the consumer's allowed context are checked. A fact that a
+  function exists does not become permission to change or call it.
+- For a procedure, the environment, the tools, the inputs, the preconditions
+  and the permitted effects are checked in addition. Success in one environment
+  gives no permission to replay the procedure in another.
+- The historical verifier of the knowledge and the oracle of the new task keep
+  their different roles. A future oracle must not be recorded in provenance as
+  already observed.
+- The result of the applicability check contains the physical evidence and the
+  reasons for each required axis. The comparison must not be skipped on the
+  strength of the `behavior_kind` value, the profile name or the presence of a
+  record in the library alone.
+- The existing exact-match profile keeps its behavior. Its refusals do not turn
+  into permissions because another profile was added.
 
-Идентичность исходного знания не должна зависеть от ещё не существующего
-контракта потребителя. Новый `GoverningTaskContract` v2 не содержит
-`behavior_refs`: задача фиксирует требования, а конкретные ссылки на знания
-получает Intent из допуска данной попытки. Исторический v1 сохраняет прежний
-контракт и точные ссылки. Связь конкретного потребителя с ранее опубликованным
-знанием устанавливается новой проверкой применимости; producer attestation
-сохраняет исходное происхождение.
+The identity of source knowledge must not depend on a consumer contract that
+does not exist yet. The new `GoverningTaskContract` v2 contains no
+`behavior_refs`: the task fixes the requirements, and the Intent receives the
+specific knowledge references from the admission of this attempt. The
+historical v1 keeps the earlier contract and the exact references. The link
+between a specific consumer and previously published knowledge is established
+by a new applicability check; the producer attestation keeps the original
+provenance.
 
-## История доработки полного контура — 8 сентября 2026
+## Full loop refinement history — 8 September 2026
 
-Первая часть изменений от 2026-09-08 отделяет требования задачи от выбора
-знаний. Она затрагивает существующих владельцев `stage10/task_contract.py`,
-`runner/attempt_plan.py`, `stage10/approval.py`, `stage12/verification.py`,
-`run_knowledge.py` и их точки сборки. Нового runtime или владельца памяти нет.
+The first part of the changes of 2026-09-08 separates the task's requirements
+from the selection of knowledge. It touches the existing owners
+`stage10/task_contract.py`, `runner/attempt_plan.py`, `stage10/approval.py`,
+`stage12/verification.py`, `run_knowledge.py` and their assembly points. There
+is no new runtime or memory owner.
 
-Для v2 задача не задаёт набор знаний. Intent и операция связаны с фактически
-допущенными ссылками попытки; независимая проверка плана отказывает подмене
-этого набора. Разрешение v2 явно допускает выбор из текущего допущенного
-snapshot при неизменных условиях задачи и операций. При чтении завершённой
-попытки проверяется её сохранённое основание выбора, его digest и идентичность.
-Исторические task/approval v1 сохраняют точные условия, новые разрешения из
-старых записей не выводятся.
+For v2 the task does not specify the knowledge set. The Intent and the
+operation are bound to the attempt's actually admitted references; an
+independent plan check refuses a substitution of this set. Approval v2
+explicitly permits selection from the current admitted snapshot while the
+conditions of the task and the operations stay unchanged. Reading a completed
+attempt checks its stored selection basis and that basis's digest and identity.
+Historical task/approval v1 keep their exact conditions; no new grants are
+derived from old records.
 
-Вместо позиции знания в исходном списке ранжирование использует долю совпавших
-привязок к объектам задачи. Это ограниченный структурный признак: corpus ещё
-задаётся экспортом, все его допущенные элементы могут попасть в выборку,
-семантический поиск и самостоятельное построение bindings не реализованы.
-Форматы и действующие ограничения описаны в `STAGE11-GOLD-RUN.md`.
+Instead of a knowledge item's position in the original list, ranking uses the
+share of matched bindings to the task's targets. This is a limited structural
+feature: the corpus is still set by the export, all of its admitted elements
+can enter the selection, and semantic search and autonomous construction of
+bindings are not implemented. Formats and current limitations are described in
+`STAGE11-GOLD-RUN.md`.
 
-Локальная проверка этой части: 44 проверки task/approval-контрактов прошли;
-два варианта сценария с двумя попытками (task v1 и v2) подтвердили исполнение,
-сохранение разрешения и чтение завершённого запуска без повторных эффектов.
-Для v2 согласованная подмена знания в Intent и операции отклонена независимой
-проверкой совместимости. Сценарий каноничного CLI с двумя настоящими публикациями
-(фактом и процедурой) прошёл за 579,77 с: проверены ранжирование, replay, доставка,
-основание выбора и удержание исходных доказательств. Проверки направлений
-зависимостей и отдельный `scripts/stage9_ownership_dag.py` прошли.
+Local verification of this part: 44 task/approval contract checks passed; two
+variants of the two-attempt scenario (task v1 and v2) confirmed execution,
+persistence of the grant and reading of the completed run without repeated
+effects. For v2, a substitution of the knowledge made consistently in the
+Intent and the operation was rejected by the independent compatibility check.
+The canonical CLI scenario with two real publications (a fact and a procedure)
+passed in 579.77 s: ranking, replay, delivery, the selection basis and
+retention of the source evidence were checked. The dependency direction checks
+and the separate `scripts/stage9_ownership_dag.py` passed.
 
-Первый запуск сценария с двумя публикациями прервался по внешнему watchdog
-480 с до старта worker; план и контекст уже были сохранены примерно на 430-й
-секунде. Watchdog приёмочного subprocess увеличен до 900 с, продуктовые бюджеты
-Gold и worker не изменены. Это не проверка производительности и не доказательство
-отсутствия её регрессии. Физического Baseline/Gold прогона и вызовов Gemini в
-этой проверке не было.
+The first run of the two-publication scenario was interrupted by the external
+480 s watchdog before the worker started; the plan and the context had already
+been saved at about the 430th second. The watchdog of the acceptance subprocess
+was raised to 900 s; the product budgets of Gold and the worker were not
+changed. This is neither a performance check nor evidence that performance has
+not regressed. This verification had no physical Baseline/Gold run and no
+Gemini calls.
 
-Следующий блок того же шага разделяет task input, локальный information input
-и публичную историю Mini. Новые записи используют worker context v3, delivery
-body v5, envelope/receipt/invocation/completed delivery v2. Связи обоих входов
-проверяются по точным bytes, длинам и digest при доставке и восстановлении.
-Прежние форматы читаются без изменения их байтов; новый runtime не продолжает
-старый frozen run с незаметной заменой контракта.
+The next block of the same step separates the task input, the local information
+input and Mini's public history. New records use worker context v3, delivery
+body v5, envelope/receipt/invocation/completed delivery v2. The links of both
+inputs are checked against exact bytes, lengths and digest on delivery and
+recovery. Earlier formats are read without changing their bytes; the new
+runtime does not continue an old frozen run with a silent replacement of the
+contract.
 
-Оставшаяся последовательность работ после этого блока:
+The remaining sequence of work after this block:
 
-1. Подключить обычное изучение проекта и поиск по всему опыту. Сохранять исходные
-   материалы, гипотезы, успехи, неудачи, частичные и неизвестные исходы,
-   противоречия и устаревшие сведения. Сохранение опыта и допуск его применения
-   имеют разные условия; ошибка среды не доказывает непригодность метода.
-2. Связать содержательные результаты replay с применимостью процедур,
-   вариантами операций и их выбором.
-3. Реализовать местное применение типизированной информации в Mini и разрешение
-   каждой поддержанной операции до эффекта. Определить разрешённый маршрут
-   публичных наблюдений; сейчас неизвестное происхождение останавливает диалог.
-4. Подключить последующее обучение, условные отрицательные знания, полезные
-   части неуспешных попыток и доказательства влияния на следующий выбор.
-5. После реализации проверить весь контур одним внешним сценарием с отдельным
-   наблюдением исходящих запросов на границе Mini.
+1. Wire in ordinary study of the project and search across all experience.
+   Retain source materials, hypotheses, successes, failures, partial and
+   unknown outcomes, contradictions and outdated information. Retention of
+   experience and admission of its application have different conditions; an
+   environment error does not prove that the method is unfit.
+2. Link the substantive results of replay to the applicability of procedures,
+   to operation variants and to their selection.
+3. Implement local application of typed information in Mini and the
+   authorization of each supported operation before its effect. Define the
+   permitted route of public observations; currently an unknown provenance
+   stops the dialogue.
+4. Wire in subsequent learning, conditional negative knowledge, the useful
+   parts of unsuccessful attempts and evidence of influence on the next
+   selection.
+5. After implementation, verify the whole loop with one external scenario that
+   separately observes the outgoing requests at the Mini boundary.
 
-Gemini остаётся внешней моделью Mini: Mini отправляет запросы и получает ответы.
-Gold передаёт локальную информацию через контракт Mini и получает результат
-работы по этому контракту. Разделение входов устраняет прежнюю передачу общего
-контекста в `mini -t`; оно ещё не подтверждает местное применение памяти и
-готовность полного контура к физическому сравнению.
+Gemini remains Mini's external model: Mini sends requests and receives
+responses. Gold passes local information through Mini's contract and receives
+the result of the work under this contract. Separating the inputs removes the
+earlier passing of a shared context into `mini -t`; it does not yet confirm
+local application of memory or the readiness of the full loop for a physical
+comparison.
 
-Локальная приёмка блока раздельных входов от 2026-09-08: **853 passed** суммарно
-по перечисленным целевым запускам, Python 3.12 на Linux:
+Local acceptance of the separate-inputs block of 2026-09-08: **853 passed** in
+total across the listed targeted runs, Python 3.12 on Linux:
 
-| Проверки | Наблюдавшийся результат |
+| Checks | Observed result |
 |---|---|
-| `test_worker_input_contract.py` и три проверки dependency direction / ownership DAG / acceptance boundary | 821 passed, 17,37 с |
-| Stage 10: context codec, worker subprocess, replay context, delivery influence | 25 passed, 53,60 с |
-| `test_mini_input_delivery_acceptance.py`: одна задача, два разных локальных пакета, настоящий Mini и FormatError continuation | 1 passed, 18,88 с |
-| `test_mini_information_boundary_acceptance.py` и прежний `test_provider_capture_acceptance.py` | 3 passed, 26,64 с |
-| `test_task_selection_approval_acceptance.py`: две попытки, одно разрешение, защита от подмены знаний | 1 passed, 152,27 с |
-| `test_run_lifecycle_acceptance.py` и `test_source_consumer_acceptance.py`: восстановление feedback и доставка настоящих публикаций | 2 passed, 472,96 с |
+| `test_worker_input_contract.py` and three dependency direction / ownership DAG / acceptance boundary checks | 821 passed, 17.37 s |
+| Stage 10: context codec, worker subprocess, replay context, delivery influence | 25 passed, 53.60 s |
+| `test_mini_input_delivery_acceptance.py`: one task, two different local packages, the real Mini and FormatError continuation | 1 passed, 18.88 s |
+| `test_mini_information_boundary_acceptance.py` and the earlier `test_provider_capture_acceptance.py` | 3 passed, 26.64 s |
+| `test_task_selection_approval_acceptance.py`: two attempts, one grant, protection against knowledge substitution | 1 passed, 152.27 s |
+| `test_run_lifecycle_acceptance.py` and `test_source_consumer_acceptance.py`: feedback recovery and delivery of real publications | 2 passed, 472.96 s |
 
-`scripts/stage9_ownership_dag.py` также завершился без запрещённых связей.
-Новые тяжёлые Mini-сценарии находятся в отдельных приёмочных файлах и отдельных
-CI shards. Продукт их не импортирует. Две последние проверки повторены после
-потери сессии среды исполнения; потерянные результаты не посчитаны успешными.
-Приёмка Mini использовала установленный SDK и контролируемый HTTP endpoint,
-включая совместимый с Gemini формат, без платных вызовов Gemini.
+`scripts/stage9_ownership_dag.py` also finished with no forbidden links. The
+new heavy Mini scenarios are in separate acceptance files and separate CI
+shards. The product does not import them. The last two checks were rerun after
+the execution environment's session was lost; the lost results were not counted
+as successful. The Mini acceptance used the installed SDK and a controlled HTTP
+endpoint, including a Gemini-compatible format, without paid Gemini calls.
 
-Подтверждены доставка раздельных входов, неизменность исходящих запросов при
-смене локальной памяти, отказ передачи местного результата/производной ошибки,
-сохранение учёта, точное восстановление и связи с исходными публикациями.
-Полный suite, живое сравнение Baseline/Gold и полезное местное применение памяти
-этим результатом не заявляются. Прежняя оптимизация canonical Unicode scan
-сохранена; новых работ по производительности в этом блоке нет.
+The following are confirmed: delivery of the separate inputs, unchanged
+outgoing requests when the local memory changes, refusal to transmit a local
+result/derived error, preserved accounting, exact recovery and the links to the
+source publications. This result does not claim the full suite, a live
+Baseline/Gold comparison or useful local application of memory. The earlier
+canonical Unicode scan optimization is kept; this block has no new performance
+work.
 
-## Время обработки и отдельная приёмка
+## Processing time and separate acceptance
 
-Разбор от 2026-09-08 использует сохранённые данные прошедшего сценария
-`acceptance/stage4/stage16/test_source_consumer_acceptance.py` с двумя публикациями. Замеры
-повторно открывают настоящий каталог `run-records/lineage-sources` и первую
-исходную `PublicationResult`; новый Gold run, worker и Gemini не запускаются.
+The analysis of 2026-09-08 uses the saved data of the passed two-publication
+scenario `acceptance/stage4/stage16/test_source_consumer_acceptance.py`. The
+measurements reopen the real `run-records/lineage-sources` directory and the
+first source `PublicationResult`; no new Gold run, worker or Gemini is started.
 
-Один вызов `stage14.sources.read_input_graph` под `cProfile` дал 22 046 911
-вызовов функций. Проверка диапазона surrogate породила около 10,2 млн вызовов
-`ord()`. В `canonical_values.py` и Gold `canonicalization.py` она заменена
-скомпилированным поиском диапазона U+D800–U+DFFF для обычных строк. Сохраняются
-UTF-8-проверка, нормализация NFC, канонические bytes, типы ошибок и прежняя
-обработка строковых подклассов общего сериализатора. Внешних зависимостей нет;
-используется [диапазон символов стандартного `re`](https://docs.python.org/3/library/re.html).
+One call of `stage14.sources.read_input_graph` under `cProfile` yielded
+22 046 911 function calls. The surrogate range check produced about
+10.2 million `ord()` calls. In `canonical_values.py` and Gold
+`canonicalization.py` it is replaced by a compiled search for the range
+U+D800–U+DFFF in plain strings. The UTF-8 check, NFC normalization, canonical
+bytes, error types and the shared serializer's earlier handling of string
+subclasses are kept. There are no external dependencies; the search uses a
+[character range of the standard `re`](https://docs.python.org/3/library/re.html).
 
-Время ниже измерено отдельно через `perf_counter`, без профилировщика, на Linux
-и Python 3.12. Для каждой операции сделано три последовательных чтения; файлы
-уже были доступны в кэше ОС. Исходный код до изменения — коммит `f4a629a`.
-Данные и сериализованный результат каждого чтения совпали до и после изменения.
-Замеры после изменения проходили одновременно с целевыми тестами на машине
-с квотой 8 CPU; это локальная оценка, а не изолированный лабораторный benchmark.
+The times below were measured separately with `perf_counter`, without the
+profiler, on Linux and Python 3.12. Three consecutive reads were made for each
+operation; the files were already available in the OS cache. The source code
+before the change is commit `f4a629a`. The data and the serialized result of
+each read matched before and after the change. The measurements after the
+change ran concurrently with targeted tests on a machine with an 8 CPU quota;
+this is a local estimate, not an isolated laboratory benchmark.
 
-| Операция | До: три чтения, с | После: три чтения, с | Отношение медиан |
+| Operation | Before: three reads, s | After: three reads, s | Ratio of medians |
 | --- | --- | --- | --- |
-| `read_input_graph` | 1,120; 1,182; 1,070 | 0,601; 0,495; 0,457 | 2,26 |
-| `PublicationResult.payload` | 0,458; 0,449; 0,461 | 0,248; 0,246; 0,266 | 1,84 |
+| `read_input_graph` | 1.120; 1.182; 1.070 | 0.601; 0.495; 0.457 | 2.26 |
+| `PublicationResult.payload` | 0.458; 0.449; 0.461 | 0.248; 0.246; 0.266 | 1.84 |
 
-Профиль нужен для поиска затрат; его время не используется как benchmark,
-поскольку он по-разному влияет на Python- и C-вызовы
-([документация Python](https://docs.python.org/3/library/profile.html)). Эти
-числа не доказывают ускорение полного Gold run или отсутствие других задержек.
+The profile is for finding costs; its time is not used as a benchmark because
+it affects Python and C calls differently
+([Python documentation](https://docs.python.org/3/library/profile.html)). These
+numbers do not prove a speedup of a full Gold run or the absence of other
+delays.
 
-Следующие приоритеты ускорения пока не реализованы:
+The following speedup priorities are not implemented yet:
 
-1. Устранить повторный разбор неизменных журналов внутри одного проверенного
-   чтения. В измеренном вызове `FileCompatibilityStore` дважды разбирает 53
-   записи: при открытии и при `resolve_ref`. Переиспользование разобранного
-   префикса требует проверки настоящих bytes, digest, coordinator и продолжения
-   цепочки. Одни размер файла, имя по hash или `mtime` такой проверки не заменяют.
-2. Объединить чтение доказательств кандидата в существующем владельце:
-   `run_knowledge.evidence_for` заново проверяет публикацию при отдельных
-   provenance, lifecycle и taint probes. Разобранные неизменные данные можно
-   переиспользовать в рамках согласованного snapshot; текущие разрешения,
-   taint и point-of-use freshness должны проверяться на своих границах.
-3. Добавить индекс кандидатов по объектам задачи и условиям применимости перед
-   дорогой проверкой доказательств. Приём подходит из
-   [индексированного поиска SQLite](https://sqlite.org/queryplanner.html);
-   смена backend не является обязательной частью решения. Хранение всего опыта,
-   включая неудачи и неизвестные исходы, сохраняется. Ограничение поисковой
-   выборки не должно скрывать подходящие отрицательные ограничения.
-4. Распараллеливать независимое чтение кандидатов только на согласованном
-   snapshot после удаления лишней работы. Публикация и изменение общего
-   состояния сохраняют одного владельца и действующий coordinator.
+1. Remove the repeated parsing of unchanged journals within one verified read.
+   In the measured call, `FileCompatibilityStore` parses 53 records twice: on
+   open and on `resolve_ref`. Reusing the parsed prefix requires checking the
+   real bytes, digest, coordinator and chain continuation. On their own, the
+   file size, a hash-based name or `mtime` do not replace such a check.
+2. Combine the reading of a candidate's evidence in the existing owner:
+   `run_knowledge.evidence_for` checks the publication again for the separate
+   provenance, lifecycle and taint probes. Parsed unchanged data can be reused
+   within a consistent snapshot; current grants, taint and point-of-use
+   freshness must be checked at their own boundaries.
+3. Add an index of candidates by task targets and applicability conditions
+   before the expensive evidence check. A suitable technique comes from
+   [SQLite indexed search](https://sqlite.org/queryplanner.html); a change of
+   backend is not a required part of the solution. Retention of all experience,
+   including failures and unknown outcomes, is preserved. Limiting the search
+   selection must not hide matching negative constraints.
+4. Parallelize independent reading of candidates only on a consistent snapshot,
+   after the redundant work is removed. Publication and changes to shared state
+   keep one owner and the current coordinator.
 
-Тяжёлые v1 и v2 проверки разрешения находятся соответственно в
-`acceptance/stage4/stage11/test_operator_approval_resume_acceptance.py` и
-`acceptance/stage4/stage11/test_task_selection_approval_acceptance.py`.
-В `.github/workflows/stage4-gold.yml` это отдельные задания matrix
-`operator-approval-resume` и `task-selection-approval`, доступные для
-[параллельного планирования GitHub Actions](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/run-job-variations).
-Разделение не переносит тесты, фикстуры или подготовку сценария в продуктовый
-код; зависимость продукта от приёмки запрещена в `AGENTS.md`.
+The heavy v1 and v2 approval checks are in
+`acceptance/stage4/stage11/test_operator_approval_resume_acceptance.py` and
+`acceptance/stage4/stage11/test_task_selection_approval_acceptance.py`
+respectively. In `.github/workflows/stage4-gold.yml` they are the separate
+matrix jobs `operator-approval-resume` and `task-selection-approval`, available
+for
+[parallel scheduling in GitHub Actions](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/run-job-variations).
+The split moves no tests, fixtures or scenario setup into product code;
+`AGENTS.md` forbids a dependency of the product on acceptance.
 
-Проверка этого изменения: 920 целевых тестов сериализации, Gold-контрактов,
-compiler binding и архитектурных границ прошли за 26,16 с. Проверены крайние
-surrogate-коды, surrogate-пара, ключи словаря, длинный префикс, допустимые
-Unicode-скаляры и существующие эталонные bytes/hash. Два разнесённых тяжёлых
-сценария успешно собраны через `--collect-only`; их условия и проверки сохранены.
-Полные тяжёлые сценарии после оптимизации локально не запускались.
+Verification of this change: 920 targeted tests of serialization, Gold
+contracts, compiler binding and architecture boundaries passed in 26.16 s. The
+checks covered the edge surrogate code points, a surrogate pair, dictionary
+keys, a long prefix, valid Unicode scalars and the existing reference
+bytes/hash. The two split-out heavy scenarios were collected successfully with
+`--collect-only`; their conditions and checks are kept. The full heavy
+scenarios were not run locally after the optimization.
 
-## Операторская команда и входы
+## Operator command and inputs
 
-Сначала подключите проект с его действующим объявлением полномочий:
+First connect the project with its current authority declaration:
 
 ```bash
 python -m synapse project connect --repo /experiments/repo --state-dir /experiments/project --declaration /experiments/project-declaration.json
 python -m synapse project learn --state-dir /experiments/project --input /experiments/learn.json > /experiments/learning-result.json
 ```
 
-`learn.json` использует закрытую схему `synapse.stage4.gold.source-ingestion/v1`:
-только `schema_version`, `claim` и `files`. У каждого файла — `ref` (обычный
-`HashBoundRef`) и `path`. Относительные пути считаются от входного JSON.
-Список точно покрывает внешние входы утверждения; лишние, отсутствующие и
-подменённые bytes отвергаются. Файлы самого репозитория читает verifier из Git.
+`learn.json` uses the closed schema `synapse.stage4.gold.source-ingestion/v1`:
+only `schema_version`, `claim` and `files`. Each file has a `ref` (an ordinary
+`HashBoundRef`) and a `path`. Relative paths are resolved against the input
+JSON. The list covers the claim's external inputs exactly; extra, missing and
+substituted bytes are rejected. The verifier reads the repository's own files
+from Git.
 
-У `claim` обязательны следующие поля:
+`claim` requires the following fields:
 
-| Поле | Содержание |
+| Field | Content |
 | --- | --- |
 | `schema_version` | `synapse.stage4.gold.source-claim/v1` |
-| `operation_id` | Уникальное имя операции; повтор с изменённым утверждением запрещён |
-| `revision` | Полный SHA исходного Git commit |
-| `kind` | `REPOSITORY_FACT_CHECK` или `VERIFICATION_RECIPE` |
-| `sources` | Точные разрешённые пути обычных committed files |
-| `symbols` | Непустой список Python bindings: `path`, `module`, `qualname`, `symbol_kind`, `contract_version` |
-| `recipe` | `null` для фактов; для процедуры — `command` и `expectation` |
-| `replay_gas_budget` | Бюджет чистого replay, совпадающий с последующим run; например 10000 |
-| `policy_inputs`, `environment_inputs`, `tool_inputs` | Полные `ObservedExternalInput`, упорядоченные по имени, со своими retained files |
+| `operation_id` | Unique operation name; a repeat with a changed claim is forbidden |
+| `revision` | Full SHA of the source Git commit |
+| `kind` | `REPOSITORY_FACT_CHECK` or `VERIFICATION_RECIPE` |
+| `sources` | Exact permitted paths of ordinary committed files |
+| `symbols` | Non-empty list of Python bindings: `path`, `module`, `qualname`, `symbol_kind`, `contract_version` |
+| `recipe` | `null` for facts; `command` and `expectation` for a procedure |
+| `replay_gas_budget` | Budget of the pure replay, matching the later run; for example 10000 |
+| `policy_inputs`, `environment_inputs`, `tool_inputs` | Complete `ObservedExternalInput` items, ordered by name, with their own retained files |
 
-Версия binding — `synapse.stage4.gold.binding-contract/v1`. Например, символ
-`src/calc.py`, `src.calc`, `add`, `FUNCTION` обозначает реально существующее
-определение функции. Проверяющий сам разбирает исходник и вычисляет её identity.
-Заявить несуществующий символ или приложить готовый положительный verdict нельзя.
+The binding version depends on the project. A project connected without import
+roots binds symbols under `synapse.stage4.gold.binding-contract/v1`: the module
+is derived from the path from the repository root. For example, the symbol
+`src/calc.py`, `src.calc`, `add`, `FUNCTION` denotes an actually existing
+function definition. The verifier itself parses the source file and computes
+its identity. It is not possible to declare a nonexistent symbol or to attach a
+ready-made positive verdict.
 
-Для последующего Gold профиль внешних входов должен содержать действующий
-`compatibility-policy`, `host-abi` версии `synapse.stage4.host-abi/v1`, отдельную
-среду `runtime-environment` и сведения об инструментах. Это объявления конкретных
-зависимостей проекта; не заменяйте их фиктивными версиями или будущим oracle.
-Verifier дополнительно сам сохраняет версию Python, систему, архитектуру и
-установленные версии Python-пакетов. При потреблении они наблюдаются снова.
-Версии пакетов не являются полным хешем установленного окружения.
+**A project with a src layout** declares its import roots in the
+`project connect` declaration: `"python_roots": ["src"]`. The roots go into the
+project record `synapse.stage4.gold.project-record/v2`, and `project status`
+prints them as the line `Python import roots: src`. The symbols of such a
+project are bound under `synapse.stage4.gold.binding-contract/v2`:
 
-Процедура задаёт массив аргументов `command`; первый элемент — точный
-`sys.executable` процесса Synapse. Начальный профиль поддерживает процедуры
-этого Python-окружения. В `expectation` обязательны `expected_exit_codes`,
-`expected_nonzero_exit`, непустой `combined_output_contains`,
-`combined_output_not_contains` и ограниченный `timeout_seconds`.
-Проверка exit code без наблюдаемого результата не допускается.
-Проект должен дать `read` для источников и `execute` для процедуры.
-Команда выполняется в отдельном checkout; его изменения запрещены, включая
-неучтённые файлы. Для pytest используйте `-B` и `-p no:cacheprovider`.
-Checkout не является песочницей для произвольных внешних действий команды.
+- **Module name.** A module is named from the longest declared root that
+  contains its path: `src/calc.py` → `calc`. Paths outside the declared roots
+  are named from the repository root: `tests/test_calc.py` → `tests.test_calc`.
+  The order in which the roots are declared does not affect the name.
+- **What a binding stores.** A v2 binding stores the chosen root
+  (`python_root`, `""` for the repository root) and all declared roots
+  (`python_roots`). So a stored binding is checked offline, without the
+  project.
+- **What a root must be.** A root is a directory of the commit. It cannot be a
+  package or lie inside a package (`IMPORT_ROOT_INVALID`). Roots that cannot
+  name modules at the connected commit refuse the connection like a malformed
+  declaration: exit `2`, and no project record is written.
+- **Ambiguous names.** A module name that is derived from two paths is rejected
+  (`MODULE_AMBIGUOUS`). Examples are a package next to a module of the same
+  name, or one package under two roots.
+- **The contract in a claim.** A claim must name its project's contract:
+  `"module": "calc"` with `contract_version` v2 in a project with roots. A v1
+  symbol in a project with roots and a v2 symbol in a project without roots are
+  rejected before the operation is recorded in the journal.
+- **Task targets.** Task targets (`task-target-resolution/v2`) record the roots
+  and are reproduced under them. So a task that mentions `calc.add` selects
+  this symbol.
+- **Renaming layouts** are not supported and yield `MODULE_MISMATCH`. These are
+  `package_dir` in setuptools, `sources` in hatch and `to` in poetry.
+- **Why the roots are declared explicitly.** Roots are not inferred from
+  `pyproject.toml`: build tools have different rules, and the identity of a
+  binding would depend on a hidden input.
 
-Успешный результат имеет `status: PUBLISHED` и поле `knowledge` со схемой
-`synapse.stage4.gold.knowledge-input/v2`. Сохраните именно это поле как обычный
-`knowledge.json` для `knowledge_path` последующего `project run`. Экспорт содержит
-ссылки на реальные публикации и удерживаемые материалы; их нельзя переносить
-отдельно от project state. Экспорт не создаёт разрешений самостоятельно.
-Будущая задача получает собственные task contract, oracle observation и
-behavior refs опубликованных записей; исходная attestation не переписывается.
+For later use by Gold, the external input profile must contain the current
+`compatibility-policy`, `host-abi` of version `synapse.stage4.host-abi/v1`, a
+separate environment `runtime-environment` and information about the tools.
+These are declarations of the project's concrete dependencies; do not replace
+them with fictitious versions or a future oracle. In addition, the verifier
+itself records the Python version, the system, the architecture and the
+installed versions of Python packages. They are observed again at consumption.
+Package versions are not a complete hash of the installed environment.
+Knowledge observed in another runtime, for example after a package was
+installed following `project learn`, does not apply: its compatibility
+evidence names `ENVIRONMENT_MISMATCH` for the task contract and for the
+verifier's result.
 
-Повтор уже подтверждённого утверждения с новым именем операции возвращает
-`ALREADY_KNOWN` и прежнюю публикацию. Он не запускает процедуру повторно и не
-увеличивает библиотеку. Неудача сохраняет `REFUSED`, `REJECTED`, `INFRA_ERROR`
-или `INTERRUPTED`. После неопределённого внешнего действия прежнее имя операции
-не разрешает тихое повторение. Для осознанной новой проверки нужны новые входы
-и новая операция, после разбора прежнего прерывания.
+A procedure specifies the argument array `command`; its first element is the
+exact `sys.executable` of the Synapse process. The initial profile supports
+procedures of this Python environment. `expectation` requires
+`expected_exit_codes`, `expected_nonzero_exit`, a non-empty
+`combined_output_contains`, `combined_output_not_contains` and a bounded
+`timeout_seconds`. Checking the exit code without an observed result is not
+allowed. The project must grant `read` for the sources and `execute` for the
+procedure. The command runs in a separate checkout; changes to it are
+forbidden, including untracked files. For pytest, use `-B` and
+`-p no:cacheprovider`. The checkout is not a sandbox for arbitrary external
+actions of the command.
 
-## Что получает исполнитель
+A successful result has `status: PUBLISHED` and a `knowledge` field with the
+schema `synapse.stage4.gold.knowledge-input/v2`. Save exactly this field as an
+ordinary `knowledge.json` for the `knowledge_path` of a later `project run`.
+The export contains references to real publications and retained materials;
+they must not be moved separately from the project state. The export creates no
+grants by itself. A future task receives its own task contract, oracle
+observation and behavior refs of the published records; the original
+attestation is not rewritten.
 
-Знание проходит прежние retrieval, compatibility, snapshot, consumption gates
-и настоящий replay. Новые публикации source request v3 используют типизированную
-процедуру покрытия целей: число требуемых и совпавших bindings поступает в CVM,
-ветвление возвращает применимость, число совпадений и остаток. Исторические
-source request v1 читаются по прежнему профилю identity. Историческая команда
-при replay не исполняется заново. Платформа проверяет фактические входы, возврат
-и terminal snapshot перед выбором операции и доставкой материала.
+Repeating an already confirmed claim under a new operation name returns
+`ALREADY_KNOWN` and the earlier publication. It does not rerun the procedure
+and does not grow the library. A failure records `REFUSED`, `REJECTED`,
+`INFRA_ERROR` or `INTERRUPTED`. After an uncertain external action, the earlier
+operation name does not permit a silent repetition. A deliberate new check
+needs new inputs and a new operation, after the earlier interruption has been
+analyzed.
 
-Агент — допущенный профиль реестра — получает один STDIO-кадр
-`synapse.agent.stdio-request/v1` с двумя нейтральными проекциями:
+## What the worker receives
 
-- `task.text` — только `synapse.worker.task-input/v1`: формулировка задачи,
-  ревизия, scope, capabilities, виды ожидаемых/запрещённых эффектов и критериев,
-  аргументы явно заданных проверочных команд. Внутренние ссылки на условия
-  остаются в Gold; перечисление видов не заменяет их содержательную проверку.
-- `local_information.text` — `synapse.worker.local-information-input/v1` со своим
-  digest и длиной. Информация включает исходные bytes выбранных записей, replay
-  observations и feedback. Отвергнутая гипотеза сохраняет свой статус; роль
-  `REFERENCE` не объявляет запись успешным опытом.
-- Полные proofs, admission, выбранные операции, plan authority и идентификаторы
-  контроллера остаются в проверяемых envelope/audit.
+Knowledge passes through the existing retrieval, compatibility, snapshot and
+consumption gates and an actual replay. New source request v3 publications use
+a typed target coverage procedure: the counts of required and matched bindings
+go into the CVM, and a branch returns the applicability, the match count and
+the remainder. Historical v1 source requests are read under the earlier
+identity profile. A historical command is not executed again during replay.
+The platform checks the actual inputs, the return value and the terminal
+snapshot before selecting an operation and delivering material.
 
-Если профиль обращается к модели (`LOCAL_BROKER`), он обязан объявить протокол
-локальных правок Synapse; иначе вызов с локальной информацией отвергается до
-запуска процесса. Модельный брокер Synapse (`synapse/agents/model_broker.py`)
-держит ключ провайдера у себя, агент получает только адрес и capability своего
-вызова. Пока доставлена локальная информация, брокер пропускает к провайдеру
-только публичную беседу протокола: инструкции и публичную задачу
-(`public_messages`), затем для каждого наблюдавшегося ответа провайдера — сам
-ответ и фиксированное корректирующее сообщение `LOCAL_EDIT_CORRECTION`. Поля
-запроса ограничены `model` и `messages`. Изменённая история, неизвестное
-сообщение или добавленные параметры отвергаются до внешнего вызова. Клиент может
-опустить поле, уже равное null в публичном ответе; добавить поле нельзя.
+The agent, an admitted registry profile, receives one STDIO frame
+`synapse.agent.stdio-request/v1` with two neutral projections:
 
-Агент возвращает только сырой текст предложения своей модели
-(`local_edit_proposal`); интерпретирует его Synapse. Эффекты репозитория
-выполняет C1 после проверки плана и разрешения. Процесс профиля
-`TRUSTED_PROCESS` допускается оператором по сохранённым доказательствам
-приёмки; ОС-изоляции произвольно изменённого процесса эти проверки не дают.
+- `task.text` — only `synapse.worker.task-input/v1`: the task statement, the
+  revision, scope, capabilities, the kinds of expected/forbidden effects and of
+  criteria, and the arguments of explicitly given verification commands.
+  Internal references to conditions stay in Gold; listing the kinds does not
+  replace a check of their content.
+- `local_information.text` — `synapse.worker.local-information-input/v1` with
+  its own digest and length. The information includes the original bytes of
+  the selected records, replay observations and feedback. A rejected hypothesis
+  keeps its status; the `REFERENCE` role does not declare a record to be
+  successful experience.
+- Full proofs, admission, the selected operations, plan authority and
+  controller identifiers stay in the verifiable envelope/audit.
 
-NR-03/NR-05: новые зависимости `stage10/context.py`, `context_codec.py` и
-`worker_transport.py` ограничены нейтральными неизменяемыми данными
-`synapse.worker.input_contract`. Этот контракт не импортирует Gold, SDK,
-контроллер или приёмку и не выдаёт разрешения. Формирование контекста, admission,
-планирование и восстановление сохраняют прежних владельцев. Точки расширения
-ограничены нейтральным STDIO-протоколом агентов и модельным брокером Synapse.
+If a profile calls a model (`LOCAL_BROKER`), it must declare the Synapse local
+edit protocol; otherwise a call with local information is rejected before the
+process starts. The Synapse model broker (`synapse/agents/model_broker.py`)
+keeps the provider key to itself; the agent receives only the address and the
+capability of its call. While local information is delivered, the broker
+passes to the provider only the protocol's public conversation: the
+instructions and the public task (`public_messages`), then, for each observed
+provider reply, the reply itself and the fixed correction message
+`LOCAL_EDIT_CORRECTION`. The request fields are limited to `model` and
+`messages`. A changed history, an unknown message or added parameters are
+rejected before the external call. A client may omit a field that is already
+null in the public reply; it cannot add a field.
 
-Дополнительная граница NR-03/NR-05: владелец `stage10/influence.py` читает
-нейтральные `synapse.worker.input_contract` и `synapse.worker.local_edits`.
-Проверены их зависимости: это ограниченный чистый интерпретатор данных без
-агента, SDK, файловых эффектов, запуска команд или импортов Gold. Он повторно
-интерпретирует удержанное локальное предложение для наблюдения зависимости
-выбранной правки от информации. Этот путь не вызывает модель, не разрешает
-операции и не устанавливает правильность результата; это остаётся обязанностью
-C1 и независимой проверки. Разрешение импорта ограничено этим владельцем.
+The agent returns only the raw text of its model's proposal
+(`local_edit_proposal`); Synapse interprets it. C1 performs the repository
+effects after the plan and the permission are checked. The operator admits a
+process of the `TRUSTED_PROCESS` profile on stored acceptance evidence; these
+checks do not give OS isolation to an arbitrarily changed process.
 
-Полная физическая цепочка включает исходную операцию, её публикацию, snapshot
-потребителя, replay и переданный контекст. Потеря исходных bytes нарушает
-реконструкцию. Доставка не считается доказательством полезного применения и не
-создаёт `MechanismUseRecord` за модель. Прежнее доказательство предотвращённого
-повтора отвергнутого патча сохраняет собственную семантику.
+NR-03/NR-05: the new dependencies of `stage10/context.py`, `context_codec.py`
+and `worker_transport.py` are limited to the neutral immutable data of
+`synapse.worker.input_contract`. This contract does not import Gold, an SDK,
+the controller or acceptance, and it grants no permissions. Context building,
+admission, planning and recovery keep their existing owners. The extension
+points are limited to the neutral agent STDIO protocol and the Synapse model
+broker.
 
-Для живого Astropy-сценария внешняя команда `prepare-astropy-pair` проверяет
-реальное окружение рабочего агента и вызывает именно этот продуктовый процесс.
-Она сохраняет полные квитанции и время каждого вызова обучения отдельно от
-решения задачи. Внутренний `elapsed_ns` результата `learn` относится только к
-verifier и не включает публикацию. Порядок подготовки, запуска и чтения
-результатов приведён в [инструкции стенда](../acceptance/stage4/stage16/README.md).
+An additional NR-03/NR-05 boundary: the owner `stage10/influence.py` reads the
+neutral `synapse.worker.input_contract` and `synapse.worker.local_edits`.
+Their dependencies have been checked: this is a bounded pure data interpreter
+without an agent, an SDK, file effects, command runs or Gold imports. It
+reinterprets the retained local proposal to observe how the selected edit
+depends on the information. This path does not call a model, does not
+authorize operations and does not establish that the result is correct; that
+remains the duty of C1 and of independent verification. The import permission
+is limited to this owner.
 
-Две проверенные записи сопоставляет существующий compatibility owner. Разные
-исторические факты без совместных эффектов могут сосуществовать; несовпадающие
-источники и конкурирующие ожидания одной команды требуют отказа/разбора.
-Заданный оператором ответ «конфликта нет» не заменяет эту проверку.
+The full physical chain includes the original operation, its publication, the
+consumer's snapshot, the replay and the delivered context. Loss of the
+original bytes breaks reconstruction. Delivery does not count as evidence of
+useful application and does not create a `MechanismUseRecord` on the model's
+behalf. The earlier evidence of a prevented repeat of a rejected patch keeps
+its own semantics.
 
-## Происхождение, атомарность и восстановление
+For the live Astropy scenario, the external command `prepare-astropy-pair`
+checks the real environment of the worker agent and calls exactly this
+product process. It stores the full receipts and the time of each learning
+call separately from solving the task. The internal `elapsed_ns` of the
+`learn` result covers only the verifier and does not include publication. The
+order of preparing, running and reading the results is given in the
+[stand instructions](../acceptance/stage4/stage16/README.md).
 
-Первый корень lineage — сохранённый источник, например конкретная версия
-файла в Git commit. Далее следуют настоящая операция извлечения, её проверка,
-решение о допуске и публикация. У операции есть собственная identity; она не
-выдаётся за попытку решения пользовательской задачи.
+The existing compatibility owner compares two verified records. Different
+historical facts without joint effects can coexist; mismatched sources and
+competing expectations of one command require a refusal/review. An answer of
+"no conflict" given by the operator does not replace this check.
 
-Профиль первичного наполнения имеет закрытую версионированную схему и свой
-обязательный набор ролей графа. Он не ослабляет обязательные роли существующего
-графа Gold. Реконструкция повторно открывает физические материалы и проверяет
-связи; один сохранённый JSON-граф не заменяет доказательства.
+## Provenance, atomicity and recovery
 
-Публикация, admission, attestation, lifecycle, index visibility и retention
-используют общий coordinator. Повторное открытие завершённой операции возвращает
-её прежнюю публикацию без новых эффектов. Незавершённая запись проходит
-существующее восстановление; неизвестный результат внешнего действия нельзя
-повторить молча или отметить успешным. Старые результаты задач не переписываются.
+The first root of the lineage is a stored source, for example a specific
+version of a file in a Git commit. Then come the actual extraction operation,
+its verification, the admission decision and publication. The operation has
+its own identity; it is not passed off as an attempt to solve a user task.
 
-Потеря удерживаемого источника, несовпадение hash, изменение профиля или
-неполная цепочка происхождения блокируют новое подтверждение. Историческая
-квитанция остаётся исторической квитанцией. Taint не исчезает при пересказе,
-хешировании, успешном исполнении или переиздании знания.
+The initial ingestion profile has a closed versioned schema and its own
+required set of graph roles. It does not weaken the required roles of the
+existing Gold graph. Reconstruction reopens the physical materials and checks
+the links; one stored JSON graph does not replace the evidence.
 
-Отсутствующее поле, `null`, пустота, `false`, `0` и неизвестное значение сохраняют
-различную семантику. Неизвестные поля запрещены внутренними закрытыми контрактами.
+Publication, admission, attestation, lifecycle, index visibility and retention
+use a shared coordinator. Reopening a completed operation returns its earlier
+publication without new effects. An unfinished record goes through the
+existing recovery; an external action with an unknown result cannot be
+silently retried or marked successful. Old task results are not rewritten.
 
-## Шаг 2 карты: сохранённый опыт изучения
+Loss of a retained source, a hash mismatch, a profile change or an incomplete
+provenance chain blocks a new confirmation. A historical receipt remains a
+historical receipt. Taint does not disappear when knowledge is paraphrased,
+hashed, successfully executed or republished.
 
-Первый блок шага 2 реализует сохранение и выбор **опыта source-операций**.
-`project learn` сохраняет утверждение до эффектов, затем физические bytes
-входов и источников, разрешённые привязки, начало команды, её результат и
-последующие проверки. Контрольные точки используют существующие
-`source-operations/<sha256(operation_id)>`, snapshot transactions и fence
-операции. Входы и наблюдения связаны цепочкой; завершение связано с её головой.
-Пропажа committed bytes или части завершённой истории вызывает отказ чтения.
+A missing field, `null`, emptiness, `false`, `0` and an unknown value keep
+distinct semantics. Internal closed contracts forbid unknown fields.
 
-Разрешённый символ и stdout команды сохраняются, даже если следующее
-утверждение неверно или очистка рабочего каталога завершилась ошибкой.
-Если после начала команды нет committed результата, исход остаётся
-`STARTED_UNKNOWN`; повторный `learn` не запускает команду заново. Повторное
-чтение не зависит от первоначальных внешних файлов оператора. Старые записи
-читаются без переписывания; ранее не сохранённые bytes из них не выдумываются.
-Если прочитанные bytes входа не совпали с заявленной identity, сохраняются
-обе ссылки и фактические bytes, а проверка/исполнение не начинаются.
+## Step 2 of the map: stored study experience
 
-Обычное изучение файлов использует `source-ingestion/v2` с `source-claim/v2`:
-`kind: SOURCE_STUDY`, `symbols: []`, `recipe: null`. Остальные поля декларации
-v1, включая точный commit, разрешённые `sources`, observed dependencies и
-бюджеты, обязательны. Система выводит поддерживаемые Python-привязки через
-существующий `bindings.py`. Документы, некорректный Python и неоднозначные
-определения сохраняются с причиной отсутствия интерпретации. Код и команды
-из текста не исполняются. Результат `RETAINED` не создаёт публикацию.
-Обнаруженный span символа не доказывает его runtime-эффекты.
+The first block of step 2 implements storing and selecting
+**source-operation experience**. `project learn` stores the claim before the
+effects, then the physical bytes of inputs and sources, the resolved bindings,
+the start of the command, its result and the subsequent checks. Checkpoints
+use the existing `source-operations/<sha256(operation_id)>`, snapshot
+transactions and the operation's fence. Inputs and observations are linked in
+a chain; the completion is linked to its head. Loss of committed bytes or of
+part of a completed history causes a read refusal.
 
-Команда чтения:
+The resolved symbol and the command's stdout are stored even if a later
+assertion is false or cleaning the working directory ended in an error. If
+there is no committed result after the command started, the outcome stays
+`STARTED_UNKNOWN`; a repeated `learn` does not run the command again. A
+repeated read does not depend on the operator's original external files. Old
+records are read without being rewritten; bytes that were not stored before
+are not invented from them. If the bytes read for an input do not match the
+declared identity, both references and the actual bytes are stored, and
+verification/execution does not start.
+
+An ordinary study of files uses `source-ingestion/v2` with `source-claim/v2`:
+`kind: SOURCE_STUDY`, `symbols: []`, `recipe: null`. The other fields of the
+v1 declaration, including the exact commit, the permitted `sources`, observed
+dependencies and budgets, are required. The system derives the supported
+Python bindings through the existing `bindings.py`. Documents, invalid Python
+and ambiguous definitions are stored with the reason why they have no
+interpretation. Code and commands from the text are not executed. A `RETAINED`
+result does not create a publication. A detected span of a symbol does not
+prove its runtime effects.
+
+The read command:
 
 ```bash
 python -m synapse project recall --state-dir /path/to/state --input /path/to/query.json
 ```
 
-Закрытый запрос задаёт задачу и область, а не список записей памяти:
+A closed query gives the task and the scope, not a list of memory records:
 
 ```json
 {
   "schema_version": "synapse.stage4.gold.source-recall-query/v1",
-  "statement": "Проверить расчёт площади Shape.area",
-  "revision": "ТОЧНЫЙ_GIT_COMMIT",
+  "statement": "Check the area calculation of Shape.area",
+  "revision": "EXACT_GIT_COMMIT",
   "scope": ["src/shape.py"],
   "limit": 8
 }
 ```
 
-Профиль `exact-revision-path-and-term-overlap/v1` выбирает операции той же
-ревизии с пересечением путей. Ранжирование учитывает число подходящих путей,
-затем пересечение терминов задачи с исходниками, именами символов и выводом
-команды; равенство разрешается по identity операции. Положительный исход
-не является условием отбора или дополнительным баллом. Ответ сохраняет
-контекст целой выбранной операции, включая её зависимости и материалы;
-совпавшие пути и термины указаны отдельно. Область ограничена entitlements
-проекта. Результат сверх лимита явно учтён в `omitted_by_limit`, отсутствие
-совпадений — `NO_RELEVANT_EXPERIENCE`. Бюджет ответа 16 MiB: превышение вызывает
-отказ с предложением сузить запрос, а не обрезание доказательств.
+The `exact-revision-path-and-term-overlap/v1` profile selects operations of
+the same revision with overlapping paths. Ranking takes into account the
+number of matching paths, then the overlap of task terms with the source
+files, symbol names and command output; a tie is broken by the operation's
+identity. A positive outcome is neither a selection condition nor an extra
+score. The response keeps the context of the whole selected operation,
+including its dependencies and materials; the matched paths and terms are
+listed separately. The scope is limited by the project's entitlements. A
+result beyond the limit is counted explicitly in `omitted_by_limit`, and an
+absence of matches is `NO_RELEVANT_EXPERIENCE`. The response budget is 16 MiB:
+exceeding it causes a refusal that suggests narrowing the query, not a
+truncation of the evidence.
 
-Исполнение и проверка имеют разные статусы. `EXITED_NONZERO` вместе с
-`VERIFIED` возможно, если именно такой результат требовал заранее заявленный
-контракт. Сбой среды остаётся `INFRA_ERROR`. У всех найденных записей
-`applicability: UNASSESSED`: совпадение путей, слов или exit code не доказывает
-применимость метода и не запрещает его в любых условиях. Чтение открывает
-committed префикс каждой операции под её fence; это ещё не общий атомарный
-snapshot проекта для исполнения Gold.
+v1 has a flaw: a large file contains almost every word of the task. So
+operations over one file score the same, and their order is decided
+alphabetically by their identity. The operation needed can end up beyond the
+limit.
 
-NR-03/NR-05: `source_experience.py` — сборка чтения журнала и опубликованных
-доказательств. Точные зависимости на `source_ingestion.py` и
-`knowledge_environment.py` внесены в assembly DAG. Владельцы журналирования,
-проверки, Python binding и публикации сохраняются. Второе изменяемое
-хранилище, второй publisher или исполняющий агент не добавлены. Разделение
-материала, наблюдаемой деятельности и результата опирается на понятия
-[W3C PROV-DM](https://www.w3.org/TR/prov-dm/); полной реализации стандарта
-этот профиль не заявляет.
+A `synapse.stage4.gold.source-recall-query/v2` query names the profile
+explicitly, in the `"profile"` field. The profile
+`exact-revision-path-and-tiered-term-overlap/v2` (response
+`synapse.stage4.gold.source-recall/v2`) compares integers in order:
 
-**Оставшаяся часть шага 2:** общая модель элементов и current/target/delta,
-типизация остальных видов опыта, извлечение содержательных утверждений из
-документов и автоматический выбор всего подходящего корпуса в frozen Gold
-run. Новый `recall` подключён к CLI чтения; его результат ещё не передаётся
-Mini и не участвует в replay/плане. Следующий блок должен провести его через
-существующие snapshot, context и lineage с отдельной семантикой недопущенных
-материалов. Изучение всего репозитория без заданной области и перенос выводов
-между ревизиями не заявляются. Весь контур Gold пока не принят.
+1. matching paths;
+2. task terms in the operation's own identity: in its paths and the names of
+   its bound symbols;
+3. task terms in the output of its command;
+4. task terms in the full text of the source files.
 
-Тяжёлые сценарии `test_source_experience_acceptance.py`,
+The operation's identity breaks the remaining ties. So an operation whose
+symbol the task names comes before operations that matched only on the file
+text. Command output is a separate tier: long test output would by itself
+reproduce the large-file effect. In a v2 response, `match.terms` splits the
+terms by tier (`identity`, `output`, `source`), and `match.tie_group` shows
+how many operations were ordered by their identity alone.
+
+The profile has no fractional scores: `log` values differ between the math
+libraries of platforms, and the result is canonicalized and hashed. v1 queries
+and the delivery of experience into a Gold run stay on profile v1: changing
+what a run sees in the middle of an experiment would confound the
+Baseline/Gold comparison.
+
+Measurement (`reports/source_recall_profile_v1.json`, script
+`acceptance/stage4/stage16/source_recall_profile_measure.py`): 36 labeled
+queries against 36 operations learned on pallets/flask (root `src`) and
+Synapse; ranks are computed with ties taken into account (within a group of
+equal keys every order is equally likely). MRR 0.566 → 0.818, Success@1 0.30
+→ 0.68, Success@3 0.87 → 0.98; 25 queries better, 7 the same, 4 worse.
+Queries that name the needed symbol gain the most (MRR 0.50 → 0.98, not a
+single loss), queries without names gain moderately (0.61 → 0.75). Queries
+that name another studied symbol show no significant difference (0.60 → 0.64;
+4 better, 3 worse): v2 puts the named symbol first even when the defect is in
+a neighboring one. The set is small and was compiled by the profile's author;
+the command output tier took no part in the measurement (fact checks have no
+command) and is checked by an acceptance test.
+
+Execution and verification have different statuses. `EXITED_NONZERO` together
+with `VERIFIED` is possible if the contract declared in advance required
+exactly that result. An environment failure stays `INFRA_ERROR`. Every record
+found has `applicability: UNASSESSED`: a match of paths, words or exit code
+neither proves the applicability of a method nor forbids it under all
+conditions. A read opens the committed prefix of each operation under its
+fence; this is not yet a shared atomic snapshot of the project for Gold
+execution.
+
+NR-03/NR-05: `source_experience.py` is the assembly that reads the journal and
+the published evidence. The exact dependencies on `source_ingestion.py` and
+`knowledge_environment.py` are entered in the assembly DAG. The owners of
+journaling, verification, Python binding and publication are preserved. No
+second mutable store, second publisher or executing agent has been added. The
+separation of material, observed activity and result rests on the concepts of
+[W3C PROV-DM](https://www.w3.org/TR/prov-dm/); this profile does not claim a
+full implementation of the standard.
+
+**The rest of step 2:** a general model of elements and current/target/delta,
+typing of the other kinds of experience, extraction of substantive claims from
+documents and automatic selection of the whole suitable corpus in a frozen
+Gold run. The new `recall` is connected to the read CLI; its result is not yet
+passed to Mini and takes no part in replay/the plan. The next block has to
+route it through the existing snapshot, context and lineage, with separate
+semantics for non-admitted materials. Studying a whole repository without a
+given scope and carrying conclusions over between revisions are not claimed.
+The whole Gold loop has not been accepted yet.
+
+The heavy scenarios `test_source_experience_acceptance.py`,
 `test_source_study_acceptance.py`, `test_source_experience_recovery_acceptance.py`
-и `test_source_experience_publication_acceptance.py` имеют отдельные CI shards.
-Они проверяют реальные CLI-процессы и команды, разные исходы, частичные
-результаты, прерывания, повреждение истории и поиск. Продуктовое исполнение
-не зависит от приёмочных сценариев или фикстур.
+and `test_source_experience_publication_acceptance.py` have separate CI shards.
+They check real CLI processes and commands, different outcomes, partial
+results, interruptions, history corruption and search. Product execution does
+not depend on acceptance scenarios or fixtures.
 
-Проверка этого блока 2026-09-09: 14 новых сценариев источников, 13 существующих
-сценариев ingestion/refusal/recovery/retention/consumer и 329 проверок binding
-и направления зависимостей — 356 уникальных целевых проверок прошли. Старый
-потребитель подтвердил путь публикация → replay → раздельная доставка worker
-и физическую lineage; новые сценарии отдельно подтвердили чтение опыта.
-Assembly DAG не содержит запрещённых рёбер. Полный baseline, живой Gemini и
-применение новых материалов внутри Mini не проверялись; результата полного
-контура Gold здесь нет.
+Verification of this block on 2026-09-09: 14 new source scenarios, 13 existing
+ingestion/refusal/recovery/retention/consumer scenarios and 329 binding and
+dependency direction checks — 356 unique targeted checks passed. The old
+consumer confirmed the path publication → replay → separate worker delivery
+and the physical lineage; the new scenarios separately confirmed the reading
+of experience. The assembly DAG contains no forbidden edges. A full baseline,
+live Gemini and the use of new materials inside Mini were not checked; there
+is no result of the full Gold loop here.
 
-## Приёмка реализации
+## Acceptance of the implementation
 
-Приёмочные сценарии проверяют продуктовый путь и не создают для него
-разрешения, permissive probes, готовую историю или тестовую реализацию verifier.
-Тяжёлые сценарии располагаются отдельно для независимого запуска в CI.
+Acceptance scenarios check the product path and do not create permissions,
+permissive probes, a ready-made history or a test implementation of the
+verifier for it. Heavy scenarios are placed separately for an independent run
+in CI.
 
-- Свежий проект получает настоящее проверенное знание через каноничный CLI;
-  повторный процесс открывает те же stores и может использовать это знание.
-- Неверное утверждение, неизвестный профиль, изменённый источник и попытка
-  самодопуска не создают доступной для поиска публикации.
-- Исполнение процедуры проверяет заявленный эффект, сохраняет наблюдения и
-  различает отказ, инфраструктурную ошибку, прерывание и подтверждение.
-- Сбой на границах публикации не оставляет видимого знания без полного commit;
-  восстановление не создаёт дубликат или новую authority.
-- Удаление физического источника выявляется реконструкцией. Новый origin не
-  позволяет принимать неполный граф существующей попытки Gold.
-- Реальный потребитель проходит действующие gates, snapshot и replay;
-  несовместимые условия использования отвергаются.
-- Расходы подготовки сохраняются отдельно от расходов решения задачи.
-  Отсутствующие измерения остаются неизвестными.
+- A fresh project receives real verified knowledge through the canonical CLI;
+  a later process opens the same stores and can use this knowledge.
+- A false claim, an unknown profile, a changed source and an attempt at
+  self-admission create no searchable publication.
+- Executing a procedure checks the declared effect, stores the observations
+  and distinguishes refusal, infrastructure error, interruption and
+  confirmation.
+- A failure at the publication boundaries leaves no visible knowledge without
+  a complete commit; recovery creates no duplicate or new authority.
+- The deletion of a physical source is detected by reconstruction. The new
+  origin does not allow accepting an incomplete graph of an existing Gold
+  attempt.
+- A real consumer passes the current gates, snapshot and replay; incompatible
+  conditions of use are rejected.
+- Preparation costs are stored separately from the costs of solving the task.
+  Missing measurements stay unknown.
 
-## Использование в эксперименте Astropy
+## Use in the Astropy experiment
 
-Первичное наполнение использует только разрешённую исходную версию репозитория.
-Эталонное исправление SWE-bench, evaluator test patch, результаты калибровки и
-ответы предыдущих экспериментальных реплик не попадают в источники или контекст
-worker. Подготовленный corpus фиксируется до сравнения; каждая реплика Gold
-получает одинаковое начальное состояние в независимых stores.
+Initial ingestion uses only the permitted original version of the repository.
+The SWE-bench reference fix, the evaluator test patch, calibration results and
+the answers of earlier experimental replicates do not get into the sources or
+the worker's context. The prepared corpus is frozen before the comparison;
+each Gold replicate receives the same initial state in independent stores.
 
-Отчёт показывает расходы подготовки и решения отдельно. Вывод об экономии
-должен учитывать подготовку и фактическое число повторных использований.
-Результат одной пары не доказывает причинную пользу памяти. Различия политик
-Baseline/Gold остаются явными, дополнительный контрольный Gold не вводится.
+The report shows preparation and solving costs separately. A conclusion about
+savings must account for the preparation and the actual number of reuses. The
+result of one pair does not prove a causal benefit of memory. The differences
+between the Baseline/Gold policies stay explicit; no additional control Gold
+is introduced.
 
-Окружение oracle и окружение команд worker проверяются отдельно: успешная
-калибровка Docker oracle не доказывает готовность среды Mini-worker.
+The oracle environment and the environment of worker commands are checked
+separately: a successful calibration of the Docker oracle does not prove that
+the Mini-worker environment is ready.
 
-## Основания проектных решений
+## Rationale for design decisions
 
-- [PREPING](https://arxiv.org/html/2605.13880v1): ограниченная практика в реальной
-  среде до первой задачи, управление покрытием и отбор памяти. Его LLM-оценка
-  допуска не заменяет независимую исполнимую проверку Synapse.
+- [PREPING](https://arxiv.org/html/2605.13880v1): limited practice in the real
+  environment before the first task, coverage management and memory
+  selection. Its LLM assessment of admission does not replace the independent
+  executable verification of Synapse.
 - [LangMem](https://langchain-ai.github.io/langmem/guides/extract_semantic_memories/):
-  извлечение кандидатов можно отделить от мутации хранилища. Новая зависимость
-  LangMem для этого процесса не требуется.
-- [SLSA provenance](https://slsa.dev/spec/v1.2/build-provenance) и
-  [in-toto](https://github.com/in-toto/in-toto): явные материалы, операции,
-  исполнители и результаты. Мягкие правила отсутствия данных и полноты
-  зависимостей SLSA не переносятся во внутренние контракты Synapse.
-- [W3C PROV](https://www.w3.org/TR/prov-dm/): происхождение начинается с источника
-  и деятельности; предыдущая успешная пользовательская задача не обязательна.
+  candidate extraction can be separated from store mutation. This process does
+  not need a new LangMem dependency.
+- [SLSA provenance](https://slsa.dev/spec/v1.2/build-provenance) and
+  [in-toto](https://github.com/in-toto/in-toto): explicit materials,
+  operations, executors and results. The lenient SLSA rules on missing data
+  and on dependency completeness are not carried over into the internal
+  contracts of Synapse.
+- [W3C PROV](https://www.w3.org/TR/prov-dm/): provenance starts from a source
+  and an activity; an earlier successful user task is not required.
 
-Ограничения реализации: точная версия репозитория и Python-среды; Python bindings;
-одна контролируемая файловая правка в нынешнем каноничном Gold run. Автоматическое
-изучение произвольного репозитория моделью, перенос знания между изменёнными
-версиями, серверное исполнение и обучение на любых успешных задачах этим профилем
-не реализованы. Эти ограничения нельзя скрывать результатом одного теста.
+Implementation limitations: an exact version of the repository and of the
+Python environment; Python bindings; one controlled file edit in the current
+canonical Gold run. Automatic study of an arbitrary repository by a model,
+carrying knowledge over between changed versions, server-side execution and
+learning from any successful tasks are not implemented by this profile. These
+limitations must not be hidden behind the result of a single test.
 
-## Фиксация опыта для каноничного Gold run: история этапов
+## Recording experience for the canonical Gold run: stage history
 
-Этот раздел и последующие подразделы сохраняют результаты промежуточных
-этапов до текущей доработки PR 108. Формулировки о незавершённых работах
-описывают состояние соответствующего этапа. Действующие профили, ограничения
-и новые результаты перечислены в начале инструкции; прежние неуспешные
-эксперименты не переобъявляются успешными.
+This section and its subsections keep the results of intermediate stages
+preceding the current rework of PR 108. Statements about unfinished work
+describe the state of the corresponding stage. The profiles in force, the
+limitations and the new results are listed at the start of the instruction;
+earlier unsuccessful experiments are not redeclared successful.
 
-`knowledge_path` в декларации `project run` может указывать на новый профиль:
+`knowledge_path` in the `project run` declaration may point to the new profile:
 
 ```json
 {
@@ -2736,280 +3021,304 @@ Baseline/Gold остаются явными, дополнительный кон
 }
 ```
 
-`files` содержит необходимые для задачи наблюдения и доказательства в прежнем
-формате `{ "ref": ..., "path": ... }`. Исполняемые кандидаты в этом профиле
-берутся из реальных source-публикаций проекта; оператор не перечисляет их в
-задаче. Их последующий допуск, отбор и replay выполняют прежние владельцы.
-Профили knowledge-input/v1 и v2 сохраняют прежнюю семантику.
+`files` holds the observations and evidence the task needs, in the earlier
+format `{ "ref": ..., "path": ... }`. In this profile executable candidates are
+taken from the project's real source publications; the operator does not list
+them in the task. Their later admission, selection and replay are performed by
+the same owners as before. The knowledge-input/v1 and v2 profiles keep their
+earlier semantics.
 
-До исполнения `frozen-input/v4` фиксирует согласованные префиксы журнала
-source-операций, существующие публикации и выборку по контракту задачи. Запись
-захватывается под координаторами инвентаря, операций и проекта в этом порядке.
-Повторное открытие проверяет исходные физические записи и воспроизводит отбор,
-не запуская команды. Позднейшее обучение не добавляется в уже начатый запуск;
-потеря записи исходного префикса делает его доказательство недействительным.
+Before execution, `frozen-input/v4` records consistent prefixes of the source
+operation journal, the existing publications and the selection made under the
+task contract. The record is taken under the inventory, operation and project
+coordinators, in that order. Reopening checks the original physical records and
+reproduces the selection without running commands. Later learning is not added
+to a run that has already started; the loss of a record of the original prefix
+makes its evidence invalid.
 
-Worker получает выбранный опыт через отдельный локальный вход. В нём находятся
-материалы, структурные символы, заявленные условия команды и её наблюдаемый
-результат. Gold refs, публикационные разрешения и журнал аудита остаются на
-стороне Gold. Статусы `UNASSESSED`, `STARTED_UNKNOWN` и отсутствие наблюдения
-сохраняются явно. Ненулевой код команды не создаёт запрет метода. Контракт
-самого задания не меняется в зависимости от содержания этой выборки.
+The worker receives the selected experience through a separate local input. It
+holds the materials, structural symbols, the declared conditions of the command
+and its observed result. Gold refs, publication permissions and the audit
+journal stay on the Gold side. The `UNASSESSED` and `STARTED_UNKNOWN` statuses
+and the absence of an observation are kept explicitly. A nonzero exit code of a
+command does not create a ban on the method. The contract of the task itself
+does not change with the content of this selection.
 
-Для этого перехода используются context-record/v4 и delivery-body/v6;
-нейтральный двухвходовый контракт worker остаётся прежним. Lineage-sources/v5
-связывает физический `experiment.json`, исходный журнал и доставленную проекцию;
-реконструкция проверяет их соответствие манифесту запуска и контракту задачи.
+This transition uses context-record/v4 and delivery-body/v6; the neutral
+two-input worker contract stays as it was. Lineage-sources/v5 binds the
+physical `experiment.json`, the original journal and the delivered projection;
+reconstruction checks that they match the run manifest and the task contract.
 
-Это подключение сохранённого опыта к доставке. Оно не реализует интерпретатор
-локальных материалов Mini, не доказывает полезное применение опыта и не
-разрешает запуск с пустой библиотекой допущенных исполняемых поведений.
-Mini по-прежнему сообщает `local_interpretation: NOT_PERFORMED`. Следующий
-переход — проверяемое локальное применение к вариантам исполнения и обучение
-по фактическому результату, без передачи памяти провайдеру.
+This connects retained experience to delivery. It does not implement an
+interpreter of local materials for Mini, does not prove a useful application of
+experience and does not permit a run with an empty library of admitted
+executable behaviors. Mini still reports `local_interpretation: NOT_PERFORMED`.
+The next transition is a verifiable local application to execution variants
+and learning from the actual result, without passing memory to the provider.
 
-Приёмочная проверка этого перехода: 361 уникальная целевая проверка прошла
-раздельными группами. Новые сценарии проверяют реальный source → frozen run →
-replay → локальный worker input → физическая lineage, неизвестный исход после
-эффекта команды, неизменность выборки после позднего обучения и отказ при
-утрате исходной записи. Проверка codec подтверждает неизменность задания и
-отказ при понижении версии контекста с потерей источника. Проверки assembly DAG
-не обнаружили запрещённых зависимостей. Сквозной worker этого сценария только
-фиксирует полученные входы и возвращает отсутствие кандидата: это не результат
-живого Gemini, не проверка локальной интерпретации и не успешное решение задачи.
+The acceptance check of this transition: 361 unique targeted checks passed in
+separate groups. The new scenarios check real source → frozen run → replay →
+local worker input → physical lineage, an unknown outcome after the effect of a
+command, an unchanged selection after later learning and a refusal when the
+original record is lost. The codec check confirms that the task is unchanged
+and that a downgrade of the context version that loses the source is refused.
+The assembly DAG checks found no forbidden dependencies. The end-to-end worker
+of this scenario only records the inputs it received and returns no candidate:
+this is not a live Gemini result, not a check of local interpretation and not a
+successful solution of the task.
 
 
-### Живая проверка связи Mini и неполный расход после retry
+### Live check of the Mini connection and incomplete usage after a retry
 
-В запуске GitHub Actions `34296776480` Mini выполнил оба шага, но между ними
-Gemini вернул HTTP 503 в форме `[{"error": {"code": 503, ...}}]`. Штатный retry
-SDK завершился успешно. Такой ответ не содержит измерения usage: для него
-сохраняются `FAILED`, `UNAVAILABLE` и неизвестные токены. Отдельно проверяются
-HTTP-статус, профиль Gemini и форма error envelope; неизвестная форма успешного
-ответа и повреждённые поля usage по-прежнему дают `SOURCE_INCONSISTENT`.
+In GitHub Actions run `34296776480` Mini completed both steps, but between them
+Gemini returned HTTP 503 in the form `[{"error": {"code": 503, ...}}]`. The
+SDK's standard retry succeeded. Such a response carries no usage measurement:
+`FAILED`, `UNAVAILABLE` and unknown tokens are kept for it. The HTTP status, the
+Gemini profile and the shape of the error envelope are checked separately; an
+unknown shape of a successful response and corrupted usage fields still yield
+`SOURCE_INCONSISTENT`.
 
-Приёмка связи требует сохранённых физических запросов и ответов, успешного
-продолжения каждого логического вызова и полного совпадения известных измерений.
-Единственное допустимое отсутствие измерения — usage удержанного неудачного
-запроса, после которого зафиксирован успешный retry того же логического вызова.
-Отсутствие самих call records, повреждение исходников и расхождение известных
-счётчиков остаются провалом. `connection-capture.json` фиксирует результат этой
-проверки отдельно от исходного `reconciliation.json`.
+Connection acceptance requires retained physical requests and responses, a
+successful continuation of every logical call and a full match of the known
+measurements. The only permitted missing measurement is the usage of a retained
+failed request after which a successful retry of the same logical call is
+recorded. The absence of the call records themselves, corruption of the source
+files and a divergence of known counters remain a failure.
+`connection-capture.json` records the result of this check separately from the
+original `reconciliation.json`.
 
-Общий учёт при неизвестном расходе остаётся `MISSING_CALL`; его нельзя объявить
-`COMPLETE` или использовать как полное доказательство экономии. Исходный
-неуспешный CI-артефакт не переписывается. Новых циклов повторения поверх SDK нет.
-Такие временные ошибки и ограниченный повтор описаны в
-[руководстве Gemini API](https://ai.google.dev/gemini-api/docs/troubleshooting).
+Overall accounting with unknown usage stays `MISSING_CALL`; it cannot be
+declared `COMPLETE` or used as full evidence of savings. The original failed CI
+artifact is not rewritten. There are no new retry loops on top of the SDK. Such
+transient errors and bounded retry are described in the
+[Gemini API guide](https://ai.google.dev/gemini-api/docs/troubleshooting).
 
-### Условия неудачной попытки и типизированный результат replay
+### Conditions of a failed attempt and a typed replay result
 
-После завершившейся команды source verifier повторно измеряет среду и при
-`PASS`, и при `FAIL`, таймауте или изменённом worktree. Наблюдение
-`source-observation/v2` сохраняет ссылку на фактическое повторное измерение;
-исторический читатель сравнивает обе удержанные последовательности байтов.
-Заявление `unchanged` без соответствующих измерений новым доказательством
-не становится. Старые наблюдения v1 читаются по прежнему контракту.
+After a command has finished, the source verifier measures the environment
+again on `PASS` as well as on `FAIL`, a timeout or a changed worktree. A
+`source-observation/v2` observation keeps a reference to the actual
+remeasurement; the historical reader compares both retained byte sequences. A
+declaration of `unchanged` without the corresponding measurements does not
+become new evidence. Old v1 observations are read under the earlier contract.
 
-`source-execution-result/v1` различает нарушение ожиданий команды,
-изменение worktree, изменение измеряемой среды, таймаут и завершение сигналом.
-Изменение среды даёт `INFRA_ERROR`; таймаут и сигнал — `INTERRUPTED`, даже если
-отрицательный return code был записан в ожидаемые. Неудачный результат
-проверяется против исходных наблюдений при recall. Исходники, найденные bindings,
-stdout/stderr и полезные промежуточные наблюдения сохраняются при любом исходе.
-Эти статусы описывают конкретную попытку; общего запрета метода они не создают.
-Измерение среды по-прежнему охватывает метаданные runtime, перечисленные выше,
-и не доказывает неизменность всех установленных файлов.
+`source-execution-result/v1` distinguishes a violation of the command's
+expectations, a worktree change, a change of the measured environment, a
+timeout and termination by a signal. An environment change yields
+`INFRA_ERROR`; a timeout and a signal yield `INTERRUPTED`, even if a negative
+return code was recorded among the expected ones. A failed result is checked
+against the original observations on recall. Source files, the bindings found,
+stdout/stderr and useful intermediate observations are kept whatever the
+outcome. These statuses describe one specific attempt; they create no general
+ban on the method. The environment measurement still covers the runtime
+metadata listed above and does not prove that all installed files are
+unchanged.
 
-### Исправление границы приёмочного образца
+### Correcting the boundary of the acceptance sample
 
-В локальном commit `5054fe2` приёмочная заготовка `source_procedure.py` была
-ошибочно подключена к продуктовому пути публикации, compatibility и доставки.
-Она строила программу возврата литеральных описаний операций. Проверка такого
-возврата не является исполнением процедуры и не закрывает требование
-содержательного replay общей модели Gold. Добавлять заготовку в карту
-продуктовых владельцев ради прохождения архитектурной проверки было неверно.
+In local commit `5054fe2` the acceptance stub `source_procedure.py` was
+mistakenly wired into the product path of publication, compatibility and
+delivery. It built a program that returned literal descriptions of operations.
+Checking such a return is not execution of a procedure and does not close the
+requirement of substantive replay in the general Gold model. Adding the stub to
+the product ownership map to pass the architecture check was wrong.
 
-После уточнения пользователя заготовка перенесена в
-`acceptance/stage4/stage13/source_procedure.py`. Единственная оставшаяся проверка
-`test_source_procedure_sample.py` проверяет её литеральный образец через настоящий
-CVM. Продукт её не импортирует. Удалены продуктовый генератор вложенного
-литерального сертификата, автоматическая публикация `source-publication-request/v2`
-и связанные маршруты `source-procedure/v1`.
+After the user's clarification the stub was moved to
+`acceptance/stage4/stage13/source_procedure.py`. The only remaining check,
+`test_source_procedure_sample.py`, checks its literal sample through the real
+CVM. The product does not import it. The product generator of the nested
+literal certificate, the automatic publication of
+`source-publication-request/v2` and the related `source-procedure/v1` routes
+were removed.
 
-Каноническое изучение снова публикует `source-publication-request/v1`: проверенное
-исходное знание и его происхождение. Replay этого профиля возвращает идентичность
-знания из пяти целых чисел. Его результат сравнивается по каноническим байтам,
-чтобы, например, boolean не заменял integer. В lineage сохранено сопоставление
-по паре «допущенный behavior, ссылка на содержимое» и физическая проверка
-исходной публикации. Это доставка проверенного знания после проверки его
-идентичности, а не процедурное выполнение и не полный PASS Gold.
+Canonical learning again publishes `source-publication-request/v1`: verified
+source knowledge and its provenance. Replay of this profile returns a knowledge
+identity of five integers. Its result is compared by canonical bytes so that,
+for example, a boolean does not replace an integer. Lineage keeps the matching
+by the pair "admitted behavior, content reference" and the physical check of
+the original publication. This is delivery of verified knowledge after a check
+of its identity, not procedural execution and not a full Gold PASS.
 
-Существующие байты артефактов тестового v2 не удаляются и не переписываются в v1.
-Прототип v2 больше не является поддержанным продуктовым профилем; его старые
-приёмочные результаты не используются как доказательство готовности продукта.
-При последующей проверке обнаружена регрессия: отказ этого профиля блокировал
-открытие проекта и весь `recall`. Владелец `PublicationResult` теперь различает
-чтение поддержанного результата через `payload()` и чтение сохранённой истории
-через `retained_payload()`. Второй путь допускает только явно перечисленный
-снятый профиль, проверяет исходный commit, полный физический состав записи,
-журналы, write set, ссылки lineage и независимое доказательство исходных фактов.
-Он не восстанавливает поддержку старого поведения или его генератор.
+The existing bytes of the test v2 artifacts are not deleted and not rewritten
+into v1. The v2 prototype is no longer a supported product profile; its old
+acceptance results are not used as evidence of product readiness. A later check
+found a regression: the refusal of this profile blocked opening the project and
+all of `recall`. The owner of `PublicationResult` now distinguishes reading a
+supported result through `payload()` from reading retained history through
+`retained_payload()`. The second path admits only an explicitly listed retired
+profile and checks the original commit, the full physical composition of the
+record, the journals, the write set, the lineage references and independent
+evidence of the original facts. It does not restore support for the old
+behavior or its generator.
 
-Повторный `learn`, recovery, recall и снимок опыта используют сохранённую историю;
-повторного исполнения старой команды нет. Экспорт исполняемого знания исключает
-снятые профили. Обычный читатель для admission/replay и новый publisher их
-отклоняют. Историческое `PUBLISHED` остаётся фактом старой записи, а не новым
-разрешением исполнения. Повреждение исходного материала или lineage по-прежнему
-блокирует чтение; пропуск повреждённой истории не допускается.
-Поддержка полноценного процедурного replay остаётся открытой задачей.
+A rerun of `learn`, recovery, recall and the experience snapshot use the
+retained history; the old command is not executed again. The export of
+executable knowledge excludes retired profiles. The ordinary reader for
+admission/replay and the new publisher reject them. A historical `PUBLISHED`
+remains a fact of the old record, not a new permission to execute. Corruption
+of the original material or of lineage still blocks reading; skipping corrupted
+history is not allowed.
+Support for full procedural replay remains an open task.
 
-Из предыдущего пакета сохранены реальные измерения среды после неуспешных
-команд, различение `INFRA_ERROR` и `INTERRUPTED`, проверка удержанных наблюдений
-при recall и полное сохранение исходного опыта. Повторный `learn` завершённой
-публикации возвращает полный сохранённый результат, включая `operation_id`,
-`verification_ref` и фактически измеренный `elapsed_ns`. Восстановление между
-commit публикации и checkpoint результата не выдумывает отсутствующее время.
+The previous package's real environment measurements after failed commands,
+the distinction between `INFRA_ERROR` and `INTERRUPTED`, the check of retained
+observations on recall and the full retention of the original experience are
+kept. A rerun of `learn` for a completed publication returns the full retained
+result, including `operation_id`, `verification_ref` and the actually measured
+`elapsed_ns`. Recovery between the publication commit and the result checkpoint
+does not invent the missing time.
 
-### Ограниченный профиль локальных текстовых предложений Mini
+### Bounded profile of local text proposals for Mini
 
-Для нового запуска можно явно указать в объекте `worker` декларации:
+For a new run, the `worker` object of the declaration may explicitly state:
 
 ```json
 "input_profile": "mini-2.4.6-local-edit-proposals/v1"
 ```
 
-Этот профиль требует раздельного входа задания и локальной информации,
-установленного Mini 2.4.6 и существующего учёта его физических запросов.
-Старые декларации без поля сохраняют прежний профиль
-`mini-2.4.6-task-and-local-information/v1`. Имя профиля входит в замороженную
-декларацию, а исходники адаптера — в runtime fingerprint; подмена профиля
-в сохранённом запуске не получает прежнюю идентичность или approval.
+This profile requires separate task and local information inputs, an installed
+Mini 2.4.6 and the existing accounting of its physical requests. Old
+declarations without the field keep the earlier profile
+`mini-2.4.6-task-and-local-information/v1`. The profile name is part of the
+frozen declaration and the adapter's source files are part of the runtime
+fingerprint; substituting the profile in a retained run does not obtain the
+earlier identity or approval.
 
-Mini получает предложение модели через свой обычный SDK. Фиксированный
-публичный протокол допускает одно типизированное сообщение с максимум восемью
-альтернативами текстовых замен. Каждая альтернатива содержит до шестнадцати
-замен, по одной на файл. Модель видит только публичное задание и фиксированное
-описание протокола. Локальный обработчик Mini сопоставляет предложения с
-исходными материалами из отдельного информационного входа: тот же revision,
-разрешённый изменяемый путь, однозначные исходные байты и единственное совпадение
-старого текста. При несовпадении либо противоречивых исходниках сохраняется
-причина неприменимости. Произвольная проза не интерпретируется.
+Mini receives the model's proposal through its ordinary SDK. A fixed public
+protocol permits one typed message with at most eight alternatives of text
+replacements. Each alternative holds up to sixteen replacements, one per file.
+The model sees only the public task and the fixed description of the protocol.
+Mini's local handler matches the proposals against the source materials from
+the separate information input: the same revision, a permitted modifiable path,
+unambiguous source bytes and a single match of the old text. On a mismatch or
+contradictory source files the reason for inapplicability is kept. Arbitrary
+prose is not interpreted.
 
-Исходные байты допустимы как материал предложения и после неудачного,
-прерванного или неизвестного изучения; его статус не становится запретом метода.
-Точный `EXECUTION_OBSERVATION`, сформированный вызывающей стороной из независимой
-проверки текущей задачи, позволяет исключить тот же `evaluated_patch_sha256`
-при `oracle_resolved: false`. Неизвестный исход и сбой recipe этого права не дают.
-Противоречивые результаты для одного patch hash сохраняются как конфликт и не
-создают такого исключения. Это узкое использование точного отрицательного
-feedback; извлечение общих условий неприменимости метода пока не реализовано.
+Source bytes are acceptable as proposal material even after failed, interrupted
+or unknown learning; its status does not become a ban on the method. An exact
+`EXECUTION_OBSERVATION` that the caller forms from an independent check of the
+current task allows excluding the same `evaluated_patch_sha256` with
+`oracle_resolved: false`. An unknown outcome and a recipe failure do not give
+this right. Contradictory results for one patch hash are kept as a conflict and
+do not create such an exclusion. This is a narrow use of exact negative
+feedback; extracting general conditions of a method's inapplicability is not
+implemented yet.
 
-Все переданные альтернативы получают оценку; выбирается первая применимая
-в порядке публичного предложения. Сохраняются исходные предложения, причины,
-выбранный индекс, hash входов, исходных и полученных байтов, hash патчей.
-Это локальный выбор в Mini, а не реализация отсутствующего генератора графов
-плана Gold. Полный диалог модели не становится входом Gold planner.
+Every alternative passed is evaluated; the first applicable one in the order of
+the public proposal is selected. The original proposals, the reasons, the
+selected index, the hash of the inputs and of the original and resulting bytes
+and the hash of the patches are kept. This is a local choice in Mini, not an
+implementation of the missing generator of Gold plan graphs. The full model
+dialog does not become an input of the Gold planner.
 
-Mini возвращает **непроверенный патч**, сохраняя worktree без изменений. В этом
-профиле нет shell fallback: неподдержанный запрос отклоняется до вызова
-окружения. После локальной оценки цикл заканчивается; ни материал, ни патч,
-ни локальные результаты и ошибки не добавляются в следующий запрос модели.
-Существующий C1 получает патч через обычный контракт worker, применяет его
-в своём контролируемом пути и запускает свежие проверки. Ни локальная оценка,
-ни сообщение worker не объявляют задачу решённой и не публикуют знание.
+Mini returns an **unverified patch** and leaves the worktree unchanged. This
+profile has no shell fallback: an unsupported request is rejected before the
+environment is called. The loop ends after the local evaluation; neither the
+material, nor the patch, nor the local results and errors are added to the next
+model request. The existing C1 receives the patch through the ordinary worker
+contract, applies it in its controlled path and runs fresh checks. Neither the
+local evaluation nor the worker's message declares the task solved or publishes
+knowledge.
 
-Поддержаны ограниченные UTF-8 текстовые файлы с LF и завершающим переводом
-строки, переносимыми ASCII-путями без пробелов, размером до 1 MiB на исходник.
-Предложение и итоговый патч ограничены 256 KiB. Создание/удаление файлов,
-бинарные правки, произвольные команды и общий локальный анализ текста этим
-профилем не поддерживаются. Использована штатная точка расширения
-[Mini execute_actions](https://mini-swe-agent.com/latest/advanced/cookbook/),
-без замены CLI, SDK, контроллера Gold или C1.
+Bounded UTF-8 text files with LF and a trailing newline, portable ASCII paths
+without spaces and a size of up to 1 MiB per source file are supported. The
+proposal and the final patch are limited to 256 KiB. File creation/deletion,
+binary edits, arbitrary commands and general local text analysis are not
+supported by this profile. The standard extension point
+[Mini execute_actions](https://mini-swe-agent.com/latest/advanced/cookbook/)
+is used, without replacing the CLI, the SDK, the Gold controller or C1.
 
-Строки `old` и `new` сохраняются буквально. Для них и hash альтернатив применяется
-детерминированный JSON без Unicode-нормализации: NFC и NFD могут обозначать разные
-байты программы. Это исправляет обнаруженную при аудите незаметную замену текста
-общей канонизацией. Проверка проходит через настоящий Mini, сохранённую trajectory
-и `git apply`, после чего сравниваются точные байты изменённого файла.
+The `old` and `new` strings are kept literally. They and the hash of the
+alternatives use deterministic JSON without Unicode normalization: NFC and NFD
+can denote different program bytes. This fixes a silent replacement of text by
+the general canonicalization, found during an audit. The check goes through the
+real Mini, the retained trajectory and `git apply`, after which the exact bytes
+of the modified file are compared.
 
-Аудит выявил ту же потерю текста в сохранении результата worker самим Gold.
-Если результат содержит строки не в NFC, `completed-worker-delivery/v3`
-сохраняет весь результат как точный UTF-8 JSON внутри base64url канонической
-внешней записи. Это включает патч, отчёт и диагностические поля. Читатель
-проверяет точный формат, ссылку, исходные delivery identities и побайтовое
-восстановление. Для результатов, которым нормализация не меняет текст,
-сохраняются прежние v1/v2 и их идентичности. Старые записи не переписываются;
-уже утраченные прежним кодеком различия из них восстановить нельзя.
-`stage11/test_worker_result_retention_acceptance.py` проверяет настоящий
-checkpoint `WORKER_COMPLETED` и чтение в отдельном процессе. Worker этого
-сценария — приёмочный subprocess, его проверка не объявляет успешным весь Gold.
+The audit found the same loss of text in Gold's own retention of the worker
+result. If the result contains strings that are not in NFC,
+`completed-worker-delivery/v3` keeps the whole result as exact UTF-8 JSON in
+base64url inside a canonical outer record. This covers the patch, the report
+and the diagnostic fields. The reader checks the exact format, the reference,
+the original delivery identities and the byte-for-byte restoration. For results
+whose text is not changed by normalization, the earlier v1/v2 and their
+identities are kept. Old records are not rewritten; differences that the
+earlier codec already lost cannot be restored from them.
+`stage11/test_worker_result_retention_acceptance.py` checks a real
+`WORKER_COMPLETED` checkpoint and reading in a separate process. The worker of
+this scenario is an acceptance subprocess; its check does not declare all of
+Gold successful.
 
-Приёмка этого профиля находится только в `acceptance/`:
+Acceptance of this profile lives only in `acceptance/`:
 
-- `stage10/test_local_edit_contract.py`: условия применимости, точные отрицательные
-  наблюдения, неизвестные/противоречивые исходы, ограничения задания и транспорта.
-- `stage15/test_mini_local_edit_acceptance.py`: настоящий процесс Mini, SDK и
-  наблюдаемый HTTP. Одинаковый внешний запрос при изменении локальной памяти;
-  локальное получение патча; отказ shell-запроса до эффекта.
-- `stage15/test_mini_local_edit_c1_acceptance.py`: фактический Mini → существующий
-  C1 → независимый исполняемый oracle. Первая правка реально отвергается oracle,
-  её точный отрицательный feedback меняет выбор следующей правки, после чего
-  новый C1/oracle подтверждает результат.
+- `stage10/test_local_edit_contract.py`: applicability conditions, exact
+  negative observations, unknown/contradictory outcomes, task and transport
+  constraints.
+- `stage15/test_mini_local_edit_acceptance.py`: the real Mini process, SDK and
+  observed HTTP. The same external request when local memory changes; getting
+  the patch locally; refusal of a shell request before any effect.
+- `stage15/test_mini_local_edit_c1_acceptance.py`: actual Mini → existing C1 →
+  independent executable oracle. The oracle really rejects the first edit, its
+  exact negative feedback changes the choice of the next edit, and after that a
+  new C1/oracle confirms the result.
 
-В двух тяжёлых сценариях управляется только ответ тестового внешнего endpoint;
-реальный Gemini в них не вызывается. Они имеют отдельные CI shards. Это проверка
-границ Mini и C1, не единый запуск полного Gold: генерация планов из replay,
-публикация успешных методов, последующий самостоятельный retrieval и полный
-influence/lineage ещё требуют реализации и отдельного общего доказательства.
+In the two heavy scenarios only the response of the test external endpoint is
+controlled; the real Gemini is not called in them. They have separate CI shards.
+This is a check of the Mini and C1 boundaries, not a single run of full Gold:
+plan generation from replay, publication of successful methods, later
+autonomous retrieval and full influence/lineage still require implementation
+and separate overall evidence.
 
-Фактически завершённые адресные проверки пакета, Python 3.12 / Linux:
+Targeted checks of the package that actually completed, Python 3.12 / Linux:
 
-| Проверка | Результат |
+| Check | Result |
 |---|---|
-| Mini adapter и локальные условия предложений | 46 passed, 2,37 с |
-| Настоящий Mini, раздельная память, отказ shell-запросов | 4 passed, 36,99 с |
-| Настоящий Mini → C1 → независимый oracle, затем точный отрицательный feedback и новая правка | 1 passed, 18,13 с |
-| Прежний профиль Mini: доставка и блокировка приватного наблюдения на следующем запросе | 2 passed, 22,86 с |
-| Публикация источника, исходы команд, runtime drift и recovery опыта после удаления прототипа | 20 passed, 79,54 с |
-| Проверка владения модулями и ownership DAG после удаления образца из продукта | 130 passed, 39 deselected, 4,73 с |
-| Две реальные source-публикации v1 → replay идентичностей → раздельный вход регистратора → физический lineage | 1 passed, 321,80 с |
+| Mini adapter and local proposal conditions | 46 passed, 2.37 s |
+| Real Mini, separate memory, refusal of shell requests | 4 passed, 36.99 s |
+| Real Mini → C1 → independent oracle, then exact negative feedback and a new edit | 1 passed, 18.13 s |
+| Earlier Mini profile: delivery and blocking of a private observation on the next request | 2 passed, 22.86 s |
+| Source publication, command outcomes, runtime drift and experience recovery after the prototype's removal | 20 passed, 79.54 s |
+| Module ownership check and ownership DAG after the sample's removal from the product | 130 passed, 39 deselected, 4.73 s |
+| Two real v1 source publications → identity replay → separate recorder input → physical lineage | 1 passed, 321.80 s |
 
-Последняя строка использует приёмочный регистратор worker и завершается
-`NO_CANDIDATE`; она не подменяет отдельное доказательство Mini → C1 и не
-засчитывается как полный Gold. Результаты таблицы — адресные локальные проверки,
-не полный baseline репозитория и не результат нового запуска GitHub Actions.
+The last row uses the acceptance recorder worker and ends with `NO_CANDIDATE`;
+it does not stand in for the separate Mini → C1 evidence and does not count as
+full Gold. The table's results are targeted local checks, not a full repository
+baseline and not the result of a new GitHub Actions run.
 
-### Повторная проверка после удаления образца
+### Recheck after the sample's removal
 
-Воспроизведены и исправлены блокировка истории снятым source-профилем и
-незаметное изменение Unicode в двух местах: Mini и checkpoint результата Gold.
-Адресная приёмка исправлений на Python 3.12 / Linux:
+The blocking of history by a retired source profile and a silent Unicode change
+in two places, Mini and the Gold result checkpoint, were reproduced and fixed.
+Targeted acceptance of the fixes on Python 3.12 / Linux:
 
-| Проверка | Результат |
+| Check | Result |
 |---|---|
-| Границы владельцев и зависимости | 191 passed |
-| Локальные предложения и настоящий Mini → точные байты после `git apply` | 32 + 1 passed |
-| Обычная source-публикация и снимок опыта | 5 passed |
-| История снятого профиля, запрет использования и повреждение оригиналов | 3 passed |
-| Recovery публикации и проверка точного состава записей | 3 + 2 passed |
-| Checkpoint v2/v3 в отдельном процессе и продолжение C1 без повторного worker | 2 + 1 passed |
+| Owner boundaries and dependencies | 191 passed |
+| Local proposals and real Mini → exact bytes after `git apply` | 32 + 1 passed |
+| Ordinary source publication and experience snapshot | 5 passed |
+| History of the retired profile, ban on use and corruption of the originals | 3 passed |
+| Publication recovery and check of the exact composition of records | 3 + 2 passed |
+| Checkpoint v2/v3 in a separate process and C1 continuation without rerunning the worker | 2 + 1 passed |
 
-Дополнительно старый writer из архива commit `5054fe2` создал настоящий v2-проект.
-Новый читатель открыл проект, вернул опыт и прежний результат `learn`, сохранив
-все 79 файлов состояния побайтно. Исполняемых кандидатов из v2 получено ноль.
-После отдельной новой публикации в том же проекте recall вернул оба опыта,
-а экспорт — только поддержанное знание v1. Образец и его генератор в продукт
-не возвращались. Эти проверки не являются полным Gold PASS; общий сценарий
-планирования, процедурного replay и публикации полезного метода ещё не закрыт.
+In addition, the old writer from the archive of commit `5054fe2` created a real
+v2 project. The new reader opened the project and returned the experience and
+the earlier `learn` result, keeping all 79 state files byte for byte. Zero
+executable candidates were obtained from v2. After a separate new publication
+in the same project, recall returned both experiences and the export returned
+only the supported v1 knowledge. The sample and its generator were not brought
+back into the product. These checks are not a full Gold PASS; the overall
+scenario of planning, procedural replay and publication of a useful method is
+not closed yet.
 
-### Автоматические цели обычного задания
+### Automatic targets of an ordinary task
 
-Новая декларация `synapse.stage4.gold.experiment-input/v3` принимает
-`synapse.stage4.gold.governing-task/v3`. В задании отсутствуют `target_bindings`
-и `behavior_refs`, в декларации — `target_records`. Поля нельзя передать даже
-пустыми. Пользователь задаёт цель, исходный commit, scope, разрешения, ожидаемые
-эффекты и критерии проверки. Для знания используется уже действующий вход:
+The new declaration `synapse.stage4.gold.experiment-input/v3` accepts
+`synapse.stage4.gold.governing-task/v3`. The task has no `target_bindings` and
+`behavior_refs`, and the declaration has no `target_records`. The fields cannot
+be passed even when empty. The user sets the goal, the base commit, the scope,
+the permissions, the expected effects and the verification criteria. For
+knowledge, the input already in force is used:
 
 ```json
 {
@@ -3019,445 +3328,486 @@ influence/lineage ещё требуют реализации и отдельно
 }
 ```
 
-`files` содержит при необходимости проверяемые исходные свидетельства среды
-и постановки задачи; это не ручной список выбранных записей памяти. Декларация
-по-прежнему должна обеспечивать свидетельства, на которые ссылается
-`observation`. Команды остаются каноническими:
+`files` holds, when needed, verifiable source evidence of the environment and
+of the task statement; it is not a manual list of selected memory records. The
+declaration must still supply the evidence that `observation` references. The
+commands remain canonical:
 
 ```bash
 python -m synapse project run --state-dir /absolute/project-state --input /absolute/task.json --run-dir /absolute/gold-run
 python -m synapse project resume --run-dir /absolute/gold-run
 ```
 
-До согласования плана Gold читает точный Git-коммит через существующий resolver
-и сохраняет `target_resolution` в `experiment.json` версии `frozen-input/v5`.
-Запись содержит обнаруженные элементы, причины выбора, ссылку на неизменяемое
-задание и исходную ревизию. Выбираются модуль ожидаемого изменяемого пути и
-точно упомянутые в тексте символы. Остальные обнаруженные символы сохраняются
-в объяснении с пустым списком причин выбора. Resolver не импортирует и не
-исполняет код проекта; состояние рабочего каталога не подменяет commit.
+A run directory holds one run. `project run` refuses a directory that already
+exists before anything is recorded; `project resume` continues the run started
+there. The run's memory job is requested while its inputs are frozen, after the
+declaration, its agent and its support files have been checked, and it is
+keyed by the project, the run directory and the run id. A run id already used
+with other inputs for the same directory is refused by name: a new run needs
+another run id or run directory.
 
-Результат участвует в ранжировании, intent, проверке authority и восстановлении.
-Независимая authority повторно сопоставляет его с исходным кодом. Подмена списка
-элементов, причин, ссылок либо задания отклоняется. Approval V3 фиксирует цели
-и прежнее правило независимого допуска знаний: обычное завершение retrieval
-не требует второй заявки. Исходные байты задания и прежних записей сохраняются.
+Before the plan is agreed, Gold reads the exact Git commit through the existing
+resolver and stores `target_resolution` in `experiment.json` of version
+`frozen-input/v5`. The record holds the elements found, the selection reasons,
+a reference to the immutable task and the base revision. The module of the
+expected modified path and the symbols mentioned exactly in the text are
+selected. The other symbols found are kept in the explanation with an empty
+list of selection reasons. The resolver does not import or execute the
+project's code; the state of the working directory does not stand in for the
+commit.
 
-Текущий исполнительный профиль поддерживает одну точную модификацию
-существующего Python-файла. Сам resolver ограничен 32 путями и 1024 элементами;
-сохраняются ограничения существующего Python resolver на синтаксис, размер
-исходника и число деклараций. Выход за пределы завершается отказом, без
-молчаливого усечения. Анализ произвольных языков, граф вызовов, все восемь видов
-памяти и жизненный цикл постоянных агентов этим изменением не реализованы.
+The result takes part in ranking, intent, the authority check and recovery. The
+independent authority matches it against the source code again. A substitution
+of the list of elements, the reasons, the references or the task is rejected.
+Approval V3 binds the targets and the earlier rule of independent admission of
+knowledge: an ordinary completion of retrieval does not require a second
+request. The original bytes of the task and of the earlier records are kept.
 
-Для V3-заданий введён смысловой отпечаток фактического плана: операции, входные
-данные, аргументы, зависимости, scope и условия проверки. Смена идентификаторов
-предложений или снимков не выдаётся за новый метод. Stage 12 сверяет отпечаток
-с принятым планом при чтении результата. Для старых заданий сохраняется прежний
-алгоритм. Генерация вариантов из содержательного replay остаётся отдельным
-незавершённым пунктом; один EDIT-шаблон не переименован в процедурный planner.
+The current execution profile supports one exact modification of an existing
+Python file. The resolver itself is limited to 32 paths and 1024 elements; the
+existing Python resolver's limits on syntax, source file size and the number of
+declarations are kept. Exceeding the limits ends in a refusal, without silent
+truncation. Analysis of arbitrary languages, a call graph, all eight kinds of
+memory and the lifecycle of persistent agents are not implemented by this
+change.
 
-Новая приёмка находится исключительно в `acceptance/`. Проверки контрактов
-отделены от тяжёлых CLI-сценариев `test_automatic_task_targets_acceptance.py`
-и `test_automatic_task_mini_acceptance.py`; каждому назначен отдельный CI shard.
-Первый сценарий использует регистратор и проверяет неизменяемость задания,
-разрешение целей, реальный replay, раздельную доставку и resume. Он заканчивается
-`NO_CANDIDATE` и не считается доказательством исправления задачи.
-Второй использует установленный Mini, контролируемый внешний ответ модели,
-существующий C1 и отдельный исполняемый приёмочный oracle: oracle применяет
-полученный патч в свежем checkout и получает вердикт из выполнения проверок.
-Заранее заданных verdict нет. Это приёмочный oracle через существующий формат
-отчёта, а не официальный запуск SWE-bench. Результат такого сценария не закрывает
-процедурное планирование, публикацию успешных методов и полный Gold по карте.
+For V3 tasks a semantic fingerprint of the actual plan is introduced:
+operations, input data, arguments, dependencies, scope and verification
+conditions. A change of proposal or snapshot identifiers is not passed off as a
+new method. Stage 12 compares the fingerprint with the accepted plan when it
+reads the result. Old tasks keep the earlier algorithm. Generating variants
+from substantive replay remains a separate unfinished item; the single EDIT
+template is not renamed to a procedural planner.
 
-Фактические адресные проверки этого пакета, Python 3.12 / Linux:
+The new acceptance lives only in `acceptance/`. The contract checks are kept
+apart from the heavy CLI scenarios `test_automatic_task_targets_acceptance.py`
+and `test_automatic_task_mini_acceptance.py`; each of them is assigned its own
+CI shard. The first scenario uses the recorder and checks the immutability of
+the task, target resolution, real replay, separate delivery and resume. It ends
+with `NO_CANDIDATE` and does not count as evidence that the task was fixed.
+The second uses the installed Mini, a controlled external model response, the
+existing C1 and a separate executable acceptance oracle: the oracle applies the
+patch it received in a fresh checkout and obtains its verdict from running the
+checks. There are no predefined verdicts. This is an acceptance oracle through
+the existing report format, not an official SWE-bench run. The result of such
+a scenario does not close procedural planning, the publication of successful
+methods and full Gold according to the map.
 
-| Проверка | Результат |
+Actual targeted checks of this package, Python 3.12 / Linux:
+
+| Check | Result |
 |---|---|
-| Контракты заданий, разрешение целей, authority и смысл операций | 30 passed, 3,19 с |
-| Владение модулями, зависимости, граница приёмки и целостность входов CLI | 662 passed, 26,49 с |
-| V3-задание без ручных привязок → replay → регистратор → resume | 1 passed, 174,18 с |
-| Историческая декларация: две попытки и продолжение | 1 passed, 206,75 с |
-| V3-задание → настоящий Mini → C1 → исполняемый приёмочный oracle → resume | 1 passed, 194,65 с |
+| Task contracts, target resolution, authority and operation semantics | 30 passed, 3.19 s |
+| Module ownership, dependencies, acceptance boundary and integrity of CLI inputs | 662 passed, 26.49 s |
+| V3 task without manual bindings → replay → recorder → resume | 1 passed, 174.18 s |
+| Historical declaration: two attempts and continuation | 1 passed, 206.75 s |
+| V3 task → real Mini → C1 → executable acceptance oracle → resume | 1 passed, 194.65 s |
 
-В последнем сценарии исходный commit действительно не проходит отдельную
-матрицу проверок, исправленный — проходит; итоговая запись имеет `FULL` для
-этой задачи. Oracle получает diff, построенный C1 из проверенной пары коммитов.
-Его текстовый hash может отличаться от предложения Mini из-за Git-метаданных;
-связь подтверждена точным совпадением итоговых байтов файла. Само предложение
-сохраняет свой hash. Повторный resume не повторяет Mini и oracle. Эти локальные
-результаты не являются новым GitHub Actions baseline или завершением всей карты.
+In the last scenario the base commit really fails a separate matrix of checks
+and the fixed one passes it; the final record has `FULL` for this task. The
+oracle receives a diff that C1 built from the verified pair of commits. Its
+text hash can differ from that of Mini's proposal because of Git metadata; the
+link is confirmed by an exact match of the final bytes of the file. The
+proposal itself keeps its hash. A repeated resume does not rerun Mini or the
+oracle. These local results are not a new GitHub Actions baseline or the
+completion of the whole map.
 
-### Типизированный replay и опыт выполненных задач
+### Typed replay and experience from completed tasks
 
-Профиль `typed-pure-replay/v1` связывает неизменяемую invocation с точным
-behavior, входным и выходным контрактами. REQUIRED, DEFAULTED, отсутствующее
-значение, NULL и UNKNOWN различаются. Boolean не проходит как INTEGER.
-Начальный snapshot обязан содержать именно связанные входы; продолжение
-проверяет удержанную цепочку предыдущих переходов и выходной контракт.
-Произвольные host calls и внешние условия без поддержанного проверяющего
-механизма этот профиль не принимает. Контракт пока содержит фиксированную
-сертифицированную трассу: это не общий сертификат всех ветвей процедуры.
+The `typed-pure-replay/v1` profile binds an immutable invocation to the exact
+behavior, input contract and output contract. REQUIRED, DEFAULTED, an absent
+value, NULL and UNKNOWN are distinct. A Boolean does not pass as an INTEGER.
+The initial snapshot must contain exactly the bound inputs; a continuation
+checks the retained chain of previous transitions and the output contract. This
+profile does not accept arbitrary host calls or external conditions without a
+supported checking mechanism. For now the contract contains a fixed certified
+trace: it is not a general certificate of all branches of the procedure.
 
-`typed-pure-replay/v2` использует тот же CVM и того же владельца replay, но
-сопоставляет входозависимую трассу с реальным reference capture этого вызова.
-Фиксированная трасса, внешние activity и заранее заявленные observations в этом
-профиле запрещены. До совпадения с удержанными начальными входами, упорядоченной
-трассой и конечным состоянием `REPLAY_IDENTICAL` не устанавливается. Завершение
-и тип возвращаемого значения проверяются отдельно. Это воспроизводимость
-вычисления; независимый контракт правильности задачи остаётся обязательным.
+`typed-pure-replay/v2` uses the same CVM and the same replay owner, but matches
+the input-dependent trace against the real reference capture of this
+invocation. A fixed trace, external activities and observations declared in
+advance are forbidden in this profile. `REPLAY_IDENTICAL` is not established
+until the retained initial inputs, the ordered trace and the final state match.
+Completion and the type of the returned value are checked separately. This is
+reproducibility of the computation; an independent contract of task correctness
+remains mandatory.
 
-Отрицательный профиль `rejected-patch-guard/v4` выполняет в CVM сравнения слов
-текущих task/base с областью исходного доказательства. При несовпадении чистое
-вычисление возвращает пустой результат; оно не распространяет неудачу на другую
-задачу. Применение запрета дополнительно требует точного патча, политики C1,
-конфигурации oracle, среды и фактического допущенного replay. Отказ, сбой среды
-и неизвестный исход не превращаются в подтверждённую неудачу метода.
+The negative profile `rejected-patch-guard/v4` compares, in the CVM, the words
+of the current task/base with the domain of the original evidence. On a
+mismatch the pure computation returns an empty result; it does not extend the
+failure to another task. Applying the ban additionally requires the exact
+patch, the C1 policy, the oracle configuration, the environment and an actual
+admitted replay. A refusal, an environment failure and an unknown outcome do
+not turn into a confirmed failure of the method.
 
-Новый запуск автоматически включает подходящие результаты выполненных задач
-в `source-experience-snapshot/v2`. В нём фиксируются исходные транзакции
-публикации. Повторное чтение старого снимка не добавляет позднейшие результаты.
-Повторная попытка сохраняет исходный набор кандидатов, но читает актуальные
-дескрипторы lifecycle/taint; устаревший дескриптор первой попытки больше не
-подменяет текущее состояние при следующем допуске.
+A new run automatically includes suitable results of completed tasks in
+`source-experience-snapshot/v2`. The snapshot records the original publication
+transactions. Reading an old snapshot again does not add later results. A retry
+keeps the original set of candidates but reads the current lifecycle/taint
+descriptors; a stale descriptor from the first attempt no longer stands in for
+the current state at the next admission.
 
-Planner получает проверенные наблюдения через `execution_feedback`. Stage 12
-повторно проверяет их по предыдущему результату либо по оригинальной публикации
-и реальному replay. Lineage включает эту публикацию и наблюдение, даже когда
-они происходят из другого запуска. Это ещё не генератор произвольных графов:
-текущий исполнительный план по-прежнему ограничен поддержанным EDIT-профилем.
+The planner receives verified observations through `execution_feedback`.
+Stage 12 checks them again against the previous result, or against the original
+publication and a real replay. Lineage includes this publication and
+observation even when they come from another run. This is not yet a generator
+of arbitrary graphs: the current execution plan is still limited to the
+supported EDIT profile.
 
-`stage10/influence.py` теперь участвует в исполнении, хранении доказательства,
-независимой проверке и lineage. Он повторно интерпретирует реальные раздельные
-входы Mini и то же публичное предложение. Затем исключает информационные роли
-по очереди и проверяет изменение выбранной правки. Изменение только ID, номера
-варианта или метаданных не считается влиянием. Доказательство относится к
-зависимости локального выбора от информации; правильность правки устанавливают
-отдельные C1/oracle. При отсутствии локального результата сохраняется только
-доказанный уровень доставки.
+`stage10/influence.py` now takes part in execution, evidence retention,
+independent verification and lineage. It interprets Mini's real separate inputs
+and the same public proposal again. It then excludes the information roles one
+at a time and checks whether the selected edit changes. A change of only the
+ID, the alternative number or metadata does not count as influence. The
+evidence concerns the dependence of the local selection on the information; the
+correctness of the edit is established by the separate C1/oracle. Without a
+local result only the proven delivery level is retained.
 
-Для V3-задач с независимо установленным `FULL` добавлена публикация
-`publication-request/v4`, политика `stage13-atomic-publication/v3` и регистрация
-`reusable-candidate/v3`. Профиль `verified-patch-guard/v1` утверждает только
-проверенный успех точного патча в указанной области. Исторические отрицательные
-профили и прежние отказы сохраняют прежнюю семантику. Положительная запись
-не может подавить C1 через механизм запрета отвергнутого патча.
+For V3 tasks with an independently established `FULL`, the
+`publication-request/v4` publication, the `stage13-atomic-publication/v3`
+policy and the `reusable-candidate/v3` registration are added. The
+`verified-patch-guard/v1` profile asserts only the verified success of the
+exact patch in the stated domain. Historical negative profiles and earlier
+refusals keep their earlier semantics. A positive record cannot suppress C1
+through the rejected-patch ban mechanism.
 
-В Mini новый явный профиль `mini-2.4.6-local-edit-proposals/v2` предпочитает
-применимый вариант с непротиворечивым проверенным положительным наблюдением.
-Без такого наблюдения сохраняется порядок предложений. Профиль v1 сохраняет
-старое правило первого применимого варианта. Исходные материалы нужны обоим
-профилям: прошлый успех не отменяет проверки текста, scope и ограничений текущей
-задачи. Никакая информация этой локальной оценки не передаётся модели.
-Для v2/v3 прежний положительный ответ oracle становится сигналом предпочтения
-только при полном независимом `FULL` предыдущей попытки. Неполное выполнение
-остаётся в истории, но не выдаётся этому порту как проверенное решение задачи.
+In Mini the new explicit profile `mini-2.4.6-local-edit-proposals/v2` prefers
+an applicable alternative with an uncontradicted verified positive observation.
+Without such an observation the order of the proposals is kept. Profile v1
+keeps the old rule of the first applicable alternative. Both profiles need the
+source materials: a past success does not cancel the checks of the current
+task's text, scope and constraints. No information from this local assessment
+is passed to the model. For v2/v3 an earlier positive oracle answer becomes a
+preference signal only with a complete independent `FULL` of the previous
+attempt. An incomplete execution stays in the history but is not given to this
+port as a verified solution of the task.
 
-Профиль `mini-2.4.6-local-edit-proposals/v3` добавляет локальное предложение
-сохранённого проверенного патча. Новая положительная публикация связывает его
-реальные байты из C1 с `artifact_refs` поведения. Читатель публикации проверяет
-их физическое наличие, длину и digest; обычные compatibility, taint, admission
-и replay продолжают определять допустимость использования. Положительная
-историческая запись без такого артефакта остаётся читаемой, но сама не может
-дать Mini отсутствующие байты правки.
+The `mini-2.4.6-local-edit-proposals/v3` profile adds a local proposal of a
+retained verified patch. A new positive publication binds its real bytes from
+C1 to the behavior's `artifact_refs`. The publication reader checks their
+physical presence, length and digest; the ordinary compatibility, taint,
+admission and replay continue to determine whether use is permitted. A positive
+historical record without such an artifact stays readable but cannot by itself
+give Mini the missing bytes of the edit.
 
-Mini получает патч через свой информационный вход. Его чистый локальный
-обработчик проверяет формат diff, точные исходные строки, позиции и размеры
-каждого участка, scope и применимое независимо проверенное положительное
-наблюдение. Он строит предложение без файловых эффектов и требует совпадения
-полученных байтов с сохранённым патчем. Для бинарных файлов, rename, нечёткой
-привязки и других неподдержанных форматов выдаётся отказ. C1 затем заново
-применяет и независимо проверяет выбранный вариант.
+Mini receives the patch through its information input. Its pure local handler
+checks the diff format, the exact original lines, the positions and sizes of
+each hunk, the scope and an applicable independently verified positive
+observation. It builds the proposal without file effects and requires the
+resulting bytes to match the retained patch. Binary files, renames, fuzzy
+positioning and other unsupported formats are refused. C1 then applies the
+selected alternative again and verifies it independently.
 
-Поиск ограничен 128 сохранёнными патчами и восемью кандидатами: сначала
-применимые локальные варианты в устойчивом порядке digest, затем оставшиеся
-публичные предложения. Результат сохраняет исходное предложение модели,
-фактические локальные кандидаты, их происхождение и пропуски по ограничениям.
-Разные независимые подтверждения одинаковых байтов сохраняют разные ID
-доставленного знания; Mini объединяет их в один вариант патча по digest.
-Это узкий метод повторного применения точной правки к той же задаче и исходной
-ревизии; он не объявляется переносом решения на другой проект или генератором
-произвольных процедурных графов. Правильная правка может отсутствовать в
-публичном предложении модели. Ни её содержимое, ни локальные результаты
-интерпретации не становятся сообщениями модели.
+The search is limited to 128 retained patches and eight candidates: first the
+applicable local alternatives in a stable digest order, then the remaining
+public proposals. The result retains the model's original proposal, the actual
+local candidates, their provenance and the omissions due to limits. Different
+independent confirmations of identical bytes keep different IDs of delivered
+knowledge; Mini merges them into one patch alternative by digest. This is a
+narrow method for reapplying an exact edit to the same task and original
+revision; it is not presented as transferring a solution to another project or
+as a generator of arbitrary procedural graphs. The correct edit may be absent
+from the model's public proposal. Neither its content nor the local
+interpretation results become messages to the model.
 
-Канонический V3-запуск теперь принимает несколько явно указанных изменяемых
-Python-файлов в пределах бюджета выбора целей. Scope должен в точности
-соответствовать их набору. C1 применяет один целостный патч; Stage 12 проверяет
-каждый ожидаемый эффект. Положительный ответ oracle при пропущенной цели
-не означает `FULL`. Исторические V1/V2-задачи сохраняют одноцелевой контракт.
+The canonical V3 run now accepts several explicitly named Python files to
+change within the target selection budget. The scope must match their set
+exactly. C1 applies one coherent patch; Stage 12 checks every expected effect.
+A positive oracle answer with a missed target does not mean `FULL`. Historical
+V1/V2 tasks keep the single-target contract.
 
-V3-задача может явно включать шаги проверки в фактический план: для этого
-`required_capabilities` содержит `verification.run`, а критерии
-`VERIFICATION_COMMAND` перечисляют точные argv всех `acceptance_commands`,
-затем всех `full_suite_commands` из зафиксированной политики C1. Каждый
-критерий имеет отдельный ID и ссылается на тот же `command_policy_ref`.
-Пропуск команды, другой argv или иной порядок отвергаются до исполнения.
-Обычные `CONTRACT_CONDITION` продолжают связывать эффект изменения с C1.
+A V3 task can explicitly include verification steps in the actual plan: for
+this, `required_capabilities` contains `verification.run`, and the
+`VERIFICATION_COMMAND` criteria list the exact argv of all
+`acceptance_commands`, then of all `full_suite_commands` from the frozen C1
+policy. Each criterion has its own ID and refers to the same
+`command_policy_ref`. A missing command, a different argv or a different order
+is rejected before execution. Ordinary `CONTRACT_CONDITION` criteria continue
+to bind the effect of the change to C1.
 
-План содержит одну атомарную операцию изменения и зависящую от неё
-последовательность `RUN_VERIFICATION_COMMAND`. Независимое принятие плана,
-предварительное разрешение оператора и semantic digest учитывают эти операции,
-аргументы и связи. Исполнителем остаётся C1. Stage 12 читает физически
-удержанный C1 report и проверяет отдельное исполнение каждой команды после
-применения патча. Одинаковые argv в acceptance и full suite — разные
-исполнения. Успешный baseline, пропущенный шаг и нарушенный порядок не
-подменяют это доказательство; resume не запускает команды заново.
-Без командных критериев задача сохраняет прежний план. Это подключение
-реальных проверочных операций, а не завершение поиска произвольных
-процедурных вариантов из памяти.
+The plan contains one atomic change operation and a `RUN_VERIFICATION_COMMAND`
+sequence that depends on it. Independent acceptance of the plan, the operator's
+prior approval and the semantic digest take these operations, arguments and
+links into account. C1 remains the executor. Stage 12 reads the physically
+retained C1 report and checks the separate execution of each command after the
+patch is applied. Identical argv in acceptance and in the full suite are
+different executions. A successful baseline, a skipped step and a broken order
+do not substitute for this evidence; resume does not run the commands again.
+Without command criteria a task keeps its previous plan. This is the connection
+of real verification operations, not the completion of the search for arbitrary
+procedural alternatives from memory.
 
-Контракты этого расширения и связанные проверки полномочий: 385 passed,
-17,47 с; отдельный первоначальный пакет планов и разрешения целей:
-23 passed, 5,38 с. Полная приёмка с настоящими Mini/C1, двумя файлами и
-восстановлением в
+Contracts of this extension and the related authority checks: 385 passed,
+17.47 s; the separate initial package of plans and target resolution:
+23 passed, 5.38 s. The full acceptance with real Mini/C1, two files and
+recovery in
 `acceptance/stage4/stage16/test_verification_plan_mini_acceptance.py`:
-1 passed, 468,02 с. Контролируется только внешний ответ модели; независимый
-oracle действительно исполняет исходный и исправленный код. Исторический
-однооперационный путь и восстановление его результата: 17 passed, 97,81 с.
-Отдельный сценарий реального отказа на `reproduction_after`: 1 passed,
-212,60 с. Последующие команды не выполнены и не засчитаны; C2 не вызывался,
-его неизвестный исход не стал отрицательным guard. Старый статус C1
-`GOLD_NO_CANDIDATE` здесь означает отсутствие проверенного кандидата для C2:
-отчёт сохраняет применение предложенного патча и `VERIFICATION_FAILED`.
-Первоначальное ожидание общего статуса `FAIL` в приёмке было исправлено после
-сверки с этим действующим контрактом; продуктовая классификация не менялась.
+1 passed, 468.02 s. Only the external model answer is controlled; the
+independent oracle really executes the original and the fixed code. The
+historical single-operation path and the recovery of its result: 17 passed,
+97.81 s. A separate scenario of a real failure at `reproduction_after`:
+1 passed, 212.60 s. The subsequent commands were not executed and not counted;
+C2 was not called, and its unknown outcome did not become a negative guard. The
+old C1 status `GOLD_NO_CANDIDATE` here means the absence of a verified
+candidate for C2: the report retains the application of the proposed patch and
+`VERIFICATION_FAILED`. The acceptance's initial expectation of an overall
+`FAIL` status was corrected after a cross-check against this contract in force;
+the product classification did not change.
 
-Адресные проверки: 562 проверки архитектурных границ и локальных контрактов;
-28 проверок графов, типизированных входов и условного guard; 5 проверок доставки
-и influence. Шесть тяжёлых проверок typed replay и одна историческая проверка
-resume выполнены отдельно. Входозависимый replay: 4 passed, 270,84 с;
-расширенные контракты invocation: 16 passed, 9,41 с. Отдельная сквозная приёмка
-отрицательного опыта с influence/lineage завершена: 1 passed, 1741,76 с на
-зафиксированной версии до включения положительной публикации. Сейчас отдельно
-проверяется их совместная работа. Сценарий неполной задачи с двумя целями:
-1 passed, 214,76 с; oracle true не превратился в `FULL`. Полный многоцелевой
-запуск: 1 passed, 420,41 с. На удержанном неполном результате отдельно проверен
-отказ положительного порта предпочтения. Совместный пакет архитектурных границ,
-локальных контрактов, invocation, семантики планов и статусов: 621 passed,
-45,26 с. Сквозной положительный повтор с новым исполнением C1 и независимым
-oracle: 1 passed, 2196,17 с. Локальные контракты сохранённого патча, включая
-проверку вставок и удалений настоящим `git apply` и объединение одинаковых
-патчей из разных подтверждений: 28 passed, 0,71 с; этот
-пакет пересекается с указанными 621 проверками. Первый сквозной сценарий без
-нужной правки в ответе модели прошёл C1/oracle до `FULL`, но завершился отказом
-при публикации: Stage 14 ещё не открывал патч прошлой попытки как физический
-источник доставленного знания. Этот маршрут исправлен. Сохранённое исполнение
-после исправления независимо реконструировано: 143 узла, 211 связей, 27,10 с.
-После исправления также прошли 565 адресных проверок архитектурных границ,
-lineage и локальных контрактов за 23,67 с. Повтор достиг нового успешного
-C1/oracle, но завершился внешним тайм-аутом: 2211,29 с суммарно, предел одного
-CLI-вызова 1800 с. Для отдельного файла retained-patch этот watchdog увеличен
-до 3600 с без изменения продуктовых бюджетов и критериев. Новый полный прогон
-на этом срезе завершился: 1 passed, 2963,57 с. Он подтвердил повторное C1/oracle
-исполнение, влияние именно удержанных байтов, отсутствие приватных значений
-в запросах Mini, resume без повторных эффектов и отказ после физической подмены
-патча. Предыдущие два отказа не считаются пройденной приёмкой. Отдельно
-проверяется следующая версия reader с общим обходом предшественников.
+Targeted checks: 562 checks of architectural boundaries and local contracts; 28
+checks of graphs, typed inputs and the conditional guard; 5 checks of delivery
+and influence. Six heavy typed replay checks and one historical resume check
+were run separately. Input-dependent replay: 4 passed, 270.84 s; extended
+invocation contracts: 16 passed, 9.41 s. A separate end-to-end acceptance of
+negative experience with influence/lineage completed: 1 passed, 1741.76 s on a
+pinned version from before positive publication was enabled. Their combined
+operation is now being checked separately. The scenario of an incomplete task
+with two targets: 1 passed, 214.76 s; oracle true did not turn into `FULL`. The
+full multi-target run: 1 passed, 420.41 s. On a retained incomplete result the
+refusal of the positive preference port was checked separately. The combined
+package of architectural boundaries, local contracts, invocation, plan
+semantics and statuses: 621 passed, 45.26 s. The end-to-end positive repeat
+with a new C1 execution and an independent oracle: 1 passed, 2196.17 s. Local
+contracts of the retained patch, including the check of insertions and
+deletions with a real `git apply` and the merging of identical patches from
+different confirmations: 28 passed, 0.71 s; this package overlaps the 621
+checks above. The first end-to-end scenario without the needed edit in the
+model's answer passed C1/oracle up to `FULL` but ended with a refusal at
+publication: Stage 14 did not yet open the patch of the previous attempt as the
+physical source of delivered knowledge. This route is fixed. After the fix the
+retained execution was independently reconstructed: 143 nodes, 211 edges,
+27.10 s. After the fix, 565 targeted checks of architectural boundaries,
+lineage and local contracts also passed in 23.67 s. The rerun reached a new
+successful C1/oracle but ended in an external timeout: 2211.29 s in total, with
+a limit of 1800 s for one CLI call. For the separate retained-patch file this
+watchdog was raised to 3600 s without changing the product budgets and
+criteria. A new full run on this tree completed: 1 passed, 2963.57 s. It
+confirmed the repeated C1/oracle execution, the influence of exactly the
+retained bytes, the absence of private values in Mini's requests, resume
+without repeated effects and the refusal after a physical substitution of the
+patch. The two previous failures do not count as a passed acceptance. The next
+version of the reader, with a shared traversal of predecessors, is being
+checked separately.
 
-Совместный сценарий отрицательного и положительного опыта завершился внешним
-тайм-аутом после 2874,14 с: новая задача не закончила проверку/replay своих
-входов за 1800 с одного CLI-вызова. Для этой отдельной приёмки внешний watchdog
-увеличен до 3600 с. Бюджеты модели, CVM и исполнения не изменены, критерии
-корректности сохранены. Это не решение задачи производительности и не её
-успешная приёмка. Проверенные происхождения внутри одной реконструкции
-исполнения теперь читаются одним набором для feedback и доставленных материалов;
-между независимыми чтениями публикаций кэш не сохраняется. Тяжёлые сценарии находятся
-в отдельных приёмочных файлах и CI shards. Это не общий GitHub baseline.
+The combined scenario of negative and positive experience ended in an external
+timeout after 2874.14 s: the new task did not finish checking/replaying its
+inputs within the 1800 s of one CLI call. For this separate acceptance the
+external watchdog was raised to 3600 s. The model, CVM and execution budgets
+are unchanged; the correctness criteria are kept. This is neither a solution to
+the performance problem nor its successful acceptance. Verified provenances
+within one reconstruction of an execution are now read as one set for feedback
+and delivered materials; no cache is kept between independent reads of
+publications. Heavy scenarios are in separate acceptance files and CI shards.
+This is not a general GitHub baseline.
 
-### Проверка общих предшественников публикации
+### Verification of shared publication predecessors
 
-При реконструкции одной публикации общие предшественники раньше многократно
-открывались по разным путям графа. `PublicationResult` теперь удерживает только
-уже физически проверенные байты в пределах одного синхронного обхода. Каждый
-потребитель получает новый JSON-объект. Следующее независимое чтение снова
-открывает файлы; результаты не переходят в другой поток или завершённый
-скопированный context. Активное и историческое чтение имеют разные ключи.
-Цикл происхождения вызывает отказ. Предел 128 записей / 32 MiB ограничивает
-удержание; при исчерпании проверка физически выполняется снова, а не пропускается.
+When one publication was reconstructed, shared predecessors used to be opened
+many times along different paths of the graph. `PublicationResult` now retains
+only bytes that were already physically verified, within one synchronous
+traversal. Each consumer receives a new JSON object. The next independent read
+opens the files again; results do not pass to another thread or to a completed
+copied context. Active and historical reads have different keys. A provenance
+cycle causes a refusal. The limit of 128 records / 32 MiB bounds the retention;
+when it is exhausted, the check is physically performed again rather than
+skipped.
 
-Восемь приёмочных контрактов жизненного цикла и проверки dependency direction:
-334 passed, 12,68 с. В этих восьми контрактах заменён только физический reader,
-поэтому они не считаются проверкой C1 или полномочий публикации. Отдельное
-чтение сохранённой настоящей цепочки повторного применения патча под текущим
-reader совпало с committed result: три физических узла, каждый открыт один раз,
-18,76 с. Это реконструкция ранее выполненного опыта, а не повтор исполнения
-старого frozen run под изменённым runtime. Новый полный retained-patch прогон
-завершился: 1 passed, 2396,15 с. Он подтвердил отказ после подмены удержанных
-байтов и отсутствие повторного исполнения при resume. Разницу длительности
-двух запусков нельзя считать общим benchmark: нагрузка при параллельной
-приёмке была разной.
-Старый смешанный прогон без этого изменения снова завершился внешним
-тайм-аутом: 4778,10 с суммарно, 3600 с одного CLI-вызова. Третья попытка уже
-имела реальный положительный C1/oracle и сохранённый результат, но полная
-проверка завершения не успела вернуть управление. Этот прогон не считается
-PASS. Свежий сценарий под исправленным reader запускается с тем же watchdog.
+Eight lifecycle acceptance contracts and the dependency direction checks:
+334 passed, 12.68 s. In these eight contracts only the physical reader was
+replaced, so they do not count as a check of C1 or of publication authority. A
+separate read of the retained real chain of patch reapplication under the
+current reader matched the committed result: three physical nodes, each opened
+once, 18.76 s. This is a reconstruction of previously executed experience, not
+a repeated execution of the old frozen run under a changed runtime. A new full
+retained-patch run completed: 1 passed, 2396.15 s. It confirmed the refusal
+after a substitution of the retained bytes and the absence of repeated
+execution on resume. The difference in the durations of the two runs cannot be
+taken as a general benchmark: the load during the parallel acceptance differed.
+The old mixed run without this change again ended in an external timeout:
+4778.10 s in total, 3600 s for one CLI call. The third attempt already had a
+real positive C1/oracle and a retained result, but the full completion check
+did not return control in time. This run does not count as a PASS. A fresh
+scenario under the fixed reader is being run with the same watchdog.
 
-### Конфигурация oracle при повторном использовании
+### Oracle configuration on reuse
 
-При сверке границы найден пропуск: fingerprint параметров SWEbench не включает
-`python_executable` и `swebench_work_dir`. Прежнее сравнение могло разрешить
-использование старого вывода с другим настроенным исполнителем или каталогом.
-`matches_retained_oracle_configuration()` теперь дополнительно сверяет эти
-значения по фактическим `cwd` и environment payload сохранённого oracle,
-проверяет digest environment, согласованность версии и тегов образов.
-Исторический Python/platform сравнивается как удержанное наблюдение;
-текущее окружение процесса чтения не подменяет историю.
+A cross-check of the boundary found a gap: the fingerprint of the SWEbench
+parameters does not include `python_executable` and `swebench_work_dir`. The
+earlier comparison could permit using an old output with a different configured
+executor or directory. `matches_retained_oracle_configuration()` now also
+checks these values against the actual `cwd` and environment payload of the
+retained oracle, and checks the environment digest and the consistency of the
+version and the image tags. The historical Python/platform is compared as a
+retained observation; the current environment of the reading process does not
+substitute for the history.
 
-Контракты и существующая приёмка SWEbench adapter/binding: 35 passed, 12,03 с.
-Две реальные публикации — успешный повтор и отрицательная C1-проверенная часть —
-заново прочитаны текущим независимым reader и совпали с committed bytes
-(18,42 и 5,17 с). Их сохранённые наблюдения отклоняются при подстановке другого
-Python или каталога. Эта сверка относится к сохранённой конфигурации; совпадение
-тегов образов само по себе не доказывает неизменность внешней установки или
-содержимого удалённого dataset.
+Contracts and the existing acceptance of the SWEbench adapter/binding:
+35 passed, 12.03 s. Two real publications — the successful repeat and the
+negative C1-checked part — were read again by the current independent reader
+and matched the committed bytes (18.42 and 5.17 s). Their retained observations
+are rejected when another Python or directory is substituted. This cross-check
+concerns the retained configuration; matching image tags do not by themselves
+prove that the external installation or the contents of the remote dataset are
+unchanged.
 
-### Проверенная часть неуспешной попытки: Mini v4
+### Checked part of an unsuccessful attempt: Mini v4
 
-Профиль `mini-2.4.6-local-edit-proposals/v4` дополнительно включает сохранение
-материала `rejected-patch-guard/v5`. Общий результат остаётся отрицательным:
-независимый oracle не подтвердил задачу. Второе, более узкое утверждение —
-точный патч прошёл весь зафиксированный C1-контракт. Его нельзя получить из
-прерывания, инфраструктурного сбоя, пропущенных команд или самоотчёта Mini.
-Stage 12 строит оба утверждения из boundary-sealed C1; Stage 13 независимо
-проверяет их и физические байты патча перед обычной атомарной публикацией.
-V3/V4 отрицательные guards сохраняют прежнее поведение и читаемость.
+The `mini-2.4.6-local-edit-proposals/v4` profile additionally includes
+retention of `rejected-patch-guard/v5` material. The overall result stays
+negative: the independent oracle did not confirm the task. The second, narrower
+claim is that the exact patch passed the whole frozen C1 contract. It cannot be
+obtained from an interruption, an infrastructure failure, skipped commands or
+Mini's self-report. Stage 12 builds both claims from the boundary-sealed C1;
+Stage 13 independently checks them and the physical bytes of the patch before
+the ordinary atomic publication. V3/V4 negative guards keep their previous
+behavior and readability.
 
-После автоматического выбора, admission и настоящего CVM replay Gold передаёт
-этот патч через локальный вход Mini вместе с точным отрицательным feedback.
-Проверяются исходные task/base, C1 policy, oracle, environment и газовый бюджет;
-память не расширяет область применимости. Входной контракт Mini v4 требует от
-его вызывающей стороны независимого доказательства старого C1-контракта для
-такого отрицательного материала. Сам Mini не выводит это доказательство из
-одного флага `oracle_resolved=false`.
+After automatic selection, admission and a real CVM replay, Gold passes this
+patch through Mini's local input together with the exact negative feedback. The
+original task/base, C1 policy, oracle, environment and gas budget are checked;
+memory does not widen the domain of applicability. The input contract of
+Mini v4 requires its caller to provide independent evidence of the old C1
+contract for such negative material. Mini itself does not derive this evidence
+from the `oracle_resolved=false` flag alone.
 
-Локальное предложение соединяет сохранённую часть с публичным вариантом
-для **других файлов**. Совпавшие пути получают `OVERLAPPING_PATHS`; разрешение
-пересечений и произвольная последовательность редактирования пока не поддержаны.
-Составной патч заново проверяет точный исходный текст, scope и capabilities,
-имеет собственный digest и не наследует успех. Если этот новый digest уже
-имеет подтверждённый отрицательный исход, он также исключается. Повтор
-исходного неуспешного патча остаётся запрещённым в его точной области.
+The local proposal joins the retained part with a public alternative for
+**other files**. Coinciding paths get `OVERLAPPING_PATHS`; resolving overlaps
+and an arbitrary editing sequence are not supported yet. The composite patch is
+checked again against the exact original text, scope and capabilities, has its
+own digest and does not inherit success. If this new digest already has a
+confirmed negative outcome, it is excluded too. Repeating the original
+unsuccessful patch remains forbidden in its exact domain.
 
-Все рассмотренные варианты и их происхождение сохраняются: `LOCAL_MEMORY`,
-`LOCAL_PARTIAL_MEMORY` с исходным патчем и индексом публичного дополнения,
-`PUBLIC_PROPOSAL`. Граница поиска — до 128 удержанных патчей и до восьми
-предложений; причины пропуска сочетаний удерживаются явно. Положительное
-применимое знание по-прежнему имеет приоритет. Конфликтующие и неизвестные
-исходы не создают ни положительного метода, ни проверенной частичной основы.
-Stage 10 повторно вычисляет влияние по тем же входам; Stage 14 открывает
-физический источник частичного патча. Внешние запросы по-прежнему принадлежат
-только Mini и не содержат этого локального материала или его производных.
+All considered alternatives and their provenance are retained: `LOCAL_MEMORY`,
+`LOCAL_PARTIAL_MEMORY` with the original patch and the index of the public
+extension, `PUBLIC_PROPOSAL`. The search boundary is up to 128 retained patches
+and up to eight proposals; the reasons for omitting combinations are retained
+explicitly. Positive applicable knowledge still has priority. Conflicting and
+unknown outcomes create neither a positive method nor a checked partial basis.
+Stage 10 recomputes the influence over the same inputs; Stage 14 opens the
+physical source of the partial patch. External requests still belong only to
+Mini and do not contain this local material or its derivatives.
 
-Адресные проверки составления, прежнего Mini v3, условного guard и направления
-зависимостей: 369 passed, 13,52 с. Дополнительный пакет двух видов guard,
-частичных предложений и publication/reusable contracts: 19 passed, 1,41 с
-(наборы пересекаются). Приёмка действительно применяет составной diff через
-`git apply` и исполняет оба исправленных вычисления; это не заменяет Gold/C1.
-После подключения всех владельцев прошли 492 проверки поведения, invocation,
-локальных вариантов, статусов, направления зависимостей и lineage mutants за
-33,81 с. В CI новый тяжёлый сценарий имеет свой shard; всего проверены пути
-136 разных тяжёлых файлов, каждый существует в репозитории.
+Targeted checks of composition, the previous Mini v3, the conditional guard and
+dependency direction: 369 passed, 13.52 s. An additional package of the two
+guard kinds, partial proposals and publication/reusable contracts: 19 passed,
+1.41 s (the sets overlap). The acceptance really applies the composite diff
+through `git apply` and executes both fixed computations; this does not replace
+Gold/C1. After all owners were connected, 492 checks of behavior, invocation,
+local alternatives, statuses, dependency direction and lineage mutants passed
+in 33.81 s. In CI the new heavy scenario has its own shard; in total the paths
+of 136 different heavy files were checked, and each exists in the repository.
 
-Отдельный тяжёлый файл `acceptance/stage4/stage16/test_partial_memory_loop_acceptance.py`
-запускает три связанные задачи из одного исходного commit: фактический провал
-общего oracle после успеха C1; составление нового исправления из сохранённой
-части и публичного дополнения; применение положительного опыта при пустом
-списке предложений модели. Он проверяет командный граф, точное исключение
-старого провала, независимый итог, локальные причинные сравнения, внешние
-запросы Mini, неизменность исходного репозитория и resume без повторных эффектов.
-Сценарий и его CI shard добавлены; полный PASS пока не заявляется.
+The separate heavy file
+`acceptance/stage4/stage16/test_partial_memory_loop_acceptance.py` runs three
+related tasks from one original commit: an actual failure of the overall oracle
+after a C1 success; composing a new fix from the retained part and a public
+extension; applying positive experience with an empty list of model proposals.
+It checks the command graph, the exact exclusion of the old failure, the
+independent final outcome, local causal comparisons, Mini's external requests,
+the unchanged original repository and resume without repeated effects. The
+scenario and its CI shard have been added; a full PASS is not claimed yet.
 
-Это начальный профиль применимых составных методов с явными условиями и
-проверкой цели, по подходу [GTPyhop](https://github.com/dananau/GTPyhop/blob/main/additional_information.md).
-Здесь нет произвольного HTN-планировщика, автоматического доказательства
-полезности любой неудачи или завершённого подключения всех восьми видов памяти.
+This is an initial profile of applicable composite methods with explicit
+conditions and goal verification, following the
+[GTPyhop](https://github.com/dananau/GTPyhop/blob/main/additional_information.md)
+approach. There is no arbitrary HTN planner here, no automatic evidence that
+any failure is useful and no completed connection of all eight kinds of memory.
 
-### Универсальный порт исполнения агентов
+### Universal agent execution port
 
-Новая конфигурация coding-запуска использует `experiment-input/v4` с полем
-`agents`; замороженный вход v7 удерживает точный профиль и детерминированный
-выбор. Настройка, миграция прежнего объявления и наблюдённые ограничения описаны
-в [UNIVERSAL_AGENT_EXECUTION.md](UNIVERSAL_AGENT_EXECUTION.md).
+The new coding run configuration uses `experiment-input/v4` with the `agents`
+field; the frozen input v7 retains the exact profile and the deterministic
+selection. Setup, migration of the earlier declaration and the observed
+limitations are described in
+[UNIVERSAL_AGENT_EXECUTION.md](UNIVERSAL_AGENT_EXECUTION.md).
 
-Основной запуск остаётся `python -m synapse project run`. Gold строит контекст
-из допущенных знаний и принятого плана, сохраняет его и повторно разрешает
-исполнение. Только затем Stage 10 передаёт точный task и отдельный локальный
-информационный канал в `AgentExecutionPort`. Mini вызывается через свой адаптер.
-Выход исполнителя остаётся кандидатом; C1, итог, публикация и память сохраняют
-прежних владельцев доказательств. Неподходящий профиль получает явный отказ;
-автоматического выбора Mini при отказе другого агента нет.
+The main run remains `python -m synapse project run`. Gold builds the context
+from admitted knowledge and the accepted plan, persists it and authorizes
+execution again. Only then does Stage 10 pass the exact task and a separate
+local information channel to `AgentExecutionPort`. Mini is called through its
+adapter. The executor's output remains a candidate; C1, the final outcome,
+publication and memory keep their previous evidence owners. An unsuitable
+profile receives an explicit refusal; there is no automatic selection of Mini
+when another agent refuses.
 
-Требования ко всему принятому плану и к делегированной агенту операции различаются.
-Stage 10 передаёт в resolver capability `repository.edit` для производства патча;
-`verification.run` остаётся требованием к проверкам, которые исполняет C1.
-Полные байты задачи и историческая worker-привязка сохраняются. Профиль агента
-не получает право самостоятельно подтверждать результат; неподдержанные операции
-и capabilities без соответствующих операций отвергаются до вызова.
+The requirements for the whole accepted plan and for the operation delegated to
+the agent differ. Stage 10 passes the capability `repository.edit` to the
+resolver for producing the patch; `verification.run` remains a requirement for
+the checks that C1 executes. The full bytes of the task and the historical
+worker binding are retained. An agent profile does not get the right to confirm
+the result on its own; unsupported operations and capabilities without
+corresponding operations are rejected before the call.
 
-Новый профиль прошёл сквозную приёмку Gold/C1 с публикацией и восстановлением
-без повторного вызова. A2A и MCP прошли отдельную транспортную приёмку.
-Для Docling ещё нет профиля документной задачи и независимой проверки внутри
-Gold; отдельный обход Gold не добавлен. Изолированный запуск Docling/ACP в
-текущем окружении не подтверждён: создание необходимых namespaces запрещено.
-Наличие SDK и успешная транспортная приёмка не объявляются готовностью всего
-универсального контура.
+The new profile passed the end-to-end Gold/C1 acceptance with publication and
+recovery without a repeated call. A2A and MCP passed a separate transport
+acceptance. Docling has no document task profile and no independent
+verification inside Gold yet; no separate bypass of Gold was added. An isolated
+run of Docling/ACP in the current environment is not confirmed: creating the
+required namespaces is forbidden. The presence of the SDKs and a successful
+transport acceptance are not presented as readiness of the whole universal
+loop.
 
-Тесты остаются внешней приёмкой. Тяжёлые сценарии Gold, A2A и MCP находятся
-в отдельных файлах и отдельных заданиях CI для параллельного запуска; продукт
-не импортирует тесты, фикстуры или сценарные построители.
+Tests remain external acceptance. The heavy Gold, A2A and MCP scenarios are in
+separate files and separate CI jobs for parallel runs; the product does not
+import tests, fixtures or scenario builders.
 
-### Расхождение с общей моделью на предыдущем этапе
+### Discrepancy with the general model at the previous stage
 
-Сверка с разделами 5–10 фактического описания модели от 2026-09-09 не позволяет
-объявить общий слой элементов и постоянных агентов завершённым:
+A cross-check against sections 5–10 of the actual model description dated
+2026-09-09 does not allow the general layer of elements and persistent agents
+to be declared complete:
 
-| Требование | Фактически подключённый владелец | Что ещё требуется |
+| Requirement | Owner actually connected | What is still required |
 |---|---|---|
-| Элемент с назначением, owned paths/symbols, API, зависимостями и invariants | `task_targets.py` разрешает реальные Python targets; source observations удерживают bytes и bindings | Долговременная модель элемента с требованиями и связями; один обнаруженный symbol не заменяет такой элемент |
-| Target State, Current State, Development Delta | GoverningTaskContract задаёт цель и ограничения; C1, outcome и lineage подтверждают фактическое выполнение | Связать требования элемента, наблюдаемое состояние и незакрытые обязательства между разными задачами |
-| Восемь видов памяти | Source operation journal хранит материалы и все наблюдаемые исходы; run records и publications удерживают решения исполнения и доказательства | Единое типизированное представление Identity/Structural/Goal/Context/Episodic/Decision/Defect/Evidence со статусами утверждений и связями, используемое при выборе и исполнении |
-| Постоянный агент элемента | `AgentRuntime` живёт в интерпретаторе, поддерживает свой memory и сериализацию; `MemoryPalace` используется языковым runtime | Долговременное назначение владельца элемента, его контекст и восстановление в каноническом Gold-контуре |
+| An element with a purpose, owned paths/symbols, API, dependencies and invariants | `task_targets.py` resolves real Python targets; source observations retain bytes and bindings | A long-term model of the element with requirements and relations; one discovered symbol does not replace such an element |
+| Target State, Current State, Development Delta | GoverningTaskContract sets the goal and constraints; C1, outcome and lineage confirm the actual execution | Link the element's requirements, the observed state and open obligations across different tasks |
+| Eight kinds of memory | Source operation journal stores the materials and all observed outcomes; run records and publications retain execution decisions and evidence | One typed representation of Identity/Structural/Goal/Context/Episodic/Decision/Defect/Evidence with claim statuses and relations, used in selection and execution |
+| A persistent element agent | `AgentRuntime` lives in the interpreter and supports its own memory and serialization; `MemoryPalace` is used by the language runtime | Long-term assignment of the element's owner, its context and recovery in the canonical Gold loop |
 
-`AgentRuntime.think()` сейчас обращается к собственному `LLMBackend`; простое
-подключение этого метода вместо существующего worker нарушило бы принятую
-границу Mini. `MemoryPalace` по умолчанию имеет комнаты episodic/semantic/procedural,
-а `backend="sqlite"` открывает `:memory:`. Поэтому добавление восьми названий
-комнат само по себе не создаёт устойчивую проектную память и нужную связь с Gold.
-Оба компонента имеют действующие потребители в `interpreter.py`; они не являются
-глобально мёртвым кодом и в этом пакете не удаляются и не переименовываются.
+`AgentRuntime.think()` currently calls its own `LLMBackend`; simply connecting
+this method in place of the existing worker would break the accepted Mini
+boundary. By default `MemoryPalace` has the episodic/semantic/procedural rooms,
+and `backend="sqlite"` opens `:memory:`. Therefore adding eight room names does
+not by itself create a durable project memory and the required link with Gold.
+Both components have active consumers in `interpreter.py`; they are not
+globally dead code and are neither removed nor renamed in this package.
 
-### Первичные источники для сложных участков
+### Primary sources for complex areas
 
-- [Temporal: replay и история исполнения](https://docs.temporal.io/workflow-execution)
-  — опора для привязки входозависимой трассы к истории конкретного вызова.
-  Реализация остаётся в текущем владельце Gold/CVM, без добавления второго
-  движка исполнения и без повторения внешних эффектов при replay.
+- [Temporal: replay and execution history](https://docs.temporal.io/workflow-execution)
+  — the foundation for binding the input-dependent trace to the history of a
+  specific invocation. The implementation stays in the current Gold/CVM owner,
+  without adding a second execution engine and without repeating external
+  effects during replay.
 - [Dixon, Ginsberg, Parkes: Learning and Relevance](https://www.cs.cmu.edu/afs/cs/project/jair/pub/volume21/dixon04a-html/node4.html)
-  — основание для условного запрета точного подтверждённого конфликта. В Gold
-  это область task/base/patch/C1/oracle/environment. Отрицательное знание
-  сохраняется; в конкретный выбор попадает только совпадающая область.
+  — the basis for the conditional ban on an exact confirmed conflict. In Gold
+  this is the task/base/patch/C1/oracle/environment domain. Negative knowledge
+  is retained; only a matching domain enters a specific selection.
 - [GTPyhop, Dana Nau](https://github.com/dananau/GTPyhop)
-  — выбран подход явных применимых методов и возврата к альтернативам для
-  следующего расширения планировщика. Само изучение алгоритма не считается
-  внедрённым генератором графов: этот пункт остаётся открытым ниже.
-  В подключённых командных планах проверка достижения требований представлена
-  отдельными обязательствами над фактическими действиями. Команды и результаты
-  исполняет и подтверждает существующий C1, а не симуляция планировщика.
+  — the approach of explicit applicable methods and backtracking to
+  alternatives was chosen for the next extension of the planner. Studying the
+  algorithm by itself does not count as an implemented graph generator: this
+  item remains open below. In the connected command plans, the verification
+  that requirements are achieved is represented by separate obligations over
+  the actual actions. The commands and results are executed and confirmed by
+  the existing C1, not by a simulation in the planner.
 - [CaMeL: Defeating Prompt Injections by Design](https://arxiv.org/abs/2503.18813)
-  — проверена граница потоков данных, включая производные значения и ошибки.
-  В текущей Mini-интеграции локальные вычисления терминальны для внешнего
-  диалога; локальный результат не становится сообщением модели. Владение
-  провайдером сохраняется у Mini. Ограничение относится к содержимому запросов,
-  без заявления об отсутствии любых побочных каналов времени и числа вызовов.
+  — the data flow boundary was checked, including derived values and errors. In
+  the current Mini integration, local computations are terminal for the
+  external dialogue; a local result does not become a model message. Ownership
+  of the provider stays with Mini. The restriction concerns the contents of
+  requests, without claiming the absence of any side channels through timing
+  and the number of calls.
 - [Python: difflib](https://docs.python.org/3/library/difflib.html)
-  — используется существующее представление `unified_diff`. Локальное
-  восстановление ограничено этим точным форматом; соответствие результата
-  проверяется также настоящим `git apply` во внешней приёмке.
+  — the existing `unified_diff` representation is used. Local reconstruction is
+  limited to this exact format; the conformance of the result is also checked
+  by a real `git apply` in the external acceptance.
 
-На этом промежуточном этапе оставались открыты физическое подтверждение
-частичного профиля и связанного сквозного сценария, расширение за пределы точных патчей и непересекающихся
-правок, общая модель элементов и восьми видов памяти, жизненный цикл постоянных
-агентов. Командный граф и локальные варианты не доказывают произвольное
-процедурное планирование. Исходники, отказы, неудачи и неизвестные исходы
-продолжают сохраняться независимо от допуска исполнимого знания.
+At this intermediate stage the following remained open: physical confirmation
+of the partial profile and of the related end-to-end scenario, extension beyond
+exact patches and non-overlapping edits, the general model of elements and of
+the eight kinds of memory, and the lifecycle of persistent agents. The command
+graph and local alternatives do not prove arbitrary procedural planning. Source
+files, refusals, failures and unknown outcomes continue to be retained
+regardless of the admission of executable knowledge.

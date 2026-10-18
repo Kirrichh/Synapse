@@ -1,0 +1,635 @@
+{
+ "schema_version": "synapse.live-trial-fixes.mutation-evidence/v1",
+ "review": "Fixes of a live trial of the owner-decisions package through the canonical CLI: an unadopted memory configuration refused by name, recall with a relative state directory, a REPL whose channel fails, project connect exit codes, Gold run ids and run directories, source knowledge verified in another runtime",
+ "source_sha": "3f127aaaba51d51513cf011fa04b381fccc964f1",
+ "tree": "the uncommitted working tree on 3f127aa",
+ "method": "one mutation at a time in a fresh copy of the working tree, four copies in parallel; its killer files run alone, in order, the targeted cases first, each in its own pytest process with -x, until one fails; the file restored byte for byte (sha256 verified) before the next mutation; every kill was checked to be a failing test of the mutated behavior",
+ "mutation_identity": "sha256 of the production file's bytes with the mutation applied",
+ "python": "3.13.16",
+ "scopes": {
+  "unadopted_configuration": "a durable run whose memory configuration the owner has not adopted is refused before it starts, by name (MemoryOwner.require_bindable, MemoryFactory.check_binding)",
+  "recall_relative_state": "project recall accepts a state directory named relative to the working directory",
+  "repl_closed_channel": "a REPL whose input or output fails ends once with one error line and its exit code",
+  "connect_exit_code": "import roots that name nothing at the connected commit exit like a malformed declaration",
+  "run_id_reuse": "a Gold run's declaration and run directory are checked before its memory job is requested; a run id requested with other inputs is refused by name",
+  "source_runtime_drift": "source knowledge verified in another runtime is an environment mismatch"
+ },
+ "round": {
+  "mutants": 33,
+  "killed": 29,
+  "survivors": [
+   "F8-05",
+   "F8-06",
+   "F8-07",
+   "F8-08"
+  ],
+  "restored": true
+ },
+ "survivors_explained": {
+  "F8-05": "A failure to read a published claim's sources again at its revision now applies the knowledge. The sources were regular files at that commit and were read when the claim was verified; a commit's tree does not change, so reading them again fails only in a damaged repository.",
+  "F8-06": "Knowledge verified at another revision now applies. A run evaluates only candidates of its own revision: in two probes through the canonical CLI (explicit and automatic task targets), knowledge learned at a later commit of another branch never reached the compatibility evaluation, and its repository_revision dimension would refuse it (INCOMPATIBLE_REVISION) in any case.",
+  "F8-07": "Bindings outside the task's scope now apply. The allowed_scope dimension compares the same paths (a source descriptor's allowed scope is the set of its binding paths), so the knowledge is still refused (INCOMPATIBLE_SCOPE instead of INCOMPATIBLE_TASK_CONTRACT); only the explanation changes.",
+  "F8-08": "Source bytes other than the verified ones now apply. The bytes of a path at a commit are the ones the verifier hashed when it published the claim; they differ only in a damaged object store."
+ },
+ "excluded_from_mutation": "the REPL banner's text and frame (no test pins cosmetic text), and a support file recorded by its path as named instead of resolved (the same path for the absolute, symlink-free paths a frozen declaration names)",
+ "campaign_result": "KILLED_EXCEPT_UNREACHABLE_OR_MASKED",
+ "items": [
+  {
+   "mutant_id": "F2-01",
+   "item": "recall_relative_state",
+   "production_file": "synapse/experiments/gold/source_ingestion.py",
+   "original": "        project = open_gold_project(state_root.resolve())",
+   "mutation": "        project = open_gold_project(state_root)",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "ee1dec156e06389ef6dc98f98ea32e8f8ca736d3c1ffc3aef687e99028222d25"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_recall_query_contract.py -k relative",
+    "acceptance/stage4/stage16/test_source_recall_query_contract.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_recall_query_contract.py::test_a_state_directory_named_relative_to_the_working_directory_is_the_same_project"
+  },
+  {
+   "mutant_id": "F3-01",
+   "item": "unadopted_configuration",
+   "production_file": "synapse/memory_consolidation/owner.py",
+   "original": "        if bound is not None and bound != configuration.configuration_sha256:",
+   "mutation": "        if bound != configuration.configuration_sha256:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "b9c3be33f388ad190f4b8bdd973310466253a86ffb73a45322e1393f401cf3b5"
+   },
+   "killer_files": [
+    "acceptance/memory/test_applicability_contrast_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_applicability_contrast_acceptance.py::test_contrasts_draw_the_boundary_and_unknown_information_never_grants_automation"
+  },
+  {
+   "mutant_id": "F3-02",
+   "item": "unadopted_configuration",
+   "production_file": "synapse/memory_consolidation/owner.py",
+   "original": "        if bound is not None and bound != configuration.configuration_sha256:",
+   "mutation": "        if bound is not None and bound == configuration.configuration_sha256:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "3a5d1f8f995b5f3b7cf62b9dd664dbe2ad82e41ff64ec4406bf86f95d6e87e4b"
+   },
+   "killer_files": [
+    "acceptance/memory/test_applicability_contrast_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_applicability_contrast_acceptance.py::test_contrasts_draw_the_boundary_and_unknown_information_never_grants_automation"
+  },
+  {
+   "mutant_id": "F3-03",
+   "item": "unadopted_configuration",
+   "production_file": "synapse/memory_consolidation/owner.py",
+   "original": "\"a new configuration is adopted only by 'synapse memory reassess'\")\n        return bound\n",
+   "mutation": "\"a new configuration is adopted only by 'synapse memory reassess'\")\n        return None\n",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "7cbcc4760637e3d56bbcb51e0f3066664a54d72bff100fc551800f59d7e0f6a9"
+   },
+   "killer_files": [
+    "acceptance/memory/test_memory_reassessment_acceptance.py",
+    "acceptance/memory/test_applicability_contrast_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_memory_reassessment_acceptance.py::test_a_corrected_contract_archives_a_habit_its_basis_no_longer_supports"
+  },
+  {
+   "mutant_id": "F3-04",
+   "item": "unadopted_configuration",
+   "production_file": "synapse/memory_consolidation/factory.py",
+   "original": "            self.owner.require_bindable(self.configuration)\n",
+   "mutation": "            pass\n",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "aa61c982fca0b255e6a141d2821aab24376035505348eab6eea8fc4ba7b4c038"
+   },
+   "killer_files": [
+    "acceptance/memory/test_applicability_contrast_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_applicability_contrast_acceptance.py::test_contrasts_draw_the_boundary_and_unknown_information_never_grants_automation"
+  },
+  {
+   "mutant_id": "F3-05",
+   "item": "unadopted_configuration",
+   "production_file": "synapse/memory_consolidation/factory.py",
+   "original": "        elif self.owner.bound_digest() != self.configuration.configuration_sha256:",
+   "mutation": "        elif self.owner.bound_digest() == self.configuration.configuration_sha256:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "c413afb73936907c29aaeaf8a4ac6d251e958cda204733b780b75acf09b41215"
+   },
+   "killer_files": [
+    "acceptance/memory/test_experiment_modes_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_experiment_modes_acceptance.py::test_exam_modes_read_one_snapshot_and_never_teach"
+  },
+  {
+   "mutant_id": "F3-06",
+   "item": "unadopted_configuration",
+   "production_file": "synapse/memory_consolidation/factory.py",
+   "original": "        if self.exam is None:\n            self.owner.require_bindable",
+   "mutation": "        if self.exam is not None:\n            self.owner.require_bindable",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "40bdcbf3d3b2337ea422bc70eae1000a6e571a39ddda803a072dd3db42450b27"
+   },
+   "killer_files": [
+    "acceptance/memory/test_applicability_contrast_acceptance.py",
+    "acceptance/memory/test_experiment_modes_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_applicability_contrast_acceptance.py::test_contrasts_draw_the_boundary_and_unknown_information_never_grants_automation"
+  },
+  {
+   "mutant_id": "F3-07",
+   "item": "unadopted_configuration",
+   "production_file": "synapse/cli.py",
+   "original": "    factory.check_binding()\n",
+   "mutation": "",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "33409af4b4d10d64bb5bff10439c2d3427ee89326dacd9f05a4ce66899d95320"
+   },
+   "killer_files": [
+    "acceptance/memory/test_applicability_contrast_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/memory/test_applicability_contrast_acceptance.py::test_contrasts_draw_the_boundary_and_unknown_information_never_grants_automation"
+  },
+  {
+   "mutant_id": "F4-01",
+   "item": "repl_closed_channel",
+   "production_file": "synapse/application.py",
+   "original": "            except OSError:\n                raise\n",
+   "mutation": "",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "749a15bafb83618cfd4cadea74d423f4c3fd1e6890f34209951bb44b21652189"
+   },
+   "killer_files": [
+    "tests/test_system_execution_path.py -k output_closes",
+    "tests/test_system_execution_path.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_system_execution_path.py::test_a_repl_whose_output_closes_ends_once_with_its_exit_code"
+  },
+  {
+   "mutant_id": "F4-02",
+   "item": "repl_closed_channel",
+   "production_file": "synapse/application.py",
+   "original": "        return ReplResult(status=\"ERROR\", exit_code=1, diagnostics=(str(exc),))",
+   "mutation": "        return ReplResult(status=\"ERROR\", exit_code=0, diagnostics=(str(exc),))",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "be3753f23520666f2fe9c77f89e0d26def8718fb9e7a457ebbfa22164070a4f8"
+   },
+   "killer_files": [
+    "tests/test_system_execution_path.py -k output_closes",
+    "tests/test_system_execution_path.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_system_execution_path.py::test_a_repl_whose_output_closes_ends_once_with_its_exit_code"
+  },
+  {
+   "mutant_id": "F4-03",
+   "item": "repl_closed_channel",
+   "production_file": "synapse/application.py",
+   "original": "        return ReplResult(status=\"ERROR\", exit_code=1, diagnostics=(str(exc),))",
+   "mutation": "        return ReplResult(status=\"OK\", exit_code=1, diagnostics=(str(exc),))",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "cd12b794faf9ba49346f36916674c58f6fb24b2c594f72800852eacf2a062a59"
+   },
+   "killer_files": [
+    "tests/test_system_execution_path.py -k output_closes",
+    "tests/test_system_execution_path.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_system_execution_path.py::test_a_repl_whose_output_closes_ends_once_with_its_exit_code"
+  },
+  {
+   "mutant_id": "F4-04",
+   "item": "repl_closed_channel",
+   "production_file": "synapse/application.py",
+   "original": "        # fails again on every line, so the session ends with the failure once.\n        stderr.write(f\"Error: {exc}\\n\")\n",
+   "mutation": "        # fails again on every line, so the session ends with the failure once.\n",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "a3ca58b8e90ddd1be02bb28760c0ce547e9ca2142f0c210ac7be03c310d580ab"
+   },
+   "killer_files": [
+    "tests/test_system_execution_path.py -k output_closes",
+    "tests/test_system_execution_path.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_system_execution_path.py::test_a_repl_whose_output_closes_ends_once_with_its_exit_code"
+  },
+  {
+   "mutant_id": "F4-05",
+   "item": "repl_closed_channel",
+   "production_file": "synapse/cli.py",
+   "original": "        if result.status == \"ERROR\":",
+   "mutation": "        if result.status != \"ERROR\":",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "7ee884f1a7aac837f5de9fd0a1e7e13a3a85b2c09318c4c88e0b2d956979a764"
+   },
+   "killer_files": [
+    "tests/test_system_execution_path.py -k output_closes",
+    "tests/test_system_execution_path.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_system_execution_path.py::test_a_repl_whose_output_closes_ends_once_with_its_exit_code"
+  },
+  {
+   "mutant_id": "F4-06",
+   "item": "repl_closed_channel",
+   "production_file": "synapse/cli.py",
+   "original": "                os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())",
+   "mutation": "                pass",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "c698d5cad76d94e7f69d0cbd4717440530c5edf8ace9d05ce82ad09bbd73e1f5"
+   },
+   "killer_files": [
+    "tests/test_system_execution_path.py -k output_closes",
+    "tests/test_system_execution_path.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_system_execution_path.py::test_a_repl_whose_output_closes_ends_once_with_its_exit_code"
+  },
+  {
+   "mutant_id": "F4-07",
+   "item": "repl_closed_channel",
+   "production_file": "synapse/cli.py",
+   "original": "            try:\n                sys.stdout.flush()\n            except OSError:",
+   "mutation": "            try:\n                pass\n            except OSError:",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "e6149ae8ac5096acbc607035a9fe0c907c22dac255016aa59653a0b663eed343"
+   },
+   "killer_files": [
+    "tests/test_system_execution_path.py -k output_closes",
+    "tests/test_system_execution_path.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "tests/test_system_execution_path.py::test_a_repl_whose_output_closes_ends_once_with_its_exit_code"
+  },
+  {
+   "mutant_id": "F6-01",
+   "item": "connect_exit_code",
+   "production_file": "synapse/experiments/gold/knowledge_environment.py",
+   "original": "        code = 2 if exc.failure_code is GoldRunFailureCode.CONFIG_INVALID else 1",
+   "mutation": "        code = 1",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "df789c5b920a1d61e4b8fbe8dc7af2c318227d0f52b61c5e4e7f91a21e138ea3"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py::test_roots_that_cannot_name_modules_refuse_the_connection[files0-roots0-an"
+  },
+  {
+   "mutant_id": "F6-02",
+   "item": "connect_exit_code",
+   "production_file": "synapse/experiments/gold/knowledge_environment.py",
+   "original": "        code = 2 if exc.failure_code is GoldRunFailureCode.CONFIG_INVALID else 1",
+   "mutation": "        code = 2",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "503a5d13c7f7de56b0c91b9c8bd3a1b501a438c283b3c2f7fb5bbf34601d46cb"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage11/test_project_connect_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage11/test_project_connect_acceptance.py::test_a_second_connect_on_one_state_root_is_refused"
+  },
+  {
+   "mutant_id": "F6-03",
+   "item": "connect_exit_code",
+   "production_file": "synapse/experiments/gold/knowledge_environment.py",
+   "original": "        code = 2 if exc.failure_code is GoldRunFailureCode.CONFIG_INVALID else 1",
+   "mutation": "        code = 2 if exc.failure_code is not GoldRunFailureCode.CONFIG_INVALID else 1",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "c67e51d1d4542b7e6c6c765f0d8ecf1f330a1216f7a8fc531302377c679c170e"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py",
+    "acceptance/stage4/stage11/test_project_connect_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_src_layout_project_refusal_acceptance.py::test_roots_that_cannot_name_modules_refuse_the_connection[files0-roots0-an"
+  },
+  {
+   "mutant_id": "F7-01",
+   "item": "run_id_reuse",
+   "production_file": "synapse/experiments/gold/run_inputs.py",
+   "original": "    task = _validate_declaration(declaration)\n    # The declaration is refused before its run's memory job is requested: that job holds the run id.\n    if declaration[\"schema_version\"] != EXPERIMENT_INPUT_SCHEMA_V4:\n        raise ValueError(\"new runs select an admitted agent profile (experiment input v4)\")\n    from .agent_selection import select_coding_agent\n    agent_selection, _ = select_coding_agent(declaration)\n    target_resolution = None\n    if task.schema_version == TASK_CONTRACT_SCHEMA_V3:\n        from .task_targets import resolve_task_targets\n        target_resolution = decode_canonical(resolve_task_targets(task=task, repository_root=project.declaration.repo_root,\n                                                                  python_roots=project.declaration.python_roots))\n    knowledge_path = Path(declaration[\"knowledge_path\"])\n    if not knowledge_path.is_absolute():\n        knowledge_path = declaration_path.parent / knowledge_path\n    knowledge = read_input_json(knowledge_path)\n    if target_resolution is not None and knowledge.get(\"schema_version\") not in {PROJECT_KNOWLEDGE_INPUT_V3, PROJECT_KNOWLEDGE_INPUT_V4}:\n        raise ValueError(\"automatic tasks require project knowledge selection\")\n    source_snapshot, source_heads = None, None\n    if knowledge.get(\"schema_version\") in {PROJECT_KNOWLEDGE_INPUT_V3, PROJECT_KNOWLEDGE_INPUT_V4}:\n        from .canonicalization import HashBoundRef\n        from .source_snapshot import capture_project_source_snapshot\n        fields = {\"schema_version\", \"files\", \"experience_limit\"}\n        selection = \"ALL\"\n        if knowledge[\"schema_version\"] == PROJECT_KNOWLEDGE_INPUT_V4:\n            fields.add(\"run_memory_selection\")\n            if target_resolution is None:\n                raise ValueError(\"memory class selection requires automatic task inputs\")\n            selection = require_run_memory_selection(knowledge.get(\"run_memory_selection\"))\n        if set(knowledge) != fields or type(knowledge[\"files\"]) is not list:\n            raise ValueError(\"project knowledge input has an unknown selection contract\")\n        supplied = {}\n        for item in knowledge[\"files\"]:\n            if type(item) is not dict or set(item) != {\"ref\", \"path\"}:\n                raise ValueError(\"project support evidence requires a reference and path\")\n            ref = HashBoundRef.from_dict(item[\"ref\"])\n            path = Path(item[\"path\"])\n            path = path if path.is_absolute() else knowledge_path.parent / path\n            raw = read_regular_bytes(path, maximum_bytes=MAX_INPUT_BYTES)\n            if ref in supplied or len(raw) != ref.byte_length or hashlib.sha256(raw).hexdigest() != ref.sha256:\n                raise ValueError(\"project support evidence is repeated or changed\")\n            supplied[ref] = str(path.resolve())\n        source_snapshot, knowledge, source_heads = capture_project_source_snapshot(project=project,\n            task=task, limit=knowledge[\"experience_limit\"], target_resolution=target_resolution,\n            run_root=run_root, run_id=declaration[\"run_id\"], run_memory_selection=selection, court=court)\n        references = {HashBoundRef.from_dict(item[\"ref\"]) for item in knowledge[\"files\"]}\n        knowledge[\"files\"].extend({\"ref\": ref.to_dict(), \"path\": path} for ref, path in supplied.items()\n                                  if ref not in references)\n    state_root = project.declaration.state_root\n    with project.fence.exclusive():\n",
+   "mutation": "    task = _validate_declaration(declaration)\n    target_resolution = None\n    if task.schema_version == TASK_CONTRACT_SCHEMA_V3:\n        from .task_targets import resolve_task_targets\n        target_resolution = decode_canonical(resolve_task_targets(task=task, repository_root=project.declaration.repo_root,\n                                                                  python_roots=project.declaration.python_roots))\n    knowledge_path = Path(declaration[\"knowledge_path\"])\n    if not knowledge_path.is_absolute():\n        knowledge_path = declaration_path.parent / knowledge_path\n    knowledge = read_input_json(knowledge_path)\n    if target_resolution is not None and knowledge.get(\"schema_version\") not in {PROJECT_KNOWLEDGE_INPUT_V3, PROJECT_KNOWLEDGE_INPUT_V4}:\n        raise ValueError(\"automatic tasks require project knowledge selection\")\n    source_snapshot, source_heads = None, None\n    if knowledge.get(\"schema_version\") in {PROJECT_KNOWLEDGE_INPUT_V3, PROJECT_KNOWLEDGE_INPUT_V4}:\n        from .canonicalization import HashBoundRef\n        from .source_snapshot import capture_project_source_snapshot\n        fields = {\"schema_version\", \"files\", \"experience_limit\"}\n        selection = \"ALL\"\n        if knowledge[\"schema_version\"] == PROJECT_KNOWLEDGE_INPUT_V4:\n            fields.add(\"run_memory_selection\")\n            if target_resolution is None:\n                raise ValueError(\"memory class selection requires automatic task inputs\")\n            selection = require_run_memory_selection(knowledge.get(\"run_memory_selection\"))\n        if set(knowledge) != fields or type(knowledge[\"files\"]) is not list:\n            raise ValueError(\"project knowledge input has an unknown selection contract\")\n        supplied = {}\n        for item in knowledge[\"files\"]:\n            if type(item) is not dict or set(item) != {\"ref\", \"path\"}:\n                raise ValueError(\"project support evidence requires a reference and path\")\n            ref = HashBoundRef.from_dict(item[\"ref\"])\n            path = Path(item[\"path\"])\n            path = path if path.is_absolute() else knowledge_path.parent / path\n            raw = read_regular_bytes(path, maximum_bytes=MAX_INPUT_BYTES)\n            if ref in supplied or len(raw) != ref.byte_length or hashlib.sha256(raw).hexdigest() != ref.sha256:\n                raise ValueError(\"project support evidence is repeated or changed\")\n            supplied[ref] = str(path.resolve())\n        source_snapshot, knowledge, source_heads = capture_project_source_snapshot(project=project,\n            task=task, limit=knowledge[\"experience_limit\"], target_resolution=target_resolution,\n            run_root=run_root, run_id=declaration[\"run_id\"], run_memory_selection=selection, court=court)\n        references = {HashBoundRef.from_dict(item[\"ref\"]) for item in knowledge[\"files\"]}\n        knowledge[\"files\"].extend({\"ref\": ref.to_dict(), \"path\": path} for ref, path in supplied.items()\n                                  if ref not in references)\n    if declaration[\"schema_version\"] != EXPERIMENT_INPUT_SCHEMA_V4:\n        raise ValueError(\"new runs select an admitted agent profile (experiment input v4)\")\n    from .agent_selection import select_coding_agent\n    agent_selection, _ = select_coding_agent(declaration)\n    state_root = project.declaration.state_root\n    with project.fence.exclusive():\n",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "daf46f38b1408a7f57d58b85ad440c057780c3e17d93bf20f90d47e257c95031"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_run_id_reuse_acceptance.py -k agent",
+    "acceptance/stage4/stage16/test_run_id_reuse_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_run_id_reuse_acceptance.py::test_a_refused_declaration_requests_no_memory_job_and_its_correction_keeps_the_run_id[agent-program-agent"
+  },
+  {
+   "mutant_id": "F7-02",
+   "item": "run_id_reuse",
+   "production_file": "synapse/experiments/gold/run_inputs.py",
+   "original": "        supplied = {}\n        for item in knowledge[\"files\"]:\n            if type(item) is not dict or set(item) != {\"ref\", \"path\"}:\n                raise ValueError(\"project support evidence requires a reference and path\")\n            ref = HashBoundRef.from_dict(item[\"ref\"])\n            path = Path(item[\"path\"])\n            path = path if path.is_absolute() else knowledge_path.parent / path\n            raw = read_regular_bytes(path, maximum_bytes=MAX_INPUT_BYTES)\n            if ref in supplied or len(raw) != ref.byte_length or hashlib.sha256(raw).hexdigest() != ref.sha256:\n                raise ValueError(\"project support evidence is repeated or changed\")\n            supplied[ref] = str(path.resolve())\n        source_snapshot, knowledge, source_heads = capture_project_source_snapshot(project=project,\n            task=task, limit=knowledge[\"experience_limit\"], target_resolution=target_resolution,\n            run_root=run_root, run_id=declaration[\"run_id\"], run_memory_selection=selection, court=court)\n",
+   "mutation": "        support = knowledge[\"files\"]\n        source_snapshot, knowledge, source_heads = capture_project_source_snapshot(project=project,\n            task=task, limit=knowledge[\"experience_limit\"], target_resolution=target_resolution,\n            run_root=run_root, run_id=declaration[\"run_id\"], run_memory_selection=selection, court=court)\n        supplied = {}\n        for item in support:\n            if type(item) is not dict or set(item) != {\"ref\", \"path\"}:\n                raise ValueError(\"project support evidence requires a reference and path\")\n            ref = HashBoundRef.from_dict(item[\"ref\"])\n            path = Path(item[\"path\"])\n            path = path if path.is_absolute() else knowledge_path.parent / path\n            raw = read_regular_bytes(path, maximum_bytes=MAX_INPUT_BYTES)\n            if ref in supplied or len(raw) != ref.byte_length or hashlib.sha256(raw).hexdigest() != ref.sha256:\n                raise ValueError(\"project support evidence is repeated or changed\")\n            supplied[ref] = str(path.resolve())\n",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "4805e953245000e64488120c7d180c29e43cc4b0926806230df8ed27170ca577"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_run_id_reuse_acceptance.py -k support",
+    "acceptance/stage4/stage16/test_run_id_reuse_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_run_id_reuse_acceptance.py::test_a_refused_declaration_requests_no_memory_job_and_its_correction_keeps_the_run_id[support-evidence-project"
+  },
+  {
+   "mutant_id": "F7-03",
+   "item": "run_id_reuse",
+   "production_file": "synapse/experiments/gold/run_inputs.py",
+   "original": "            if ref in supplied or len(raw) != ref.byte_length",
+   "mutation": "            if len(raw) != ref.byte_length",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "ce249cade7f60ffd410b0e437e1797cbc1707124d392805ed9dae8944d4171e9"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_run_id_reuse_acceptance.py -k repeated",
+    "acceptance/stage4/stage16/test_run_id_reuse_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_run_id_reuse_acceptance.py::test_a_refused_declaration_requests_no_memory_job_and_its_correction_keeps_the_run_id[support-repeated-project"
+  },
+  {
+   "mutant_id": "F7-04",
+   "item": "run_id_reuse",
+   "production_file": "synapse/experiments/gold/run_inputs.py",
+   "original": "                                  if ref not in references)",
+   "mutation": "                                  if ref in references)",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "167f1dcd280cea63b1d1db2d78d89dde5a1e306a91fe86c4dd9953d6b911bee5"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_src_layout_gold_inputs_acceptance.py",
+    "acceptance/stage4/stage16/test_project_memory_lifecycle_acceptance.py",
+    "acceptance/stage4/stage16/test_source_experience_consumer_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_experience_consumer_acceptance.py::test_frozen_failed_experience_reaches_local_input_and_physical_lineage"
+  },
+  {
+   "mutant_id": "F7-05",
+   "item": "run_id_reuse",
+   "production_file": "synapse/experiments/gold/project_agents.py",
+   "original": "            if request != original:\n",
+   "mutation": "            if request == original:\n",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "252ea88de47fcc6185e50abc1936f03e7da05ded54fd2ac4f79e6b65541e4d1a"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_project_memory_lifecycle_acceptance.py",
+    "acceptance/stage4/stage16/test_run_id_reuse_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_project_memory_lifecycle_acceptance.py::test_interrupted_memory_job_resumes_its_original_history_without_an_effect"
+  },
+  {
+   "mutant_id": "F7-06",
+   "item": "run_id_reuse",
+   "production_file": "synapse/experiments/gold/project_agents.py",
+   "original": "            if request != original:\n",
+   "mutation": "            if False:\n",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "ef27454b6d510e5b40e0fcf5cb0ead16dad75a9ae467f6842ffdfcec1fd04906"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_run_id_reuse_acceptance.py -k other_inputs",
+    "acceptance/stage4/stage16/test_run_id_reuse_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_run_id_reuse_acceptance.py::test_a_run_id_requested_with_other_inputs_is_refused_by_name"
+  },
+  {
+   "mutant_id": "F7-07",
+   "item": "run_id_reuse",
+   "production_file": "synapse/experiments/gold/runner_composition.py",
+   "original": "            if root.exists():\n",
+   "mutation": "            if False:\n",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "642bad2c8c5fdedab46bff1251245f3aec99649e361d7bfaf8fad8478beb1faa"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_run_id_reuse_acceptance.py -k existing_directory",
+    "acceptance/stage4/stage16/test_run_id_reuse_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_run_id_reuse_acceptance.py::test_a_run_into_an_existing_directory_is_refused_before_its_memory_job"
+  },
+  {
+   "mutant_id": "F8-01",
+   "item": "source_runtime_drift",
+   "production_file": "synapse/experiments/gold/compatibility.py",
+   "original": "        return CompatibilityReason.ENVIRONMENT_MISMATCH\n",
+   "mutation": "        return CompatibilityReason.SCOPE_EXPANSION\n",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "8edf66185b5b0c746a2bb090425a4021a6351886c4a01273b7a5d48c3fdd1ba0"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_runtime_drift_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_runtime_drift_acceptance.py::test_a_distribution_installed_after_learning_is_an_environment_mismatch"
+  },
+  {
+   "mutant_id": "F8-02",
+   "item": "source_runtime_drift",
+   "production_file": "synapse/experiments/gold/compatibility.py",
+   "original": "                         else source_gap if source_gap is CompatibilityReason.ENVIRONMENT_MISMATCH",
+   "mutation": "                         else source_gap if source_gap is not CompatibilityReason.ENVIRONMENT_MISMATCH",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "591a6da171c46611051a7cad5f028132f97daca07bff8b657af991b6d3dacde7"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_runtime_drift_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_runtime_drift_acceptance.py::test_a_distribution_installed_after_learning_is_an_environment_mismatch"
+  },
+  {
+   "mutant_id": "F8-03",
+   "item": "source_runtime_drift",
+   "production_file": "synapse/experiments/gold/compatibility.py",
+   "original": "            source_applies, CompatibilityReason.SOURCE_APPLICABLE if source_applies else source_gap, source_refs))",
+   "mutation": "            source_applies, CompatibilityReason.SOURCE_APPLICABLE if source_applies else CompatibilityReason.SCOPE_EXPANSION, source_refs))",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "68267381bacee65f2e421bcfcfd97463cf589dbc86e8e4424a41734b6624a5f9"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_runtime_drift_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_runtime_drift_acceptance.py::test_a_distribution_installed_after_learning_is_an_environment_mismatch"
+  },
+  {
+   "mutant_id": "F8-04",
+   "item": "source_runtime_drift",
+   "production_file": "synapse/experiments/gold/compatibility.py",
+   "original": "        source_applies = source_gap is None\n",
+   "mutation": "        source_applies = source_gap is not None\n",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "5146035a1771b1108bb731ecfa75d4ed359dc5f19be1a23cde9408374f8c76fa"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_runtime_drift_acceptance.py",
+    "acceptance/stage4/stage16/test_source_consumer_acceptance.py"
+   ],
+   "status": "KILLED",
+   "restored": true,
+   "killed_by": "acceptance/stage4/stage16/test_source_runtime_drift_acceptance.py::test_a_distribution_installed_after_learning_is_an_environment_mismatch"
+  },
+  {
+   "mutant_id": "F8-05",
+   "item": "source_runtime_drift",
+   "production_file": "synapse/experiments/gold/compatibility.py",
+   "original": "        except (ValueError, OSError):\n            source_gap = CompatibilityReason.SCOPE_EXPANSION\n",
+   "mutation": "        except (ValueError, OSError):\n            source_gap = None\n",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "4b7c1eb4abcd7df19d9e571a9aa17649b6790344e3b2ae350920a2dd915b7cb1"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_runtime_drift_acceptance.py",
+    "acceptance/stage4/stage16/test_source_consumer_acceptance.py",
+    "acceptance/stage4/stage16/test_source_delivery_scope_acceptance.py",
+    "acceptance/stage4/stage16/test_source_experience_consumer_acceptance.py"
+   ],
+   "status": "SURVIVED",
+   "restored": true,
+   "killed_by": null,
+   "unreachable_or_masked": "A failure to read a published claim's sources again at its revision now applies the knowledge. The sources were regular files at that commit and were read when the claim was verified; a commit's tree does not change, so reading them again fails only in a damaged repository."
+  },
+  {
+   "mutant_id": "F8-06",
+   "item": "source_runtime_drift",
+   "production_file": "synapse/experiments/gold/compatibility.py",
+   "original": "    if revision != context.repository_revision.git_sha:\n        return CompatibilityReason.SCOPE_EXPANSION\n",
+   "mutation": "    if revision != context.repository_revision.git_sha:\n        return None\n",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "3d634bc3c9420a7995e5404de7b5756ace7031a9186b6d440f770ad409acaf62"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_runtime_drift_acceptance.py",
+    "acceptance/stage4/stage16/test_source_consumer_acceptance.py",
+    "acceptance/stage4/stage16/test_source_delivery_scope_acceptance.py",
+    "acceptance/stage4/stage16/test_source_experience_consumer_acceptance.py"
+   ],
+   "status": "SURVIVED",
+   "restored": true,
+   "killed_by": null,
+   "unreachable_or_masked": "Knowledge verified at another revision now applies. A run evaluates only candidates of its own revision: in two probes through the canonical CLI (explicit and automatic task targets), knowledge learned at a later commit of another branch never reached the compatibility evaluation, and its repository_revision dimension would refuse it (INCOMPATIBLE_REVISION) in any case."
+  },
+  {
+   "mutant_id": "F8-07",
+   "item": "source_runtime_drift",
+   "production_file": "synapse/experiments/gold/compatibility.py",
+   "original": "    if not paths or not all(path in context.allowed_scope for path in paths):\n        return CompatibilityReason.SCOPE_EXPANSION\n",
+   "mutation": "    if not paths or not all(path in context.allowed_scope for path in paths):\n        return None\n",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "c1768566673c9f1df731026e6ca08c9d93889659b08392e7c719eb31b2e2772b"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_runtime_drift_acceptance.py",
+    "acceptance/stage4/stage16/test_source_consumer_acceptance.py",
+    "acceptance/stage4/stage16/test_source_delivery_scope_acceptance.py",
+    "acceptance/stage4/stage16/test_source_experience_consumer_acceptance.py"
+   ],
+   "status": "SURVIVED",
+   "restored": true,
+   "killed_by": null,
+   "unreachable_or_masked": "Bindings outside the task's scope now apply. The allowed_scope dimension compares the same paths (a source descriptor's allowed scope is the set of its binding paths), so the knowledge is still refused (INCOMPATIBLE_SCOPE instead of INCOMPATIBLE_TASK_CONTRACT); only the explanation changes."
+  },
+  {
+   "mutant_id": "F8-08",
+   "item": "source_runtime_drift",
+   "production_file": "synapse/experiments/gold/compatibility.py",
+   "original": "hexdigest() != reference.sha256:\n            return CompatibilityReason.SCOPE_EXPANSION\n",
+   "mutation": "hexdigest() != reference.sha256:\n            return None\n",
+   "mutation_identity": {
+    "algorithm": "sha256",
+    "value": "de71ab47b9d13c54c827a22a84ffda23fc38b989e870a70d960e007808cebd80"
+   },
+   "killer_files": [
+    "acceptance/stage4/stage16/test_source_runtime_drift_acceptance.py",
+    "acceptance/stage4/stage16/test_source_consumer_acceptance.py",
+    "acceptance/stage4/stage16/test_source_delivery_scope_acceptance.py",
+    "acceptance/stage4/stage16/test_source_experience_consumer_acceptance.py"
+   ],
+   "status": "SURVIVED",
+   "restored": true,
+   "killed_by": null,
+   "unreachable_or_masked": "Source bytes other than the verified ones now apply. The bytes of a path at a commit are the ones the verifier hashed when it published the claim; they differ only in a damaged object store."
+  }
+ ]
+}

@@ -47,6 +47,7 @@ from synapse.change.workspace import resolve_revision
 from synapse.experiments.gold.admission_journal import FileAdmissionJournal, FileSnapshotFence
 from synapse.experiments.gold.admission_store import FileAdmissionCausalStore
 from synapse.experiments.gold.compatibility_store import FileCompatibilityStore
+from synapse.experiments.gold.bindings import BindingViolation, canonical_python_roots, check_python_roots
 from synapse.experiments.gold.canonicalization import HashBoundRef, RefKind
 from synapse.experiments.gold.contracts import (
     ActorIdentity,
@@ -80,6 +81,9 @@ from .runner.vocabulary import GoldRunFailureCode, GoldRunViolation
 
 
 PROJECT_RECORD_SCHEMA_V1 = "synapse.stage4.gold.project-record/v1"
+#: A project that declares Python import roots records them, and binds Python symbols under binding
+#: contract v2; a project that declares none keeps record v1 and contract v1, byte for byte.
+PROJECT_RECORD_SCHEMA_V2 = "synapse.stage4.gold.project-record/v2"
 
 #: The attesting runtime's *contract* version, which is what §18 records. The
 #: build actually running is bound separately, by digest, in ``executable_ref``:
@@ -126,6 +130,14 @@ _PROJECT_STORES_SEAL = object()
 
 def _fail(code: GoldRunFailureCode, detail: str) -> GoldRunViolation:
     return GoldRunViolation(code, detail)
+
+
+def _python_roots(value: object) -> tuple[str, ...]:
+    """Declared Python import roots, as binding contract v2 accepts them."""
+    try:
+        return canonical_python_roots(value)
+    except BindingViolation as exc:
+        raise _fail(GoldRunFailureCode.CONFIG_INVALID, f"python_roots: {exc.detail}") from exc
 
 
 @dataclass(frozen=True)
@@ -258,6 +270,8 @@ class GoldProjectDeclaration:
     environment_profile_id: str
     identities: GoldProjectIdentities
     entitlements: GoldProjectEntitlements | None = None
+    #: The directories Python modules are imported from (``src`` in a src layout), canonical and sorted.
+    python_roots: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("repo_root", "state_root"):
@@ -281,6 +295,10 @@ class GoldProjectDeclaration:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "identities must be exact")
         if self.entitlements is not None and type(self.entitlements) is not GoldProjectEntitlements:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "entitlements must be exact or None")
+        if type(self.python_roots) is not tuple:
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "python_roots must be an exact tuple")
+        if self.python_roots and _python_roots(self.python_roots) != self.python_roots:
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "python_roots must be canonical and sorted")
         if not self.repo_root.is_dir():
             raise _fail(
                 GoldRunFailureCode.TYPE_MISMATCH,
@@ -380,11 +398,18 @@ def connect_gold_project(declaration: GoldProjectDeclaration) -> Path:
             GoldRunFailureCode.AUTHORITY_MISMATCH,
             "this state root is already connected to a project",
         )
+    connected_revision = resolve_revision(declaration.repo_root, "HEAD")
+    if declaration.python_roots:
+        try:
+            check_python_roots(declaration.repo_root, RepositoryRevision.git_commit(connected_revision),
+                               declaration.python_roots)
+        except BindingViolation as exc:
+            raise _fail(GoldRunFailureCode.CONFIG_INVALID, f"python_roots: {exc.detail}") from exc
     stores = _open_project_stores(declaration, anchors=None, genesis=True)
     payload = {
-        "schema_version": PROJECT_RECORD_SCHEMA_V1,
+        "schema_version": PROJECT_RECORD_SCHEMA_V2 if declaration.python_roots else PROJECT_RECORD_SCHEMA_V1,
         "repo_root": str(declaration.repo_root),
-        "connected_revision": resolve_revision(declaration.repo_root, "HEAD"),
+        "connected_revision": connected_revision,
         "policy_version": declaration.policy_version,
         "environment_profile_id": declaration.environment_profile_id,
         "identities": declaration.identities.to_dict(),
@@ -397,6 +422,7 @@ def connect_gold_project(declaration: GoldProjectDeclaration) -> Path:
             "provenance": _anchor_of(stores.attestation_store),
             "taint": _anchor_of(stores.taint_store),
         },
+        **({"python_roots": list(declaration.python_roots)} if declaration.python_roots else {}),
     }
     declaration.state_root.mkdir(parents=True, exist_ok=True)
     record_path.write_text(
@@ -418,12 +444,14 @@ def read_gold_project_declaration(state_root: Path) -> GoldProjectDeclaration:
             "this state root holds no connected project",
         )
     payload = json.loads(record_path.read_text(encoding="utf-8"))
-    if type(payload) is not dict or payload.get("schema_version") != PROJECT_RECORD_SCHEMA_V1:
+    if type(payload) is not dict or payload.get("schema_version") not in (PROJECT_RECORD_SCHEMA_V1,
+                                                                           PROJECT_RECORD_SCHEMA_V2):
         raise _fail(
             GoldRunFailureCode.TYPE_MISMATCH,
             "the project record has an unknown schema",
         )
-    missing = sorted(_RECORD_FIELDS - set(payload))
+    rooted = payload["schema_version"] == PROJECT_RECORD_SCHEMA_V2
+    missing = sorted(_RECORD_FIELDS - set(payload) | ({"python_roots"} - set(payload) if rooted else set()))
     if missing:
         raise _fail(
             GoldRunFailureCode.TYPE_MISMATCH,
@@ -439,6 +467,7 @@ def read_gold_project_declaration(state_root: Path) -> GoldProjectDeclaration:
         entitlements=(
             None if entitlements is None else GoldProjectEntitlements.from_dict(entitlements)
         ),
+        python_roots=_python_roots(payload["python_roots"]) if rooted else (),
     )
 
 
@@ -683,6 +712,7 @@ def declaration_from_file(request: ConnectProjectRequest) -> GoldProjectDeclarat
         "environment_profile_id",
         "identities",
         "entitlements",
+        "python_roots",
     }
     if unknown:
         raise _fail(
@@ -699,6 +729,7 @@ def declaration_from_file(request: ConnectProjectRequest) -> GoldProjectDeclarat
         entitlements=(
             None if entitlements is None else GoldProjectEntitlements.from_dict(entitlements)
         ),
+        python_roots=_python_roots(payload["python_roots"]) if "python_roots" in payload else (),
     )
 
 
@@ -708,7 +739,9 @@ def execute_connect_project(request: ConnectProjectRequest) -> ConnectProjectRes
     Every refusal here is an operator-facing one — a malformed declaration, an
     already-connected state root, a repository that is not there — so it leaves
     as a diagnostic and an exit code, the way the controlled-change entry point
-    reports its own.
+    reports its own. A declaration that cannot be used exits with ``2``, also
+    when its import roots name nothing at the connected commit; a connection
+    that cannot be made exits with ``1``.
     """
 
     if type(request) is not ConnectProjectRequest:
@@ -722,7 +755,8 @@ def execute_connect_project(request: ConnectProjectRequest) -> ConnectProjectRes
     try:
         record_path = connect_gold_project(declaration)
     except GoldRunViolation as exc:
-        return ConnectProjectResult(None, 1, (str(exc),))
+        code = 2 if exc.failure_code is GoldRunFailureCode.CONFIG_INVALID else 1
+        return ConnectProjectResult(None, code, (str(exc),))
     except Exception as exc:  # a store refusal carries its own typed reason
         return ConnectProjectResult(None, 1, (f"the project could not be connected: {exc}",))
     return ConnectProjectResult(record_path, 0)
@@ -747,6 +781,7 @@ class ProjectStatus:
     library_candidates: int
     gold_available: bool
     gold_unavailable_reason: str | None
+    python_roots: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -790,6 +825,7 @@ def read_project_status(state_root: Path) -> ProjectStatus:
         library_candidates=candidates,
         gold_available=available,
         gold_unavailable_reason=reason,
+        python_roots=declaration.python_roots,
     )
 
 
@@ -808,6 +844,7 @@ def execute_project_status(request: ProjectStatusRequest) -> ProjectStatusResult
 
 __all__ = [
     "PROJECT_RECORD_SCHEMA_V1",
+    "PROJECT_RECORD_SCHEMA_V2",
     "ConnectProjectRequest",
     "ConnectProjectResult",
     "ProjectStatus",

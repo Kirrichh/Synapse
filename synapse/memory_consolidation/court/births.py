@@ -23,7 +23,7 @@ from ..quanta import weight
 from ..records import canonical
 from .dependencies import retained_basis
 from .habit_state import EFFECTIVE, mean, new_metadata
-from .pool import assess, merge_pool
+from .pool import assess, candidate_key, merge_pool
 
 _DECISIVE = {"duplicate", "absorbed", "archived_duplicate", "archived_absorbed"}
 _ARBITRATION_FIELDS = ("similarity", "calls", "answer", "agreed", "refs")
@@ -168,6 +168,35 @@ def _expired(pool, touched, window, parameters, report) -> dict[str, Any]:
     return updates
 
 
+def _witness_exclusions(context, key, entry, assessment) -> None:
+    """Answers this window offered as witnesses of a candidate's claim that cannot count, with why.
+
+    The report shows how many independent witnesses were counted against how many are required, then
+    each answer set apart (by reason codes, the summary sorted by reason). It explains; no decision,
+    state, digest or boundary reads it.
+    """
+    held = {(item["run_id"], item["event_id"]) for item in entry["episodes"]}
+    excluded = []
+    for reaction in sorted(context.draft["reactions"], key=lambda item: (item["run_id"], item["event_id"])):
+        slow = reaction["slow"]
+        if (slow is None or (reaction["run_id"], reaction["event_id"]) not in held
+                or candidate_key(reaction["context"]["event_type"], slow["steps"]) != key):
+            continue
+        excluded.extend({"run_id": reaction["run_id"], "event_id": reaction["event_id"], **item}
+                        for item in slow["excluded_witnesses"])
+    if not excluded:
+        return
+    counts: dict[str, int] = {}
+    for item in excluded:
+        for reason in item["reasons"]:
+            counts[reason] = counts.get(reason, 0) + 1
+    independence = assessment["independence"]
+    context.report["witness_exclusions"].append({
+        "candidate_key": key, "independence": independence["verdict"],
+        "counted": len(independence["independent_set"]), "required": independence["required"],
+        "excluded": excluded, "reasons": dict(sorted(counts.items()))})
+
+
 def pool_stage(context, births, consumed, refused) -> dict[str, Any]:
     """Pool updates of this window; births are appended to ``births``."""
     state, draft, parameters, report = context.state, context.draft, context.parameters, context.report
@@ -179,6 +208,7 @@ def pool_stage(context, births, consumed, refused) -> dict[str, Any]:
         # An event id is unique within its run only: a wake consumes that run's event (review R8).
         entry["episodes"] = [item for item in entry["episodes"] if (item["run_id"], item["event_id"]) not in consumed]
         assessment = assess(entry, parameters, context.configuration, draft["requests"])
+        _witness_exclusions(context, key, entry, assessment)
         reasons, relation = list(assessment["reasons"]), None
         if not reasons:
             relation, waiting = typed_relation(key, entry, assessment, state, parameters, draft["arbitration"], report)

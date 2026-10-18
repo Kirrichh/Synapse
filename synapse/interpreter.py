@@ -233,6 +233,9 @@ _DETERMINISTIC_BUILTINS = frozenset(
     name for name in BUILTINS if name not in RECORDED_SIDE_EFFECT_HOST_SYMBOLS | {"print"})
 # Builtins that call a function the program passes them: the interpreter makes each of those calls.
 _CALLBACK_BUILTINS = ("map", "filter")
+# AST fields added after identities were recorded: an unset one is left out of an identity, so a program that
+# does not use it keeps the identity (of a dream body, of a habit declaration) it always had.
+_IDENTITY_FIELDS_OMITTED_WHEN_UNSET = frozenset({"integration_reason"})
 #: 1.1.0: the scope encoding records which positions name one object (``aliases``, review F5).
 SNAPSHOT_VERSION = "1.1.0"
 RESTORABLE_SNAPSHOTS = ("1.0.0", SNAPSHOT_VERSION)
@@ -2019,7 +2022,7 @@ class Interpreter:
         if isinstance(value, Node):
             data = {"node_type": type(value).__name__}
             for key, val in sorted(value.__dict__.items()):
-                if key in {"line", "column"}:
+                if key in {"line", "column"} or (key in _IDENTITY_FIELDS_OMITTED_WHEN_UNSET and val is None):
                     continue
                 data[key] = self._ast_to_canonical_data(val)
             return data
@@ -3013,7 +3016,7 @@ class Interpreter:
             raise IntegrateIsolationViolation("fracture is forbidden inside integrate transaction")
         if self.fracture_depth >= self.max_fracture_depth:
             raise NestedFractureException(f"Maximum fracture depth {self.max_fracture_depth} exceeded")
-        if self.fracture_depth > 0 and node.integration_clause:
+        if self.fracture_depth > 0 and (node.integration_clause or node.integration_reason is not None):
             raise NestedFractureException("nested fracture cannot integrate; return a position to parent fracture")
 
         base_agent = self.evaluate(node.target, env) if node.target else self.find_agent(env)
@@ -3068,13 +3071,17 @@ class Interpreter:
             }
 
             integration_result = None
-            if node.integration_clause:
+            reason_value = None
+            if node.integration_clause or node.integration_reason is not None:
                 integrate_env = Environment(env)
                 integrate_env.define("fracture_result", fracture_result)
                 integrate_env.define("positions", positions)
                 integrate_env.define("deaths", deaths)
                 integrate_env.define("consensus", consensus_value)
-                integration_result = self.execute_block(node.integration_clause, integrate_env)
+                if node.integration_reason is not None:
+                    reason_value = self.evaluate(node.integration_reason, integrate_env)
+                if node.integration_clause:
+                    integration_result = self.execute_block(node.integration_clause, integrate_env)
 
             integrated_event = {
                 "type": "identity_integrated",
@@ -3087,6 +3094,9 @@ class Interpreter:
                 "resulting_delta": {},
                 "depth": self.fracture_depth,
             }
+            if node.integration_reason is not None:
+                # Only a declared reason enters the record: an event without one is unchanged.
+                integrated_event["reason"] = self.global_env._json_safe(reason_value)
             if self.runtime_mode == RuntimeMode.LIVE:
                 self.execution_history.append(integrated_event)
                 self.actor_log.append(dict(integrated_event))

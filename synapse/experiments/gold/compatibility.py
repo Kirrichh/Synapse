@@ -1781,27 +1781,32 @@ def _source_facts(evidence):
     return facts
 
 
-def _source_applies(evaluator, context, evidence, facts):
-    """Check the source-to-consumer relation without altering producer facts."""
+def _source_gap(evaluator, context, evidence, facts):
+    """Why source knowledge does not apply to this consumer, or ``None`` when it does.
+
+    The source-to-consumer relation is checked without altering producer facts. Knowledge verified in
+    another runtime than this one is an environment mismatch; another revision, bindings outside the
+    consumer's scope or other source bytes leave the task outside what was verified.
+    """
     from synapse.change.workspace import load_committed_bytes, require_tree_mode
     from .source_verification import observe_source_runtime
     if facts is None:
-        return False
+        return CompatibilityReason.SCOPE_EXPANSION
     revision = facts["claim"]["revision"]
     if revision != context.repository_revision.git_sha:
-        return False
+        return CompatibilityReason.SCOPE_EXPANSION
     if _canonical(observe_source_runtime()) != _canonical(facts["observed_runtime"]):
-        return False
+        return CompatibilityReason.ENVIRONMENT_MISMATCH
     paths = [binding.path for binding in evidence.bindings]
     if not paths or not all(path in context.allowed_scope for path in paths):
-        return False
+        return CompatibilityReason.SCOPE_EXPANSION
     for item in facts["sources"]:
         reference = HashBoundRef.from_dict(item["ref"])
         require_tree_mode(evaluator._binding_repo_root, revision, item["path"], {"100644", "100755"}, "SOURCE_NOT_REGULAR")
         raw = load_committed_bytes(evaluator._binding_repo_root, revision, item["path"])
         if len(raw) != reference.byte_length or hashlib.sha256(raw).hexdigest() != reference.sha256:
-            return False
-    return True
+            return CompatibilityReason.SCOPE_EXPANSION
+    return None
 
 
 def assess_source_knowledge_pair(left, right):
@@ -2140,12 +2145,13 @@ def _dimension_facts(
 
     exact_dimension(CompatibilityDimension.REPOSITORY_REVISION, descriptor.repository_revision.to_dict(), context.repository_revision.to_dict())
     source_facts = _source_facts(subject_evidence)
-    source_applies = False
+    source_applies, source_gap = False, None
     if source_facts is not None:
         try:
-            source_applies = _source_applies(evaluator, context, subject_evidence, source_facts)
+            source_gap = _source_gap(evaluator, context, subject_evidence, source_facts)
         except (ValueError, OSError):
-            source_applies = False
+            source_gap = CompatibilityReason.SCOPE_EXPANSION
+        source_applies = source_gap is None
         source_refs = (*refs, descriptor.task_contract_ref, context.task_contract_ref,
                        *subject_evidence.unit.core.artifact_refs)
         dimensions.append(_make_dimension(CompatibilityDimension.TASK_CONTRACT_IDENTITY,
@@ -2153,7 +2159,7 @@ def _dimension_facts(
             compatibility_value(label="consumer-task-with-source-applicability", exact_value={
                 "task_contract_ref": context.task_contract_ref.to_dict(), "profile": "verified-repository-source/v1",
                 "source_files_reopened": source_applies, "allowed_scope": list(context.allowed_scope)}, refs=source_refs),
-            source_applies, CompatibilityReason.SOURCE_APPLICABLE if source_applies else CompatibilityReason.SCOPE_EXPANSION, source_refs))
+            source_applies, CompatibilityReason.SOURCE_APPLICABLE if source_applies else source_gap, source_refs))
     else:
         exact_dimension(CompatibilityDimension.TASK_CONTRACT_IDENTITY, descriptor.task_contract_ref.to_dict(), context.task_contract_ref.to_dict())
     exact_dimension(
@@ -2257,10 +2263,14 @@ def _dimension_facts(
     if source_facts is not None:
         # The historical source verifier and the consumer's task oracle retain
         # their distinct identities/results. Neither is relabelled as the other.
+        # A verifier result observed in another runtime does not carry over for that reason, not another value.
+        oracle_reason = (CompatibilityReason.SOURCE_APPLICABLE if source_applies
+                         else source_gap if source_gap is CompatibilityReason.ENVIRONMENT_MISMATCH
+                         else CompatibilityReason.VALUE_MISMATCH)
         dimensions.append(_make_dimension(CompatibilityDimension.ORACLE,
             compatibility_value(label="producer-source-verifier", exact_value=descriptor.oracle_binding.to_dict(), refs=source_refs),
             compatibility_value(label="consumer-task-oracle", exact_value=context.oracle_observation.to_dict(), refs=source_refs),
-            source_applies, CompatibilityReason.SOURCE_APPLICABLE if source_applies else CompatibilityReason.VALUE_MISMATCH, source_refs))
+            source_applies, oracle_reason, source_refs))
     else:
         exact_dimension(CompatibilityDimension.ORACLE, descriptor.oracle_binding.to_dict(), context.oracle_observation.to_dict())
 

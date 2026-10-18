@@ -45,11 +45,26 @@ def source_publications(project_root):
 SOURCE_RECALL_QUERY_V1 = "synapse.stage4.gold.source-recall-query/v1"
 SOURCE_RECALL_V1 = "synapse.stage4.gold.source-recall/v1"
 SOURCE_RECALL_PROFILE_V1 = "exact-revision-path-and-term-overlap/v1"
+#: A query that names its ranking profile. v1 queries keep profile v1, byte for byte; delivery into a Gold
+#: run keeps v1 until its owner selects otherwise, since changing what a run is shown confounds a comparison.
+SOURCE_RECALL_QUERY_V2 = "synapse.stage4.gold.source-recall-query/v2"
+SOURCE_RECALL_V2 = "synapse.stage4.gold.source-recall/v2"
+#: Profile v2 ranks by tiers of evidence, compared in order, each an integer count of distinct query terms:
+#: the operation's own identity (its claimed paths and bound qualified names), then the output of its
+#: command, then the full text of its sources; operation_id breaks what remains equal. A large file holds
+#: nearly every query term, so in v1 operations over one file tie on its text and the alphabet orders them;
+#: v2 lets what an operation itself names and observed decide first (field priority, as code search ranks
+#: symbol matches above content). Integers only: no floating score whose bits could differ by platform.
+SOURCE_RECALL_PROFILE_V2 = "exact-revision-path-and-tiered-term-overlap/v2"
+_PROFILES = {SOURCE_RECALL_PROFILE_V1: SOURCE_RECALL_V1, SOURCE_RECALL_PROFILE_V2: SOURCE_RECALL_V2}
 
 
 def _query(value):
-    if (type(value) is not dict or set(value) != {"schema_version", "statement", "revision", "scope", "limit"}
-            or value["schema_version"] != SOURCE_RECALL_QUERY_V1):
+    fields = {"schema_version", "statement", "revision", "scope", "limit"}
+    if (type(value) is not dict
+            or not (value.get("schema_version") == SOURCE_RECALL_QUERY_V1 and set(value) == fields
+                    or value.get("schema_version") == SOURCE_RECALL_QUERY_V2 and set(value) == fields | {"profile"}
+                    and type(value["profile"]) is str and value["profile"] in _PROFILES)):
         raise ValueError("source recall requires an exact task query")
     RepositoryRevision.git_commit(value["revision"])
     if type(value["statement"]) is not str or not 1 <= len(value["statement"]) <= 4096:
@@ -61,7 +76,7 @@ def _query(value):
         raise ValueError("source recall scope must be canonical")
     if type(value["limit"]) is not int or not 1 <= value["limit"] <= 64:
         raise ValueError("source recall requires a bounded selection limit")
-    return scope
+    return scope, value.get("profile", SOURCE_RECALL_PROFILE_V1)
 
 
 def _terms(text):
@@ -79,13 +94,33 @@ def _publication_evidence(state_root, publication):
     return proof, evidence
 
 
+def _ranked(profile, query_terms, matched_paths, claim, observed, texts):
+    """How ``profile`` ranks one eligible operation: its key, compared count by count, and the match it reports.
+
+    v1 counts the task terms found anywhere in the operation's claimed paths, bound qualified names, command
+    output and sources' text. v2 counts them per tier, compared in order: the operation's own identity (its
+    claimed paths and bound qualified names), its command's output, then its sources' text.
+    """
+    command = observed["command_result"]
+    names = [*claim["sources"], *(item["qualname"] for item in observed["bindings"])]
+    output = [] if command is None else [command["stdout"], command["stderr"]]
+    if profile == SOURCE_RECALL_PROFILE_V1:
+        terms = sorted(query_terms & _terms(" ".join([*names, *output, *texts])))
+        return (len(matched_paths), len(terms)), {"paths": matched_paths, "terms": terms}
+    tiers = {"identity": sorted(query_terms & _terms(" ".join(names))),
+             "output": sorted(query_terms & _terms(" ".join(output))),
+             "source": sorted(query_terms & _terms(" ".join(texts)))}
+    return ((len(matched_paths), *(len(tiers[name]) for name in ("identity", "output", "source"))),
+            {"paths": matched_paths, "terms": tiers})
+
+
 def recall_source_experience(*, state_root: Path, query, entitlements, operations=None, publications=None):
     """Select relevant retained experience, with explicit empty/limited results.
 
     Each operation is read under its own existing fence. This is a read view of
     individually committed prefixes, not an atomic Gold execution snapshot.
     """
-    scope = _query(query)
+    scope, profile = _query(query)
     grant = entitlements
     if (grant is None or "read" not in grant["capabilities"]
             or any(not any(path == entry or path.startswith(entry.rstrip("/") + "/")
@@ -155,16 +190,18 @@ def recall_source_experience(*, state_root: Path, query, entitlements, operation
             "publication": None if publication is None else {"transaction_id": publication["transaction_id"]},
             "retained": [{"ref": ref.to_dict(), "content_base64url": encode_base64url(raw)}
                          for ref, raw in sorted(evidence.items(), key=lambda item: canonical(item[0].to_dict()))]}
-        searchable = " ".join([*claim["sources"], *(item["qualname"] for item in observed["bindings"]),
-                               *([] if command is None else [command["stdout"], command["stderr"]])])
-        for source in observed["sources"]:
-            searchable += " " + evidence[HashBoundRef.from_dict(source["ref"])].decode("utf-8", errors="replace")
-        terms = sorted(query_terms & _terms(searchable))
-        score = (len(matched_paths), len(terms))
-        eligible.append((score, record, {"paths": matched_paths, "terms": terms}))
-    eligible.sort(key=lambda item: (-item[0][0], -item[0][1], item[1]["operation_id"]))
-    selected = [{"match": match, "experience": record} for _, record, match in eligible[:query["limit"]]]
-    value = {"schema_version": SOURCE_RECALL_V1, "profile": SOURCE_RECALL_PROFILE_V1,
+        texts = [evidence[HashBoundRef.from_dict(source["ref"])].decode("utf-8", errors="replace")
+                 for source in observed["sources"]]
+        eligible.append((*_ranked(profile, query_terms, matched_paths, claim, observed, texts), record))
+    eligible.sort(key=lambda item: (*(-count for count in item[0]), item[2]["operation_id"]))
+    if profile == SOURCE_RECALL_PROFILE_V2:
+        # How many eligible operations share each key: within a group only operation_id ordered them.
+        groups: dict[tuple, int] = {}
+        for key, _, _ in eligible:
+            groups[key] = groups.get(key, 0) + 1
+        eligible = [(key, {**match, "tie_group": groups[key]}, record) for key, match, record in eligible]
+    selected = [{"match": match, "experience": record} for _, match, record in eligible[:query["limit"]]]
+    value = {"schema_version": _PROFILES[profile], "profile": profile,
         "query": query, "state": "MATCHES" if selected else "NO_RELEVANT_EXPERIENCE",
         "selection_scope": "SOURCE_OPERATIONS", "eligible_count": len(eligible),
         "omitted_by_limit": max(0, len(eligible) - len(selected)), "excluded": excluded, "selected": selected}

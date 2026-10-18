@@ -90,9 +90,12 @@ def test_contrasts_draw_the_boundary_and_unknown_information_never_grants_automa
     path = tmp_path / "changed-memory.json"
     path.write_text(json.dumps(changed, sort_keys=True))
     environment, journal = world.world(), world.journal()
-    code, payload, _ = world.attempt(checkpoint.program(), "changed-contract",
-                                     checkpoint.inputs("changed-contract", "catalog"), configuration=path)
-    assert code == 1 and payload["status"] == "ERROR"  # The public error names no internals.
+    code, payload, stderr = world.attempt(checkpoint.program(), "changed-contract",
+                                          checkpoint.inputs("changed-contract", "catalog"), configuration=path)
+    # The public error names no internals; stderr names the owner's refusal and how a configuration is adopted.
+    assert code == 2 and payload["error"]["code"] == "INVALID_CLI_INPUT"
+    assert stderr == ("memory: this memory owner is bound to another memory configuration; "
+                      "a new configuration is adopted only by 'synapse memory reassess'\n")
     assert world.world() == environment and world.journal() == journal
     assert not (world.runs / "changed-contract.json").exists()
     # The refusal is the owner's: bound to one configuration, it refuses any other.

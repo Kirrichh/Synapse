@@ -21,7 +21,10 @@ from .digest import digest_record
 from .knowledge import additions, known_of
 from .quantization import quantize
 
-REPORT_V1 = "synapse.memory.consolidation-report/v1"
+#: v2: the ``witness_exclusions`` section explains the answers a window offered as witnesses that could not
+#: count, with reason codes. It is report-only: decisions, the ``apply`` section, digests and boundaries are
+#: those v1 produced.
+REPORT_V2 = "synapse.memory.consolidation-report/v2"
 
 
 def _admitted(decision, gates) -> list[dict[str, Any]]:
@@ -101,7 +104,7 @@ def assemble(*, state, draft, decision, configuration, inputs_hash, window_sessi
         boundary = boundary_record(after, legitimacy_after, draft["consolidation_id"])
         digest = digest_record(draft, boundary["id"], decision["slow_only"], draft["consolidation_id"])
     report = {
-        "schema_version": REPORT_V1, "consolidation_id": draft["consolidation_id"], "mode": draft["mode"],
+        "schema_version": REPORT_V2, "consolidation_id": draft["consolidation_id"], "mode": draft["mode"],
         "window": {"index": window, "sessions": consolidated, **({"deferred": window_sessions} if deferred else {})},
         "inputs_hash": inputs_hash,
         "policy": configuration.policy, "components": configuration.components,

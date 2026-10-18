@@ -193,6 +193,10 @@ def capture_active_memory(*, project, run_root, run_id, target_resolution, sourc
             for field in ("profile", "prior_outcomes", "prior_learning", "court", "frame_storage"):
                 if field in original:
                     request[field] = original[field]
+            if request != original:
+                # The job of a run id is requested once; other inputs are another run.
+                raise ValueError(f"run id {run_id!r} was already used with other inputs for this run directory; "
+                                 "a new run needs another run id or run directory")
         else:
             # The unjudged tail is judged before the job pins the decision it reads.
             decision = court.consolidate(store, guard, project_identity=identity)

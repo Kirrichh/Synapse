@@ -11,11 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .contracts import ToolContract
-
-#: Services whose records are the agent's own product; they never corroborate.
-AGENT_OWN_SERVICES = frozenset({"palace", "memory", "store", "scratchpad", "ledger", "journal", "log",
-                                "notes", "notebook", "self", "agent", "cassette", "internal"})
+from .contracts import AGENT_OWN_SERVICES, ToolConfiguration, ToolContract
 
 
 def payload_result(payload: Any) -> tuple[str, str | None]:
@@ -103,6 +99,20 @@ def environmental_refusal(contract: ToolContract, transport: str, op_err: str | 
     return transport == "lost" or (op_err is not None and op_err in contract.environmental_errors)
 
 
-def corroborating(role: str, source: str) -> bool:
-    """Whether a recorded answer can count as an outside witness."""
-    return role == "action" and source.partition(":")[0] not in AGENT_OWN_SERVICES
+def witness_exclusions(configuration: ToolConfiguration, role: str, source: str) -> list[str]:
+    """Why a recorded answer cannot count as an outside witness; none when it can.
+
+    ``not_an_action``: a reasoning tool's answer. Under configuration v2, ``agent_own_service``: the source's
+    service, the part before the colon, is one of the agent's own services (``AGENT_OWN_SERVICES``), its record
+    of itself. Under v3, ``not_declared_outside``: the operator did not declare the source outside. Such an
+    answer still resolves an operation's uncertain effect; it never witnesses a birth.
+    """
+    reasons = []
+    if role != "action":
+        reasons.append("not_an_action")
+    if configuration.outside is None:
+        if source.partition(":")[0] in AGENT_OWN_SERVICES:
+            reasons.append("agent_own_service")
+    elif source not in configuration.outside:
+        reasons.append("not_declared_outside")
+    return reasons

@@ -24,6 +24,7 @@ the production desktop UI has not been implemented by this change.
 | [Coding rules](CODING_RULES.md) | Responsibilities, module boundaries, size review signals, frontend/native/core organization, and researched sources |
 | [Acceptance rules](ACCEPTANCE_RULES.md) | Strict product separation, useful coverage, parallel heavy scenarios, mutation verification, and full completion |
 | [Security rules](SECURITY_RULES.md) | Continuous boundary review and concrete anti-bypass obligations |
+| [UI security design](UI_SECURITY_DESIGN.md) | Researched threat model, native/renderer controls, consent limits, secret handling, and external acceptance scenarios |
 
 The root [agent guide](../../AGENTS.md) links these rules so later contributors
 encounter them before implementing UI or supporting changes. Existing ownership

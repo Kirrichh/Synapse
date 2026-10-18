@@ -60,6 +60,26 @@ Root AGENTS.md and acceptance rules explicitly prohibit product use as imports,
 assets, navigation, startup hooks, state feeds, or implementations. No product
 code depended on those documents or tests during this work.
 
+## UI security research addendum — 2026-10-18
+
+The [UI security design](UI_SECURITY_DESIGN.md) adds researched implementation
+guidance and developer-only attack/mutation scenarios. Its companion changes
+connect the guide to the working index, security rules, and implementation status,
+and record F-05 as an unresolved consent-assurance design clarification.
+
+- All 24 cited public source URLs returned HTTP 200 during review. Reviewed
+  guidance comes from OWASP, Tauri, React, MDN, and W3C; successful retrieval is
+  source verification, not evidence that Synapse implements a control.
+- Checked capability defaults, handler-enforced scopes, the Linux iframe limit,
+  CSP delivery constraints, consent binding, secret boundaries, and separation
+  of native transport from conditional web controls against the specification.
+- Checked English text, local links/heading targets, tables/fenced blocks, and
+  whitespace. The governing specification, requirement/acceptance matrices,
+  product integration map/index, and original prototype remain unchanged.
+- Changes are Markdown documentation only. Product acceptance remains NOT_RUN;
+  executable-change mutation verification is NOT_APPLICABLE. No product source,
+  test implementation, dependency, or runtime security validation was added.
+
 ## Publication record
 
 Deliver this work as a commit on the named branch. The branch head is the

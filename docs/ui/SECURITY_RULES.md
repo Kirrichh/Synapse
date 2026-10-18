@@ -6,6 +6,11 @@ This document operationalizes the owner's requirement to check security while
 writing code. The [bridge specification](SYNAPSE_UI_BRIDGE_SPEC_V1.md) owns
 product semantics; these checks do not authorize changing those semantics.
 
+Use the [UI security design](UI_SECURITY_DESIGN.md) for the researched threat
+model, platform-specific controls, implementation decisions, and developer-only
+security acceptance scenarios. It includes the limits of renderer-based consent
+and does not claim that proposed controls are already implemented.
+
 ## 1. Review at each boundary change
 
 Before coding, identify who supplies each input, who may act on it, which state

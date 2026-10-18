@@ -12,6 +12,10 @@ verification are recorded in [foundation verification](FOUNDATION_VERIFICATION.m
 This status does not claim that existing backend foundations satisfy the new
 desktop contracts or that any of the 44 product cases have passed.
 
+The [UI security design](UI_SECURITY_DESIGN.md) records public-source research
+and its application to the planned architecture. Its controls await implementation
+and acceptance; the consent trust-boundary clarification is tracked as F-05.
+
 ## Delivery stages and remaining work
 
 Stages organize dependencies, not reduced scope. Finish the entire assigned
@@ -20,7 +24,7 @@ Independent capabilities may progress while unrelated open conditions remain.
 
 | Stage | Scope and exit evidence | Current state |
 |---|---|---|
-| P0 — Foundation | English v1, all original requirements/map entries, permanent rules, prototype, traceability, reviewed branch | Documentation prepared |
+| P0 — Foundation | English v1, all original requirements/map entries, permanent rules, researched UI security design, prototype, traceability, reviewed branch | Documentation prepared |
 | P1 — Trusted application and bridge | Bundled canonical machine mode, schemas/JCS, handshake/framing/queues, trusted caller context, diagnostics/CSP, Windows/Linux containment/shutdown; behavioral and mutation evidence | Not started |
 | P2 — Authorized reading and synchronization | Project/material reads, domain snapshots/coverage/epochs, progress/freshness, unsubscribe, retained evidence gaps and safe source projections | Not started |
 | P3 — Durable commands and permissions | Intent/pre-send recovery, owner acceptance/status/retention, binding conflicts, grant/refuse/revoke, exclusive once-binding, new-task mode policy | Not started |
@@ -86,7 +90,8 @@ the product integration index. They are not product links or data feeds.
 2. Design Windows/Linux containment around the actual existing process paths;
    state supported environment requirements before enabling execution.
 3. Establish module boundaries for the shell, transport, client intents, Python
-   dispatch, and frontend projections according to the coding rules.
+   dispatch, and frontend projections according to the coding rules; define the
+   capability/CSP profiles and threat boundaries from the UI security design.
 4. Implement and externally accept that assigned scope fully, with targeted
    mutants and security-negative cases, before recording VERIFIED.
 
@@ -108,3 +113,4 @@ and traceability together before changing what completion means.
 |---|---|
 | 2026-10-18 | Created foundation branch from current main; translated supplied specification into English v1; documented detailed coding, acceptance, mutation, and security rules; retained original prototype; established all requirement/case/open-condition registers |
 | 2026-10-18 | Clarified the owner's product/test separation: removed eight acceptance sources from product integration/index and preserved them only in development documentation; no product code changed |
+| 2026-10-18 | Researched official OWASP, Tauri, React, MDN, and W3C guidance; added English UI security design with external acceptance/mutation scenarios and F-05 consent-assurance clarification; no product behavior or product verification state changed |

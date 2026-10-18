@@ -32,6 +32,12 @@ This repository contains the Synapse DSL/runtime and AS2 verification work.
 
 ## Permanent Development Requirements
 
+- Agents must never merge branches or pull requests. This includes local
+  `git merge`, pull-request merge actions, enabling auto-merge, and adding work
+  to a merge queue. Merging is reserved for the repository owner.
+- Authorization to implement, commit, push a task branch, or open/update a pull
+  request does not authorize merging. Do not bypass this prohibition through
+  direct target-branch updates or history rewrites that integrate the work.
 - Write new repository documentation, comments, identifiers, and development
   records in English. Product localization and unchanged supplied reference
   artifacts may retain their intended languages.

@@ -230,6 +230,11 @@ are mandatory in [ACCEPTANCE_RULES.md](ACCEPTANCE_RULES.md).
 6. Verify behavior with meaningful acceptance checks and a mutation campaign.
 7. Record the security review and any unresolved findings accurately.
 8. Update the status and traceability documents with observed evidence.
+9. Agents must never merge branches or pull requests, perform local `git merge`,
+   enable auto-merge, or add work to a merge queue. Merging belongs exclusively
+   to the repository owner. Permission to implement, commit, push a task branch,
+   or open/update a PR does not grant merge authority. Direct target-branch
+   updates or history rewrites must not be used to bypass this prohibition.
 
 A small PR is a focused, understandable change. It is not defined by file count
 or an arbitrary diff quota. Splitting a change must not omit its necessary usage,

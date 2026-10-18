@@ -30,7 +30,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install -e . pytest build setuptools
+      - run: python -m pip install . pytest build setuptools
       - env:
           ACCEPTANCE_FILE: ${{ matrix.file }}
         run: python -m pytest -q -p no:cacheprovider "$ACCEPTANCE_FILE"
@@ -47,7 +47,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install -e . pytest build setuptools
+      - run: python -m pip install . pytest build setuptools
       - name: Mutate affected Python behaviors and reporting
         env:
           UI_TEST_PLAN: ${{ inputs.plan }}
@@ -100,7 +100,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: acceptance/ui_bridge/native
-      - run: python -m pip install -e . pytest build setuptools
+      - run: python -m pip install . pytest build setuptools
       - run: python scripts/ui/build_core_bundle.py --output synapse/ui/src-tauri/resources/core
       - run: cargo test --locked --manifest-path acceptance/ui_bridge/native/Cargo.toml
       - env:

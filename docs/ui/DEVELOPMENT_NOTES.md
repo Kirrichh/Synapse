@@ -26,6 +26,11 @@ The specification remains authoritative; the matrices record completion evidence
 - Only selection and CI execution support changed in this follow-up. Product
   behavior, Windows platform acceptance, and installed-window claims are unchanged.
   Static dependency edges need maintenance when new dynamic owners are introduced.
+- The first remote run exposed an editable-install finder leaking the checkout's
+  desktop namespace into the isolated wheel probe. UI jobs now install the normal
+  distribution, so the acceptance probe observes packaged imports. The isolation
+  assertion remains unchanged; editable development installation is not wheel
+  isolation evidence.
 
 ## 2026-10-18 — P1 implementation begins
 

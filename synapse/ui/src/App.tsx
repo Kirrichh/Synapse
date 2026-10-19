@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import { useConnection } from "./connection/useConnection";
 import { ConnectionPanel } from "./components/ConnectionPanel";
 import { SessionPanel } from "./components/SessionPanel";
+import { ApplicationPanel } from "./components/ApplicationPanel";
 import { copy, type Language } from "./i18n";
 import "./styles/theme.css";
 import "./styles/layout.css";
+import "./styles/application.css";
 
 export function App() {
   const [language, setLanguage] = useState<Language>("en");
@@ -54,6 +56,7 @@ export function App() {
         </aside>
         <main>
           <ConnectionPanel language={language} {...model} />
+          <ApplicationPanel connected={snapshot?.state === "ready" && model.connection.delivery === "connected"} />
           <section className="agents-panel">
             <div className="section-label">
               <span>{t.agents}</span>

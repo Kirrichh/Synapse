@@ -1,6 +1,6 @@
 # Desktop development and source boundaries
 
-Version 1.0. Current implementation: P1 control bootstrap, still in progress.
+Version 1.0. Current implementation: control bootstrap and scoped Windows invocation application; full P1 remains in progress.
 
 ## Product layout
 
@@ -8,12 +8,15 @@ All product source stays under the existing `synapse/` directory:
 
 ```text
 synapse/
-  machine/                 Canonical Python machine endpoint and envelope schema
+  access/                  Core delegation authority and platform registry/resource custody
+  commands/                Command bindings, JCS and owner-facing contracts
+  machine/                 Canonical control/application endpoint and delivery routing
   ui/
     contracts/             Native bootstrap schema
     src/
       components/          UI components
-      connection/          Channel observation and connection state
+      connection/          Control Channel observation and connection state
+      application/         Authorized requests, intent recovery and scoped observations
       contracts/           Strict input decoder and generated validators/types
       styles/              Theme and layout
     src-tauri/
@@ -157,8 +160,9 @@ sequence. Each subscription uses a Tauri Channel. At most one snapshot is awaiti
 acknowledgment; further bootstrap updates coalesce to the latest complete snapshot.
 Only the current subscription and its sent sequence can acknowledge delivery.
 A blocked callback or missing acknowledgment cannot block the core controller.
-This mechanism does not implement domain StateSync coverage, durable command
-results, Live gaps, or evidential replay; those retain their separate requirements.
+This control mechanism remains separate from application delivery. The latter
+uses an independent bounded Channel with exact acknowledgments, core-owned
+subscriptions and source-class semantics described below.
 
 ## External verification
 
@@ -231,3 +235,47 @@ uses Windows x64 process-parameter offsets and is not a portable product API.
 EOF cases terminate only that owned child; the GUI may observe CORE_EXITED before
 the framing reader sees partial EOF. Native byte witnesses establish the specific
 partial-frame/no-resynchronization contract separately.
+
+## Authorized invocation application
+
+The [access contract](WORKSPACE_ACCESS_CONTRACT.md) defines the sole Python access
+owner. The canonical `python -m synapse access --help` surface exposes enrollment,
+application registration, exact grant issuance and revocation. Enrollment and
+administrative changes require a real elevated administrative context; merely
+launching the CLI grants nothing. The registry is machine-owned outside projects.
+The ordinary application displays its registration public key and only grants
+returned by its authenticated session. Folder paths and renderer IDs grant no
+rights. Do not run the application elevated as a substitute for registration.
+
+`access/` separates records/authentication/authority from Windows location,
+registry and resource custody. The invocation owner retains command receipts and
+observation truth. `machine/domain_session.py` routes the negotiated application
+contract; `subscriptions.py` owns bounded source delivery and current authority.
+Rust separates client identity, protected intent storage, command recovery,
+application request handling and acknowledged publication. React separates the
+session, fresh observations, recovery interaction and presentation. None is a
+second execution owner or permission registry.
+
+The UI supports explicit fresh invocation snapshots, retained facts, Live
+connection observations, invocation cancellation and protected cold recovery.
+It does not implement the complete P2 continuous multi-domain reducer. Linux
+protected application identity/storage/access is unavailable; no permissive
+substitute is selected. Control readiness alone never grants application access.
+
+For installed application acceptance, run `windows_application_host.mjs` with
+`--executable`, `--python`, external `--workspace` and `--run` directories, and
+`--output`. Pair it with `windows_application_registry.py administer --run
+<same-directory> --installed <installed-application-directory>` in a separately elevated
+acceptance interpreter. The guardian invokes the installed canonical CLI.
+The ordinary driver prepares the
+synthetic owner; the elevated guardian registers/grants/revokes and cleans only
+the temporary registry it created. It refuses an existing registry. Do not use
+these checks against a configured personal installation or put runtime files
+inside the checkout. Keep all application/Job checks serial on the same desktop.
+
+The source-level subscription, domain-integration, application-channels and
+windows-location mutation catalogues run through the external mutation driver.
+Use a fresh workspace and external Cargo target for each campaign. The installed
+sequence, foreign caller probes and transport corruption are separate host jobs;
+successful component tests are not substitutes for them. See the
+[final Windows record](P1_VERIFICATION.md#windows-application-and-delivery-integration).

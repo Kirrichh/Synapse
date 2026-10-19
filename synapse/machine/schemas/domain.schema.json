@@ -1,0 +1,2135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synapse.invalid/contracts/machine-domain-v1",
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 192,
+      "pattern": "^[A-Za-z0-9]",
+      "not": {
+        "pattern": "[^A-Za-z0-9._:/-]"
+      }
+    },
+    "operation": {
+      "enum": [
+        "invocation.inspect",
+        "invocation.snapshot",
+        "invocation.changes",
+        "command.status",
+        "invocation.cancel"
+      ]
+    },
+    "item": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "invocation_id",
+            "state"
+          ],
+          "properties": {
+            "invocation_id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "state": {
+              "const": "ABSENT"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "invocation_id",
+            "revision",
+            "state",
+            "cancel_requested",
+            "result_sha256"
+          ],
+          "properties": {
+            "invocation_id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "revision": {
+              "type": "string",
+              "minLength": 64,
+              "maxLength": 64,
+              "not": {
+                "pattern": "[^0-9a-f]"
+              }
+            },
+            "state": {
+              "enum": [
+                "TERMINAL",
+                "EXECUTION_STATE_UNKNOWN"
+              ]
+            },
+            "cancel_requested": {
+              "type": "boolean"
+            },
+            "result_sha256": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "minLength": 64,
+                  "maxLength": 64,
+                  "not": {
+                    "pattern": "[^0-9a-f]"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "error": {
+      "enum": [
+        "ACCESS_DENIED",
+        "ACCESS_INVALID",
+        "ACCESS_UNAVAILABLE",
+        "ADMIN_REQUIRED",
+        "RESOURCE_CHANGED",
+        "AUTHENTICATION_FAILED",
+        "COMMAND_INVALID",
+        "BINDING_CONFLICT",
+        "REVISION_CONFLICT",
+        "OBJECT_UNAVAILABLE",
+        "RECORD_INVALID",
+        "SCOPE_REFUSED",
+        "CURSOR_UNAVAILABLE",
+        "NOT_READY",
+        "SCHEMA_INVALID",
+        "INTERNAL_ERROR",
+        "SUBSCRIPTION_UNKNOWN",
+        "BUSY",
+        "RESPONSE_TOO_LARGE"
+      ]
+    },
+    "result_access_open": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "challenge"
+      ],
+      "properties": {
+        "profile": {
+          "const": "synapse.application/v1"
+        },
+        "challenge": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "installation",
+            "connection",
+            "nonce"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": "synapse.access.challenge/v1"
+            },
+            "installation": {
+              "type": "string",
+              "format": "uuid",
+              "minLength": 36,
+              "maxLength": 36
+            },
+            "connection": {
+              "type": "string",
+              "format": "uuid",
+              "minLength": 36,
+              "maxLength": 36
+            },
+            "nonce": {
+              "type": "string",
+              "minLength": 64,
+              "maxLength": 64,
+              "not": {
+                "pattern": "[^0-9a-f]"
+              }
+            }
+          }
+        }
+      }
+    },
+    "result_access_authenticate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "application_id"
+      ],
+      "properties": {
+        "state": {
+          "const": "AUTHENTICATED"
+        },
+        "application_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        }
+      }
+    },
+    "result_access_grants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grants"
+      ],
+      "properties": {
+        "grants": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "grant_id",
+              "version",
+              "workspace",
+              "methods",
+              "objects",
+              "expires_at"
+            ],
+            "properties": {
+              "grant_id": {
+                "type": "string",
+                "format": "uuid",
+                "minLength": 36,
+                "maxLength": 36
+              },
+              "version": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "workspace": {
+                "$ref": "#/$defs/identifier"
+              },
+              "methods": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 5,
+                "uniqueItems": true,
+                "items": {
+                  "$ref": "#/$defs/operation"
+                }
+              },
+              "objects": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 128,
+                "uniqueItems": true,
+                "items": {
+                  "$ref": "#/$defs/identifier"
+                }
+              },
+              "expires_at": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "result_invocation_inspect": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "invocation_id",
+            "revision",
+            "cancel_requested"
+          ],
+          "properties": {
+            "state": {
+              "const": "EXECUTION_STATE_UNKNOWN"
+            },
+            "invocation_id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "revision": {
+              "type": "string",
+              "minLength": 64,
+              "maxLength": 64,
+              "not": {
+                "pattern": "[^0-9a-f]"
+              }
+            },
+            "cancel_requested": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "invocation_id",
+            "revision",
+            "cancel_requested",
+            "record",
+            "record_sha256"
+          ],
+          "properties": {
+            "state": {
+              "const": "TERMINAL"
+            },
+            "invocation_id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "revision": {
+              "type": "string",
+              "minLength": 64,
+              "maxLength": 64,
+              "not": {
+                "pattern": "[^0-9a-f]"
+              }
+            },
+            "cancel_requested": {
+              "type": "boolean"
+            },
+            "record": {
+              "type": "string",
+              "maxLength": 65536
+            },
+            "record_sha256": {
+              "type": "string",
+              "minLength": 64,
+              "maxLength": 64,
+              "not": {
+                "pattern": "[^0-9a-f]"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "result_invocation_snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generation",
+        "position",
+        "items"
+      ],
+      "properties": {
+        "generation": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "position": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/item"
+          }
+        }
+      }
+    },
+    "result_invocation_changes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generation",
+        "from",
+        "to",
+        "changes"
+      ],
+      "properties": {
+        "generation": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "from": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "to": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "changes": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "position",
+              "item"
+            ],
+            "properties": {
+              "position": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "item": {
+                "$ref": "#/$defs/item"
+              }
+            }
+          }
+        }
+      }
+    },
+    "result_command_status": {
+      "$ref": "https://synapse.invalid/contracts/command-reconciliation-v1"
+    },
+    "result_invocation_cancel": {
+      "$ref": "https://synapse.invalid/contracts/command-reconciliation-v1#/$defs/completed"
+    },
+    "result_access_close": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "const": "CLOSED"
+        }
+      },
+      "required": [
+        "state"
+      ]
+    },
+    "delivery_identity": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/delivery_identity_state"
+        },
+        {
+          "$ref": "#/$defs/delivery_identity_record"
+        },
+        {
+          "$ref": "#/$defs/delivery_identity_live"
+        }
+      ]
+    },
+    "delivery_frame": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "const": "delivery.empty"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "identity",
+            "reason"
+          ],
+          "properties": {
+            "type": {
+              "const": "delivery.invalidated"
+            },
+            "identity": {
+              "$ref": "#/$defs/delivery_identity_state"
+            },
+            "reason": {
+              "const": "RESNAPSHOT"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "identity",
+            "reason"
+          ],
+          "properties": {
+            "type": {
+              "const": "delivery.invalidated"
+            },
+            "identity": {
+              "$ref": "#/$defs/delivery_identity_record"
+            },
+            "reason": {
+              "const": "REREAD"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "identity",
+            "gap",
+            "payload"
+          ],
+          "properties": {
+            "type": {
+              "const": "delivery.data"
+            },
+            "identity": {
+              "$ref": "#/$defs/delivery_identity_state"
+            },
+            "gap": {
+              "const": false
+            },
+            "payload": {
+              "$ref": "#/$defs/result_invocation_changes"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "identity",
+            "gap",
+            "payload"
+          ],
+          "properties": {
+            "type": {
+              "const": "delivery.data"
+            },
+            "identity": {
+              "$ref": "#/$defs/delivery_identity_record"
+            },
+            "gap": {
+              "const": false
+            },
+            "payload": {
+              "$ref": "#/$defs/result_invocation_inspect"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "identity",
+            "gap",
+            "payload"
+          ],
+          "properties": {
+            "type": {
+              "const": "delivery.data"
+            },
+            "identity": {
+              "$ref": "#/$defs/delivery_identity_live"
+            },
+            "gap": {
+              "type": "boolean"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "core",
+                "monotonic_ms"
+              ],
+              "properties": {
+                "core": {
+                  "const": "RESPONDING"
+                },
+                "monotonic_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "result_delivery_subscribe": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "identity",
+            "deliver_from"
+          ],
+          "properties": {
+            "type": {
+              "const": "subscription.confirm"
+            },
+            "identity": {
+              "$ref": "#/$defs/delivery_identity_state"
+            },
+            "deliver_from": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "identity",
+            "deliver_from"
+          ],
+          "properties": {
+            "type": {
+              "const": "subscription.confirm"
+            },
+            "identity": {
+              "$ref": "#/$defs/delivery_identity_record"
+            },
+            "deliver_from": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "identity",
+            "deliver_from"
+          ],
+          "properties": {
+            "type": {
+              "const": "subscription.confirm"
+            },
+            "identity": {
+              "$ref": "#/$defs/delivery_identity_live"
+            },
+            "deliver_from": {
+              "type": "null"
+            }
+          }
+        }
+      ]
+    },
+    "result_delivery_snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "identity",
+        "snapshot"
+      ],
+      "properties": {
+        "type": {
+          "const": "state.snapshot"
+        },
+        "identity": {
+          "$ref": "#/$defs/delivery_identity_state"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/result_invocation_snapshot"
+        }
+      }
+    },
+    "result_delivery_collect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "subscription_id",
+        "queued"
+      ],
+      "properties": {
+        "type": {
+          "const": "delivery.collected"
+        },
+        "subscription_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "queued": {
+          "type": "boolean"
+        }
+      }
+    },
+    "result_delivery_next": {
+      "$ref": "#/$defs/delivery_frame"
+    },
+    "result_delivery_unsubscribe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "subscription_id"
+      ],
+      "properties": {
+        "type": {
+          "const": "delivery.closed"
+        },
+        "subscription_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        }
+      }
+    },
+    "delivery_identity_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "subscription_id",
+        "epoch",
+        "workspace",
+        "grant_id",
+        "grant_version",
+        "source",
+        "delivery_class",
+        "invocation_ids",
+        "generation"
+      ],
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "subscription_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "epoch": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "workspace": {
+          "$ref": "#/$defs/identifier"
+        },
+        "grant_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "grant_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source": {
+          "const": "invocation.state"
+        },
+        "delivery_class": {
+          "const": "StateSync"
+        },
+        "invocation_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "generation": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        }
+      }
+    },
+    "delivery_identity_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "subscription_id",
+        "epoch",
+        "workspace",
+        "grant_id",
+        "grant_version",
+        "source",
+        "delivery_class",
+        "invocation_ids"
+      ],
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "subscription_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "epoch": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "workspace": {
+          "$ref": "#/$defs/identifier"
+        },
+        "grant_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "grant_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source": {
+          "const": "invocation.record"
+        },
+        "delivery_class": {
+          "const": "Evidential"
+        },
+        "invocation_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        }
+      }
+    },
+    "delivery_identity_live": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "subscription_id",
+        "epoch",
+        "workspace",
+        "grant_id",
+        "grant_version",
+        "source",
+        "delivery_class",
+        "invocation_ids"
+      ],
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "subscription_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "epoch": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "workspace": {
+          "$ref": "#/$defs/identifier"
+        },
+        "grant_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "grant_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source": {
+          "const": "connection.health"
+        },
+        "delivery_class": {
+          "const": "Live"
+        },
+        "invocation_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "access.open"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile"
+          ],
+          "properties": {
+            "profile": {
+              "const": "synapse.application/v1"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "result"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "result"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "access.open"
+        },
+        "result": {
+          "$ref": "#/$defs/result_access_open"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "access.authenticate"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "public_key",
+            "signature"
+          ],
+          "properties": {
+            "signature": {
+              "type": "string",
+              "minLength": 128,
+              "maxLength": 128,
+              "not": {
+                "pattern": "[^0-9a-f]"
+              }
+            },
+            "public_key": {
+              "type": "string",
+              "minLength": 64,
+              "maxLength": 64,
+              "not": {
+                "pattern": "[^0-9a-f]"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "result"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "result"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "access.authenticate"
+        },
+        "result": {
+          "$ref": "#/$defs/result_access_authenticate"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "access.grants"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [],
+          "properties": {}
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "result"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "result"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "access.grants"
+        },
+        "result": {
+          "$ref": "#/$defs/result_access_grants"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "params",
+        "grant_id",
+        "grant_version"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "invocation.inspect"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "invocation_id"
+          ],
+          "properties": {
+            "invocation_id": {
+              "$ref": "#/$defs/identifier"
+            }
+          }
+        },
+        "grant_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "grant_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "result"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "result"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "invocation.inspect"
+        },
+        "result": {
+          "$ref": "#/$defs/result_invocation_inspect"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "params",
+        "grant_id",
+        "grant_version"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "invocation.snapshot"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "invocation_ids"
+          ],
+          "properties": {
+            "invocation_ids": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/identifier"
+              }
+            }
+          }
+        },
+        "grant_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "grant_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "result"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "result"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "invocation.snapshot"
+        },
+        "result": {
+          "$ref": "#/$defs/result_invocation_snapshot"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "params",
+        "grant_id",
+        "grant_version"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "invocation.changes"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "invocation_ids",
+            "generation",
+            "position"
+          ],
+          "properties": {
+            "invocation_ids": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/identifier"
+              }
+            },
+            "generation": {
+              "type": "string",
+              "format": "uuid",
+              "minLength": 36,
+              "maxLength": 36
+            },
+            "position": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        "grant_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "grant_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "result"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "result"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "invocation.changes"
+        },
+        "result": {
+          "$ref": "#/$defs/result_invocation_changes"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "params",
+        "grant_id",
+        "grant_version"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "command.status"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "command_id",
+            "recipient"
+          ],
+          "properties": {
+            "command_id": {
+              "type": "string",
+              "format": "uuid",
+              "minLength": 36,
+              "maxLength": 36
+            },
+            "recipient": {
+              "$ref": "#/$defs/identifier"
+            }
+          }
+        },
+        "grant_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "grant_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "result"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "result"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "command.status"
+        },
+        "result": {
+          "$ref": "#/$defs/result_command_status"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "params",
+        "grant_id",
+        "grant_version"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "invocation.cancel"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "command"
+          ],
+          "properties": {
+            "command": {
+              "$ref": "https://synapse.invalid/contracts/command-binding-v1"
+            }
+          }
+        },
+        "grant_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "grant_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "result"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "result"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "invocation.cancel"
+        },
+        "result": {
+          "$ref": "#/$defs/result_invocation_cancel"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "code"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "error"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "code": {
+          "$ref": "#/$defs/error"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "access.close"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "result"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "result"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "access.close"
+        },
+        "result": {
+          "$ref": "#/$defs/result_access_close"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "params",
+        "grant_id",
+        "grant_version"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "delivery.subscribe"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source",
+            "invocation_ids"
+          ],
+          "properties": {
+            "source": {
+              "enum": [
+                "invocation.state",
+                "invocation.record",
+                "connection.health"
+              ]
+            },
+            "invocation_ids": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/identifier"
+              }
+            }
+          }
+        },
+        "grant_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "grant_version": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "result"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "result"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "delivery.subscribe"
+        },
+        "result": {
+          "$ref": "#/$defs/result_delivery_subscribe"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "delivery.snapshot"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "subscription_id"
+          ],
+          "properties": {
+            "subscription_id": {
+              "type": "string",
+              "format": "uuid",
+              "minLength": 36,
+              "maxLength": 36
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "result"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "result"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "delivery.snapshot"
+        },
+        "result": {
+          "$ref": "#/$defs/result_delivery_snapshot"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "delivery.collect"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "subscription_id"
+          ],
+          "properties": {
+            "subscription_id": {
+              "type": "string",
+              "format": "uuid",
+              "minLength": 36,
+              "maxLength": 36
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "result"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "result"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "delivery.collect"
+        },
+        "result": {
+          "$ref": "#/$defs/result_delivery_collect"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "delivery.next"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [],
+          "properties": {}
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "result"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "result"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "delivery.next"
+        },
+        "result": {
+          "$ref": "#/$defs/result_delivery_next"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "delivery.unsubscribe"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "subscription_id"
+          ],
+          "properties": {
+            "subscription_id": {
+              "type": "string",
+              "format": "uuid",
+              "minLength": 36,
+              "maxLength": 36
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "result"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "result"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "delivery.unsubscribe"
+        },
+        "result": {
+          "$ref": "#/$defs/result_delivery_unsubscribe"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "delivery.reset"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "type",
+        "request_id",
+        "method",
+        "result"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.machine.domain/v1"
+        },
+        "type": {
+          "const": "result"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "method": {
+          "const": "delivery.reset"
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "const": "delivery.reset"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

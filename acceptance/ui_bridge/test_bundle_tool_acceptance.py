@@ -14,7 +14,9 @@ spec.loader.exec_module(builder)
 def test_copy_preserves_runtime_source_without_distributing_acceptance_or_user_packages(tmp_path):
     source = tmp_path / "source"
     for module in ["runtime.py", "tests/probe.py", "test/probe.py", "site-packages/injection.py",
-                   "__pycache__/runtime.pyc", "_testcapi.so", "test_runtime.py", "pkg/useful.py", "pkg/tests/probe.py"]:
+                   "__pycache__/runtime.pyc", "_testcapi.so", "test_runtime.py", "pkg/useful.py", "pkg/tests/probe.py",
+                   "_ctypes_test.pyd", "_ctypes_test_d.pyd", "_ctypes_test.cpython-312-x86_64-linux-gnu.so",
+                   "xxlimited.pyd", "xxlimited_35_d.pyd"]:
         path = source / module
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"runtime or untrusted code")

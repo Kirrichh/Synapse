@@ -1,5 +1,6 @@
 //! One native owner for the core session; renderer reloads cannot spawn another.
 use crate::{
+    application::{Application, ApplicationOperation},
     bridge::Session,
     diagnostics::Diagnostics,
     lifecycle::RunningProcess,
@@ -24,14 +25,26 @@ pub enum Operation {
     Stop,
     Close,
 }
+struct ApplicationRequest(crate::application_delivery::Ticket, ApplicationOperation,
+                          mpsc::SyncSender<Result<serde_json::Value, &'static str>>);
 pub struct Controller {
     pub publication: Publication,
+    pub application_delivery: crate::application_delivery::ApplicationDelivery,
     operations: mpsc::SyncSender<Operation>,
+    applications: mpsc::SyncSender<ApplicationRequest>,
+    public_key: Option<String>,
 }
 impl Controller {
     pub fn start(host: impl Host) -> Self {
+        Self::with_application(host, None)
+    }
+    pub fn with_application(host: impl Host, application: Option<Application>) -> Self {
+        let public_key = application.as_ref().map(Application::public_key);
+        let application_delivery = crate::application_delivery::ApplicationDelivery::default();
+        let delivery = application_delivery.clone();
         let publication = Publication::default();
-        let (operations, requests) = mpsc::sync_channel(8);
+        let (operations, requests) = mpsc::sync_channel(PROFILE.native_control_capacity);
+        let (applications, application_requests) = mpsc::sync_channel(PROFILE.application_request_capacity);
         let owner = publication.clone();
         std::thread::spawn(move || {
             Owner {
@@ -42,13 +55,27 @@ impl Controller {
                 diagnostics: Diagnostics::default(),
                 launched: false,
                 stopped: false,
+                application,
+                delivery,
             }
-            .run(requests)
+            .run(requests, application_requests)
         });
         Self {
             publication,
+            application_delivery,
             operations,
+            applications,
+            public_key,
         }
+    }
+    pub fn public_key(&self) -> Result<&str, &'static str> {
+        self.public_key.as_deref().ok_or("PROTECTED_STORAGE_UNAVAILABLE")
+    }
+    pub fn application(&self, ticket: crate::application_delivery::Ticket, operation: ApplicationOperation)
+        -> Result<mpsc::Receiver<Result<serde_json::Value, &'static str>>, &'static str> {
+        let (reply, result) = mpsc::sync_channel(1);
+        self.applications.try_send(ApplicationRequest(ticket, operation, reply)).map_err(|_| "BUSY")?;
+        Ok(result)
     }
     pub fn request(&self, operation: Operation) -> Result<(), &'static str> {
         self.operations.try_send(operation).map_err(|_| "BUSY")
@@ -63,6 +90,8 @@ struct Owner<H: Host> {
     diagnostics: Diagnostics,
     launched: bool,
     stopped: bool,
+    application: Option<Application>,
+    delivery: crate::application_delivery::ApplicationDelivery,
 }
 impl<H: Host> Owner<H> {
     fn state(&self, state: &'static str, code: Option<&'static str>) {
@@ -78,6 +107,7 @@ impl<H: Host> Owner<H> {
     fn fail(&mut self, failure: Failure) {
         self.state("fail", Some(failure.0));
         self.session = None;
+        if let Some(application) = &mut self.application { application.disconnected(); }
     }
     fn connect(&mut self) -> Result<(), Failure> {
         if self.session.is_some() {
@@ -148,6 +178,7 @@ impl<H: Host> Owner<H> {
         self.stopped = true;
         self.state("stopped", None);
         self.session = None;
+        if let Some(application) = &mut self.application { application.disconnected(); }
         Ok(true)
     }
     fn heartbeat(&mut self) -> Result<(), Failure> {
@@ -176,8 +207,8 @@ impl<H: Host> Owner<H> {
         }
         Ok(())
     }
-    fn run(mut self, operations: mpsc::Receiver<Operation>) {
-        let interval = Duration::from_secs(2);
+    fn run(mut self, operations: mpsc::Receiver<Operation>, applications: mpsc::Receiver<ApplicationRequest>) {
+        let interval = Duration::from_secs(PROFILE.heartbeat_interval_seconds);
         let mut heartbeat = Instant::now() + interval;
         loop {
             if Instant::now() >= heartbeat {
@@ -186,9 +217,32 @@ impl<H: Host> Owner<H> {
                 }
                 heartbeat = Instant::now() + interval;
             }
-            let result = match operations
-                .recv_timeout(heartbeat.saturating_duration_since(Instant::now()))
-            {
+            // Control admission has its own capacity. At most one bounded
+            // application exchange can precede a queued stop/close request.
+            let control = match operations.try_recv() {
+                Ok(operation) => Ok(operation),
+                Err(mpsc::TryRecvError::Disconnected) => return,
+                Err(mpsc::TryRecvError::Empty) => {
+                    if let Ok(ApplicationRequest(ticket, operation, reply)) = applications.try_recv() {
+                        if !self.delivery.is_pending(&ticket) {
+                            let _ = reply.try_send(Err("SUBSCRIPTION_UNKNOWN"));
+                            continue;
+                        }
+                        let result = match (&mut self.application, &mut self.session) {
+                            (Some(application), Some(session)) => application.handle_for_delivery(session, ticket.subscription_id(), operation),
+                            _ => Err(Failure("NOT_READY")),
+                        };
+                        let failure = result.as_ref().err().cloned();
+                        let _ = reply.try_send(result.map_err(|error| error.0));
+                        if let Some(error) = failure {
+                            if ["CORE_EXITED", "TRANSPORT_TIMEOUT", "PROTOCOL_ERROR"].contains(&error.0) { self.fail(error); }
+                        }
+                        continue;
+                    }
+                    operations.recv_timeout(heartbeat.saturating_duration_since(Instant::now()).min(Duration::from_millis(PROFILE.native_idle_poll_milliseconds)))
+                }
+            };
+            let result = match control {
                 Ok(Operation::Start) => self.connect(),
                 Ok(Operation::Stop) => self.stop().map(|_| ()),
                 Ok(Operation::Close) => {

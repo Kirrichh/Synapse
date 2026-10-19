@@ -27,9 +27,9 @@ citations likewise remain development documentation, never product wiring.
 
 - **Symbols:** Admitted-agent-profile acceptance through Gold.
 - **Role:** Canonical profile, C1, publication, and recovery route cited in documentation.
-- **Acceptance use:** Reference for future installed-UI acceptance.
-- **Boundary:** Not a ready Tauri test or product adapter. Editorial finding: this path is absent from the reviewed baseline; the documentation reference is retained, not treated as executable evidence.
-- **Basis:** Source map cites docs/UNIVERSAL_AGENT_EXECUTION.md for path/purpose; baseline inspection found the path missing.
+- **Acceptance use:** Historical reference only; do not schedule this absent path.
+- **Boundary:** Not a ready Tauri test or product adapter. The source-map reference is retained, not treated as executable evidence or replaced with an invented equivalent.
+- **Basis:** The supplied map cites docs/UNIVERSAL_AGENT_EXECUTION.md. The maintained [Gold ingestion record](../../GOLD_KNOWLEDGE_INGESTION.md#coding-agent--a-pluggable-profile-no-built-in-executor) explicitly records removal of this duplicating scenario when heavy scenarios moved to admitted agent profiles. This resolves the reference discrepancy (F-01), not any installed acceptance obligation.
 
 ## `acceptance/agents/test_a2a_sdk_acceptance.py`
 
@@ -91,3 +91,21 @@ citations likewise remain development documentation, never product wiring.
 | `acceptance/stage4/stage15/test_observation_recovery_acceptance.py` | Observability recovery acceptance. |
 | `tests/test_llm_gateway_stage1.py` | LLMGateway, Gemini, and usage acceptance. |
 | `acceptance/runtime/test_vm_host_calls_contract.py` | runtime host-call contract. |
+
+## Installed application and source delivery
+
+| Acceptance source | Observable responsibility |
+| --- | --- |
+| `acceptance/ui_bridge/test_subscription_acceptance.py` | Core source-class selection, identity, snapshots/coverage, loss, current authority and disposal. |
+| `acceptance/ui_bridge/test_domain_session_acceptance.py` | Canonical application negotiation, signed access and owner routing. |
+| `acceptance/ui_bridge/native/command_recovery.rs` | Real native-to-Python owner acceptance, lost reply and durable recovery. |
+| `acceptance/ui_bridge/native/application_delivery.rs` | Bounded application Channel acknowledgment and replacement. |
+| `acceptance/ui_bridge/typescript/application-observations.test.ts` | Scoped snapshot/evidence/Live validation and stale identity refusal. |
+| `acceptance/ui_bridge/windows_application_host.mjs` | Actual ordinary installed window, visible owner observations, cold recovery and revocation. |
+| `acceptance/ui_bridge/windows_application_registry.py` | Separate administrative grant/revoke guardian and cross-process read-custody barrier. |
+| `acceptance/ui_bridge/test_windows_location_acceptance.py` | Machine access location under minimal/forged environment and unsupported configuration. |
+
+These are external developer tools and synthetic scenarios. They are not product
+data sources, runtime modules, privileged app shortcuts or UI navigation targets.
+Sanitized results and artifact identities are linked from the P1 verification
+record; raw host reports and temporary registries stay outside the repository.

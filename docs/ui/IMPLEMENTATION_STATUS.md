@@ -10,8 +10,9 @@ the isolated `codex/pr110-windows-tr2-p1` branch from PR #110 head `330483b`.
 The English specification, detailed rules, separated source references, original
 prototype, and progress registers are prepared. Publication and final document
 verification are recorded in [foundation verification](FOUNDATION_VERIFICATION.md).
-P1 control/bootstrap code is now implemented under `synapse/machine` and
-`synapse/ui`. The [development guide](DESKTOP_DEVELOPMENT.md) describes its module
+P1 control/bootstrap and scoped invocation application code are implemented under
+`synapse/access`, `synapse/commands`, `synapse/machine` and `synapse/ui`.
+The [development guide](DESKTOP_DEVELOPMENT.md) describes its module
 boundaries; [P1 verification](P1_VERIFICATION.md) records actual evidence. None of
 the 44 complete installed/domain scenarios is claimed passed by component checks.
 
@@ -30,9 +31,9 @@ Independent capabilities may progress while unrelated open conditions remain.
 | Stage | Scope and exit evidence | Current state |
 |---|---|---|
 | P0 — Foundation | English v1, all original requirements/map entries, permanent rules, researched UI security design, prototype, traceability, reviewed branch | Documentation prepared |
-| P1 — Trusted application and bridge | Bundled canonical machine mode, schemas/JCS, handshake/framing/queues, trusted caller context, diagnostics/CSP, Windows/Linux containment/shutdown; behavioral and mutation evidence | IN_PROGRESS: control/bootstrap implementation and local evidence exist; F-06 mechanism decision resolved; Windows installed control/crash evidence recorded; installed negative checks pass after the F-11 request guard; unsigned Windows release/control-pipe/caller checks pass; full domain/platform acceptance and JCS remain open |
-| P2 — Authorized reading and synchronization | Project/material reads, domain snapshots/coverage/epochs, progress/freshness, unsubscribe, retained evidence gaps and safe source projections | Not started |
-| P3 — Durable commands and permissions | Intent/pre-send recovery, owner acceptance/status/retention, binding conflicts, grant/refuse/revoke, exclusive once-binding, new-task mode policy | Not started |
+| P1 — Trusted application and bridge | Bundled canonical machine mode, schemas/JCS, handshake/framing/queues, trusted caller context, diagnostics/CSP, Windows/Linux containment/shutdown; behavioral and mutation evidence | IN_PROGRESS at the full platform gate: Windows canonical access/owner integration, protected cold recovery and three delivery classes now have real installed evidence. Scoped implementation and mutation checks pass; native Linux and clean-machine/signing/wider-version qualification remain open. See the current Windows integration record below. |
+| P2 — Authorized reading and synchronization | Project/material reads, domain snapshots/coverage/epochs, progress/freshness, unsubscribe, retained evidence gaps and safe source projections | IN_PROGRESS: authorized invocation subscriptions, core-issued epochs, fresh snapshots, retained rereads and source-class queues are integrated. Complete continuous multi-domain synchronization and project/material surfaces remain required. |
+| P3 — Durable commands and permissions | Intent/pre-send recovery, owner acceptance/status/retention, binding conflicts, grant/refuse/revoke, exclusive once-binding, new-task mode policy | IN_PROGRESS: invocation cancellation, current access checks and protected restart recovery pass through the installed application. Other command owners, approvals and new-task policy remain separate required work. |
 | P4 — Task workspace and editing | Required panel layout, main conversation contract, task submit/control, real execution cards, Monaco reads/diffs/versioned own edits, RU/EN draft/focus preservation | Not started |
 | P5 — Connection administration | Agent definitions/admission/preferences/probes, distinct model targets/secrets, MCP/instructions, disabling/recovery dependencies, honest cost/limit presentation | Not started |
 | P6 — Memory and learning | Derived parameter metadata, mathematical validation, isolated bound preview, safe-point durable acceptance/recovery, storage accounting/enforcement, supported cache/metrics, required controls/chart | Not started |
@@ -126,14 +127,16 @@ the product integration index. They are not product links or data feeds.
    in addition to startup faults, actual adapter/MCP cleanup and installed recovery.
 2. Execute the supported Linux graphical systemd/cgroup and installed profile.
    The owner explicitly deferred Linux execution on 2026-10-19; it remains debt.
-3. Finish JCS/parameter-binding and remaining P1 contracts with their actual owner
-   integrations. The integer-only control profile does not implement COMP-6 or
-   generic domain parameter hashing, readiness, recovery or delivery classes.
-4. Complete the transport/launch and source-case obligations for those domain
-   integrations. Windows arbitrary byte fidelity has native witness evidence and
-   the installed canonical control endpoint passes 51 pipe cases. Seven corrupt
-   transport scenarios also show failure in the installed release GUI. Arbitrary
-   domain replies remain unavailable in the current control-only implementation.
+3. Preserve the scope of the completed [Windows application integration](P1_VERIFICATION.md#windows-application-and-delivery-integration):
+   JCS/parameter binding, core-owned access, canonical invocation routing, native
+   protected intents and current authorization through recovery/delivery are now
+   wired and exercised. This resolves the previous integration gap for the
+   invocation profile; it does not automatically implement every P3–P6 owner.
+4. Complete the remaining platform/source-case obligations without treating
+   Windows evidence as Linux evidence. The installed application now carries
+   actual authorized domain replies and all three source classes. The complete
+   P2 multi-domain reducer and full source scenarios remain their own work;
+   explicit fresh observations are not a claim of continuous synchronization.
 5. Complete affected requirement/source-case acceptance and security review at
    every required platform level before marking P1 VERIFIED. The 201 original
    requirement IDs and 44 complete source cases retain their existing identities;
@@ -156,6 +159,10 @@ and traceability together before changing what completion means.
 
 | Date | Work and result |
 |---|---|
+| 2026-10-19 | Integrated bounded control delivery and fixed F-17 equal-duplicate frontend decoding. Final checks: 102 selected Python, 91 frontend, 16 native and 39 installed-pipe cases; 17 delivery/transport and 13 decoder mutants killed. Fresh ordinary-user release installation/process, security/Channels and crash-consent checks passed (16/26/7). F-16 has fresh installed evidence. The owner approved a separate core access authority with protected administration; implementation, domain routing and end-to-end recovery remain open. |
+| 2026-10-19 | Checked P1 boundaries against primary public sources and completed the Gold ingestion document reading. Fixed F-16: native CPython test extensions entered Windows resources. Five affected packaging cases, two native directory cases and five final mutants pass; the rebuilt canonical core passes 36 pipe-corpus cases and its full resource inventory check. No installed desktop or P1 completion is inferred; application routing, delivery and the remaining historical document review stay open. |
+| 2026-10-19 | Verified protected native recovery without a renderer draft, scoped status, independent JCS limits and strict identifier/array admission. Targeted Python 88 plus three admission-drift, native 11 and TypeScript 26 cases passed; 41 command-foundation, three admission and 23 owner mutants were killed. Application domain routing/delivery and installed acceptance remain unfinished; no P1 closure or publication. |
+| 2026-10-19 | Reviewed pending command foundations against the mandatory rules; separated invocation retention, command receipts and observation ownership without splitting their transaction. Forty owner/regression cases and 884 existing ownership cases passed. Twenty-three owner mutants are killed after closing one initially surviving digest-check mutant. These components are not wired into the application; P1, full branch documentation review and domain/installed acceptance remain unfinished. |
 | 2026-10-19 | Added 155-case Python regression, 51 installed canonical/native-pipe cases, raw native byte witnesses, unsigned ordinary-user release NSIS, 26 release security/Channel, 7 consent checks and 7 installed GUI transport-damage scenarios (35 assertions). Actual foreign native label/origin contexts refuse commands; eight focused mutants are detected across the identified runs. Clean-machine/signing/wider versions, Linux and unfinished P1 owner/JCS contracts remain open. |
 | 2026-10-19 | Continued Windows verification: 119 Python and 31 native checks, six startup cases and real adapter/MCP cleanup passed. Fixed F-08 diagnostic framing, F-10 startup Job ownership and F-11 navigation GET leakage. Six lifecycle/diagnostic and six request-guard mutants were killed. Final ordinary-user installed identity, CSP/navigation, Channels and crash consent passed. Linux remains owner-deferred debt; TR-2/P1 remain IN_PROGRESS. |
 | 2026-10-19 | Verified Windows components, native Job launch/containment, exact wire bytes, debug NSIS installation, installed shell/core crash recovery and visible shutdown on an isolated PR #110 checkout. Fixed bundle provenance/launcher leakage; five packaging checks and ten focused mutants passed. Retained the Windows stderr failure, base-reproduced replay failure and explicit platform/security/JCS gaps. TR-2/P1 remain IN_PROGRESS. |

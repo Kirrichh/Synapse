@@ -20,8 +20,49 @@ or renderer-selected interpreter. The installed shell must use its bundled core.
 Profile `synapse.control.v1`, protocol version 1, envelope `schema_version: "1.0"`
 advertises only the `control` command class. `domain_ready` is always false.
 This is an explicit capability boundary: no task, model, project, memory, approval,
-or agent command is available through this profile. Later domain work needs a
-documented compatible negotiation/extension decision and its own owner enforcement.
+or agent command is authorized by this control profile. The separately opened
+application profile below supplies its own authentication and owner enforcement.
+
+## Scoped application profile v1
+
+After control readiness, the same canonical byte pipe accepts the closed
+`synapse.machine.domain/v1` envelope. `access.open` explicitly requests
+`synapse.application/v1`; it issues a single-use installation/connection/nonce
+challenge, not workspace authority. The native instance proves its registered
+key with Ed25519. `access.grants` lists current exact delegations. The control
+`ready` message remains control-only: it never authenticates an application.
+
+`domain.schema.json` owns this extension and references the command owner's
+binding and reconciliation schemas. The endpoint exposes invocation inspection,
+snapshot/changes, cancellation, scoped status and delivery; there is no generic
+owner forwarding. Every read, acceptance, replay and delivery rechecks current
+authority and actual invocation membership. See [access ownership](WORKSPACE_ACCESS_CONTRACT.md).
+
+The native instance owns protected intents and their original command IDs.
+Prepared resubmissions reconcile status before sending; only scoped absence and
+an explicit resend allow the original command to be sent. Domain data travels
+through a separate one-outstanding-result Channel with exact subscription and
+request acknowledgment. Renderer replacement discards delivery resources, not
+accepted commands or saved intents. Control and application admission have
+separate bounded native queues; at most one bounded application operation
+precedes queued stop/close, and heartbeat has an independent deadline.
+
+The core fixes source classes: `invocation.state` is StateSync,
+`invocation.record` is Evidential, and `connection.health` is Live. A subscription
+confirms its core-issued session, epoch, scope/filter and generation/P0 where
+applicable. State requires a snapshot Ps >= P0 before collecting changes; all
+subsequent ranges come from the owner's journal. Collection and consumption are
+separate bounded operations. StateSync loss requires a new snapshot/epoch,
+Evidential loss requires rereading, and Live loss is marked. Each consumption
+rechecks authorization before writing its response. Unsubscription and native
+Channel replacement release only delivery. A lost response never means a
+command was absent. Oversized domain results produce a named bounded refusal;
+the owner's durable result remains available for authorized reconciliation.
+
+The current UI performs explicit fresh observations, using a new scoped snapshot
+for each refresh. It distinguishes last observed connection response from
+invocation execution state. This does not implement the complete P2 continuous
+multi-domain reducer, overlap reconciliation, or all future domain sources.
 
 ## Wire representation and resource bounds
 
@@ -35,7 +76,9 @@ read are ordinary byte-stream behavior.
 | Bootstrap / maximum payload | 65,536 bytes; bounded control metadata, not bulk documents |
 | Minimum negotiated maximum | 1,024 bytes; enough for every fixed control response |
 | JSON nesting | 32 containers, checked before JSON object construction |
-| Incoming / outgoing queue | 16 bounded frames each; this profile has no Live or domain projection traffic |
+| Incoming / result-control queue | 16 bounded frames each; independently bounded from projection storage |
+| Projection / registered-stream capacity | 16 payloads / 32 streams; scheduler limits, not advertised domain capabilities in this control profile |
+| Control scheduling burst | At most 8 queued control items before an available projection/loss notice; one in-flight write remains subject to the output deadline |
 | Handshake deadline | 5 seconds total, never extended by invalid requests |
 | Individual output deadline | 2 seconds; an unread output pipe cannot hang the process indefinitely |
 | Shell shutdown deadline | 5 seconds; expiry requires explicit forced-close handling |
@@ -43,7 +86,14 @@ read are ordinary byte-stream behavior.
 Selection may lower the frame maximum but cannot exceed either announcement.
 Enforce the header limit before allocating the payload; also check prefetched
 frames against the selected limit. Queue saturation applies bounded backpressure.
-Domain result/control/projection scheduling remains part of later TR-12 work.
+The shared scheduler has separate result/control and projection storage. Live
+overflow marks the next delivery for that stream with a gap. StateSync overflow
+invalidates the epoch and requires a snapshot; Evidential overflow requires a
+reread. An invalidated stream cannot silently resume. Loss notices have bounded
+per-stream slots independent of the full payload queue. Unsubscription releases
+delivery resources only. These are scheduling contracts, not authority or owner
+acceptance. This control profile exposes no domain subscriptions; negotiated
+domain routing and end-to-end recovery remain required for TR-12 completion.
 
 Reject invalid UTF-8, malformed JSON, duplicate keys at every nesting level,
 unpaired Unicode surrogates, nonfinite constants, and excessive nesting. This
@@ -81,7 +131,7 @@ invocation claim, authorization token, or retry mechanism for effects.
 |---|---|
 | `machine.ping` | `{ "status": "alive" }`; transport liveness only |
 | `machine.status` | Selected profile/limit, control state `ready`, and `domain_ready: false`; no store creation or domain inspection |
-| `machine.shutdown` | Flush `{ "status": "stopped", "pending_commands": 0 }`, then exit successfully; zero applies to this control-only process |
+| `machine.shutdown` | Flush `{ "status": "stopped", "pending_commands": 0 }`, then exit successfully; zero describes pending machine-handler commands, not completion or rollback of previously accepted domain work |
 
 Every result repeats the request ID and method. Unknown methods return
 `METHOD_UNSUPPORTED`; nonempty control parameters return `PARAMS_INVALID`.

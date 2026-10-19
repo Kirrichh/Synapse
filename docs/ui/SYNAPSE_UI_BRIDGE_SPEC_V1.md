@@ -380,6 +380,11 @@ client fields. An intent cannot change project, recipient, method, or content;
 reject mismatches before effects. Represent a secret by a protected reference
 to a specific secret version, never plaintext or a diagnostic hash of the secret.
 
+The owner-approved [workspace access contract](WORKSPACE_ACCESS_CONTRACT.md)
+defines the source of this trusted context: a separate Python-core authority,
+protected administrative delegation, authenticated application sessions and
+current exact grants. CLI invocation and `CommandScope` do not issue authority.
+
 **CMD-22.** Proposed `command.status` is a read by command ID, workspace, and
 owner. It creates nothing and never calls `claim()`. Distinguish saved terminal
 result, confirmed unfinished execution, unknown outcome, and no record within

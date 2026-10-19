@@ -55,3 +55,35 @@ def test_reader_and_writer_failures_are_reported_without_raw_exception_text():
         assert "secret" not in str(failure.value)
     finally:
         transport.close()
+
+
+def test_closed_transport_refuses_new_output_without_touching_the_sink():
+    destination = io.BytesIO()
+    transport = PipeTransport(io.BytesIO(), destination)
+    transport.close()
+    with pytest.raises(ProtocolError, match="PIPE_CLOSED"):
+        transport.send(request())
+    assert destination.getvalue() == b""
+
+
+def test_domain_reply_budget_is_named_and_keeps_control_transport_usable():
+    from uuid import uuid4
+    from synapse.machine import domain_contract
+    from synapse.machine.codec import read_frame, decode
+    request_value = {"request_id":str(uuid4()), "method":"invocation.inspect"}
+    record = {"state":"TERMINAL", "invocation_id":"synthetic-invocation", "revision":"a"*64,
+              "cancel_requested":False, "record":"x"*65000, "record_sha256":"b"*64}
+    destination=io.BytesIO()
+    transport=PipeTransport(io.BytesIO(), destination)
+    transport.limit=1024
+    try:
+        transport.send(domain_contract.reply(request_value, record))
+        transport.send(request())
+        received=io.BytesIO(destination.getvalue())
+        denied=decode(read_frame(received,1024))
+        assert denied["code"] == "RESPONSE_TOO_LARGE" and denied["request_id"] == request_value["request_id"]
+        assert decode(read_frame(received,1024))["method"] == "machine.ping"
+        record["record"] = "x"*65530
+        assert domain_contract.reply(request_value, record)["code"] == "RESPONSE_TOO_LARGE"
+    finally:
+        transport.close()

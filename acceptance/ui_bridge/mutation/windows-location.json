@@ -1,0 +1,21 @@
+[
+  {"id":"LOCATION-caller-environment","kind":"python","target":"synapse/access/windows_location.py",
+   "before":"return root / \"SynapseAccessV1\"",
+   "after":"return Path(__import__('os').environ.get('ProgramData', str(root))) / \"SynapseAccessV1\"",
+   "cases":["acceptance/ui_bridge/test_windows_location_acceptance.py"],
+   "behavior":"Caller environment cannot redirect the machine authority root."},
+  {"id":"LOCATION-system-expansion","kind":"python","target":"synapse/access/windows_location.py",
+   "before":"configured = re.sub(r\"%SystemDrive%\", lambda _: drive, configured, flags=re.IGNORECASE)",
+   "after":"configured = configured",
+   "cases":["acceptance/ui_bridge/test_windows_location_acceptance.py"],
+   "behavior":"A native minimal environment still resolves the configured system drive."},
+  {"id":"LOCATION-absolute-config","kind":"python","target":"synapse/access/windows_location.py",
+   "before":"root = Path(configured)","after":"root = Path(drive + '/ProgramData')",
+   "cases":["acceptance/ui_bridge/test_windows_location_acceptance.py"],
+   "behavior":"An absolute machine configuration is not replaced by an assumed default."},
+  {"id":"LOCATION-local-scope","kind":"python","target":"synapse/access/windows_location.py",
+   "before":"if (not root.is_absolute() or root.drive.startswith(\"\\\\\\\\\") or \"%\" in configured\n            or \"\\0\" in configured or \"..\" in root.parts):",
+   "after":"if False:",
+   "cases":["acceptance/ui_bridge/test_windows_location_acceptance.py"],
+   "behavior":"Unknown expansions, relative locations and nonlocal paths fail closed."}
+]

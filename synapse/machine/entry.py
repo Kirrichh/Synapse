@@ -24,6 +24,7 @@ def run_machine() -> int:
     destination = os.fdopen(os.dup(sys.stdout.fileno()), "wb", buffering=0)
     transport = PipeTransport(source, destination)
     session = ControlSession()
+    domain = None
     deadline = monotonic() + PROFILE["handshake_timeout_seconds"]
     handshaking = True
     try:
@@ -36,7 +37,27 @@ def run_machine() -> int:
             payload = transport.receive(timeout)
             if handshaking and monotonic() >= deadline:
                 raise ProtocolError("HANDSHAKE_TIMEOUT")
-            response = session.receive(decode(payload))
+            incoming = decode(payload)
+            if type(incoming) is dict and incoming.get("schema_version") == "synapse.machine.domain/v1":
+                from . import domain_contract
+                from synapse.access.records import AccessRefused
+                domain_contract.validate(incoming)
+                if incoming["type"] != "request":
+                    raise ProtocolError("INVALID_SEQUENCE")
+                if session.phase != "ready":
+                    transport.send(domain_contract.refusal(incoming, "NOT_READY"))
+                    continue
+                if domain is None:
+                    from .application import domain_session
+                    try:
+                        domain = domain_session()
+                    except AccessRefused as error:
+                        transport.send(domain_contract.refusal(incoming, error.code))
+                        continue
+                with domain.response(incoming, ready=True) as response:
+                    transport.send(response)
+                continue
+            response = session.receive(incoming)
             transport.limit = session.frame_limit
             if response is not None:
                 transport.send(response, timeout=deadline - monotonic() if handshaking else None)
@@ -55,4 +76,6 @@ def run_machine() -> int:
         print("machine: INTERNAL_ERROR", file=sys.stderr, flush=True)
         return 2
     finally:
+        if domain is not None:
+            domain.close()
         transport.close()

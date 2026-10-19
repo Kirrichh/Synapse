@@ -9,6 +9,7 @@ from typing import BinaryIO
 
 from .codec import encode, read_frame, write_frame
 from .contract import PROFILE, ProtocolError, validate
+from .delivery import DeliveryClosed, DeliveryQueues
 
 
 @dataclass
@@ -21,7 +22,12 @@ class _Write:
 class PipeTransport:
     def __init__(self, source: BinaryIO, destination: BinaryIO) -> None:
         self.incoming: Queue[bytes | ProtocolError] = Queue(PROFILE["queue_capacity"])
-        self.outgoing: Queue[_Write | None] = Queue(PROFILE["queue_capacity"])
+        self.outgoing = DeliveryQueues(
+            control_capacity=PROFILE["result_control_capacity"],
+            projection_capacity=PROFILE["projection_capacity"],
+            stream_capacity=PROFILE["subscription_capacity"],
+            max_payload_bytes=PROFILE["max_frame_bytes"] + 4,
+            control_burst=PROFILE["control_burst"])
         self.stopped = Event()
         self.source, self.destination = source, destination
         self.limit = PROFILE["bootstrap_max_frame_bytes"]
@@ -50,11 +56,13 @@ class PipeTransport:
 
     def _write(self) -> None:
         while not self.stopped.is_set():
-            item = self.outgoing.get()
-            if item is None:
-                return
             try:
-                write_frame(self.destination, item.frame)
+                delivery = self.outgoing.take()
+            except DeliveryClosed:
+                return
+            item = delivery.completion
+            try:
+                write_frame(self.destination, delivery.payload)
             except (OSError, ValueError, ProtocolError):
                 item.error = ProtocolError("PIPE_CLOSED")
             finally:
@@ -73,14 +81,27 @@ class PipeTransport:
         return item
 
     def send(self, value: dict, timeout: float | None = None) -> None:
-        validate(value)
-        item = _Write(encode(value, self.limit))
+        if value.get("schema_version") == "synapse.machine.domain/v1":
+            from .domain_contract import validate as validate_domain
+            validate_domain(value)
+        else:
+            validate(value)
+        try:
+            frame = encode(value, self.limit)
+        except ProtocolError as error:
+            if value.get("schema_version") != "synapse.machine.domain/v1" or error.code != "FRAME_TOO_LARGE":
+                raise
+            from .domain_contract import refusal as domain_refusal
+            frame = encode(domain_refusal(value, "RESPONSE_TOO_LARGE"), self.limit)
+        item = _Write(frame)
         timeout = min(PROFILE["write_timeout_seconds"], timeout) if timeout is not None else PROFILE["write_timeout_seconds"]
         deadline = monotonic() + max(0, timeout)
         try:
-            self.outgoing.put(item, timeout=max(0, deadline - monotonic()))
+            self.outgoing.control(item.frame, completion=item, timeout=max(0, deadline - monotonic()))
         except Full:
             raise ProtocolError("WRITE_TIMEOUT") from None
+        except DeliveryClosed:
+            raise ProtocolError("PIPE_CLOSED") from None
         if not item.done.wait(max(0, deadline - monotonic())):
             raise ProtocolError("WRITE_TIMEOUT")
         if item.error:
@@ -88,7 +109,4 @@ class PipeTransport:
 
     def close(self) -> None:
         self.stopped.set()
-        try:
-            self.outgoing.put_nowait(None)
-        except Full:
-            pass
+        self.outgoing.close()

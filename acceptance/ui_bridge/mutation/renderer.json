@@ -20,8 +20,8 @@
     "kind": "typescript",
     "behavior": "duplicate properties",
     "target": "synapse/ui/src/contracts/decode.ts",
-    "before": "onDuplicateKey() {\n      throw new ContractError();\n    }",
-    "after": "onDuplicateKey() { return undefined; }"
+    "before": "try { requireUniqueJsonKeys(text); } catch { throw new ContractError(); }",
+    "after": "void text;"
   },
   {
     "id": "TS-unicode-scalars",

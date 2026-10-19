@@ -6,6 +6,29 @@ import pytest
 from machine_peer import MachinePeer, hello, request, selection, wire
 
 
+def test_canonical_domain_request_is_not_deferred_or_authorized_by_control_ready(tmp_path):
+    from uuid import uuid4
+    def domain(method, params):
+        return {"schema_version":"synapse.machine.domain/v1", "type":"request",
+                "request_id":str(uuid4()), "method":method, "params":params}
+    with MachinePeer(tmp_path) as peer:
+        assert peer.receive()["type"] == "hello"
+        early = domain("access.open", {"profile":"synapse.application/v1"})
+        peer.send(early)
+        denied = peer.receive()
+        assert denied["request_id"] == early["request_id"] and denied["code"] == "NOT_READY"
+        peer.send(hello()); peer.send(selection())
+        assert peer.receive()["type"] == "ready"
+        peer.send(domain("access.grants", {}))
+        assert peer.receive()["code"] in ("AUTHENTICATION_FAILED", "ACCESS_UNAVAILABLE")
+        peer.send(request("machine.ping"))
+        assert peer.receive()["type"] == "result"
+        peer.send(request("machine.shutdown", request_id="close"))
+        assert peer.receive()["result"]["status"] == "stopped"
+        assert peer.process.wait(timeout=5) == 0
+        assert list(tmp_path.iterdir()) == []
+
+
 def test_fatal_negotiation_refusal_exits_unsuccessfully(tmp_path):
     with MachinePeer(tmp_path) as peer:
         peer.receive()

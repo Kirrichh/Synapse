@@ -71,6 +71,14 @@ def test_build_prunes_installation_artifacts_before_binding_inventory(tmp_path, 
     (base / "python.exe").write_bytes(b"synthetic interpreter")
     (base / "bin/python3").write_bytes(b"synthetic interpreter")
     (base / "Lib/runtime.py").write_bytes(b"standard library")
+    native_runtime = {"_ctypes.pyd": b"ctypes runtime", "_sqlite3.pyd": b"database runtime",
+                      "sqlite3.dll": b"database library", "_ssl.pyd": b"TLS runtime"}
+    native_tests = ("_testcapi.pyd", "_testbuffer.pyd", "_testinternalcapi.pyd", "_ctypes_test.pyd",
+                    "xxlimited.pyd", "xxlimited_35.pyd")
+    for name, data in native_runtime.items():
+        (base / "DLLs" / name).write_bytes(data)
+    for name in native_tests:
+        (base / "DLLs" / name).write_bytes(b"synthetic interpreter acceptance extension")
     monkeypatch.setattr(builder.sys, "base_prefix", str(base))
     monkeypatch.setattr(builder.sys, "_base_executable", str(base / "bin/python3"))
     monkeypatch.setattr(builder.sysconfig, "get_path", lambda _: str(base / "Lib"))
@@ -93,6 +101,13 @@ def test_build_prunes_installation_artifacts_before_binding_inventory(tmp_path, 
     manifest = json.loads((destination / "bundle-manifest.json").read_text(encoding="utf-8"))
     assert any(name.endswith("sample/runtime.py") for name in manifest["files"])
     assert not any(name.endswith(("direct_url.json", "sample.exe", "sample-script.py")) for name in manifest["files"])
+    if builder.sys.platform == "win32":
+        for name, data in native_runtime.items():
+            assert (destination / "DLLs" / name).read_bytes() == data
+            assert manifest["files"]["DLLs/" + name] == hashlib.sha256(data).hexdigest()
+        for name in native_tests:
+            assert not (destination / "DLLs" / name).exists()
+            assert "DLLs/" + name not in manifest["files"]
 
 
 def test_build_refuses_private_staging_inside_source_checkout(tmp_path, monkeypatch):

@@ -11,6 +11,18 @@ pub struct Session {
     pub last: Value,
 }
 impl Session {
+    pub fn domain_exchange(&mut self, method: &str, params: Value,
+                           grant: Option<(&str, u64)>, deadline: Instant)
+                           -> Result<Result<Value, &'static str>, Failure> {
+        let request = crate::domain_protocol::request(method, params, grant)?;
+        self.connection.send_before(&request, deadline)?;
+        let remaining = deadline.checked_duration_since(Instant::now())
+            .ok_or(Failure("TRANSPORT_TIMEOUT"))?;
+        let reply = self.connection.receive(remaining)?;
+        // Do not copy domain data into the control/diagnostic publication.
+        crate::domain_protocol::result(&request, reply)
+    }
+
     pub fn connect(connection: PipeConnection, version: &str) -> Result<Self, Failure> {
         let deadline = Instant::now() + Duration::from_secs(PROFILE.handshake_timeout_seconds);
         let remaining = || {

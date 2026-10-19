@@ -75,6 +75,10 @@ try {
   for (const [command,args] of [
     ['desktop_subscribe',{channel:'__CHANNEL__:987654'}], ['desktop_start',{}], ['desktop_stop',{}],
     ['desktop_ack',{subscriptionId:'synthetic-foreign',sequence:0}], ['desktop_force_close',{}],
+    ['desktop_identity',{}], ['desktop_application_subscribe',{channel:'__CHANNEL__:987654'}],
+    ['desktop_application',{subscriptionId:'synthetic-foreign',request:'{"action":"grants"}'}],
+    ['desktop_application_ack',{subscriptionId:'synthetic-foreign',requestId:'synthetic-request'}],
+    ['desktop_application_unsubscribe',{subscriptionId:'synthetic-foreign'}],
   ]) {
     const result=await evaluate(`window.__TAURI_INTERNALS__.invoke(${JSON.stringify(command)},${JSON.stringify(args)}).then(()=>"ALLOWED",error=>error==="CALLER_REFUSED"?"CALLER_REFUSED":"OTHER_REFUSAL")`);
     record.commands.push({command,result});

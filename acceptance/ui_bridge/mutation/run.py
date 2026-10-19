@@ -115,8 +115,12 @@ def main(args):
             subject = Path(temporary)
             copy_subject(subject)
             if signature not in baseline_signatures:
-                status, _ = execute(seed, subject, args.python, args.cargo, args.timeout)
+                status, baseline_output = execute(seed, subject, args.python, args.cargo, args.timeout)
                 if status != "SURVIVED":
+                    # Raw diagnostics can contain local paths. Preserve them
+                    # only in an explicitly external campaign directory.
+                    if not args.output.resolve().is_relative_to(ROOT):
+                        (args.output / (seed["id"] + "-baseline.txt")).write_text(baseline_output, encoding="utf-8")
                     raise RuntimeError(f"Baseline failed for {seed['id']}: {status}")
                 baseline_signatures.add(signature)
             path = subject / seed["target"]

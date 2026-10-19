@@ -109,6 +109,7 @@ fn wait(controller: &Controller, state: &str, code: Option<&str>) {
         std::thread::sleep(Duration::from_millis(5));
     }
 }
+
 #[test]
 fn ready_requires_negotiation_stop_requires_ack_and_restart_is_never_automatic() {
     let (controller, calls, exit) = controller(false, false);

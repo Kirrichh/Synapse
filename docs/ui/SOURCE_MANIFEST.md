@@ -82,6 +82,13 @@ their incomplete implementation/acceptance status.
 
 ## Inspected repository baseline
 
+The owner approved the [workspace access contract](WORKSPACE_ACCESS_CONTRACT.md)
+on 2026-10-19 to define CMD-21's previously unspecified source of trusted context.
+Python owns delegation and revocation; the CLI is the initial administrative
+surface over a separately protected context. A later trusted graphical surface
+uses the same owner. This records a design decision, not implementation evidence.
+No private discussion is retained as an artifact.
+
 Repository: the Synapse checkout containing this document.
 Base: `main`, commit `e5249908864ca9481f656092ecf08eb5f6bec567`.
 Working branch: `codex/ui-foundation-v1`.
@@ -90,8 +97,10 @@ All 130 source-map entries are retained. At this baseline 129 paths exist.
 `acceptance/stage4/stage16/test_agent_profile_gold_acceptance.py` is referenced
 by the supplied map/documentation but absent from the tree. Its entry explicitly
 records this discrepancy; no replacement or successful execution is claimed.
-Resolve [F-01](OPEN_CONDITIONS.md#local-findings) before using that reference as
-acceptance evidence.
+The later branch-document review resolved [F-01](OPEN_CONDITIONS.md#local-findings):
+the maintained Gold ingestion record explicitly explains removal of this
+duplicating scenario. It remains a historical reference, never current
+executable acceptance evidence.
 
 Source-map descriptions express the source review's evidence basis. A path check
 does not re-prove every implementation claim, and historical test results are

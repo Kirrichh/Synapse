@@ -18,6 +18,11 @@ fn main() {
                 "desktop_start",
                 "desktop_stop",
                 "desktop_force_close",
+                "desktop_identity",
+                "desktop_application",
+                "desktop_application_subscribe",
+                "desktop_application_ack",
+                "desktop_application_unsubscribe",
             ]),
         ))
         .expect("Tauri capability generation failed");

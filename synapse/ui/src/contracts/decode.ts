@@ -1,4 +1,5 @@
 import { parse } from "lossless-json";
+import { requireUniqueJsonKeys } from "./json-keys.ts";
 import { validateBootstrap, validateEnvelope } from "./generated/validators.js";
 import type { MachineEnvelope } from "./generated/MachineEnvelope";
 import type { BootstrapSnapshot } from "./generated/BootstrapSnapshot";
@@ -48,15 +49,13 @@ function validUnicode(text: string): boolean {
 
 function strictJson(text: string): unknown {
   inspectText(text);
+  try { requireUniqueJsonKeys(text); } catch { throw new ContractError(); }
   const value = parse(text, null, {
     parseNumber(token) {
       if (token === "-0" || !/^-?(0|[1-9][0-9]*)$/.test(token)) throw new ContractError();
       const number = Number(token);
       if (!Number.isSafeInteger(number)) throw new ContractError();
       return number;
-    },
-    onDuplicateKey() {
-      throw new ContractError();
     },
   });
   const pending: unknown[] = [value];

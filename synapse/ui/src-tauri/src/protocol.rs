@@ -18,6 +18,11 @@ pub struct Profile {
     pub min_frame_bytes: usize,
     pub max_json_depth: usize,
     pub queue_capacity: usize,
+    pub native_control_capacity: usize,
+    pub application_request_capacity: usize,
+    pub native_idle_poll_milliseconds: u64,
+    pub heartbeat_interval_seconds: u64,
+    pub application_timeout_seconds: u64,
     pub handshake_timeout_seconds: u64,
     pub write_timeout_seconds: u64,
     pub shutdown_timeout_seconds: u64,
@@ -137,7 +142,10 @@ pub fn decode(bytes: &[u8]) -> Result<Value, Failure> {
         }
     }
     let Strict(value) = serde_json::from_str(text).map_err(|_| Failure("PROTOCOL_ERROR"))?;
-    if !VALIDATOR.is_valid(&value) {
+    let valid = if value["schema_version"] == crate::domain_protocol::VERSION {
+        crate::domain_protocol::valid(&value)
+    } else { VALIDATOR.is_valid(&value) };
+    if !valid {
         return Err(Failure("PROTOCOL_ERROR"));
     }
     Ok(value)

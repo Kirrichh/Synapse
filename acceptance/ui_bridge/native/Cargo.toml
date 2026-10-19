@@ -36,8 +36,32 @@ name = "windows_pipe_bytes"
 path = "windows_pipe_bytes.rs"
 
 [[test]]
+name = "application_delivery"
+path = "application_delivery.rs"
+[[test]]
+name = "application"
+path = "application.rs"
+[[test]]
+name = "domain_protocol"
+path = "domain_protocol.rs"
+[[test]]
+name = "client_identity"
+path = "client_identity.rs"
+[[test]]
 name = "protocol"
 path = "protocol.rs"
+[[test]]
+name = "jcs"
+path = "jcs.rs"
+[[test]]
+name = "intent_store"
+path = "intent_store.rs"
+[[test]]
+name = "intent_directory"
+path = "intent_directory.rs"
+[[test]]
+name = "command_recovery"
+path = "command_recovery.rs"
 [[test]]
 name = "transport"
 path = "transport.rs"
@@ -83,3 +107,7 @@ path = "windows_containment.rs"
 [[test]]
 name = "webview_network"
 path = "webview_network.rs"
+
+[[test]]
+name = "controller_delivery"
+path = "controller_delivery.rs"

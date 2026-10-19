@@ -10,6 +10,54 @@ fn trusted(window: &WebviewWindow) -> Result<(), &'static str> {
 }
 
 #[tauri::command]
+fn desktop_identity(window: WebviewWindow, worker: State<'_, Controller>) -> Result<String, &'static str> {
+    trusted(&window)?;
+    worker.public_key().map(str::to_owned)
+}
+
+#[tauri::command]
+fn desktop_application_subscribe(window: WebviewWindow, worker: State<'_, Controller>, channel: Channel<String>)
+    -> Result<String, &'static str> {
+    trusted(&window)?;
+    Ok(worker.application_delivery.subscribe(Arc::new(move |text| channel.send(text).map_err(|_| ()))))
+}
+
+#[tauri::command]
+fn desktop_application_unsubscribe(window: WebviewWindow, worker: State<'_, Controller>, subscription_id: String)
+    -> Result<(), &'static str> {
+    trusted(&window)?;
+    worker.application_delivery.unsubscribe(&subscription_id);
+    Ok(())
+}
+
+#[tauri::command]
+fn desktop_application_ack(window: WebviewWindow, worker: State<'_, Controller>, subscription_id: String, request_id: String)
+    -> Result<(), &'static str> {
+    trusted(&window)?;
+    worker.application_delivery.acknowledge(&subscription_id, &request_id).map_err(|failure| failure.0)
+}
+
+#[tauri::command]
+fn desktop_application(window: WebviewWindow, worker: State<'_, Controller>, subscription_id: String, request: String)
+    -> Result<String, &'static str> {
+    trusted(&window)?;
+    let value = crate::jcs::decode(request.as_bytes()).map_err(|_| "COMMAND_INVALID")?;
+    let operation = serde_json::from_value(value).map_err(|_| "COMMAND_INVALID")?;
+    let delivery = worker.application_delivery.clone();
+    let ticket = delivery.reserve(&subscription_id).map_err(|failure| failure.0)?;
+    let result = match worker.application(ticket.clone(), operation) {
+        Ok(result) => result,
+        Err(code) => { delivery.refused_before_enqueue(&ticket); return Err(code); }
+    };
+    let request_id = ticket.request_id().to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = result.recv_timeout(std::time::Duration::from_secs(crate::protocol::PROFILE.application_timeout_seconds)).unwrap_or(Err("DELIVERY_TIMEOUT"));
+        let _ = delivery.deliver(ticket, result);
+    });
+    Ok(request_id)
+}
+
+#[tauri::command]
 fn desktop_subscribe(
     window: WebviewWindow,
     worker: State<'_, Controller>,
@@ -65,14 +113,27 @@ pub fn run() {
             desktop_ack,
             desktop_start,
             desktop_stop,
-            desktop_force_close
+            desktop_force_close,
+            desktop_identity,
+            desktop_application,
+            desktop_application_subscribe,
+            desktop_application_ack,
+            desktop_application_unsubscribe
         ])
         .setup(|app| {
             let resource = app.path().resource_dir()?.join("core");
-            app.manage(Controller::start(DesktopHost {
+            #[cfg(windows)]
+            let application = {
+                let identity = crate::client_identity::ClientIdentity::open(
+                    &format!("Synapse/Instance/v1/{}", app.config().identifier))?;
+                Some(crate::application::Application::new(identity, app.path().app_local_data_dir()?.join("intents")))
+            };
+            #[cfg(not(windows))]
+            let application = None;
+            app.manage(Controller::with_application(DesktopHost {
                 app: app.handle().clone(),
                 resource,
-            }));
+            }, application));
             let config = app.config().app.windows[0].clone();
             #[cfg(windows)]
             let (config, target, visible) = {

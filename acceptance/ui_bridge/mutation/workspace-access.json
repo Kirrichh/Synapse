@@ -1,0 +1,223 @@
+[
+  {
+    "id": "ACCESS-method",
+    "kind": "python",
+    "target": "synapse/access/authority.py",
+    "before": "or grant.application_id != app.application_id or method not in grant.methods",
+    "after": "or grant.application_id != app.application_id",
+    "cases": [
+      "acceptance/ui_bridge/test_access_authority_acceptance.py"
+    ],
+    "behavior": "Unlisted operations are refused on an otherwise valid grant."
+  },
+  {
+    "id": "ACCESS-object",
+    "kind": "python",
+    "target": "synapse/access/authority.py",
+    "before": "or any(value not in grant.objects for value in objects)",
+    "after": "or False",
+    "cases": [
+      "acceptance/ui_bridge/test_access_authority_acceptance.py"
+    ],
+    "behavior": "A grant cannot disclose an unlisted object."
+  },
+  {
+    "id": "ACCESS-grant-revocation",
+    "kind": "python",
+    "target": "synapse/access/authority.py",
+    "before": "grant is None or grant.revoked or grant.version != version",
+    "after": "grant is None or (grant.revoked and False) or (grant.version != version and False)",
+    "cases": [
+      "acceptance/ui_bridge/test_access_authority_acceptance.py",
+      "acceptance/ui_bridge/test_authorized_invocations_acceptance.py"
+    ],
+    "behavior": "Revocation stops new reads, cancellation retries and saved-result disclosure."
+  },
+  {
+    "id": "ACCESS-grant-version",
+    "kind": "python",
+    "target": "synapse/access/authority.py",
+    "before": "or grant.version != version",
+    "after": "or False",
+    "cases": [
+      "acceptance/ui_bridge/test_access_authority_acceptance.py"
+    ],
+    "behavior": "Queued requests cannot silently adopt a changed grant version."
+  },
+  {
+    "id": "ACCESS-app-binding",
+    "kind": "python",
+    "target": "synapse/access/authority.py",
+    "before": "or grant.application_id != app.application_id or method not in grant.methods",
+    "after": "or method not in grant.methods",
+    "cases": [
+      "acceptance/ui_bridge/test_access_authority_acceptance.py"
+    ],
+    "behavior": "An authenticated application cannot use another application's grant."
+  },
+  {
+    "id": "ACCESS-expiry",
+    "kind": "python",
+    "target": "synapse/access/authority.py",
+    "before": "or (grant.expires_at is not None and time() >= grant.expires_at)",
+    "after": "or False",
+    "cases": [
+      "acceptance/ui_bridge/test_access_authority_acceptance.py"
+    ],
+    "behavior": "Expired rights cannot disclose owner data."
+  },
+  {
+    "id": "ACCESS-current-app",
+    "kind": "python",
+    "target": "synapse/access/authority.py",
+    "before": "if current != app or current.revoked:\n                raise AccessRefused()\n            if (grant is None",
+    "after": "if False:\n                raise AccessRefused()\n            if (grant is None",
+    "cases": [
+      "acceptance/ui_bridge/test_access_authority_acceptance.py"
+    ],
+    "behavior": "An existing connection rechecks current application registration."
+  },
+  {
+    "id": "ACCESS-resource-custody",
+    "kind": "python",
+    "target": "synapse/access/authority.py",
+    "before": "            with self._resources.hold(grant.resource):",
+    "after": "            from contextlib import nullcontext\n            with nullcontext():",
+    "cases": [
+      "acceptance/ui_bridge/test_access_authority_acceptance.py"
+    ],
+    "behavior": "Each request verifies and holds its registered resource."
+  },
+  {
+    "id": "ACCESS-proof",
+    "kind": "python",
+    "target": "synapse/access/authentication.py",
+    "before": "Ed25519PublicKey.from_public_bytes(bytes.fromhex(application.public_key)).verify(signature, challenge)",
+    "after": "pass",
+    "cases": [
+      "acceptance/ui_bridge/test_access_authority_acceptance.py"
+    ],
+    "behavior": "A known client identifier without its private-key proof fails."
+  },
+  {
+    "id": "ACCESS-single-use",
+    "kind": "python",
+    "target": "synapse/access/authentication.py",
+    "before": "self._closed or self._consumed or monotonic() >= self._deadline",
+    "after": "self._closed or monotonic() >= self._deadline",
+    "cases": [
+      "acceptance/ui_bridge/test_access_authority_acceptance.py"
+    ],
+    "behavior": "A consumed challenge cannot authenticate again."
+  },
+  {
+    "id": "ACCESS-authority-instance",
+    "kind": "python",
+    "target": "synapse/access/authentication.py",
+    "before": "or self._authority is not authority",
+    "after": "or False",
+    "cases": [
+      "acceptance/ui_bridge/test_access_authority_acceptance.py"
+    ],
+    "behavior": "Session custody cannot cross authority instances."
+  },
+  {
+    "id": "ACCESS-close",
+    "kind": "python",
+    "target": "synapse/access/authentication.py",
+    "before": "        self._closed = True\n        self._application = None\n        self._authority = None",
+    "after": "        pass",
+    "cases": [
+      "acceptance/ui_bridge/test_access_authority_acceptance.py"
+    ],
+    "behavior": "Closing a byte connection destroys its authenticated context."
+  },
+  {
+    "id": "ACCESS-membership",
+    "kind": "python",
+    "target": "synapse/machine/invocations.py",
+    "before": "            store.require_membership(objects)",
+    "after": "            pass",
+    "cases": [
+      "acceptance/ui_bridge/test_authorized_invocations_acceptance.py"
+    ],
+    "behavior": "A declared object name must resolve to a retained record in the authorized store."
+  },
+  {
+    "id": "ACCESS-response-authorization",
+    "kind": "python",
+    "target": "synapse/machine/invocations.py",
+    "before": "with self.authority.authorize(connection, grant_id, version, method, objects) as (scope, resource):",
+    "after": "with self.authority.authorize(connection, grant_id, version, 'invocation.inspect', objects) as (scope, resource):",
+    "cases": [
+      "acceptance/ui_bridge/test_authorized_invocations_acceptance.py"
+    ],
+    "behavior": "The adapter checks the actual operation, not merely a read right."
+  },
+  {
+    "id": "ACCESS-closed-input",
+    "kind": "python",
+    "target": "synapse/machine/invocations.py",
+    "before": "if method not in fields or set(params) != fields[method]:",
+    "after": "if method not in fields:",
+    "cases": [
+      "acceptance/ui_bridge/test_authorized_invocations_acceptance.py"
+    ],
+    "behavior": "Renderer authority/path fields cannot pass through a known request."
+  },
+  {
+    "id": "ACCESS-preserve-cancel-owner",
+    "kind": "python",
+    "target": "synapse/machine/invocations.py",
+    "before": "result = InvocationCommands(InvocationStore.open_commands(root)).cancel(scope, command)",
+    "after": "result = {'outcome': 'CANCEL_REQUESTED', 'replayed': False}",
+    "cases": [
+      "acceptance/ui_bridge/test_authorized_invocations_acceptance.py"
+    ],
+    "behavior": "Successful cancellation must change and retain the actual owner's state."
+  },
+  {
+    "id": "ACCESS-resource-file-id",
+    "kind": "python",
+    "target": "synapse/access/windows_objects.py",
+    "before": "if (str(info.volume), f\"{info.index_high:08x}{info.index_low:08x}\") != (resource.volume, resource.file_id):",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_access_windows_objects_acceptance.py"
+    ],
+    "behavior": "A replacement directory at an approved path is refused."
+  },
+  {
+    "id": "ACCESS-pin-handle",
+    "kind": "python",
+    "target": "synapse/access/windows_objects.py",
+    "before": "str(path), access, 3, C.byref(attrs) if create else None",
+    "after": "str(path), access, 7, C.byref(attrs) if create else None",
+    "cases": [
+      "acceptance/ui_bridge/test_access_windows_objects_acceptance.py"
+    ],
+    "behavior": "Resource custody prevents rename through the protected operation."
+  },
+  {
+    "id": "ACCESS-admin-token",
+    "kind": "python",
+    "target": "synapse/access/windows_objects.py",
+    "before": "or not elevated.value):",
+    "after": "or False):",
+    "cases": [
+      "acceptance/ui_bridge/test_access_windows_objects_acceptance.py"
+    ],
+    "behavior": "An ordinary process cannot obtain the administrative context."
+  },
+  {
+    "id": "ACCESS-pin-owner-db",
+    "kind": "python",
+    "target": "synapse/access/windows_invocations.py",
+    "before": "                yield",
+    "after": "                self.objects.kernel.CloseHandle(_)\n                yield",
+    "cases": [
+      "acceptance/ui_bridge/test_access_windows_objects_acceptance.py"
+    ],
+    "behavior": "SQLite's actual database cannot be swapped between authorization and use."
+  }
+]

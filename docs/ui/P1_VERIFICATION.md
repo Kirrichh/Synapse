@@ -1,6 +1,6 @@
 # P1 implementation verification
 
-Version 1.1. Linux observations: 2026-10-18 on `codex/ui-foundation-v1`;
+Version 1.2. Linux observations: 2026-10-18 on `codex/ui-foundation-v1`;
 Windows follow-up: 2026-10-19 on `codex/pr110-windows-tr2-p1`, based on PR #110
 head `330483bc33bdba1e5d3901a44abd30fe82e29fe3`. **P1 remains IN_PROGRESS.**
 This record separates implemented control behavior from unverified installed
@@ -491,3 +491,288 @@ See [remaining P1 work](IMPLEMENTATION_STATUS.md#remaining-before-p1-can-close),
 [all requirements](REQUIREMENT_MATRIX.md), [source cases](ACCEPTANCE_MATRIX.md),
 and [open conditions](OPEN_CONDITIONS.md). No merge or full-product completion
 is authorized by these results.
+
+## Invocation owner component review
+
+The pending command foundations are not connected to the canonical machine
+profile or installed renderer. This is component evidence from the Windows
+working tree, not a new installed release result and not P1 completion.
+The [development record](DEVELOPMENT_NOTES.md#2026-10-19--owner-boundaries-and-incomplete-command-foundations)
+defines ownership, the current review gap, affected requirements and remaining
+integration work.
+
+| Check | Observed result | Scope and limits |
+|---|---|---|
+| Invocation owner acceptance and existing execution retention | 40 passed | Real SQLite cancellation/receipt/projection transactions, deterministic concurrent snapshot cut, scoped replay/status, original terminal bytes/evidence, read-only refusals and bounded change retention. Includes the existing four execution-retention cases. |
+| Existing mutation-report confidentiality acceptance | 5 passed | Separate tooling evidence; no raw subprocess diagnostics retained in reports. |
+| Existing Gold architecture, dependency direction and canonical entry | 884 passed | Three targeted suites; no whole-repository or new machine-route claim. |
+| Owner seeded mutation round 1 | 22 killed, 1 survived | The missing digest guard escaped the original malformed-receipt fixture because semantic validation refused it independently. |
+| Owner seeded mutation final round | 23 killed | Strengthened the digest-specific case and repeated passing baselines and all mutants; no invalid/timeout result counted as a kill. |
+
+[Mutation seeds](../../acceptance/ui_bridge/mutation/invocation-owners.json) and
+[reviewed structured results](../../acceptance/ui_bridge/evidence/invocation-owner-mutations.json)
+retain source hashes, selected cases and the survivor resolution. The Windows
+runner uses isolated source copies and the existing shared mutation executor.
+Run from the repository root, with an external writable scratch directory:
+
+```text
+python -B -m acceptance.ui_bridge.mutation.invocation_owners --workspace ../invocation-mutation-work --output ../invocation-mutation-results
+```
+
+The digest mutant was also reproduced through this checked-in runner after the
+full campaign. The final acceptance rerun passed 45 cases: 40 owner/regression
+cases and five reporting cases. No new native or installed pass is inferred.
+Actual user-bound Windows protected storage, three-language mutation coverage,
+trusted scope resolution, machine routing and all delivery classes remain open.
+
+Earlier draft-component runs observed 34 Python, two Rust and 25 TypeScript JCS
+checks passing. They are not the mutation evidence or integrated COMP-6 closure.
+The native intent-store run observed four acceptance-protector cases passing
+and one actual Windows DPAPI case failing in the restricted process environment
+(`CryptProtectData` returned Win32 error 2). That platform failure is retained as
+a failure; no plaintext fallback or passing protection claim replaces it. A real
+ordinary-user run is still required after the native changes are finalized.
+
+## Protected command component continuation
+
+This continuation supersedes the outstanding Windows component-protection check
+above; it does not replace the recorded earlier failure or establish installed
+command recovery. The unchanged control v1 endpoint still rejects domain commands.
+
+The product contracts are
+[`binding.schema.json`](../../synapse/commands/binding.schema.json) and
+[`reconciliation.schema.json`](../../synapse/commands/reconciliation.schema.json).
+New command JCS is bounded to 65,536 UTF-8 bytes and 32 container levels. Numeric
+source spelling must preserve its decimal value through binary64 and ECMAScript
+serialization; higher precision is represented as a string. Existing evidence
+serialization and integer-only control v1 remain separate contracts.
+
+The Windows native checks now use production DPAPI in a host process outside the
+restricted agent sandbox. They verify ciphertext corruption refusal, persisted
+identity across reopening, recovery without a renderer draft or write, exact
+binding, scoped absence, historical replay and refusal of substituted responses.
+A fixed independently serialized binding vector is checked by Python and Rust.
+The earlier sandbox DPAPI failure remains a historical environment failure;
+no passing test-protector result is substituted for actual protection.
+
+| Final check | Observed result | Scope |
+|---|---|---|
+| Python command JCS and invocation-owner acceptance/regression | 88 passed | Includes malformed status queries before journal access and identifier/digest terminators; targeted run, not a full repository run |
+| Python admitted-runtime drift | 3 failed before the fix; 3 passed after it | Fresh interpreters and physical isolated runtime copies: changed command code/schema and a self-consistent declaration omitting the JCS dependency are refused |
+| Native command components on Windows | 11 passed | Two JCS, five intent-store and four recovery cases, including production DPAPI and the final shared schemas |
+| TypeScript JCS | 26 passed | Shared raw corpus, canonical order/numbers, arrays with hidden properties/accessors, bounds and fixed refusals |
+| TypeScript type checking | Passed | Maintenance check, separate from behavioral acceptance |
+| Final command and runtime-admission mutations | 41 + 3 killed | Passing selected baselines, including the two recovered limit-test families and all three newly covered admission paths |
+| Invocation-owner mutation rerun | 23 killed | Final owner source and selected acceptance; historical earlier rounds remain retained separately |
+
+The native and mutation continuation results are recorded in
+[structured component evidence](../../acceptance/ui_bridge/evidence/command-foundation-mutations.json).
+The first command-foundation campaign killed 30 mutants and left four meaningful
+survivors: Python/Rust depth and byte limits. Their cases incorrectly followed
+mutated implementation constants. Independent released-boundary cases close that
+gap; the first round is retained, not overwritten as a passing observation.
+
+Reproduction uses isolated external scratch/output directories and an existing
+toolchain. It never mutates the working checkout or installs dependencies:
+
+```text
+python -B -m acceptance.ui_bridge.mutation.command_foundations --workspace ../command-mutants --output ../command-results --cargo <cargo-executable> --node <node-executable>
+cargo test --offline --locked --manifest-path acceptance/ui_bridge/native/Cargo.toml --test jcs --test intent_store --test command_recovery
+node --experimental-strip-types --test acceptance/ui_bridge/typescript/jcs.test.ts
+```
+
+The status query is read-only. Its scope remains an input from an as-yet
+unimplemented trusted application boundary, not permission granted by knowledge
+of an object ID. Application IPC, negotiated domain transport, delivery classes,
+new installed acceptance and the full documentation review remain unfinished.
+
+## Primary-source and packaging follow-up
+
+The [research record](DEVELOPMENT_NOTES.md#2026-10-19--primary-source-review-before-application-integration)
+compares the command, authority, storage, schema and delivery requirements with
+their primary engineering sources. It is not an acceptance result by itself.
+
+F-16 was reproduced in the Windows build path: CPython test extensions entered
+the bundle because the DLL tree bypassed the library exclusion policy. The
+builder now filters both trees and excludes the upstream test-only extensions
+whose names do not start with `_test`. Two affected packaging cases failed
+before the change; all five cases in the two affected suites pass afterwards.
+Three isolated mutants are killed, including a control that wrongly removes
+the required ctypes extension. Actual staged CPython passes isolated-prefix,
+ctypes, SQLite query and TLS-context checks without the test extensions.
+
+Two separate native Windows cases pass for directory lifetime and exclusion
+before creation. Their two final mutants are killed. The first lifetime mutant
+removed a byte-range lock but retained its file handle and survived; the corrected
+mutation discards the lifetime handle. No product storage change was justified
+by those observations. Initial path-admission races and same-user isolation
+are not established by these cases.
+
+The initial packaging mutation run stopped at an invalid baseline: its isolated
+copy lacked LICENSE. It counts as no success. After correcting the copy inputs,
+the baseline and all three mutants completed. See the
+[reviewed follow-up evidence](../../acceptance/ui_bridge/evidence/source-review-checks.json).
+The older component campaigns retain their original scope and counts.
+
+The canonical core was rebuilt from the current working tree into external
+staging, including the command package. Every manifest-listed file hash verifies;
+native test extensions are absent. Manifest SHA-256:
+`76d22d6065250d024fab4a140b00d3ec3f39996793c5fec9e07c1f267745b7e5`.
+All 36 canonical pipe-corpus cases pass against that actual bundled interpreter.
+The first attempt from the agent sandbox could not access the host-created
+directory and failed before product launch; it is an environment failure, not
+product evidence. The successful rerun used a host process. This is core-bundle
+acceptance, not an updated installed shell or native-launcher result.
+
+The full Gold ingestion document has now been read. The broader historical
+document inventory still has unread entries. P1 application integration,
+delivery classes, fresh desktop/installed acceptance and native Linux verification
+remain open; this follow-up does not close a stage or a complete source scenario.
+
+## Delivery and decoder continuation
+
+The bounded delivery scheduler is integrated with the canonical control writer.
+It separates control capacity from projections, bounds subscriptions, schedules
+fairly, marks Live loss, invalidates overflowing StateSync epochs for resnapshot,
+and requests rereading for Evidential loss. This is queue behavior, not complete
+authorized application subscriptions or owner acceptance. The control profile
+still advertises `domain_ready: false`.
+
+F-17 reproduced equal duplicate JSON keys passing the frontend's third-party
+duplicate callback. A lexical uniqueness check now precedes both frontend
+decoders; the same expanded raw corpus is checked in Python and Rust. Generated
+command validators use the owner schemas and explicit UUID format checking.
+
+| Check | Observed result | Boundary |
+| --- | --- | --- |
+| Python delivery, transport, JCS and control corpus | 102 passed | Final selected component suites |
+| Frontend TypeScript acceptance | 91 passed | All current frontend acceptance files; type checking also passed separately |
+| Native Windows command/protocol components | 16 passed | Real DPAPI, intent directory/store, recovery, protocol and JCS |
+| Installed canonical core pipe corpus | 39 passed | Actual updated bundled Python through canonical machine entry |
+| Delivery and transport mutations | 17 killed | Separate final campaigns of sixteen queue controls and one transport-close control |
+| Command decoder mutations | 13 killed | Final campaign after adding missing escaped-quote/backslash duplicate refusals |
+| Updated ordinary-user NSIS installation/process checks | 16 passed | Exact shell/resource identity, containment, replacement and core crash |
+| Installed release security/Channels | 26 passed | CSP, denied commands, zero outbound navigation requests, ACK loss and recovery |
+| Installed crash consent | 7 passed | Actual core crash; cancellation preserves the shell; confirmation closes it |
+
+The first executable decoder campaign killed twelve mutants and left the
+escaped-quote scanner mutant alive. Added independent refusal cases kill it in
+the final thirteen-mutant campaign. An earlier loader-URL failure had an invalid
+baseline and supplies no success. These observations are preserved in
+[reviewed structured evidence](../../acceptance/ui_bridge/evidence/delivery-decoder-review.json).
+
+The rebuilt release shell SHA-256 is
+`8e543ebb923705d40125e3f4f686b82ada4f4a82e21cb98069e384f44bade656`;
+the exact NSIS-installed shell transformation has SHA-256
+`6b6774bde319cc4efca5e73abb0addcdca20e4066ed7bbe10494500e31d8d87d`.
+Installer SHA-256:
+`9309167d5597debcbb7cf8c8b3adf3a8b204db96e4b2374ea5e2537e3043845a`.
+Core inventory SHA-256:
+`710b1b6e65be98c00ca030c01270a8c391bba54f8455499eb7ddf85fc147ba56`.
+Every installed inventory member verifies. CPython native test extensions are
+absent; ctypes, SQLite query and TLS-context probes pass. This supplies the
+previously missing fresh installed evidence for F-16 on this Windows PC.
+
+These checks ran as an ordinary Windows user using host execution, without a
+manual PowerShell handoff. They do not establish clean-machine, signed-release,
+wider-version or native Linux acceptance. The full repository suite was not
+rerun. Application authorization, domain integration, protected end-to-end
+restart recovery and full class delivery remain unfinished. The newly approved
+[access contract](WORKSPACE_ACCESS_CONTRACT.md) resolves the design choice;
+it is not itself a passing implementation result.
+
+## Protected access and native invocation integration
+
+The complete branch document inventory was read before this continuation. The
+[access contract](WORKSPACE_ACCESS_CONTRACT.md) now has a core authority, canonical
+administrative CLI, protected Windows registry, signed application sessions and
+native durable invocation routing. The Windows host check passed real UAC
+administration and ordinary-user OS write refusal; its isolated state was cleaned.
+
+Twenty-five selected Python cases pass. Native application/identity/protocol and
+controller acceptance passes (3/2/2/3), including actual Windows credential
+persistence and a real Rust-to-Python cancellation whose reply is lost before
+restart recovery. These tests use a synthetic access registry and the production
+invocation owner. They do not establish installed canonical composition.
+The actual Tauri command/capability additions compile. Twenty domain/native
+behavioral mutants are killed; the earlier twenty access-owner mutants are also killed on this tree.
+See [reviewed evidence](../../acceptance/ui_bridge/evidence/access-native-review.json).
+
+No stage or complete source scenario closes here. The new application handlers
+still need renderer/channel delivery, current installed evidence and the remaining
+platform boundary checks. Historical release hashes above identify earlier
+artifacts and must not be presented as builds containing this continuation.
+
+## Windows application and delivery integration
+
+The previously open invocation integration is now exercised through the actual
+installed release: ordinary native identity, separate UAC administrative issuance,
+canonical core authentication, scoped source delivery, owner acceptance and cold
+protected recovery. The shipped React view reads a fresh StateSync snapshot,
+retained invocation facts and a separately labelled Live connection observation.
+It does not infer that a retained invocation is still running.
+
+The core owns access, actual object membership, subscription identity/filter,
+generation and epoch. Collection and consumption have separate bounded steps;
+delivery rechecks authority while retaining read custody through its bounded
+reply. Native Channel replacement closes old source subscriptions. The native
+controller separates application admission from stop/close capacity and refuses
+replaced queued tickets before owner dispatch. Accepted work and protected intent
+bindings survive delivery loss; only the domain owner decides acceptance/results.
+
+| Final check | Result | Scope |
+| --- | --- | --- |
+| Selected Python integration regression | 148 passed | Access, Windows resource custody, owner/domain/subscription, JCS, commands, queues and transport before the location correction |
+| Windows location/resource regression | 12 passed | Final location correction, minimal/forged environment, configured paths and actual object custody |
+| Canonical CLI and bundle/privacy checks | 18 passed | Final source and packaging behavior |
+| Complete native acceptance crate | 58 passed, none ignored | Current Windows source/resources, credentials, protected intents, control/application queues, protocols, containment and lifecycle |
+| Frontend acceptance | 100 passed | All current TypeScript acceptance files; generation/type checking/build also pass |
+| Installed canonical endpoint through native pipes | 52 passed | Final installed core and actual native launcher; control corpus and explicit application-readiness refusals |
+| Installed access/owner/recovery sequence | 15 passed | Real issuance/discovery, shipped UI, foreign object refusal, lost ACK, abrupt shell loss, original identity/receipt recovery and current revocation |
+| Installed artifact/process checks | 16 passed | Exact NSIS shell transformation and every core inventory member; overlap, owner loss, replacement and core crash |
+| Installed CSP/network/Channels | 18 passed | No unauthorized native capability, no outgoing navigation request, bounded ACK loss and independent heartbeat/shutdown |
+| Installed crash consent | 7 passed | Visible core loss, cancel preserves shell, confirm closes it |
+| Installed malformed transport scenarios | 7 scenarios, 35 assertions passed | Five malformed frames and two partial-EOF cases; visible failure, never confirmed shutdown |
+| Actual foreign native label/origin | Both baselines pass; both filter mutants killed | All ten current native commands, in external topology copies; not weakened installed binaries |
+
+The final seeded campaigns have passing baselines and kill all 27 subscription/
+delivery variants, 20 domain/native variants, 11 application-Channel variants and
+4 Windows-location variants. These are separate from earlier command/owner/access
+campaigns. Four initial subscription survivors were closed with behavioral cases:
+invalidation before consuming its recovery signal, a forbidden method that would
+otherwise be executable, and valid snapshots with mismatched grant/filter identity.
+An intermediate native baseline failure and a stale domain mutation site do not
+count as successful evidence. Final serial campaign evidence records their reruns.
+
+Installed verification found F-18: the Shell known-folder API depended on
+SystemDrive in the caller's environment, absent from the intentionally minimal
+native child. Ordinary inherited-environment reads passed while the installed
+core refused. The new location adapter reads the machine's ProgramData setting
+and expands only the Windows API's system drive. The actual installed session
+now authenticates successfully; caller environment overrides cannot reroute it.
+
+A separate harness error created the synthetic owner under elevation, producing
+administrator-private evidence ACLs. The application's refusal was correct.
+Preparation now runs as the ordinary owner; the elevated process only registers,
+grants and revokes. No product permission was relaxed. Both processes use the
+installed canonical access CLI/core; the temporary default access registry is
+created only when absent and is removed after the sequence. Existing registries
+are never adopted or replaced by this acceptance.
+
+The final sequence proves that an actual shared read transaction in one process
+blocks administrative revocation in another; once revoked, queued protected
+evidence and saved receipt recovery are denied without restarting the app.
+The accepted cancellation remains durable and is not undone by access revocation.
+Artifact identities, sanitized verdicts, source hashes, mutation descriptions and
+investigation history are in [reviewed application evidence](../../acceptance/ui_bridge/evidence/application-delivery-review.json).
+Raw logs, public registration material, private paths and synthetic runtime stores
+remain outside the repository.
+
+This closes the prior Windows invocation-application integration gap, not the
+full multi-platform stage. Native Linux remains owner-deferred; its protected
+application storage/access adapter is unavailable in this Windows implementation.
+Clean-machine provisioning, signing and wider Windows/WebView2 qualification
+remain open. P2 continuous multi-domain synchronization, later command owners,
+trusted graphical administrative confirmation and F-05 are not inferred from
+these results. The full repository suite was not rerun; the earlier independently
+reproduced Windows replay failure remains recorded without weakening its test.

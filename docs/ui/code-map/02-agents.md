@@ -60,6 +60,17 @@ Version 1.0. English translation of Appendix D.6.
 - **Boundary:** Not a universal UI-command database; claim is not a read-only lookup.
 - **Basis:** Definition/call in the supplied map.
 
+## Invocation command and observation foundations
+
+The pending P1 follow-up adds `invocation_commands.py` for durable invocation
+cancellation receipts/status and `invocation_observation.py` for consistent
+state snapshots and complete change ranges. They share retention.py's actual
+SQLite transaction. Cancellation remains cooperative; neither component dispatches
+an adapter or owns task stopping. Read-only opening cannot initialize a store.
+These components are not yet exposed by the canonical machine application route.
+They do not expand the set of authorized Gold composition roots. See the
+[development ownership record](../DEVELOPMENT_NOTES.md#2026-10-19--owner-boundaries-and-incomplete-command-foundations).
+
 ## `synapse/agents/runtime.py`
 
 - **Symbols:** run_process; ProcessObservation; _command; _terminate_tree.

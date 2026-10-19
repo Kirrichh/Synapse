@@ -20,11 +20,14 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 EXCLUDED = {"test", "tests", "__pycache__", "site-packages", "ensurepip", "idlelib", "turtledemo"}
+# CPython's layout also classifies these non-_test-prefixed extensions as tests.
+TEST_EXTENSIONS = {"_ctypes_test", "xxlimited", "xxlimited_35"}
 
 
 def copy_standard_library(source: Path, destination: Path) -> None:
     def ignore(_directory, names):
-        return [name for name in names if name in EXCLUDED or name.startswith(("_test", "test_"))]
+        return [name for name in names if name in EXCLUDED or name.startswith(("_test", "test_"))
+                or name.split(".", 1)[0].removesuffix("_d") in TEST_EXTENSIONS]
     shutil.copytree(source, destination, ignore=ignore, symlinks=False)
 
 
@@ -79,7 +82,7 @@ def build(destination: Path) -> None:
             shutil.copy2(base / executable, staging / executable)
             for library in base.glob("*.dll"):
                 shutil.copy2(library, staging / library.name)
-            shutil.copytree(base / "DLLs", staging / "DLLs", symlinks=False)
+            copy_standard_library(base / "DLLs", staging / "DLLs")
             standard = staging / "Lib"
             copy_standard_library(base / "Lib", standard)
             packages = standard / "site-packages"

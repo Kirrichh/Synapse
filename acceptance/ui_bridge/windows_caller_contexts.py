@@ -37,7 +37,8 @@ def main():
         assert args.cargo and not workspace.exists(), 'fresh external workspace required'
         workspace.mkdir(parents=True)
         subject = workspace / 'subject'
-        for relative in ('synapse/ui/src-tauri', 'synapse/ui/contracts', 'synapse/ui/dist', 'synapse/machine/schemas'):
+        for relative in ('synapse/ui/src-tauri', 'synapse/ui/contracts', 'synapse/ui/dist',
+                         'synapse/machine/schemas', 'synapse/commands'):
             shutil.copytree(ROOT / relative, subject / relative,
                             ignore=shutil.ignore_patterns('target', 'gen', '__pycache__', '*.pyc'))
         shutil.copy2(ROOT / 'synapse/machine/release_profile.json', subject / 'synapse/machine')

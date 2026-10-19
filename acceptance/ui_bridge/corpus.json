@@ -134,6 +134,21 @@
     "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{\"a\":1,\"a\":2}}"
   },
   {
+    "behavior": "equal duplicate authoritative field",
+    "valid": false,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{}}"
+  },
+  {
+    "behavior": "equal escaped duplicate nested field",
+    "valid": false,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{\"a\":true,\"\\u0061\":true}}"
+  },
+  {
+    "behavior": "equal duplicate object field",
+    "valid": false,
+    "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{},\"params\":{}}"
+  },
+  {
     "behavior": "escaped duplicate",
     "valid": false,
     "raw": "{\"schema_version\":\"1.0\",\"type\":\"request\",\"request_id\":\"r1\",\"method\":\"machine.ping\",\"params\":{\"a\":1,\"\\u0061\":2}}"

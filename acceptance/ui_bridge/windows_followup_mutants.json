@@ -1,0 +1,54 @@
+[
+  {
+    "id": "WIN-atomic-job-binding",
+    "target": "synapse/ui/src-tauri/src/lifecycle/windows/launch.rs",
+    "before": "        // Bind lifetime during creation: owner death before a later assignment\n        // must not leave an unowned suspended process. Both slices outlive us.\n        if unsafe {\n            UpdateProcThreadAttribute(\n                attributes.pointer(),\n                0,\n                PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,\n                jobs.as_ptr().cast(),\n                std::mem::size_of_val(jobs),\n                std::ptr::null_mut(),\n                std::ptr::null(),\n            )\n        } == 0\n        {\n            return Err(Failure(\"CONTAINMENT_FAILED\"));\n        }\n",
+    "after": "",
+    "kind": "startup",
+    "scenario": "owner_after_create",
+    "behavior": "owner death immediately after process creation leaves no suspended orphan"
+  },
+  {
+    "id": "WIN-job-attribute-refusal",
+    "target": "synapse/ui/src-tauri/src/lifecycle/windows/launch.rs",
+    "before": "        // Bind lifetime during creation: owner death before a later assignment\n        // must not leave an unowned suspended process. Both slices outlive us.\n        if unsafe {\n            UpdateProcThreadAttribute(\n                attributes.pointer(),\n                0,\n                PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,\n                jobs.as_ptr().cast(),\n                std::mem::size_of_val(jobs),\n                std::ptr::null_mut(),\n                std::ptr::null(),\n            )\n        } == 0\n        {\n            return Err(Failure(\"CONTAINMENT_FAILED\"));\n        }\n",
+    "after": "        // Bind lifetime during creation: owner death before a later assignment\n        // must not leave an unowned suspended process. Both slices outlive us.\n        if unsafe {\n            UpdateProcThreadAttribute(\n                attributes.pointer(),\n                0,\n                PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,\n                jobs.as_ptr().cast(),\n                std::mem::size_of_val(jobs),\n                std::ptr::null_mut(),\n                std::ptr::null(),\n            )\n        } == 0 && false\n        {\n            return Err(Failure(\"CONTAINMENT_FAILED\"));\n        }\n",
+    "kind": "startup",
+    "scenario": "job_attribute_failure",
+    "behavior": "failed Job-list preparation refuses launch"
+  },
+  {
+    "id": "WIN-suspended-creation",
+    "target": "synapse/ui/src-tauri/src/lifecycle/windows/launch.rs",
+    "before": "CREATE_SUSPENDED\n                | CREATE_NO_WINDOW",
+    "after": "CREATE_NO_WINDOW",
+    "kind": "startup",
+    "scenario": "normal",
+    "behavior": "the real process creation call requires suspended startup"
+  },
+  {
+    "id": "WIN-resume-refusal",
+    "target": "synapse/ui/src-tauri/src/lifecycle/windows/launch.rs",
+    "before": "if unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX {",
+    "after": "if unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX && false {",
+    "kind": "startup",
+    "scenario": "resume_failure",
+    "behavior": "resume failure terminates the child and refuses launch"
+  },
+  {
+    "id": "WIN-real-runtime-job-close",
+    "target": "synapse/ui/src-tauri/src/lifecycle/windows/job.rs",
+    "before": "limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;",
+    "after": "limits.BasicLimitInformation.LimitFlags = 0;",
+    "kind": "runtime",
+    "behavior": "actual adapter and MCP descendants exit when their native owner dies"
+  },
+  {
+    "id": "WIN-stderr-lf",
+    "target": "synapse/machine/entry.py",
+    "before": "    sys.stderr.reconfigure(newline=\"\\n\")\n",
+    "after": "",
+    "kind": "stderr",
+    "behavior": "canonical Windows diagnostics preserve one LF delimiter"
+  }
+]

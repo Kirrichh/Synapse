@@ -52,7 +52,7 @@ identifies the actual artifacts, executed checks, observation methods and limits
 
 | Check | Observed result | Scope and limits |
 |---|---|---|
-| Python UI acceptance at the PR head | **114 passed, 1 failed, 1 warning** | OS architecture had to be restored to the restricted process environment. The unread-output case exits within its deadline with status 2, but expects LF and receives Windows CRLF on stderr. Its flood writer also reports `OSError(EINVAL)`. The case remains failed; see F-08. |
+| Python UI acceptance at the PR head | **114 passed, 1 failed, 1 warning** | OS architecture had to be restored to the restricted process environment. The unread-output case exits within its deadline with status 2, but expects LF and receives Windows CRLF on stderr. Its flood writer also reports `OSError(EINVAL)`. This historical failure is fixed and rerun in the continuation below (F-08). |
 | Targeted CLI regression checks | **39 passed, 1 failed, 1 warning** | The broken-chain replay case reports integrity code 8/digest mismatch. Its isolated failure reproduces on both PR head and PR base; no new PR regression is established. |
 | TypeScript acceptance / frontend build | **46 passed / build passed** | Component contracts and production assets. |
 | Windows native external acceptance | **28 passed** | Elevated host PowerShell: actual canonical core through Windows Job/native byte pipes, missing-interpreter refusal, overlapping-launch refusal, ping, confirmed shutdown and two successive sessions. This run precedes the separate containment and extended wire cases below. |
@@ -78,12 +78,12 @@ patch (`__TAURI_BUNDLE_TYPE_VAR_UNK` to `__TAURI_BUNDLE_TYPE_VAR_NSS`); the corr
 check requires that exact single transformation and equality of every other byte.
 This changes verification, not product code or an integrity prerequisite.
 
-The restricted execution environment denies Rust path canonicalization and prevents
-the native witness from producing its initial report. Host execution passed the
-unchanged cases; a final restricted containment attempt still failed before that
-report. This is an environment-specific limitation, not a second passing result.
-Neither environment failure nor elevated-host success establishes an ordinary-user
-platform matrix. Product bundle verification and containment were not bypassed.
+Initial restricted executions could not access resources or produce the native
+witness report. Later publication into directories with normal inherited access
+restored resource reads, and all 30 current native cases passed, including canonical
+stderr diagnostics. These repaired environment failures are not behavioral passes.
+An elevated-host result alone does not establish an ordinary-user platform matrix.
+Product bundle verification and containment were not bypassed.
 
 The lifecycle and containment files must run serially without another active
 Synapse session because they share the production admission mutex and named Job:
@@ -119,14 +119,99 @@ not a claim that CI schedules Windows platform runs. The Job-close mutant reache
 the surviving-core assertion after the bounded wait; cleanup then terminated the
 witnesses. It was a behavioral kill, not a compiler failure or runner timeout.
 
-Remaining Windows work includes assignment/resume and interrupted-startup faults,
-pre-execution ordering evidence, exhaustive handle/lifetime leakage, actual
-adapter/MCP descendants, adversarial native caller/CSP/navigation/Channel behavior,
-and clean-machine/release coverage. Nominal installed IPC uses the configured
-production CSP but does not establish its negative security properties. Linux
-systemd/installed execution and JCS/domain-owner contracts remain open. TR-2/P1,
-OC-01/09/32 and F-07 are not closed; all 44 complete source-case verdicts remain
-NOT_RUN.
+### Continued Windows fault and runtime verification
+
+The owner explicitly deferred Linux execution on 2026-10-19 because this task has
+no usable Linux host. It remains acceptance debt, not a waiver or a passing result.
+The continuation addresses Windows; TR-2/P1 retain their wider open obligations.
+
+| Check | Observed result | Scope and limits |
+|---|---|---|
+| Current Python UI suite | **119 passed, no failures or warnings** | The original exact-LF assertion is preserved. Expected EINVAL when a Windows pipe closes no longer produces a flood-thread warning. |
+| Current native suite | **31 passed** | Includes real rebuilt canonical stderr into the native diagnostic reader, Windows lifecycle and containment, framing, refusal and publication boundaries. |
+| External startup debugger | **6 passed** | Normal startup; rejected Job-list preparation; invalid Job handle rejected by Windows; resume refusal; owner death immediately after CreateProcessW returns and immediately before ResumeThread. No product test hooks. |
+| Actual adapter/MCP descendants | **2 passed** | Actual run_process and McpToolTransport with the declared MCP 2.2.0 SDK, synthetic peers and nested children, inside the production Job. Native owner drop and abrupt death terminate all retained processes. This does not establish UI domain execution authority. |
+| Focused follow-up mutations | **6 killed** | Passing startup/runtime/stderr baselines and final reruns; Job-list omission, ignored preparation failure, missing suspended flag, ignored resume failure, missing Job-close termination, and removed stderr LF control. |
+| Final ordinary-user installation | **Passed** | Rebuilt debug NSIS, exact executable transformation and every installed resource hash, canonical entry, overlap exclusion, shell/core death and replacement; elevation independently false. |
+| Actual installed window security | **Passed after F-11 fix** | Forbidden native commands/foreign ACK, CSP eval/inline/fetch/frame/image refusal, denied new window, and foreign navigation with zero requests at the local HTTP receiver. This does not establish every foreign privileged caller context. |
+| Real Channels and crash consent | **Passed** | Missing ACK does not block heartbeat or confirmed shutdown; stale ACK refused; reload restores stopped state. Real core loss, confirmation, cancel, second confirmation and shell exit observed. |
+| Request-guard policy and mutations | **Native policy case passed; 6 mutants killed** | Four admission-policy mutations and two native filter/response mutations. Native kills require an actual outbound navigation request; readiness/debugger/build failures do not count. |
+
+[Structured before/after evidence](../../acceptance/ui_bridge/evidence/windows-followup-results.json),
+[mutation seeds](../../acceptance/ui_bridge/windows_followup_mutants.json), and
+[mutation results](../../acceptance/ui_bridge/evidence/windows-followup-mutations.json)
+retain only reviewed fields and normalized source hashes. Raw logs, process IDs,
+private paths and runtime stores are not retained in repository evidence.
+
+The original launch left an unowned suspended child when its owner died after
+CreateProcessW returned but before AssignProcessToJobObject. It had not executed,
+but remained alive. The fixed path supplies PROC_THREAD_ATTRIBUTE_JOB_LIST during
+creation, then resumes only after successful preparation. Membership is observed
+at the returned creation boundary; death at either tested boundary terminates the
+child. Removing the Job-list attribute reproduces the leak and kills the mutant.
+This is F-10; it is not a claim about every possible interruption inside Windows.
+The mechanism follows [Microsoft's Job-list attribute contract](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute).
+
+The Windows diagnostic producer now emits one LF delimiter explicitly. The real
+canonical bundle's INVALID_LENGTH code survives the native stderr reader. Removing
+the producer setting restores the original exact-byte failure. The reader's
+strict diagnostic allowlist was not relaxed (F-08).
+
+Run the external probes serially, after building the acceptance binaries, with
+scratch and result paths outside the source checkout:
+
+```powershell
+cargo build --offline --locked --manifest-path acceptance/ui_bridge/native/Cargo.toml --bins
+python -B acceptance/ui_bridge/windows_startup_debugger.py --executable <startup-probe.exe> --output <startup-result.json>
+python -B acceptance/ui_bridge/windows_runtime_descendants.py --executable <runtime-probe.exe> --scratch <scratch-directory> --output <runtime-result.json>
+python -B acceptance/ui_bridge/windows_followup_mutations.py --workspace <scratch-directory> --cargo <cargo.exe> --output <mutation-result.json>
+```
+
+The runtime probe requires the declared agent-mcp extra in its development Python.
+Its native executable is an acceptance host for real existing launch owners, not
+a replacement packaged core. It never enters the shipped resources or UI routes.
+
+Remaining Windows work concerns the full installed byte corpus, broader foreign
+caller contexts, and release/clean-machine coverage. Linux execution is deferred debt. JCS and domain-owner contracts remain
+unimplemented by this control profile. TR-2/P1, OC-01/09/32 and F-07 are not closed;
+all 44 complete source-case verdicts remain NOT_RUN.
+
+### Windows navigation request boundary (F-11)
+
+The original installed window kept its packaged origin after a denied navigation,
+but the synthetic HTTP receiver observed one GET with destination `document` and
+mode `navigate`. The separate new-window probe made no request. No private input
+was sent. Navigation cancellation alone therefore did not establish SEC-5/OC-22.
+[Microsoft documents this timing](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2navigationstartingeventargs?view=webview2-1.0.4191.47).
+
+Windows now creates an empty hidden WebView, installs native WebResourceRequested
+interception for every resource context and request source kind, then navigates
+to packaged content. Only the configured Tauri asset and IPC origins reach their
+local handlers. Other requests receive a local empty 403 before network dispatch.
+Missing interception support/setup refuses startup; failure to apply a denial
+closes the WebView and terminates its owner. There is no permissive fallback.
+CSP, caller checks and navigation/new-window restrictions remain in force.
+The native callback does not re-enter Tauri's locked WebView dispatcher.
+The approach follows [Microsoft's request interception sequence](https://learn.microsoft.com/en-us/microsoft-edge/webview2/how-to/webresourcerequested).
+
+The fixed real window and final installed artifact preserve the origin with
+**zero HTTP requests**, while heartbeat, IPC, shutdown and crash consent pass.
+[Request-guard mutations](../../acceptance/ui_bridge/evidence/windows-network-mutations.json)
+record passing baselines/final reruns, four rejected weakened URL policies and
+two real native variants whose missing filter/response each leaks the request.
+The external observer keeps CSP enforced and uses per-process loopback CDP only;
+it neither changes the shipped configuration nor adds product test hooks.
+Unsupported WebView2 versions and arbitrary COM failures are not an executed
+environment matrix; this is not a firewall for unrelated browser/OS traffic.
+
+Reproduce with scratch outside source, the built EXE and its verified core bundle:
+
+```powershell
+python -B acceptance/ui_bridge/windows_network_mutations.py --prepare --workspace <private-variants> --cargo <cargo.exe> --baseline <built-desktop.exe> --output <mutation-result.json>
+python -B acceptance/ui_bridge/windows_network_mutations.py --workspace <private-variants> --node <node.exe> --output <mutation-result.json>
+node acceptance/ui_bridge/windows_installed_security.mjs --executable <installed-desktop.exe> --workspace <private-scratch> --output <security-result.json>
+node acceptance/ui_bridge/windows_installed_security.mjs --executable <installed-desktop.exe> --workspace <private-scratch> --output <consent-result.json> --scenario crash --python <development-python.exe>
+```
 
 ## Automatic affected checks
 
@@ -226,8 +311,8 @@ edge and broken-reconnection mutants that the earlier campaign did not include.
 This is a targeted campaign, not exhaustive mutation coverage of every platform
 integration or an assertion that all written platform behavior is accepted.
 The Windows follow-up above adds targeted lifecycle and byte-fidelity mutations.
-Startup-fault/handle-leak mutations and negative native WebView/capability/CSP
-execution remain required before the affected work can be complete.
+The later continuation adds startup-fault and actual-runtime mutations. Negative
+native WebView/capability/CSP acceptance remains separate from these results.
 
 `PY-session-exit-status` initially survived. The missing assertion concerned an
 observable failure: a fatal, schema-valid negotiation refusal could exit with
@@ -277,8 +362,9 @@ store and grants no task authority. Error rendering uses declared codes and text
 Static review confirms closed Tauri commands/capabilities, no arbitrary renderer
 filesystem/process command, no remote capability origin, navigation/new-window
 restriction, packaged custom protocol, no runtime Ajv compilation, and no product
-imports/resources from acceptance. Actual native enforcement still requires the
-installed-window scenarios; static configuration and browser injection are not proof.
+imports/resources from acceptance. The Windows continuation now executes the
+listed installed-window scenarios and records the F-11 before/after result. Static
+configuration and browser injection alone remain insufficient evidence.
 
 Before publication, changed text, the retained design reference, and the preview
 were reviewed for private user data. Raw diagnostic excerpts were removed from
@@ -318,17 +404,18 @@ alone. The PR still selects the consumers of its cumulative executable changes.
   at its distribution path. No Linux native IPC/CSP or installed UI pass is recorded.
 - Linux direct-launch refusal is executed. A supported systemd user service,
   cgroup cleanup after shell death, real adapter descendants and replacement
-  ordering are **not run** here.
+  ordering are **not run** here. The owner explicitly deferred Linux execution.
 - Windows installed control, core/shell death, replacement, synthetic descendants,
   one inheritance sentinel and the extended wire cases have the scoped evidence
-  above. Assignment/resume/interrupted-startup faults and actual adapters/MCP
-  remain **not run**. Synthetic descendants cannot close those integration cases.
-- Native caller substitution, CSP/network/navigation attacks, forced-close cancel
-  behavior and a stalled real Tauri Channel remain **not run** in the installed
-  application. Nominal IPC and browser/component security evidence cannot replace them.
-- The Windows stderr CRLF case remains failed. Rust's exact diagnostic-code match
-  can lose the declared code when a trailing CR is present; this consequence is
-  source-inspected, not a separate installed end-to-end reproduction.
+  above. The continuation adds six real startup fault/boundary cases and actual
+  adapter/MCP descendant cleanup. It does not establish UI domain authority or
+  every supported environment.
+- Windows installed CSP, ungranted commands, foreign ACK, navigation request
+  denial, force-close cancel/confirm and stalled real Channels now have executed
+  evidence. A separate foreign privileged caller context and the full supported
+  platform matrix are not established by these probes.
+- The Windows stderr CRLF failure is resolved at the producer and verified through
+  the rebuilt canonical stderr/native reader, with a detecting mutation.
 - JCS parameter hashing, domain command ownership/recovery, domain delivery classes
   and the later UI workspace/features are not supplied by the control profile.
 - Debug NSIS on this existing PC does not establish signing, clean-machine

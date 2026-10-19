@@ -1,4 +1,4 @@
-//! Create suspended, inherit only the three pipe ends, assign, then resume.
+//! Create suspended inside the Job, inherit only the three pipe ends, then resume.
 use super::job::{own, wide};
 use crate::{bundle::CoreBundle, protocol::Failure};
 use std::{
@@ -9,7 +9,7 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT},
     Security::SECURITY_ATTRIBUTES,
-    System::{JobObjects::AssignProcessToJobObject, Pipes::CreatePipe, Threading::*},
+    System::{Pipes::CreatePipe, Threading::*},
 };
 
 fn pipe() -> Result<(OwnedHandle, OwnedHandle), Failure> {
@@ -29,17 +29,17 @@ struct Attributes {
     storage: Vec<usize>,
 }
 impl Attributes {
-    fn new(handles: &[HANDLE]) -> Result<Self, Failure> {
+    fn new(handles: &[HANDLE], jobs: &[HANDLE]) -> Result<Self, Failure> {
         let mut size = 0;
         unsafe {
-            InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut size);
+            InitializeProcThreadAttributeList(std::ptr::null_mut(), 2, 0, &mut size);
         }
         if size == 0 {
             return Err(Failure("CONTAINMENT_FAILED"));
         }
         let mut storage = vec![0usize; size.div_ceil(size_of::<usize>())];
         if unsafe {
-            InitializeProcThreadAttributeList(storage.as_mut_ptr().cast(), 1, 0, &mut size)
+            InitializeProcThreadAttributeList(storage.as_mut_ptr().cast(), 2, 0, &mut size)
         } == 0
         {
             return Err(Failure("CONTAINMENT_FAILED"));
@@ -52,6 +52,22 @@ impl Attributes {
                 PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
                 handles.as_ptr().cast(),
                 std::mem::size_of_val(handles),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            )
+        } == 0
+        {
+            return Err(Failure("CONTAINMENT_FAILED"));
+        }
+        // Bind lifetime during creation: owner death before a later assignment
+        // must not leave an unowned suspended process. Both slices outlive us.
+        if unsafe {
+            UpdateProcThreadAttribute(
+                attributes.pointer(),
+                0,
+                PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
+                jobs.as_ptr().cast(),
+                std::mem::size_of_val(jobs),
                 std::ptr::null_mut(),
                 std::ptr::null(),
             )
@@ -110,7 +126,8 @@ pub fn launch(bundle: &CoreBundle, job: &OwnedHandle) -> Result<Launched, Failur
         child_out.as_raw_handle(),
         child_err.as_raw_handle(),
     ];
-    let attributes = Attributes::new(&handles)?;
+    let jobs = [job.as_raw_handle()];
+    let attributes = Attributes::new(&handles, &jobs)?;
     let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
@@ -156,11 +173,6 @@ pub fn launch(bundle: &CoreBundle, job: &OwnedHandle) -> Result<Launched, Failur
         armed: true,
     };
     let thread = own(info.hThread)?;
-    if unsafe { AssignProcessToJobObject(job.as_raw_handle(), suspended.process.as_raw_handle()) }
-        == 0
-    {
-        return Err(Failure("CONTAINMENT_FAILED"));
-    }
     if unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX {
         return Err(Failure("SPAWN_FAILED"));
     }

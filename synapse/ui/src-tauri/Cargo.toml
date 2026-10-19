@@ -15,7 +15,7 @@ required-features = ["desktop"]
 
 [features]
 default = ["desktop", "custom-protocol"]
-desktop = ["dep:tauri", "dep:tauri-build"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:webview2-com", "dep:windows"]
 custom-protocol = ["tauri/custom-protocol"]
 
 [dependencies]
@@ -28,6 +28,8 @@ url = "2"
 tauri = { version = "2", optional = true , features = [] }
 
 [target.'cfg(windows)'.dependencies]
+webview2-com = { version = "0.39", optional = true }
+windows = { version = "0.62", optional = true, features = ["Win32_System_Com"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Environment"] }
 
 [build-dependencies]

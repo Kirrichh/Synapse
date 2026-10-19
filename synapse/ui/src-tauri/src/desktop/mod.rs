@@ -73,10 +73,52 @@ pub fn run() {
                 app: app.handle().clone(),
                 resource,
             }));
-            tauri::WebviewWindowBuilder::from_config(app, &app.config().app.windows[0])?
+            let config = app.config().app.windows[0].clone();
+            #[cfg(windows)]
+            let (config, target, visible) = {
+                let mut blank = config.clone();
+                let tauri::WebviewUrl::App(path) = &config.url else {
+                    return Err("desktop requires packaged content".into());
+                };
+                let origin = if config.use_https_scheme {
+                    "https://tauri.localhost/"
+                } else {
+                    "http://tauri.localhost/"
+                };
+                let target = url::Url::parse(origin)?.join(&path.to_string_lossy())?;
+                crate::caller::authorize("main", &target)
+                    .map_err(|_| "desktop requires packaged content")?;
+                blank.url = tauri::WebviewUrl::External(url::Url::parse("about:blank")?);
+                blank.visible = false;
+                (blank, target, config.visible)
+            };
+            let window = tauri::WebviewWindowBuilder::from_config(app, &config)?
                 .on_navigation(|url| crate::caller::authorize("main", url).is_ok())
                 .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
                 .build()?;
+            #[cfg(windows)]
+            {
+                window.with_webview(move |platform| {
+                    let protected = crate::webview_network::install(&platform, config.use_https_scheme);
+                    // Tauri holds the WebView dispatch lock in this callback.
+                    // Re-entering its navigate/show methods here would deadlock.
+                    let loaded = protected.and_then(|()| unsafe {
+                        platform.controller().CoreWebView2()?.Navigate(
+                            &windows::core::HSTRING::from(target.as_str()),
+                        )
+                    });
+                    if loaded.is_err() {
+                        // Never expose application content after incomplete admission setup.
+                        eprintln!("desktop: NETWORK_GUARD_FAILED");
+                        std::process::exit(1);
+                    }
+                })?;
+                if visible {
+                    window.show()?;
+                }
+            }
+            #[cfg(not(windows))]
+            let _ = window;
             Ok(())
         })
         .on_window_event(|window, event| {

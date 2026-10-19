@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "source_encoding": "UTF-8 with LF",
+  "baselines": {
+    "startup": "PASS",
+    "runtime": "PASS",
+    "stderr": "PASS"
+  },
+  "final_rerun": {
+    "startup": "PASS",
+    "runtime": "PASS",
+    "stderr": "PASS"
+  },
+  "records": [
+    {
+      "id": "WIN-atomic-job-binding",
+      "target": "synapse/ui/src-tauri/src/lifecycle/windows/launch.rs",
+      "behavior": "owner death immediately after process creation leaves no suspended orphan",
+      "kind": "startup",
+      "source_sha256": "3f0d9aa7b4d1d6bf5c579ed8058dc63092faa861bcf008bbce2b5176633cde08",
+      "baseline": "PASS",
+      "result": "KILLED"
+    },
+    {
+      "id": "WIN-job-attribute-refusal",
+      "target": "synapse/ui/src-tauri/src/lifecycle/windows/launch.rs",
+      "behavior": "failed Job-list preparation refuses launch",
+      "kind": "startup",
+      "source_sha256": "3f0d9aa7b4d1d6bf5c579ed8058dc63092faa861bcf008bbce2b5176633cde08",
+      "baseline": "PASS",
+      "result": "KILLED"
+    },
+    {
+      "id": "WIN-suspended-creation",
+      "target": "synapse/ui/src-tauri/src/lifecycle/windows/launch.rs",
+      "behavior": "the real process creation call requires suspended startup",
+      "kind": "startup",
+      "source_sha256": "3f0d9aa7b4d1d6bf5c579ed8058dc63092faa861bcf008bbce2b5176633cde08",
+      "baseline": "PASS",
+      "result": "KILLED"
+    },
+    {
+      "id": "WIN-resume-refusal",
+      "target": "synapse/ui/src-tauri/src/lifecycle/windows/launch.rs",
+      "behavior": "resume failure terminates the child and refuses launch",
+      "kind": "startup",
+      "source_sha256": "3f0d9aa7b4d1d6bf5c579ed8058dc63092faa861bcf008bbce2b5176633cde08",
+      "baseline": "PASS",
+      "result": "KILLED"
+    },
+    {
+      "id": "WIN-real-runtime-job-close",
+      "target": "synapse/ui/src-tauri/src/lifecycle/windows/job.rs",
+      "behavior": "actual adapter and MCP descendants exit when their native owner dies",
+      "kind": "runtime",
+      "source_sha256": "7c49c4d7698de717637012eccf563736cf237ca7d71c5f91bda3f146152ce55c",
+      "baseline": "PASS",
+      "result": "KILLED"
+    },
+    {
+      "id": "WIN-stderr-lf",
+      "target": "synapse/machine/entry.py",
+      "behavior": "canonical Windows diagnostics preserve one LF delimiter",
+      "kind": "stderr",
+      "source_sha256": "8f28c458f03736896d3779d7db606dcc04b32fd67793ad93a7f2d6862f12e26b",
+      "baseline": "PASS",
+      "result": "KILLED"
+    }
+  ]
+}

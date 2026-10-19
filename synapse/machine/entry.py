@@ -16,6 +16,9 @@ def run_machine() -> int:
         import msvcrt
         msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
         msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
+    # Diagnostic codes have one LF delimiter on every platform. Text-mode CRLF
+    # translation would change the code consumed by the bounded native reader.
+    sys.stderr.reconfigure(newline="\n")
     # Raw descriptors avoid buffered-reader finalization locks after a timeout.
     source = os.fdopen(os.dup(sys.stdin.fileno()), "rb", buffering=0)
     destination = os.fdopen(os.dup(sys.stdout.fileno()), "wb", buffering=0)

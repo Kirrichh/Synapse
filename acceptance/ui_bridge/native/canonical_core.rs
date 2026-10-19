@@ -48,3 +48,34 @@ fn native_bridge_negotiates_and_confirms_canonical_core_shutdown() {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+
+#[test]
+fn canonical_core_preserves_declared_diagnostic_over_real_stderr() {
+    use std::io::Write;
+    use synapse_desktop::diagnostics::Diagnostics;
+    struct ChildGuard(std::process::Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); }
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../synapse/ui/src-tauri/resources/core");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("bundle-manifest.json")).unwrap()).unwrap();
+    let mut child = ChildGuard(Command::new(root.join(manifest["python"].as_str().unwrap()))
+        .args(["-I", "-B", "-m", "synapse", "machine"])
+        .current_dir(&root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().unwrap());
+    let diagnostics = Diagnostics::default();
+    diagnostics.drain(child.0.stderr.take().unwrap());
+    child.0.stdin.as_mut().unwrap().write_all(&[0, 0, 0, 0]).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            assert_eq!(status.code(), Some(2));
+            if !diagnostics.snapshot().is_empty() { break; }
+        }
+        assert!(Instant::now() < deadline, "canonical diagnostic exceeded deadline");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(diagnostics.snapshot(), ["INVALID_LENGTH"]);
+}

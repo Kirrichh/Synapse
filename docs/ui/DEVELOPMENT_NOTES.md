@@ -276,3 +276,32 @@ Implementation observations and verified outcomes will be appended below.
   remain unverified. Assignment/resume/interrupted startup, actual adapters/MCP,
   Linux systemd, clean-machine/release and JCS/owner contracts remain open.
   TR-2/P1 stay IN_PROGRESS; no complete source-case verdict is closed.
+
+## 2026-10-19 — Windows startup ownership and diagnostics continuation
+
+- The owner deferred Linux execution explicitly; retain it as acceptance debt.
+- External x64 Windows debugger acceptance exposed an unowned suspended child
+  between CreateProcessW return and the separate Job assignment. Creation now
+  includes PROC_THREAD_ATTRIBUTE_JOB_LIST; six startup scenarios pass without
+  product hooks, including actual OS refusal of an invalid Job handle (F-10).
+- Canonical stderr explicitly emits LF. All 119 Python UI checks and 30 native
+  checks pass, including INVALID_LENGTH over the rebuilt bundle's real stderr
+  into the native diagnostic reader. The allowlist and original assertion remain
+  strict (F-08).
+- Actual run_process and McpToolTransport/MCP 2.2.0 owners launch synthetic peers
+  with nested children inside the production Job. Orderly native owner drop and
+  abrupt death terminate every retained process. This is containment evidence,
+  not UI domain-command readiness.
+- Six focused mutations are killed; startup/runtime/stderr baselines and final
+  reruns pass. Evidence retains source hashes and structured verdicts only.
+- Final ordinary-user artifact identity, process recovery, installed CSP and
+  command refusal, real stalled Channels and crash cancel/confirm passed.
+- F-11 exposed one GET before WebView2 navigation cancellation. Native request
+  interception now precedes packaged content, permits local asset/IPC handlers
+  only, and refuses incomplete setup. The installed receiver sees zero requests.
+  Four policy mutants and two native filter/response mutants were killed with
+  passing baselines/final reruns. No CSP bypass or product test hooks were used.
+- Final package/window results are recorded in the continuing
+  [Windows verification record](P1_VERIFICATION.md#continued-windows-fault-and-runtime-verification).
+  TR-2/P1 remain IN_PROGRESS; JCS/domain ownership, Linux and release/environment
+  obligations are not supplied by this continuation.

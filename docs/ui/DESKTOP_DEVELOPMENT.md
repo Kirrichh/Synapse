@@ -120,14 +120,20 @@ creation. The native shell must be the unit's actual MainPID, with cgroup v2,
 five-second stop deadline. There is no one-PID fallback for core cleanup.
 
 Windows creation uses a serialized admission guard and a Job with
-`KILL_ON_JOB_CLOSE`, without breakaway flags. The core is created suspended,
-inherits only its three pipe ends, is assigned to the Job, and is then resumed.
+`KILL_ON_JOB_CLOSE`, without breakaway flags. The core is created suspended with
+`PROC_THREAD_ATTRIBUTE_JOB_LIST`, so its lifetime belongs to the Job when creation
+returns. It inherits only its three pipe ends and is resumed after successful
+preparation. A separate post-creation assignment would leave an orphan if the
+owner died between creation and assignment (F-10).
 Windows host acceptance now exercises nominal launch, overlapping-launch refusal,
 ping, confirmed shutdown, owner death, synthetic descendant cleanup, an unrelated
 inheritable-event sentinel and subsequent replacement. The debug NSIS artifact
-has scoped installed-window/crash evidence. Assignment/resume/interrupted-startup
-faults, exhaustive handle checks and actual adapter/MCP descendants remain pending;
-see the
+has scoped installed-window/crash evidence. External debugger acceptance now
+checks Job-list preparation failure, invalid Job rejection, resume failure and
+owner death at the returned creation and pre-resume boundaries. Actual agent/MCP
+launch owners and nested children pass owner-loss cleanup; the follow-up mutation
+campaign detects removed controls. Linux execution is explicitly deferred debt;
+the broader environment/release matrix remains open. See the
 [Windows verification record](P1_VERIFICATION.md#windows-verification-follow-up).
 
 Normal application close requests protocol shutdown and confirms process exit
@@ -136,6 +142,13 @@ separate confirmed force-close action. Local cleanup does not establish remote
 rollback or unknown operation outcomes. A launched session cannot silently restart;
 pre-launch failures can be retried. A previously confirmed stop remains terminal
 even if a subsequent restart request was refused.
+
+Windows navigation cancellation is not a network request barrier. The native
+WebView2 request guard is installed on an empty hidden WebView before packaged
+content loads, and returns a local 403 for requests outside the configured asset
+and IPC origins. Request-source-kind filtering is mandatory; setup failure refuses
+startup. Keep Tauri dispatcher calls outside its native WebView callback to avoid
+re-entering the held lock. See [F-11 acceptance](P1_VERIFICATION.md#windows-navigation-request-boundary-f-11).
 
 ## Renderer delivery
 

@@ -1,5 +1,6 @@
 """Heavy: stop reading output and require bounded exit from the actual CLI."""
 import json
+import errno
 import os
 import struct
 import subprocess
@@ -30,8 +31,13 @@ def test_unread_output_cannot_hold_the_control_process_indefinitely(tmp_path):
                 position = 0
                 while position < len(frame):
                     position += process.stdin.write(frame[position:])
-        except (BrokenPipeError, ValueError):
+        except ValueError:
             pass
+        except OSError as error:
+            # Windows may report EINVAL when the peer closes a pipe mid-write.
+            # Other failures are not expected shutdown and must remain visible.
+            if error.errno not in (errno.EPIPE, errno.EINVAL):
+                raise
     try:
         assert receive()["type"] == "hello"
         process.stdin.write(wire(hello()) + wire(selection()))

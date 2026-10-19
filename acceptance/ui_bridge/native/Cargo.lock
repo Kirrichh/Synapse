@@ -906,6 +906,7 @@ dependencies = [
  "synapse-desktop",
  "tempfile",
  "url",
+ "windows-sys",
 ]
 
 [[package]]

@@ -22,6 +22,17 @@ def test_fragmented_multibyte_and_back_to_back_frames():
     assert read_frame(stream, 100) is None
 
 
+def test_escaped_and_literal_line_endings_preserve_formed_frame_bytes():
+    payload = '{"text":"Привет🙂\\n\\r\\n\\t\\\\n"}\r\n'.encode('utf-8')
+    packet = struct.pack('>I', len(payload)) + payload
+    stream = Fragmented(packet + packet)
+    assert read_frame(stream, 1024) == payload
+    assert read_frame(stream, 1024) == payload
+    destination = io.BytesIO()
+    write_frame(destination, packet + packet)
+    assert destination.getvalue() == packet + packet
+
+
 @pytest.mark.parametrize("data,code", [(b'\0', 'TRUNCATED_FRAME'),
     (b'\0\0\0\0', 'INVALID_LENGTH'), (b'\0\0\0\2x', 'TRUNCATED_FRAME')])
 def test_corruption_is_explicit(data, code):

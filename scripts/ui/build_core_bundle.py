@@ -7,6 +7,7 @@ module entry and does not depend on a user-installed Python.
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import platform
@@ -27,6 +28,30 @@ def copy_standard_library(source: Path, destination: Path) -> None:
     shutil.copytree(source, destination, ignore=ignore, symlinks=False)
 
 
+def remove_installation_artifacts(packages: Path) -> None:
+    """Exclude installer provenance and launchers bound to the build interpreter."""
+    for directory in (packages / "bin", packages / "Scripts"):
+        if directory.exists():
+            shutil.rmtree(directory)
+    for metadata in packages.glob("*.dist-info"):
+        provenance = metadata / "direct_url.json"
+        provenance.unlink(missing_ok=True)
+        record = metadata / "RECORD"
+        if not record.exists():
+            continue
+        with record.open(encoding="utf-8", newline="") as source:
+            rows = list(csv.reader(source))
+        removed_metadata = f"{metadata.name}/direct_url.json"
+        with record.open("w", encoding="utf-8", newline="") as destination:
+            writer = csv.writer(destination)
+            for row in rows:
+                if row and (row[0] == removed_metadata or row[0].startswith(
+                    ("../../bin/", "../../Scripts/", "bin/", "Scripts/")
+                )):
+                    continue
+                writer.writerow(row)
+
+
 def inventory(root: Path, python: str, runtime_version: str) -> dict:
     target_os = {"Linux": "linux", "Windows": "windows"}.get(platform.system())
     architecture = {"x86_64": "x86_64", "AMD64": "x86_64", "aarch64": "aarch64", "ARM64": "aarch64"}.get(platform.machine())
@@ -42,8 +67,10 @@ def build(destination: Path) -> None:
     destination = destination.resolve()
     if destination.exists():
         raise ValueError("Destination already exists; choose a new staging directory")
+    if Path(tempfile.gettempdir()).resolve().is_relative_to(ROOT):
+        raise ValueError("Build temporary directory must be outside the source checkout")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="synapse-core-", dir=destination.parent) as temporary:
+    with tempfile.TemporaryDirectory(prefix="synapse-core-") as temporary:
         staging = Path(temporary) / "core"
         staging.mkdir()
         base = Path(sys.base_prefix)
@@ -69,6 +96,7 @@ def build(destination: Path) -> None:
         else:
             raise ValueError("Only Windows and Linux desktop bundles are supported")
         subprocess.run([sys.executable, "-m", "pip", "install", "--no-compile", "--target", str(packages), str(ROOT)], check=True)
+        remove_installation_artifacts(packages)
         # Distribution wheels can contain their own acceptance suites. They are
         # unnecessary runtime resources and are excluded before hashing.
         for path in sorted(staging.rglob("*"), key=lambda item: len(item.parts), reverse=True):
@@ -88,7 +116,12 @@ def build(destination: Path) -> None:
                        cwd=staging, check=True, stdout=subprocess.DEVNULL)
         manifest = inventory(staging, executable, version)
         (staging / "bundle-manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-        staging.rename(destination)
+        # Only sanitized resources may enter the checkout. A sibling staging
+        # directory keeps final publication atomic even across temporary volumes.
+        with tempfile.TemporaryDirectory(prefix="synapse-publish-", dir=destination.parent) as publication:
+            ready = Path(publication) / "core"
+            shutil.copytree(staging, ready)
+            ready.rename(destination)
     print(f"Bundled canonical core: {destination}")
 
 

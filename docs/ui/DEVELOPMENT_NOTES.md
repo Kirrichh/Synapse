@@ -233,3 +233,46 @@ Implementation observations and verified outcomes will be appended below.
   as a new run. The original prototype and supplied-source hashes are preserved.
   Only the English engineering decision is retained; no uploaded discussion or
   private input is copied into the repository.
+
+## 2026-10-19 — Windows verification and bundle privacy
+
+- Verified PR #110 in an isolated checkout. Host native acceptance passed 28 cases,
+  with actual canonical Windows Job/native-pipe sessions, missing executable and
+  overlap refusal, ping, confirmed shutdown and replacement. A separate heavy case
+  passed preparation refusal, unrelated-event inheritance exclusion, named-Job
+  membership, synthetic descendant cleanup after owner drop/abrupt death and
+  replacement. These host process tests were elevated; restricted execution still
+  fails before the witness report and does not establish another platform result.
+- Recorded 114 passing Python UI cases and one failed unread-output diagnostic
+  assertion (CRLF versus LF), with a flood-writer warning. Rust exact-code matching
+  makes the newline boundary a diagnostic concern (F-08). CLI checks passed 39
+  cases; the replay integrity failure reproduces on both PR head and base.
+  TypeScript passed 46 cases and frontend assets built. Extended Unicode and
+  escaped/literal line-ending cases passed 10 Python and 3 Rust frame checks.
+- Fixed build provenance and interpreter-bound console launchers in pip output,
+  removing their RECORD entries before inventory binding. Raw staging stays
+  outside source; sanitized resources publish atomically. Runtime package modules
+  and data are preserved. Five packaging cases passed. The sole product/tooling
+  behavior change is this packaging boundary; tests remain external.
+- Built and installed debug NSIS in a separate destination. Verified every resource
+  and exact shell bytes after Tauri's one UNK-to-NSS bundle-marker transformation.
+  The initial equality assertion did not account for that documented patch and
+  was corrected without permitting other differences. The earlier file-lock build
+  failure cleared with applications closed; no product workaround was added.
+- Installed process checks passed canonical command, overlap exclusion, survival
+  of the first core when a refused shell closes, core cleanup after shell death,
+  replacement and a shell remaining available after core death. Actual WebView2
+  displayed CORE_EXITED. Closing that elevated window required user-assisted
+  force-close confirmation. A subsequent ordinary desktop launch reached ready,
+  Stop displayed confirmed shutdown and the window closed; its token elevation
+  was not independently measured. No test window was left open.
+- Ten focused mutants were killed with passing baselines: packaging six, active
+  Job admission one, Job-close termination one and wire newline rewriting two.
+  Isolated copies avoided Windows symlink requirements; structured evidence and
+  source hashes retain no raw host diagnostics. New fixtures are synthetic.
+- Security review of the changed build boundary checked raw staging, provenance,
+  RECORD hashes and preservation of runtime modules/data. Installed nominal IPC
+  used configured production CSP; negative caller/CSP/navigation/Channel claims
+  remain unverified. Assignment/resume/interrupted startup, actual adapters/MCP,
+  Linux systemd, clean-machine/release and JCS/owner contracts remain open.
+  TR-2/P1 stay IN_PROGRESS; no complete source-case verdict is closed.

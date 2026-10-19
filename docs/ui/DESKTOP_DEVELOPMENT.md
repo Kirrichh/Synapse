@@ -77,6 +77,11 @@ The bundle builder must run with the release interpreter for that OS. It copies
 CPython and production dependencies, excludes distribution test packages, checks
 the staged canonical entry, and writes a content inventory. It refuses to overwrite
 an existing output; move an old build aside explicitly before rebuilding.
+Keep the OS temporary directory outside the source checkout. Raw pip output can
+contain local installation provenance and interpreter-bound console launchers;
+the builder removes these and their RECORD entries before publishing resources.
+Only sanitized files enter the destination's atomic staging directory. Production
+launch continues to use the bundled interpreter's canonical `-m synapse` entry.
 The observed Linux interpreter uses a relative `$ORIGIN/../lib` runtime search path.
 Do not assume an arbitrary Python installation is relocatable: another interpreter
 distribution needs clean-machine dependency and canonical-entry acceptance.
@@ -117,7 +122,13 @@ five-second stop deadline. There is no one-PID fallback for core cleanup.
 Windows creation uses a serialized admission guard and a Job with
 `KILL_ON_JOB_CLOSE`, without breakaway flags. The core is created suspended,
 inherits only its three pipe ends, is assigned to the Job, and is then resumed.
-Runtime acceptance on Windows and actual adapter descendant paths is still pending.
+Windows host acceptance now exercises nominal launch, overlapping-launch refusal,
+ping, confirmed shutdown, owner death, synthetic descendant cleanup, an unrelated
+inheritable-event sentinel and subsequent replacement. The debug NSIS artifact
+has scoped installed-window/crash evidence. Assignment/resume/interrupted-startup
+faults, exhaustive handle checks and actual adapter/MCP descendants remain pending;
+see the
+[Windows verification record](P1_VERIFICATION.md#windows-verification-follow-up).
 
 Normal application close requests protocol shutdown and confirms process exit
 within the deadline. A failed confirmation keeps the window open and exposes a

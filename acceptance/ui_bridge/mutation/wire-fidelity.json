@@ -1,0 +1,20 @@
+[
+  {
+    "id": "PY-wire-newline-normalization",
+    "kind": "python",
+    "behavior": "formed frame payload bytes cannot undergo newline conversion",
+    "target": "synapse/machine/codec.py",
+    "before": "return _read_exact(stream, length)",
+    "after": "return _read_exact(stream, length).replace(b'\\r\\n', b'\\n')",
+    "cases": ["acceptance/ui_bridge/test_frame_acceptance.py"]
+  },
+  {
+    "id": "RS-wire-newline-normalization",
+    "kind": "rust",
+    "behavior": "formed frame payload bytes cannot undergo newline conversion",
+    "target": "synapse/ui/src-tauri/src/transport.rs",
+    "before": "    Ok(payload)",
+    "after": "    Ok(payload.into_iter().filter(|byte| *byte != b'\\r').collect())",
+    "case": "transport"
+  }
+]

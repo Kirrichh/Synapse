@@ -1,0 +1,11 @@
+[
+  {
+    "id": "WIN-active-job-admission",
+    "kind": "rust",
+    "behavior": "a replacement cannot launch while the existing core remains in the Job",
+    "target": "synapse/ui/src-tauri/src/lifecycle/windows/job.rs",
+    "before": "if accounting.ActiveProcesses != 0 {",
+    "after": "if false {",
+    "case": "windows_lifecycle"
+  }
+]

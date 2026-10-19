@@ -1,10 +1,11 @@
 # UI implementation status
 
-Version 1.0. Last updated: 2026-10-18.
+Version 1.1. Last updated: 2026-10-19.
 
 Current stage: **P1 — trusted application and bridge implementation in progress.**
-The branch is `codex/ui-foundation-v1`,
-based on the main commit recorded in [provenance](SOURCE_MANIFEST.md).
+The implementation branch is `codex/ui-foundation-v1`, based on the main commit
+recorded in [provenance](SOURCE_MANIFEST.md). Windows verification continues in
+the isolated `codex/pr110-windows-tr2-p1` branch from PR #110 head `330483b`.
 
 The English specification, detailed rules, separated source references, original
 prototype, and progress registers are prepared. Publication and final document
@@ -16,7 +17,8 @@ the 44 complete installed/domain scenarios is claimed passed by component checks
 
 The [UI security design](UI_SECURITY_DESIGN.md) records public-source research
 and its application to the architecture. Bootstrap controls now have implementation
-and component evidence; native WebView/installed-platform acceptance remains open.
+and component evidence; Windows installed control/crash checks now have scoped
+evidence. Full platform/security acceptance remains open.
 The consent trust-boundary clarification remains F-05.
 
 ## Delivery stages and remaining work
@@ -28,7 +30,7 @@ Independent capabilities may progress while unrelated open conditions remain.
 | Stage | Scope and exit evidence | Current state |
 |---|---|---|
 | P0 — Foundation | English v1, all original requirements/map entries, permanent rules, researched UI security design, prototype, traceability, reviewed branch | Documentation prepared |
-| P1 — Trusted application and bridge | Bundled canonical machine mode, schemas/JCS, handshake/framing/queues, trusted caller context, diagnostics/CSP, Windows/Linux containment/shutdown; behavioral and mutation evidence | IN_PROGRESS: control/bootstrap implementation and local evidence exist; F-06 mechanism decision resolved; full transport/platform acceptance, production IPC/CSP, and JCS remain open |
+| P1 — Trusted application and bridge | Bundled canonical machine mode, schemas/JCS, handshake/framing/queues, trusted caller context, diagnostics/CSP, Windows/Linux containment/shutdown; behavioral and mutation evidence | IN_PROGRESS: control/bootstrap implementation and local evidence exist; F-06 mechanism decision resolved; Windows installed control/crash evidence recorded; full transport/platform acceptance, negative native security checks, and JCS remain open |
 | P2 — Authorized reading and synchronization | Project/material reads, domain snapshots/coverage/epochs, progress/freshness, unsubscribe, retained evidence gaps and safe source projections | Not started |
 | P3 — Durable commands and permissions | Intent/pre-send recovery, owner acceptance/status/retention, binding conflicts, grant/refuse/revoke, exclusive once-binding, new-task mode policy | Not started |
 | P4 — Task workspace and editing | Required panel layout, main conversation contract, task submit/control, real execution cards, Monaco reads/diffs/versioned own edits, RU/EN draft/focus preservation | Not started |
@@ -118,21 +120,25 @@ the product integration index. They are not product links or data feeds.
 
 ## Remaining before P1 can close
 
-1. Execute Windows Job/handle inheritance, actual adapter/MCP descendants, shell
-   death, replacement admission, forced close, and clean installation; mutation-check
-   platform-specific behavior on Windows. Cross-compilation is insufficient.
+1. Windows: inject assignment/resume/interrupted-startup faults, establish controls
+   before execution, exhaust handle/lifetime leakage, and exercise actual adapter/MCP
+   descendants. Mutate those boundaries. [Executed Windows evidence](P1_VERIFICATION.md#windows-verification-follow-up)
+   covers nominal and refused launch, one inheritance sentinel, synthetic descendants,
+   shell/core death, replacement and installed control shutdown; it does not close
+   the remaining platform matrix or clean-machine/release acceptance.
 2. Execute the supported Linux systemd/cgroup profile with a real graphical user
-   session, shell death, descendant cleanup, and replacement ordering. This workspace
-   establishes only refusal outside the service.
-3. Run real Tauri-window and installed-artifact checks of Channels, caller identity,
-   navigation, IPC under production CSP, and shutdown. WebKit runtime startup is
-   blocked by this workspace's native-library layout; browser evidence cannot substitute.
-4. Complete the [native transport and launch acceptance obligations](ACCEPTANCE_MATRIX.md#native-transport-and-launch-obligations),
-   including byte-preservation variants, startup faults, and the installed path.
-   F-06 is resolved; TR-2 remains IN_PROGRESS until its behavioral evidence is complete.
+   session, shell death, descendant cleanup and replacement ordering. The earlier
+   Linux workspace establishes only refusal outside the service.
+3. Execute installed negative caller/window, navigation/CSP and stalled-Channel
+   cases. Windows nominal IPC and visible crash/shutdown states passed; Linux
+   WebKit startup remains blocked by the earlier environment's runtime layout.
+4. Resolve the Windows stderr CRLF failure and verify declared diagnostic-code
+   projection end to end (F-08). Finish the [transport/launch obligations](ACCEPTANCE_MATRIX.md#native-transport-and-launch-obligations);
+   extended component byte preservation now passes, but full installed corpus and
+   fault evidence remain incomplete. F-06 is resolved; TR-2 stays IN_PROGRESS.
 5. Finish JCS/parameter-binding and remaining P1 contracts with their actual owner
    integrations. The integer-only control profile does not implement COMP-6 or
-   generic domain parameter hashing, readiness, recovery, or delivery classes.
+   generic domain parameter hashing, readiness, recovery or delivery classes.
 6. Complete affected requirement/source-case acceptance and security review at the
    required platform levels before marking P1 VERIFIED or advancing its completion gate.
 
@@ -153,6 +159,7 @@ and traceability together before changing what completion means.
 
 | Date | Work and result |
 |---|---|
+| 2026-10-19 | Verified Windows components, native Job launch/containment, exact wire bytes, debug NSIS installation, installed shell/core crash recovery and visible shutdown on an isolated PR #110 checkout. Fixed bundle provenance/launcher leakage; five packaging checks and ten focused mutants passed. Retained the Windows stderr failure, base-reproduced replay failure and explicit platform/security/JCS gaps. TR-2/P1 remain IN_PROGRESS. |
 | 2026-10-18 | Created foundation branch from current main; translated supplied specification into English v1; documented detailed coding, acceptance, mutation, and security rules; retained original prototype; established all requirement/case/open-condition registers |
 | 2026-10-18 | Clarified the owner's product/test separation: removed eight acceptance sources from product integration/index and preserved them only in development documentation; no product code changed |
 | 2026-10-18 | Researched official OWASP, Tauri, React, MDN, and W3C guidance; added English UI security design with external acceptance/mutation scenarios and F-05 consent-assurance clarification; no product behavior or product verification state changed |

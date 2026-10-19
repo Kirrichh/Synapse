@@ -30,7 +30,7 @@ impl Read for HeaderOnly {
 }
 #[test]
 fn framed_bytes_survive_fragmentation_and_coalescing() {
-    let unicode = "{\"text\":\"🙂Привет\"}".as_bytes();
+    let unicode = "{\"text\":\"🙂Привет\\n\\r\\n\\t\\\\n\"}\r\n".as_bytes();
     let mut bytes = frame(unicode);
     bytes.extend(frame(b"{}"));
     let mut source = Fragmented(Cursor::new(bytes));

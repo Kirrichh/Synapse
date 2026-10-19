@@ -1,0 +1,11 @@
+[
+  {
+    "id": "WIN-kill-on-job-close",
+    "kind": "rust",
+    "behavior": "owner loss terminates the core and its local descendants",
+    "target": "synapse/ui/src-tauri/src/lifecycle/windows/job.rs",
+    "before": "limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;",
+    "after": "limits.BasicLimitInformation.LimitFlags = 0;",
+    "case": "windows_containment"
+  }
+]

@@ -305,3 +305,36 @@ Implementation observations and verified outcomes will be appended below.
   [Windows verification record](P1_VERIFICATION.md#continued-windows-fault-and-runtime-verification).
   TR-2/P1 remain IN_PROGRESS; JCS/domain ownership, Linux and release/environment
   obligations are not supplied by this continuation.
+
+## 2026-10-19 — Windows release and remaining executable boundaries
+
+- Continued on the existing task branch; the owner authorized publishing to the
+  existing PR #110 head branch after verification. No new branch or merge is needed.
+- Added an external relay that verifies the installed inventory and invokes the
+  production Windows launcher with the real canonical bundle. All 51 control-pipe
+  cases pass. Arbitrary parameter refusal is not claimed as domain echo fidelity.
+- The separate native byte witness passes exact binary/Unicode/escape framing,
+  fragmentation, independent stderr and damaged-stream termination. Four canonical
+  corpus mutations and two endpoint-misdirection mutations are killed. The first
+  misdirection observer blocked its stderr pipe; concurrent draining removes that
+  observer defect and exposes the actual frame failure.
+- Built optimized release with unchanged frontend assets, installed it as an
+  ordinary user and verified exact patched executable/resource identity. Twelve
+  resume identity/process checks, 26 security/Channel checks and seven actual crash
+  consent checks pass. Empty PATH and synthetic Python variables do not prevent
+  readiness. The installer is unsigned and the PC already has WebView2.
+- Seven transport-damage scenarios in the actual installed release window pass
+  all 35 assertions. Five malformed frames produce PROTOCOL_ERROR; partial header
+  and body EOF produce CORE_EXITED. The owned stdout pipe is duplicated externally;
+  no product hook or installed-file change is involved.
+- Both actual foreign native contexts refuse all five custom commands in private
+  topology copies. Removing label/origin guards permits commands. Initial origin
+  coverage was masked by the port guard; a default-port loopback case detects the
+  same mutant. One repeated label run failed before IPC setup; it is not a kill.
+  Retain the independently successful label run and both attempts with exact binary
+  identities. No weakened topology is installed or shipped.
+- All 155 Python UI acceptance cases pass after observer changes. Product sources
+  are unchanged from the preceding lifecycle/network fixes. Earlier native and
+  TypeScript results remain historical scoped evidence, not newly rerun suites.
+- Keep TR-2/P1 open for Linux, clean-machine/signing/wider versions and unfinished
+  JCS/domain owner contracts. No complete source scenario is relabelled PASS.

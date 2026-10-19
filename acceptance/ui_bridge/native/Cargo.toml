@@ -27,6 +27,14 @@ path = "windows_startup_probe.rs"
 name = "windows_runtime_probe"
 path = "windows_runtime_probe.rs"
 
+[[bin]]
+name = "windows_installed_pipe"
+path = "windows_installed_pipe.rs"
+
+[[bin]]
+name = "windows_pipe_bytes"
+path = "windows_pipe_bytes.rs"
+
 [[test]]
 name = "protocol"
 path = "protocol.rs"

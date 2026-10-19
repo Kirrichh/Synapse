@@ -8,6 +8,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { createServer as tcpServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 
 const options = Object.fromEntries(process.argv.slice(2).reduce((rows, value, index, all) =>
@@ -32,11 +33,13 @@ const trap = createServer((request, response) => {
     mode: known(request.headers['sec-fetch-mode'], ['navigate', 'cors', 'no-cors', 'same-origin']) });
   response.end('synthetic canary');
 });
+trap.on('upgrade', (_request, connection) => { hits++; connection.destroy(); });
 await new Promise(resolve => trap.listen(0, '127.0.0.1', resolve));
 const canary = `http://127.0.0.1:${trap.address().port}/synthetic-canary`;
 const executable = resolve(options.executable);
 const child = spawn(executable, [], { cwd: dirname(executable), windowsHide: true, stdio: 'ignore', env: {
   ...process.env, WEBVIEW2_USER_DATA_FOLDER: profile,
+  ...(options.environment === 'isolated' ? { PATH: '', PYTHONPATH: profile, PYTHONHOME: profile } : {}),
   WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort} --remote-debugging-address=127.0.0.1`,
 } });
 const checks = [];
@@ -112,7 +115,29 @@ try {
   stage = 'window_checks';
   const packagedOrigin = await evaluate('location.origin');
   assert(/^https?:\/\/tauri\.localhost$/.test(packagedOrigin), 'unexpected packaged origin');
-  if (options.scenario === 'crash') {
+  if (options.scenario === 'transport') {
+    assert(options.python && ['zero','oversize','maximum','utf8','json','header_eof','body_eof'].includes(options.fault));
+    await command('Page.reload');
+    await delay(700);
+    const injected = spawnSync(options.python, ['-B', fileURLToPath(new URL('windows_core_fault.py', import.meta.url)),
+      '--pid',String(ready.process_id),'--owner',String(child.pid),'--core',join(dirname(executable),'core','python.exe'),
+      '--fault',options.fault], {windowsHide:true,encoding:'utf8',timeout:15000});
+    const observation = injected.status === 0 ? JSON.parse(injected.stdout) : undefined;
+    await record('synthetic fault enters only the owned installed stdout pipe',
+      observation?.status === 'INJECTED' && observation.verified_owned_pipe === true, {fault:options.fault});
+    const expected = options.fault.endsWith('_eof') ? ['CORE_EXITED','PROTOCOL_ERROR'] : ['PROTOCOL_ERROR'];
+    let visible=false;
+    for (let index=0;index<100;index++) {
+      visible=await evaluate(`${JSON.stringify(expected)}.some(code=>document.body.innerText.includes(code)) && [...document.querySelectorAll('button')].some(b=>b.textContent.includes('Force close desktop'))`);
+      if (visible) break;
+      await delay(100);
+    }
+    await record('actual release renderer shows failed transport and recovery',visible);
+    const failure=await evaluate(`(async()=>{const id=window.__TAURI_INTERNALS__.transformCallback(()=>{});return JSON.parse(await window.__TAURI_INTERNALS__.invoke('desktop_subscribe',{channel:'__CHANNEL__:'+id}))})()`);
+    await record('native failure matches the injected transport boundary',failure.state==='fail' && expected.includes(failure.code),{code:failure.code});
+    await delay(500);
+    await record('transport failure does not report successful shutdown',child.exitCode===null && !await evaluate(`document.body.innerText.includes('Shutdown was confirmed')`));
+  } else if (options.scenario === 'crash') {
     assert(options.python, 'crash observation requires development Python with psutil');
     await command('Page.reload');
     await delay(700);
@@ -167,6 +192,28 @@ try {
   await delay(200);
   const violations = await evaluate('window.__security.violations');
   await record('CSP blocks frame and image loads', violations.includes('frame-src') && violations.includes('img-src') && hits === 0);
+  if (options.scenario === 'extended') {
+    await evaluate(`(()=>{
+      const url=${JSON.stringify(canary)};
+      const script=document.createElement('script');script.src=url;document.body.append(script);
+      const style=document.createElement('link');style.rel='stylesheet';style.href=url;document.head.append(style);
+      const object=document.createElement('object');object.data=url;document.body.append(object);
+      const form=document.createElement('form');form.method='POST';form.action=url;document.body.append(form);form.submit();
+      const workerUrl=URL.createObjectURL(new Blob(['postMessage("synthetic-worker")'], {type:'text/javascript'}));
+      try { const worker=new Worker(workerUrl);worker.onmessage=()=>{window.__syntheticWorker=true;worker.terminate()};worker.onerror=()=>{}; } catch {}
+      setTimeout(()=>URL.revokeObjectURL(workerUrl), 1000);
+      try { const socket=new WebSocket(url.replace('http:', 'ws:'));socket.onerror=()=>{}; } catch {}
+      return true;
+    })()`);
+    await delay(300);
+    const blocked = await evaluate('window.__security.violations');
+    for (const directive of ['script-src-elem', 'style-src-elem', 'object-src', 'form-action', 'worker-src', 'connect-src']) {
+      await record(`CSP blocks ${directive} probe`, blocked.includes(directive));
+    }
+    await record('blocked worker executes no code', await evaluate('window.__syntheticWorker === undefined'));
+    await record('extended content probes preserve packaged origin without outbound requests',
+      await evaluate('location.origin') === packagedOrigin && hits === 0);
+  }
   phase = 'new_window';
   await record('new window denied', await evaluate(`window.open(${JSON.stringify(canary + '/new-window')},'_blank') === null`));
   await delay(500);

@@ -8,11 +8,11 @@ import sys
 from threading import Thread
 from time import monotonic
 
-from machine_peer import ROOT, hello, selection, request, wire
+from machine_peer import ROOT, hello, selection, request, wire, machine_command
 
 
 def test_unread_output_cannot_hold_the_control_process_indefinitely(tmp_path):
-    process = subprocess.Popen([sys.executable, "-m", "synapse", "machine"], cwd=tmp_path,
+    process = subprocess.Popen(machine_command(), cwd=tmp_path,
         env={**os.environ, "PYTHONPATH": str(ROOT)}, stdin=subprocess.PIPE,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
     def receive():

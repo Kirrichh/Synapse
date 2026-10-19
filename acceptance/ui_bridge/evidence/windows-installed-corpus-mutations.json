@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "scope": "copied installed canonical CLI; no GUI mutation claim",
+  "baseline": "PASS",
+  "baseline_cases": 36,
+  "records": [
+    {
+      "id": "PIPE-duplicate-key",
+      "target": "synapse/machine/codec.py",
+      "before": "if key in result:",
+      "after": "if False:",
+      "source_sha256": "5571c7577996523cb63fb528364818648f7724c9a2164b0fa61710060ae7b0dc",
+      "detecting_cases": "duplicate top level",
+      "executed": 1,
+      "result": "KILLED"
+    },
+    {
+      "id": "PIPE-negative-zero",
+      "target": "synapse/machine/codec.py",
+      "before": "if token == \"-0\" or abs(value) > SAFE_INTEGER:",
+      "after": "if abs(value) > SAFE_INTEGER:",
+      "source_sha256": "5571c7577996523cb63fb528364818648f7724c9a2164b0fa61710060ae7b0dc",
+      "detecting_cases": "negative zero",
+      "executed": 3,
+      "result": "KILLED"
+    },
+    {
+      "id": "PIPE-boundary",
+      "target": "synapse/machine/codec.py",
+      "before": "if length > limit:",
+      "after": "if length >= limit:",
+      "source_sha256": "5571c7577996523cb63fb528364818648f7724c9a2164b0fa61710060ae7b0dc",
+      "detecting_cases": "exact_limit",
+      "executed": 2,
+      "result": "KILLED"
+    },
+    {
+      "id": "PIPE-refusal-correlation",
+      "target": "synapse/machine/session.py",
+      "before": "return refusal(\"PARAMS_INVALID\", fatal=False, request_id=request_id)",
+      "after": "return refusal(\"PARAMS_INVALID\", fatal=False, request_id=\"unrelated\")",
+      "source_sha256": "4b09a5c1426123082de35eae87beaa9ff18d4c8175cc3de2552d4dad1a03e715",
+      "detecting_cases": "multibyte",
+      "executed": 5,
+      "result": "KILLED"
+    }
+  ],
+  "final": "PASS",
+  "final_cases": 36
+}

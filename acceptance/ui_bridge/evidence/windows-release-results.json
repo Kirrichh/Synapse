@@ -1,0 +1,511 @@
+{
+  "schema": 1,
+  "date": "2026-10-19",
+  "product_source_commit": "1df84ff85641d4e0fa49a1280685ecf3b1d28244",
+  "scope": "Existing Windows PC; current control profile; ordinary-user unsigned release NSIS",
+  "environment": {
+    "windows_version": "10.0.26200.0",
+    "architecture": "x86_64",
+    "webview2": "155.0.4283.62",
+    "rust": "1.99.1 MSVC",
+    "python": "3.12.14",
+    "elevated": false
+  },
+  "artifacts": {
+    "release_executable_sha256": "f28982bd9f447152f605bc9791f12744a78be571c1c5aa116a8a3f098b09987d",
+    "installed_executable_sha256": "c6574a80fd5157ed90b53766592c6224a89ba53ae01b9b692742e673be358820",
+    "installer_sha256": "c05d6aaa2297108c0d2ac68eb5276f3f93f6329d51e9cc8ed81ac720f1c01563",
+    "manifest_sha256": "3b57fc4b9a5895547792f461ec0778878b0d1245e82154d70071d1058fe7fde3",
+    "signature": "NotSigned"
+  },
+  "build": {
+    "status": "PASS",
+    "method": "cargo build --release --locked; tauri bundle --bundles nsis --ci",
+    "frontend": "unchanged previously verified production assets"
+  },
+  "installation": {
+    "initial_host_installation": "PASS",
+    "resume_resource_and_process_checks": {
+      "schema": 1,
+      "elevated": false,
+      "checks": [
+        {
+          "name": "build bundle marker is present",
+          "status": "PASS"
+        },
+        {
+          "name": "installed shell matches exact NSIS transformation",
+          "status": "PASS"
+        },
+        {
+          "name": "installed inventory matches staged inventory",
+          "status": "PASS"
+        },
+        {
+          "name": "installed resource hashes",
+          "status": "PASS"
+        },
+        {
+          "name": "no local pip provenance",
+          "status": "PASS"
+        },
+        {
+          "name": "installed canonical command",
+          "status": "PASS"
+        },
+        {
+          "name": "second shell admits no overlapping core",
+          "status": "PASS"
+        },
+        {
+          "name": "refused shell termination preserves active core",
+          "status": "PASS"
+        },
+        {
+          "name": "abrupt installed shell death terminates its core",
+          "status": "PASS"
+        },
+        {
+          "name": "installed canonical command",
+          "status": "PASS"
+        },
+        {
+          "name": "replacement starts after old core exit",
+          "status": "PASS"
+        },
+        {
+          "name": "core crash leaves shell available for explicit recovery",
+          "status": "PASS"
+        }
+      ],
+      "shell_sha256": "c6574a80fd5157ed90b53766592c6224a89ba53ae01b9b692742e673be358820",
+      "installer_sha256": "c05d6aaa2297108c0d2ac68eb5276f3f93f6329d51e9cc8ed81ac720f1c01563",
+      "status": "PASS",
+      "window_after_core_crash": "verified by the separate actual release consent observer"
+    }
+  },
+  "security_and_channels": {
+    "schema": 1,
+    "instrumentation": "per-process WebView2 CDP; CSP enforced",
+    "checks": [
+      {
+        "name": "actual installed native session ready",
+        "status": "PASS"
+      },
+      {
+        "name": "force close refused while core is ready",
+        "status": "PASS"
+      },
+      {
+        "name": "foreign subscription ACK refused",
+        "status": "PASS"
+      },
+      {
+        "name": "ungranted native command refused: plugin:shell|execute",
+        "status": "PASS"
+      },
+      {
+        "name": "ungranted native command refused: plugin:fs|read_file",
+        "status": "PASS"
+      },
+      {
+        "name": "ungranted native command refused: plugin:webview|create_webview_window",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks JavaScript eval",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks DOM inline script",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks non-IPC fetch",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks frame and image loads",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks script-src-elem probe",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks style-src-elem probe",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks object-src probe",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks form-action probe",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks worker-src probe",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks connect-src probe",
+        "status": "PASS"
+      },
+      {
+        "name": "blocked worker executes no code",
+        "status": "PASS"
+      },
+      {
+        "name": "extended content probes preserve packaged origin without outbound requests",
+        "status": "PASS"
+      },
+      {
+        "name": "new window denied",
+        "status": "PASS"
+      },
+      {
+        "name": "foreign top-level navigation denied",
+        "status": "PASS",
+        "observed": {
+          "sameOrigin": true,
+          "networkRequests": 0,
+          "requests": []
+        }
+      },
+      {
+        "name": "unacknowledged Channel has one outstanding snapshot",
+        "status": "PASS"
+      },
+      {
+        "name": "native heartbeat progresses despite missing Channel ACK",
+        "status": "PASS"
+      },
+      {
+        "name": "old Channel cannot acknowledge replacement subscription",
+        "status": "PASS"
+      },
+      {
+        "name": "shutdown completes despite unacknowledged real Channel",
+        "status": "PASS"
+      },
+      {
+        "name": "renderer recovers confirmed stopped state after reload",
+        "status": "PASS"
+      },
+      {
+        "name": "blocked content made no network request",
+        "status": "PASS"
+      }
+    ]
+  },
+  "crash_consent": {
+    "schema": 1,
+    "instrumentation": "per-process WebView2 CDP; CSP enforced",
+    "checks": [
+      {
+        "name": "actual installed native session ready",
+        "status": "PASS"
+      },
+      {
+        "name": "crash target is the owned installed canonical core",
+        "status": "PASS"
+      },
+      {
+        "name": "actual renderer displays core loss and explicit recovery",
+        "status": "PASS"
+      },
+      {
+        "name": "force close asks for confirmation",
+        "status": "PASS"
+      },
+      {
+        "name": "cancel keeps failed shell open",
+        "status": "PASS"
+      },
+      {
+        "name": "second force close asks for confirmation",
+        "status": "PASS"
+      },
+      {
+        "name": "confirmed force close exits actual installed shell",
+        "status": "PASS"
+      }
+    ]
+  },
+  "environment_isolation": "security observer passed with empty PATH and synthetic PYTHONHOME/PYTHONPATH",
+  "python_ui_regression": {
+    "passed": 155,
+    "failed": 0
+  },
+  "installed_canonical_native_pipes": {
+    "passed": 51,
+    "failed": 0,
+    "method": "external acceptance relay calls production Windows lifecycle::spawn with the verified installed canonical Python bundle",
+    "selection": [
+      "test_machine_cli_acceptance.py",
+      "test_handshake_deadline_acceptance.py",
+      "test_output_backpressure_acceptance.py",
+      "test_pipe_corpus_acceptance.py"
+    ],
+    "scope": "Actual native pipes and installed canonical control endpoint through an external relay; installed GUI corruption is observed separately."
+  },
+  "native_byte_witness": {
+    "status": "PASS",
+    "fidelity_chunkings": 3,
+    "payloads_per_chunking": 9,
+    "damage_cases": 5,
+    "scope": "external synthetic byte witness through production Windows launcher; exact bytes in both directions and independent stderr"
+  },
+  "new_mutations": {
+    "canonical_corpus": 4,
+    "native_pipe_endpoints": 2,
+    "native_caller_contexts": 2,
+    "result": "KILLED in the individually identified passing-baseline observations"
+  },
+  "observer_repairs": [
+    "The first extended Worker probe hit same-origin refusal before CSP; a Blob Worker then reaches CSP and is denied without executing.",
+    "Premature header refusal can close a large input write; the corpus observer now checks its actual reply before classifying the mutant.",
+    "The byte witness now drains stderr concurrently; its initial misdirected-stdout timeout was inconclusive and the rerun observes the frame failure."
+  ],
+  "remaining": [
+    "Supported Linux graphical systemd/cgroup and installed acceptance: explicitly deferred by the owner.",
+    "Clean Windows image, other supported Windows/WebView2 versions, dependency provisioning and signing: not established on this existing PC.",
+    "JCS parameter binding and remaining P1 owner integrations, domain readiness, durable recovery and delivery classes: unimplemented.",
+    "Full domain/installed source scenarios and arbitrary domain byte corpus through GUI: unavailable in the current control-only product.",
+    "TR-2 and P1 remain IN_PROGRESS; all 201 requirement IDs and 44 complete source-case verdicts are preserved."
+  ],
+  "installed_gui_transport_damage": {
+    "scenarios_passed": 7,
+    "assertions_passed": 35,
+    "failed": 0,
+    "method": "External Windows x64 observer duplicates only the verified owned canonical core stdout pipe and writes at most five synthetic bytes. EOF cases terminate only that owned core. Installed files and production launch code are unchanged.",
+    "scope": "Actual installed release GUI and native failure state; EOF cases observed CORE_EXITED, so native byte witnesses separately establish partial-frame rejection and no resynchronization.",
+    "observations": {
+      "zero": {
+        "schema": 1,
+        "instrumentation": "per-process WebView2 CDP; CSP enforced",
+        "checks": [
+          {
+            "name": "actual installed native session ready",
+            "status": "PASS"
+          },
+          {
+            "name": "synthetic fault enters only the owned installed stdout pipe",
+            "status": "PASS",
+            "observed": {
+              "fault": "zero"
+            }
+          },
+          {
+            "name": "actual release renderer shows failed transport and recovery",
+            "status": "PASS"
+          },
+          {
+            "name": "native failure matches the injected transport boundary",
+            "status": "PASS",
+            "observed": {
+              "code": "PROTOCOL_ERROR"
+            }
+          },
+          {
+            "name": "transport failure does not report successful shutdown",
+            "status": "PASS"
+          }
+        ]
+      },
+      "oversize": {
+        "schema": 1,
+        "instrumentation": "per-process WebView2 CDP; CSP enforced",
+        "checks": [
+          {
+            "name": "actual installed native session ready",
+            "status": "PASS"
+          },
+          {
+            "name": "synthetic fault enters only the owned installed stdout pipe",
+            "status": "PASS",
+            "observed": {
+              "fault": "oversize"
+            }
+          },
+          {
+            "name": "actual release renderer shows failed transport and recovery",
+            "status": "PASS"
+          },
+          {
+            "name": "native failure matches the injected transport boundary",
+            "status": "PASS",
+            "observed": {
+              "code": "PROTOCOL_ERROR"
+            }
+          },
+          {
+            "name": "transport failure does not report successful shutdown",
+            "status": "PASS"
+          }
+        ]
+      },
+      "maximum": {
+        "schema": 1,
+        "instrumentation": "per-process WebView2 CDP; CSP enforced",
+        "checks": [
+          {
+            "name": "actual installed native session ready",
+            "status": "PASS"
+          },
+          {
+            "name": "synthetic fault enters only the owned installed stdout pipe",
+            "status": "PASS",
+            "observed": {
+              "fault": "maximum"
+            }
+          },
+          {
+            "name": "actual release renderer shows failed transport and recovery",
+            "status": "PASS"
+          },
+          {
+            "name": "native failure matches the injected transport boundary",
+            "status": "PASS",
+            "observed": {
+              "code": "PROTOCOL_ERROR"
+            }
+          },
+          {
+            "name": "transport failure does not report successful shutdown",
+            "status": "PASS"
+          }
+        ]
+      },
+      "utf8": {
+        "schema": 1,
+        "instrumentation": "per-process WebView2 CDP; CSP enforced",
+        "checks": [
+          {
+            "name": "actual installed native session ready",
+            "status": "PASS"
+          },
+          {
+            "name": "synthetic fault enters only the owned installed stdout pipe",
+            "status": "PASS",
+            "observed": {
+              "fault": "utf8"
+            }
+          },
+          {
+            "name": "actual release renderer shows failed transport and recovery",
+            "status": "PASS"
+          },
+          {
+            "name": "native failure matches the injected transport boundary",
+            "status": "PASS",
+            "observed": {
+              "code": "PROTOCOL_ERROR"
+            }
+          },
+          {
+            "name": "transport failure does not report successful shutdown",
+            "status": "PASS"
+          }
+        ]
+      },
+      "json": {
+        "schema": 1,
+        "instrumentation": "per-process WebView2 CDP; CSP enforced",
+        "checks": [
+          {
+            "name": "actual installed native session ready",
+            "status": "PASS"
+          },
+          {
+            "name": "synthetic fault enters only the owned installed stdout pipe",
+            "status": "PASS",
+            "observed": {
+              "fault": "json"
+            }
+          },
+          {
+            "name": "actual release renderer shows failed transport and recovery",
+            "status": "PASS"
+          },
+          {
+            "name": "native failure matches the injected transport boundary",
+            "status": "PASS",
+            "observed": {
+              "code": "PROTOCOL_ERROR"
+            }
+          },
+          {
+            "name": "transport failure does not report successful shutdown",
+            "status": "PASS"
+          }
+        ]
+      },
+      "header_eof": {
+        "schema": 1,
+        "instrumentation": "per-process WebView2 CDP; CSP enforced",
+        "checks": [
+          {
+            "name": "actual installed native session ready",
+            "status": "PASS"
+          },
+          {
+            "name": "synthetic fault enters only the owned installed stdout pipe",
+            "status": "PASS",
+            "observed": {
+              "fault": "header_eof"
+            }
+          },
+          {
+            "name": "actual release renderer shows failed transport and recovery",
+            "status": "PASS"
+          },
+          {
+            "name": "native failure matches the injected transport boundary",
+            "status": "PASS",
+            "observed": {
+              "code": "CORE_EXITED"
+            }
+          },
+          {
+            "name": "transport failure does not report successful shutdown",
+            "status": "PASS"
+          }
+        ]
+      },
+      "body_eof": {
+        "schema": 1,
+        "instrumentation": "per-process WebView2 CDP; CSP enforced",
+        "checks": [
+          {
+            "name": "actual installed native session ready",
+            "status": "PASS"
+          },
+          {
+            "name": "synthetic fault enters only the owned installed stdout pipe",
+            "status": "PASS",
+            "observed": {
+              "fault": "body_eof"
+            }
+          },
+          {
+            "name": "actual release renderer shows failed transport and recovery",
+            "status": "PASS"
+          },
+          {
+            "name": "native failure matches the injected transport boundary",
+            "status": "PASS",
+            "observed": {
+              "code": "CORE_EXITED"
+            }
+          },
+          {
+            "name": "transport failure does not report successful shutdown",
+            "status": "PASS"
+          }
+        ]
+      }
+    }
+  }
+}

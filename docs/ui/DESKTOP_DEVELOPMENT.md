@@ -180,3 +180,54 @@ The mechanism decision does not close TR-2. Execute the
 [transport and launch obligations](ACCEPTANCE_MATRIX.md#native-transport-and-launch-obligations)
 at the specified component, desktop, and installed levels. Source inspection and
 cross-compilation do not establish startup-fault cleanup or descendant containment.
+
+
+### Windows release and isolated boundary probes
+
+The [additional release evidence](P1_VERIFICATION.md#additional-windows-release-and-boundary-acceptance)
+distinguishes the actual installed release from external native witnesses and
+private foreign-context variants. Run all Windows lifecycle probes serially with
+no other Synapse window: the production admission mutex and Job are session-wide.
+Keep temporary paths and reports outside the repository.
+
+```powershell
+cargo build --release --locked --manifest-path synapse/ui/src-tauri/Cargo.toml
+# From synapse/ui, with matching CARGO_TARGET_DIR and verified production assets:
+npx tauri bundle --bundles nsis --ci
+# Build external acceptance hosts separately:
+cargo build --locked --manifest-path acceptance/ui_bridge/native/Cargo.toml --bins
+windows_pipe_bytes.exe
+```
+
+For the installed control corpus, set the acceptance-only environment variable
+`SYNAPSE_ACCEPTANCE_MACHINE_COMMAND` to a JSON argv array containing
+`windows_installed_pipe.exe`, the verified installed core directory, and its
+SHA-256 manifest digest. Run the machine CLI, handshake deadline, output
+backpressure and pipe corpus pytest files. The relay uses the product launcher;
+it does not replace the canonical Python entry or ship in the application.
+
+`windows_installed_corpus_mutations.py` takes `--core`, a fresh external
+`--workspace`, and `--output`. `windows_pipe_mutations.py` takes a fresh external
+`--workspace`, `--cargo` and `--output`, with an external `CARGO_TARGET_DIR`.
+
+Prepare foreign-context copies with `windows_caller_contexts.py --prepare`,
+`--workspace`, `--cargo`, `--output` and an external `CARGO_TARGET_DIR`. Then run
+the same driver with `--workspace`, `--output` and `--node` from an ordinary
+interactive desktop. Its origin observer requires free loopback port 80 so the
+independent non-default-port rule cannot mask the origin predicate. An occupied
+port is an infrastructure failure; never stop another service to obtain it.
+These copies deliberately grant capabilities and relax earlier navigation/request
+admission solely to reach the actual native caller filter. Never install or ship
+the private copies, their resources, or their acceptance instrumentation.
+
+
+For installed GUI corruption, run `windows_installed_security.mjs` with
+`--scenario transport`, the installed `--executable`, an external `--workspace`
+and `--output`, and `--python` pointing to an acceptance interpreter with psutil.
+Run `--fault zero`, `oversize`, `maximum`, `utf8`, `json`, `header_eof`, and
+`body_eof` serially. `windows_core_fault.py` verifies the owned canonical child's
+parent, executable and argv before duplicating its stdout pipe. This observer
+uses Windows x64 process-parameter offsets and is not a portable product API.
+EOF cases terminate only that owned child; the GUI may observe CORE_EXITED before
+the framing reader sees partial EOF. Native byte witnesses establish the specific
+partial-frame/no-resynchronization contract separately.

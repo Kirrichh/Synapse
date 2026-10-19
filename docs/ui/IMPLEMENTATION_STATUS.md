@@ -30,7 +30,7 @@ Independent capabilities may progress while unrelated open conditions remain.
 | Stage | Scope and exit evidence | Current state |
 |---|---|---|
 | P0 — Foundation | English v1, all original requirements/map entries, permanent rules, researched UI security design, prototype, traceability, reviewed branch | Documentation prepared |
-| P1 — Trusted application and bridge | Bundled canonical machine mode, schemas/JCS, handshake/framing/queues, trusted caller context, diagnostics/CSP, Windows/Linux containment/shutdown; behavioral and mutation evidence | IN_PROGRESS: control/bootstrap implementation and local evidence exist; F-06 mechanism decision resolved; Windows installed control/crash evidence recorded; installed negative checks pass after the F-11 request guard; full transport/platform acceptance and JCS remain open |
+| P1 — Trusted application and bridge | Bundled canonical machine mode, schemas/JCS, handshake/framing/queues, trusted caller context, diagnostics/CSP, Windows/Linux containment/shutdown; behavioral and mutation evidence | IN_PROGRESS: control/bootstrap implementation and local evidence exist; F-06 mechanism decision resolved; Windows installed control/crash evidence recorded; installed negative checks pass after the F-11 request guard; unsigned Windows release/control-pipe/caller checks pass; full domain/platform acceptance and JCS remain open |
 | P2 — Authorized reading and synchronization | Project/material reads, domain snapshots/coverage/epochs, progress/freshness, unsubscribe, retained evidence gaps and safe source projections | Not started |
 | P3 — Durable commands and permissions | Intent/pre-send recovery, owner acceptance/status/retention, binding conflicts, grant/refuse/revoke, exclusive once-binding, new-task mode policy | Not started |
 | P4 — Task workspace and editing | Required panel layout, main conversation contract, task submit/control, real execution cards, Monaco reads/diffs/versioned own edits, RU/EN draft/focus preservation | Not started |
@@ -120,30 +120,24 @@ the product integration index. They are not product links or data feeds.
 
 ## Remaining before P1 can close
 
-1. Finish the Windows environment/release matrix and installed byte corpus.
-   [Executed Windows evidence](P1_VERIFICATION.md#continued-windows-fault-and-runtime-verification)
-   now includes real startup fault/boundary injection, creation-time Job membership,
-   actual adapter/MCP descendants, six detecting mutants, and fixed canonical
-   stderr diagnostics. These scoped results do not establish every supported
-   environment, clean-machine dependencies or signed release acceptance.
-2. Execute the supported Linux systemd/cgroup profile with a real graphical user
-   session, shell death, descendant cleanup and replacement ordering. The earlier
-   Linux workspace establishes only refusal outside the service. The owner
-   explicitly deferred Linux execution on 2026-10-19; it remains acceptance debt.
-3. Complete broader foreign-caller and platform security coverage. Windows
-   installed CSP/command refusal, zero-request navigation after F-11, real stalled
-   Channels and force-close cancel/confirm now pass. Linux WebKit startup remains
-   unverified; the earlier environment had a runtime-layout blocker.
-4. Finish the [transport/launch obligations](ACCEPTANCE_MATRIX.md#native-transport-and-launch-obligations),
-   including the full installed byte corpus. F-08 is resolved by producer LF control,
-   real bundled stderr/native-reader acceptance and a detecting mutation. F-10
-   startup ownership is fixed and tested at the reported boundaries. F-06 is
-   resolved; TR-2 stays IN_PROGRESS.
-5. Finish JCS/parameter-binding and remaining P1 contracts with their actual owner
+1. Finish the supported environment matrix: clean Windows provisioning, other
+   supported Windows/WebView2 versions and signing. The current PC now has
+   [unsigned release, installed control-pipe and caller evidence](P1_VERIFICATION.md#additional-windows-release-and-boundary-acceptance),
+   in addition to startup faults, actual adapter/MCP cleanup and installed recovery.
+2. Execute the supported Linux graphical systemd/cgroup and installed profile.
+   The owner explicitly deferred Linux execution on 2026-10-19; it remains debt.
+3. Finish JCS/parameter-binding and remaining P1 contracts with their actual owner
    integrations. The integer-only control profile does not implement COMP-6 or
    generic domain parameter hashing, readiness, recovery or delivery classes.
-6. Complete affected requirement/source-case acceptance and security review at the
-   required platform levels before marking P1 VERIFIED or advancing its completion gate.
+4. Complete the transport/launch and source-case obligations for those domain
+   integrations. Windows arbitrary byte fidelity has native witness evidence and
+   the installed canonical control endpoint passes 51 pipe cases. Seven corrupt
+   transport scenarios also show failure in the installed release GUI. Arbitrary
+   domain replies remain unavailable in the current control-only implementation.
+5. Complete affected requirement/source-case acceptance and security review at
+   every required platform level before marking P1 VERIFIED. The 201 original
+   requirement IDs and 44 complete source cases retain their existing identities;
+   partial control evidence does not close complete scenarios.
 
 P2–P7 remain fully required. Record observations in the single
 [development notebook](DEVELOPMENT_NOTES.md); no reduced completion criterion applies.
@@ -162,6 +156,7 @@ and traceability together before changing what completion means.
 
 | Date | Work and result |
 |---|---|
+| 2026-10-19 | Added 155-case Python regression, 51 installed canonical/native-pipe cases, raw native byte witnesses, unsigned ordinary-user release NSIS, 26 release security/Channel, 7 consent checks and 7 installed GUI transport-damage scenarios (35 assertions). Actual foreign native label/origin contexts refuse commands; eight focused mutants are detected across the identified runs. Clean-machine/signing/wider versions, Linux and unfinished P1 owner/JCS contracts remain open. |
 | 2026-10-19 | Continued Windows verification: 119 Python and 31 native checks, six startup cases and real adapter/MCP cleanup passed. Fixed F-08 diagnostic framing, F-10 startup Job ownership and F-11 navigation GET leakage. Six lifecycle/diagnostic and six request-guard mutants were killed. Final ordinary-user installed identity, CSP/navigation, Channels and crash consent passed. Linux remains owner-deferred debt; TR-2/P1 remain IN_PROGRESS. |
 | 2026-10-19 | Verified Windows components, native Job launch/containment, exact wire bytes, debug NSIS installation, installed shell/core crash recovery and visible shutdown on an isolated PR #110 checkout. Fixed bundle provenance/launcher leakage; five packaging checks and ten focused mutants passed. Retained the Windows stderr failure, base-reproduced replay failure and explicit platform/security/JCS gaps. TR-2/P1 remain IN_PROGRESS. |
 | 2026-10-18 | Created foundation branch from current main; translated supplied specification into English v1; documented detailed coding, acceptance, mutation, and security rules; retained original prototype; established all requirement/case/open-condition registers |

@@ -13,6 +13,16 @@ from threading import Thread
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def machine_command():
+    """Explicit acceptance-only override for the installed native pipe relay."""
+    supplied = os.environ.get("SYNAPSE_ACCEPTANCE_MACHINE_COMMAND")
+    if supplied is None:
+        return [sys.executable, "-m", "synapse", "machine"]
+    command = json.loads(supplied)
+    assert isinstance(command, list) and command and all(isinstance(arg, str) for arg in command)
+    return command
+
+
 def hello(**changes):
     return {"schema_version": "1.0", "type": "hello", "component": "shell",
             "component_version": "acceptance", "protocol_min": 1, "protocol_max": 1,
@@ -37,10 +47,11 @@ def wire(value):
 
 class MachinePeer:
     def __init__(self, directory, *, command=None):
-        self.process = subprocess.Popen(command or [sys.executable, "-m", "synapse", "machine"],
+        self.process = subprocess.Popen(command or machine_command(),
             cwd=directory, env={**os.environ, "PYTHONPATH": str(ROOT)},
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.messages = Queue()
+        self.frames = Queue()
         Thread(target=self._reader, daemon=True).start()
 
     def _reader(self):
@@ -52,6 +63,8 @@ class MachinePeer:
                 if not 0 < length <= 65536:
                     raise AssertionError("Unbounded or non-framed product output")
                 payload = self.process.stdout.read(length)
+                assert len(payload) == length, "Truncated product output payload"
+                self.frames.put(header + payload)
                 self.messages.put(json.loads(payload))
         except Exception as error:
             self.messages.put(error)

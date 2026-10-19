@@ -171,8 +171,9 @@ The runtime probe requires the declared agent-mcp extra in its development Pytho
 Its native executable is an acceptance host for real existing launch owners, not
 a replacement packaged core. It never enters the shipped resources or UI routes.
 
-Remaining Windows work concerns the full installed byte corpus, broader foreign
-caller contexts, and release/clean-machine coverage. Linux execution is deferred debt. JCS and domain-owner contracts remain
+The subsequent [release and boundary continuation](#additional-windows-release-and-boundary-acceptance)
+adds installed control-pipe, foreign-caller and release evidence. Clean-machine
+and wider platform coverage remain open. Linux execution is deferred debt. JCS and domain-owner contracts remain
 unimplemented by this control profile. TR-2/P1, OC-01/09/32 and F-07 are not closed;
 all 44 complete source-case verdicts remain NOT_RUN.
 
@@ -212,6 +213,69 @@ python -B acceptance/ui_bridge/windows_network_mutations.py --workspace <private
 node acceptance/ui_bridge/windows_installed_security.mjs --executable <installed-desktop.exe> --workspace <private-scratch> --output <security-result.json>
 node acceptance/ui_bridge/windows_installed_security.mjs --executable <installed-desktop.exe> --workspace <private-scratch> --output <consent-result.json> --scenario crash --python <development-python.exe>
 ```
+
+### Additional Windows release and boundary acceptance
+
+The 2026-10-19 continuation tests the unchanged product implementation from
+`1df84ff` on Windows x86_64 build 26200 with WebView2 155.0.4283.62. It adds
+acceptance and evidence, not another product implementation. The complete
+[release record](../../acceptance/ui_bridge/evidence/windows-release-results.json)
+binds the executable, installer and resource inventory.
+
+| Check | Result | Actual scope |
+|---|---|---|
+| Python UI acceptance regression | **155 passed** | Includes the new control-pipe corpus; no full-repository claim |
+| Installed canonical endpoint through production native pipes | **51 passed** | The external relay calls the actual Windows launcher with the verified installed bundle. Fragmentation, Unicode/escapes, exact response frames, 1024/65536-byte boundaries, every invalid shared-corpus entry, corruption/no resynchronization, EOF, handshake and unread-output deadlines |
+| Native pipe byte witness | **Passed** | Nine payloads across three fragment sizes, including every byte value and header LF/CR/SUB boundaries, plus five damaged-stream cases. A synthetic external child establishes exact bidirectional bytes and separate stderr; it is not the canonical core |
+| Optimized release EXE and NSIS | **Built and installed** | Ordinary user; exact NSIS marker transformation and every resource hash verified. The resume run reverified 12 identity/process checks after the initial successful installation |
+| Actual installed release window | **26 passed** | CSP, ungranted commands, foreign ACK, navigation with zero observed requests, real stalled Channels, renderer recovery, and additional script/style/object/form/Blob Worker/WebSocket probes |
+| Runtime dependency isolation | **Passed** | The release window reaches Ready with empty PATH and synthetic PYTHONHOME/PYTHONPATH; this does not emulate a clean OS without WebView2 |
+| Actual release crash consent | **7 passed** | Owned canonical core loss, visible recovery, cancel preserves the shell and confirmed force-close exits |
+| Corrupt transport in the installed release window | **7 scenarios, 35 assertions passed** | Zero/oversized/maximum lengths, invalid UTF-8/JSON, and partial header/body at EOF enter the owned core stdout pipe. The real renderer shows failure/recovery and never reports successful shutdown |
+| Actual native foreign caller contexts | **Two contexts refused all five commands** | External topology copies reach the unchanged native handler with a real foreign window label or foreign origin. Their capability/navigation accommodations are confined to private copies; the installed topology remains intact |
+
+The installed protocol refuses arbitrary domain parameters. Their correlated
+refusals prove parsing/rejection and exact response frames, not echo fidelity of
+unimplemented domain replies. Exact arbitrary bytes are established separately
+by the native byte witness. A separate Windows x64 observer duplicates only the
+verified owned core's stdout pipe and writes a bounded synthetic frame; it does
+not modify the installed files or add a product hook. The five malformed-frame
+cases produce `PROTOCOL_ERROR` in the installed release window. Both partial-EOF
+cases produce `CORE_EXITED`: process-exit observation may precede the framing
+reader, so these GUI cases establish visible failure, while the native byte
+witness separately establishes partial-frame rejection and no resynchronization.
+These observations do not close full AC-25 or any complete domain case.
+
+The new detecting mutations are recorded separately:
+[four installed-corpus controls](../../acceptance/ui_bridge/evidence/windows-installed-corpus-mutations.json),
+[two native endpoint controls](../../acceptance/ui_bridge/evidence/windows-native-byte-mutations.json),
+and [two actual caller controls](../../acceptance/ui_bridge/evidence/windows-caller-contexts.json).
+The corpus/native campaigns have passing baselines and final reruns. Caller
+results combine independently successful runs of the same identified binaries:
+label evidence from the first run and origin evidence from the default-port run.
+The initial origin mutant survived behind the independent non-default-port
+refusal; a standard-port loopback case detects it. The later label-mutant attempt
+failed before establishing IPC context and is retained as infrastructure failure,
+not counted as a kill. No meaningful survivor is hidden by this consolidation.
+
+Two observer defects were also corrected without relaxing product assertions:
+a cross-origin Worker was rejected before CSP, so a Blob Worker now tests CSP;
+and the byte witness drains stderr concurrently so a misdirected stdout is
+observed instead of blocking its own reader. The initial timeout is inconclusive.
+
+Release artifact SHA-256 values:
+
+| Artifact | SHA-256 |
+|---|---|
+| Built EXE | `f28982bd9f447152f605bc9791f12744a78be571c1c5aa116a8a3f098b09987d` |
+| Installed EXE after exact NSIS patch | `c6574a80fd5157ed90b53766592c6224a89ba53ae01b9b692742e673be358820` |
+| NSIS installer | `c05d6aaa2297108c0d2ac68eb5276f3f93f6329d51e9cc8ed81ac720f1c01563` |
+
+The package is **unsigned**. Clean-machine dependencies, other supported
+Windows/WebView2 versions and signing remain release-matrix work. Supported
+Linux execution remains owner-deferred. JCS/parameter binding, owner integration,
+domain readiness/recovery/delivery and complete source scenarios remain required
+implementation and acceptance work. TR-2/P1 stay IN_PROGRESS.
 
 ## Automatic affected checks
 
@@ -412,14 +476,16 @@ alone. The PR still selects the consumers of its cumulative executable changes.
   every supported environment.
 - Windows installed CSP, ungranted commands, foreign ACK, navigation request
   denial, force-close cancel/confirm and stalled real Channels now have executed
-  evidence. A separate foreign privileged caller context and the full supported
-  platform matrix are not established by these probes.
+  evidence. The additional continuation reaches actual foreign native contexts in
+  explicitly weakened external topology copies; the full supported platform matrix
+  remains unverified.
 - The Windows stderr CRLF failure is resolved at the producer and verified through
   the rebuilt canonical stderr/native reader, with a detecting mutation.
 - JCS parameter hashing, domain command ownership/recovery, domain delivery classes
   and the later UI workspace/features are not supplied by the control profile.
-- Debug NSIS on this existing PC does not establish signing, clean-machine
-  dependencies, all supported Windows environments or release readiness.
+- Both debug and optimized release NSIS now run on this existing PC. The unsigned
+  release does not establish signing, clean-machine dependencies, other supported
+  Windows/WebView2 versions or complete release readiness.
 
 See [remaining P1 work](IMPLEMENTATION_STATUS.md#remaining-before-p1-can-close),
 [all requirements](REQUIREMENT_MATRIX.md), [source cases](ACCEPTANCE_MATRIX.md),

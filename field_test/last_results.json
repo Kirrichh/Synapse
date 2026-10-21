@@ -1,0 +1,470 @@
+[
+  {
+    "section": "A",
+    "name": "world seed=1 (34 services, 41 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=2 (40 services, 56 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=3 (37 services, 39 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=4 (37 services, 30 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=5 (40 services, 14 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=6 (38 services, 26 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=7 (39 services, 26 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=8 (37 services, 41 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=9 (36 services, 30 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=10 (37 services, 26 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=11 (39 services, 15 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=12 (38 services, 51 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=13 (39 services, 26 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=14 (35 services, 21 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=15 (33 services, 28 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=16 (39 services, 35 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=17 (42 services, 38 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=18 (37 services, 48 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=19 (39 services, 46 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=20 (44 services, 27 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=21 (39 services, 34 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=22 (30 services, 33 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=23 (36 services, 34 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=24 (42 services, 47 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=25 (38 services, 19 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=26 (44 services, 37 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=27 (45 services, 34 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=28 (31 services, 16 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=29 (40 services, 32 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=30 (36 services, 30 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=31 (31 services, 28 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=32 (39 services, 32 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=33 (41 services, 45 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=34 (37 services, 31 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=35 (39 services, 26 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=36 (37 services, 36 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=37 (41 services, 25 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=38 (43 services, 32 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=39 (35 services, 22 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=40 (37 services, 27 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=41 (40 services, 41 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=42 (36 services, 29 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=43 (33 services, 21 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=44 (38 services, 48 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=45 (34 services, 44 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=46 (37 services, 24 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=47 (37 services, 31 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=48 (42 services, 37 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=49 (36 services, 29 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "A",
+    "name": "world seed=50 (40 services, 23 alerts)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "section": "B",
+    "name": "blast radius above approval (INC-2)",
+    "ok": true,
+    "detail": "exit=1 stderr='Error: blast radius above approval' leaked=[]"
+  },
+  {
+    "section": "B",
+    "name": "destructive command to Ops",
+    "ok": true,
+    "detail": "exit=1 stderr='Error: destructive command forbidden' leaked=[]"
+  },
+  {
+    "section": "B",
+    "name": "irreversible rollback intent",
+    "ok": true,
+    "detail": "exit=1 stderr='Error: rollback must be reversible' leaked=[]"
+  },
+  {
+    "section": "B",
+    "name": "ungrounded claim fails verify",
+    "ok": true,
+    "detail": "exit=1 stderr='Error: Verification failed: root cause must be grounded' leaked=[]"
+  },
+  {
+    "section": "B",
+    "name": "guard tries to send (purity)",
+    "ok": true,
+    "detail": "exit=1 stderr='Error: Policy guard cannot send actor messages' leaked=[]"
+  },
+  {
+    "section": "B",
+    "name": "dream tries to act on the world (send)",
+    "ok": true,
+    "detail": "exit=1 stderr='Error: dream cannot send actor messages; use integrate' leaked=[]"
+  },
+  {
+    "section": "C",
+    "name": "approve + green -> RESOLVED in 4 processes",
+    "ok": true,
+    "detail": "['PENDING', 'PENDING', 'PENDING', 'COMPLETED'] ['summary: db pool exhausted after d1-c', 'health green', 'RESOLVED']"
+  },
+  {
+    "section": "C",
+    "name": "deny -> REJECTED, no execution",
+    "ok": true,
+    "detail": "['summary: summary', 'REJECTED by on-call']"
+  },
+  {
+    "section": "C",
+    "name": "approve + red -> ESCALATED",
+    "ok": true,
+    "detail": "['summary: summary', 'health red', 'ESCALATED']"
+  },
+  {
+    "section": "C",
+    "name": "duplicate signal is answered from the stored result, artifact untouched",
+    "ok": true,
+    "detail": "{\"artifact_path\":\"/tmp/blackout-8r6feccx/state-happy/happy.json\",\"artifact_revision\":3,\"correlation_id\":null,\"exit_code\":20,\"history_hash\":\"90a55626c04f9a1c83ac"
+  },
+  {
+    "section": "C",
+    "name": "conflicting signal is refused (exit 24)",
+    "ok": true,
+    "detail": "{\"correlation_id\":null,\"error\":{\"code\":\"RESOLUTION_CONFLICT\",\"message\":\"Resolution conflict\"},\"exit_code\":24,\"result_schema_version\":\"1.0.0\",\"run_id\":\"happy\",\"s"
+  },
+  {
+    "section": "C",
+    "name": "tampered source in artifact is refused (exit 21)",
+    "ok": true,
+    "detail": "{\"correlation_id\":null,\"error\":{\"code\":\"ARTIFACT_INVALID_OR_INTEGRITY_FAILURE\",\"message\":\"Artifact invalid or integrity failure\"},\"exit_code\":21,\"result_schema_"
+  },
+  {
+    "section": "D",
+    "name": "full Blackout scenario replays without drift",
+    "ok": false,
+    "detail": "or: golden replay drift detected: drift=11, expected_hash=51b87dacfa07a5dcfae61b1f19a4955b1474e85940bd3c631a407863de25d771, actual_hash=bd77c162f0d657c02e022358a3a207afdcaf0307d357047710b17cbf506be308"
+  },
+  {
+    "section": "D",
+    "name": "forged event in recorded history is detected",
+    "ok": true,
+    "detail": "ArtifactIntegrityError: execution_history chain broken in artifact\n"
+  },
+  {
+    "section": "D",
+    "name": "minimal debate replays without drift",
+    "ok": true,
+    "detail": "9ac\", \"locals_keys\": [\"d\"], \"mailbox_count\": 0, \"memory_audit_length\": 0, \"output_hash\": \"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945\", \"policy_stack_depth\": 0, \"stack_depth\": 0}}"
+  },
+  {
+    "section": "D",
+    "name": "minimal fracture replays without drift",
+    "ok": true,
+    "detail": "ocals_keys\": [\"L\", \"self\"], \"mailbox_count\": 0, \"memory_audit_length\": 0, \"output_hash\": \"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945\", \"policy_stack_depth\": 0, \"stack_depth\": 0}}"
+  },
+  {
+    "section": "D",
+    "name": "minimal integrate rollback replays without drift",
+    "ok": true,
+    "detail": "862\", \"locals_keys\": [\"a\"], \"mailbox_count\": 0, \"memory_audit_length\": 0, \"output_hash\": \"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945\", \"policy_stack_depth\": 0, \"stack_depth\": 0}}"
+  },
+  {
+    "section": "D",
+    "name": "minimal imprint replays without drift",
+    "ok": false,
+    "detail": "ror: golden replay drift detected: drift=3, expected_hash=d2560161d76512c7c17ec2248a307ebe16bb6f66ad398cf369b8f45a63a1b987, actual_hash=f0ff9e897593fab30c4bbb96946e8071fa6813f5f060d6b79737d7ed8a27457b"
+  },
+  {
+    "section": "D",
+    "name": "minimal intention cascade replays without drift",
+    "ok": false,
+    "detail": "ror: golden replay drift detected: drift=3, expected_hash=c8528545c77256bcc861a63325790679cf2a5eab94864b9e95bb0e0a31894a84, actual_hash=439b56fbcbe7c77bf6f63655b36dd53ab3f5a8309c34769ab9237c7470bcfb5c"
+  },
+  {
+    "section": "E",
+    "name": "VM resume inside `context` clobbers the host context stack",
+    "ok": false,
+    "detail": "REPRODUCED"
+  },
+  {
+    "section": "E",
+    "name": "affective threshold never fires for events inside a function",
+    "ok": false,
+    "detail": "REPRODUCED"
+  },
+  {
+    "section": "E",
+    "name": "threshold action `reflect on self` (spec example) fails",
+    "ok": false,
+    "detail": "REPRODUCED"
+  },
+  {
+    "section": "E",
+    "name": "`imprint` inside `dream` escapes the sandbox into long-term memory",
+    "ok": false,
+    "detail": "REPRODUCED"
+  },
+  {
+    "section": "E",
+    "name": "fracture `consensus majority` does not pick the majority position",
+    "ok": false,
+    "detail": "REPRODUCED"
+  },
+  {
+    "section": "E",
+    "name": "`distributed consensus` cannot collect votes from .syn (always deferred)",
+    "ok": false,
+    "detail": "REPRODUCED"
+  },
+  {
+    "section": "E",
+    "name": "string literals have no escapes (\\n printed literally)",
+    "ok": false,
+    "detail": "REPRODUCED"
+  },
+  {
+    "section": "E",
+    "name": "map literal with a variable key uses the variable name, error is a bare KeyError",
+    "ok": false,
+    "detail": "REPRODUCED"
+  },
+  {
+    "section": "E",
+    "name": "policy violation cannot be handled in the interpreter (no try/catch)",
+    "ok": false,
+    "detail": "REPRODUCED"
+  }
+]

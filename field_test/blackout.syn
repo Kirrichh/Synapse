@@ -1,0 +1,431 @@
+// ═══════════════════════════════════════════════════════════════════
+// Operation Blackout — multi-stage incident investigation on Synapse.
+//
+// The harness (run_field_test.py) prepends `let incidents = [...]`:
+// randomly generated outages over a random service dependency graph.
+// For every incident the agents must, from raw telemetry alone:
+//   1. triage the alert stream through an actor mailbox (dedupe, severity);
+//   2. find failing services and their first failure minute;
+//   3. find the root cause by graph reasoning (failing, no failing deps);
+//   4. cross-check the blast radius by reverse traversal from the root;
+//   5. pick the culprit deploy (last deploy to root before first failure);
+//   6. argue hypotheses (debate, fracture self with consensus);
+//   7. consult and update long-term memory (memory palace);
+//   8. plan the remediation (intention cascade, plan weave);
+//   9. pass governance (intent + policy guards) and act through an actor;
+//  10. write the postmortem transactionally (a bad draft must roll back);
+//  11. track on-call stress (affective state/events/threshold/modulation);
+//  12. let a habit form on repeated incident context;
+//  13. recompute the error budget inside the Cognitive VM with
+//      checkpoint/resume and compare with the interpreter's own result;
+//  14. audit itself through reflect.
+// Every conclusion is printed as `RESULT|<incident>|<key>|<value>` and
+// checked by the harness against an independently computed answer.
+// ═══════════════════════════════════════════════════════════════════
+
+agent Triage {
+    model "mock"
+    trust level high
+    trust scope ["infra"]
+}
+
+agent Ops {
+    model "mock"
+    trust level high
+    trust scope ["infra"]
+}
+
+agent Lead {
+    model "mock"
+    soulprint {
+        values: [ integrity: 1.0, caution: 0.85 ]
+        memory: long_term
+        style: "methodical"
+    }
+}
+
+agent Peer {
+    model "mock"
+}
+
+// ── governance ─────────────────────────────────────────────────────
+policy ProdSafety {
+    target "Ops.execute"
+    guard (args) {
+        if args[0].command.contains("DROP") { reject "destructive command forbidden" }
+        if args[0].command.contains("rm -rf") { reject "destructive command forbidden" }
+    }
+}
+
+policy ChangeControl {
+    target "intent.rollback"
+    guard (args) {
+        if args[0].reversible == false { reject "rollback must be reversible" }
+        if args[0].blast_radius > args[0].approved_radius { reject "blast radius above approval" }
+    }
+}
+
+claim rca_grounded {
+    text "Root cause is derived from telemetry and the dependency graph"
+    evidence "first-failure analysis + reverse traversal"
+    confidence high
+}
+
+consequence rollback_deploy {
+    external_state_change true
+    reversible true
+    requires_confirmation false
+}
+
+// ── long-term memory ───────────────────────────────────────────────
+memory palace "IncidentMemory" {
+    rooms { episodic semantic procedural }
+    decay_policy { episodic -> 30 days semantic -> never procedural -> 90 days }
+    backend sqlite
+    bind palace
+}
+
+// ── on-call affect ─────────────────────────────────────────────────
+affective state "OnCall" {
+    dimensions { valence [-1.0, 1.0] arousal [0.0, 1.0] dominance [0.0, 1.0] }
+    baseline { valence 0.2 arousal 0.3 dominance 0.6 }
+    decay 0.05 per minute
+    bind mood
+}
+
+affective threshold "Overload" {
+    when arousal > 0.7 and valence < -0.4
+    for 2 events
+    cooldown 50 events
+    priority critical
+    action { reflect on self { last 5 events } }
+}
+
+// ── habits ─────────────────────────────────────────────────────────
+energy_pool { max 50 initial 30 recharge 2 per 50 events rest_threshold 3 hysteresis_margin 2 }
+
+habit "RunbookFirst" from pattern {
+    energy_cost 2
+    priority high
+    activate when { context "incident_response" }
+    body { print("HABIT|runbook consulted") }
+    bind runbook_habit
+}
+
+// ── pure analysis functions ────────────────────────────────────────
+fn has(list, item) {
+    for x in list { if x == item { return true } }
+    return false
+}
+
+fn first_failures(telemetry, threshold) {
+    // service -> first minute whose error rate is above threshold
+    let result = {}
+    for svc in telemetry.keys() {
+        let series = telemetry[svc]
+        let minute = 0
+        let found = -1
+        for v in series {
+            if found < 0 {
+                if v > threshold { found = minute }
+            }
+            minute = minute + 1
+        }
+        if found >= 0 { result.setdefault(svc, found) }
+    }
+    return result
+}
+
+fn find_root(graph, failing) {
+    // a failing service none of whose dependencies is failing
+    let roots = []
+    for svc in sorted(failing.keys()) {
+        let explained = false
+        for dep in graph[svc] {
+            if failing.get(dep, -1) >= 0 { explained = true }
+        }
+        if not explained { roots.append(svc) }
+    }
+    return roots
+}
+
+fn reverse_reach(graph, root) {
+    // every service that transitively depends on root, plus root
+    let seen = [root]
+    let frontier = [root]
+    while len(frontier) > 0 {
+        let next = []
+        for cur in frontier {
+            for svc in sorted(graph.keys()) {
+                if has(graph[svc], cur) {
+                    if not has(seen, svc) {
+                        seen.append(svc)
+                        next.append(svc)
+                    }
+                }
+            }
+        }
+        frontier = next
+    }
+    return sorted(seen)
+}
+
+fn culprit_deploy(deploys, svc, before) {
+    let best = null
+    for d in deploys {
+        if d.service == svc {
+            if d.minute <= before {
+                if best == null { best = d }
+                if best != null {
+                    if d.minute > best.minute { best = d }
+                }
+            }
+        }
+    }
+    return best
+}
+
+fn severity_of(level) {
+    if level >= 4 { return "SEV1" }
+    if level >= 3 { return "SEV2" }
+    return "SEV3"
+}
+
+fn join(list, sep) {
+    let out = ""
+    let first = true
+    for x in list {
+        if first { out = str(x) } else { out = out + sep + str(x) }
+        first = false
+    }
+    return out
+}
+
+fn error_budget(telemetry, failing) {
+    let total = 0
+    for svc in sorted(failing.keys()) {
+        for v in telemetry[svc] { total = total + v }
+    }
+    return total
+}
+
+fn vm_budget_source(telemetry, failing) {
+    // the same sum, written as a one-line program for the Cognitive VM
+    let src = "let total = 0"
+    let idx = 0
+    for svc in sorted(failing.keys()) {
+        let name = "s" + str(idx)
+        src = src + " let " + name + " = [" + join(telemetry[svc], ", ") + "]"
+        src = src + " for v in " + name + " { total = total + v }"
+        idx = idx + 1
+    }
+    return src + " print(total)"
+}
+
+fn emit(inc, key, value) {
+    print("RESULT|" + inc + "|" + key + "|" + str(value))
+}
+
+// ═══════════════════════════════════════════════════════════════════
+fn investigate(incident) {
+    let inc = incident.id
+    print("=== " + inc + " ===")
+
+    let root = ""
+    context "incident_response" {
+        // ── 1. triage through the actor mailbox ───────────────────
+        for alert in incident.alerts {
+            send Triage.alert(alert)
+        }
+        let self = Triage
+        let seen = []
+        let max_level = 0
+        let received = 0
+        for i in range(len(incident.alerts)) {
+            receive {
+                sender => msg {
+                    received = received + 1
+                    let a = msg.payload
+                    if not has(seen, a.service) { seen.append(a.service) }
+                    if a.level > max_level { max_level = a.level }
+                }
+            }
+        }
+        emit(inc, "alerts_received", received)
+        emit(inc, "alerting_services", join(sorted(seen), ","))
+        let severity = severity_of(max_level)
+        emit(inc, "severity", severity)
+
+        // stress rises with severity
+        affective event "page" { valence -0.7 arousal 0.85 dominance -0.2 duration 300 bind page_tag }
+
+        // ── 2-4. telemetry and graph reasoning ────────────────────
+        let failing = first_failures(incident.telemetry, incident.threshold)
+        let roots = find_root(incident.graph, failing)
+        emit(inc, "root_candidates", join(roots, ","))
+        root = roots[0]
+        emit(inc, "root", root)
+        let blast = sorted(failing.keys())
+        let reach = reverse_reach(incident.graph, root)
+        emit(inc, "blast_radius", join(blast, ","))
+        emit(inc, "blast_consistent", join(blast, ",") == join(reach, ","))
+
+        // ── 5. change correlation ─────────────────────────────────
+        let deploy = culprit_deploy(incident.deploys, root, failing[root])
+        emit(inc, "culprit", deploy.id)
+
+        // ── 6. hypotheses ─────────────────────────────────────────
+        let opinion = debate {
+            branch rollback { return llm "Argue for rolling back the culprit deploy" }
+            branch failover { return llm "Argue for failing over the root service" }
+        } judge "incident_commander" rounds 2
+        emit(inc, "debate_has_verdict", len(str(opinion)) > 0)
+
+        let self = Lead
+        let earliest = root
+        for svc in blast {
+            if failing[svc] < failing[earliest] { earliest = svc }
+        }
+        let agreed = "none"
+        fracture self into {
+            GraphAnalyst { focus "dependency graph" return root }
+            TimelineAnalyst { focus "first failure" return earliest }
+        } consensus weighted integrate {
+            reason "root cause synthesis"
+            if consensus.positions.GraphAnalyst == consensus.positions.TimelineAnalyst {
+                agreed = consensus.positions.GraphAnalyst
+            }
+        }
+        emit(inc, "fracture_agreed", agreed)
+
+        // ── 7. memory ─────────────────────────────────────────────
+        recall from palace.episodic {
+            query "root " + root
+            threshold 0.3
+            limit 5
+            bind prior
+        }
+        let prior_hits = 0
+        for m in prior {
+            if m.content.contains("root " + root + " ") { prior_hits = prior_hits + 1 }
+        }
+        emit(inc, "prior_incidents_same_root", prior_hits)
+        imprint into palace.episodic {
+            content inc + " root " + root + " culprit " + deploy.id + " severity " + severity
+            confidence 0.95
+            source "rca"
+            bind imprint_id
+        }
+
+        // ── 8. plan ───────────────────────────────────────────────
+        intention cascade "Remediate" {
+            mission "Restore service"
+            objective "Undo the culprit change"
+            task "Roll back " + deploy.id
+            action "rollback " + deploy.id
+            bind plan
+        }
+        plan weave with [self] under "IncidentGovernance" {
+            intention plan
+            checkpoint every 2 steps
+            rollback on failure
+            timeout 120
+            bind execution
+        }
+        emit(inc, "plan_status", execution.status)
+
+        // ── 9. governance and action ──────────────────────────────
+        intent rollback {
+            action "rollback " + deploy.id
+            blast_radius len(blast)
+            approved_radius incident.approved_radius
+            reversible true
+        }
+        declare intent rollback
+        verify {
+            check rca_grounded.confidence == high, "root cause must be grounded"
+            check rollback_deploy.reversible == true, "rollback must be reversible"
+        }
+        send Ops.execute({"command": "rollback " + deploy.id, "incident": inc})
+        send Ops.execute({"command": "restart " + root, "incident": inc})
+        let self = Ops
+        let executed = []
+        for i in range(2) {
+            receive { sender => msg { executed.append(msg.payload.command) } }
+        }
+        emit(inc, "ops_executed", join(executed, ";"))
+
+        // ── 10. transactional postmortem ──────────────────────────
+        let postmortem = "draft"
+        integrate "postmortem-draft" {
+            postmortem = inc + ": root " + earliest
+            memory.write(postmortem) { reason "draft postmortem" }
+            assert earliest == "__nobody__", "draft must name the verified root"
+        } on fail rollback
+        emit(inc, "postmortem_after_bad_draft", postmortem)
+        integrate "postmortem-final" {
+            postmortem = inc + ": root " + root + ", culprit " + deploy.id
+            memory.write(postmortem) { reason "verified postmortem" }
+            assert root == roots[0], "postmortem names the verified root"
+        } on fail rollback
+        emit(inc, "postmortem", postmortem)
+
+        // ── 11. affect ────────────────────────────────────────────
+        affective event "recovered" { valence 0.5 arousal 0.4 dominance 0.6 duration 120 bind ok_tag }
+        affective modulation { bind modulation }
+        emit(inc, "modulation_suppresses_risky", has(modulation.suppress, "risky_action"))
+
+    }
+    // ── 13. Cognitive VM cross-check (outside `context`: resume inside it
+    // clobbers the host context stack — see FINDINGS.md) ──
+    let failing = first_failures(incident.telemetry, incident.threshold)
+    let budget = error_budget(incident.telemetry, failing)
+    compile vm { source vm_budget_source(incident.telemetry, failing) bind code }
+    run vm { source code gas 100000 checkpoint "mid" at_ip 6 bind full_run }
+    run vm { resume_from "mid" gas 100000 bind resumed }
+    emit(inc, "budget", budget)
+    emit(inc, "vm_budget", full_run.locals.total)
+    emit(inc, "vm_resumed_budget", resumed.locals.total)
+    return root
+}
+
+// ═══════════════════════════════════════════════════════════════════
+fn main() {
+    let roots = []
+    for incident in incidents {
+        roots.append(investigate(incident))
+    }
+
+    distributed consensus with [Peer] on "close_incidents" {
+        quorum 1
+        timeout 30
+        policy "MajorityVote"
+        bind vote
+    }
+    emit("ALL", "consensus_committed", vote.committed)
+
+    consolidate palace {
+        rooms ["episodic", "semantic", "procedural"]
+        bind consolidation
+    }
+    emit("ALL", "consolidation", consolidation.status)
+
+    // ── 14. self-audit ────────────────────────────────────────────
+    let policy_ok = reflect { last 100000 events filter type == "policy_evaluated" }
+    let violations = reflect { last 100000 events filter type == "policy_violation" }
+    let received = reflect { last 100000 events filter type == "message_received" }
+    let rollbacks = reflect { last 100000 events filter type == "integrate_rollback" }
+    let commits = reflect { last 100000 events filter type == "integrate_committed" }
+    let habits = reflect { last 100000 events filter type == "habit_activated" }
+    let triggers = reflect { last 100000 events filter type == "affective_threshold_triggered" }
+    let fractures = reflect { last 100000 events filter type == "identity_integrated" }
+    emit("ALL", "policy_evaluated", len(policy_ok))
+    emit("ALL", "policy_violation", len(violations))
+    emit("ALL", "message_received", len(received))
+    emit("ALL", "integrate_rollback", len(rollbacks))
+    emit("ALL", "integrate_committed", len(commits))
+    emit("ALL", "habit_activated", len(habits))
+    emit("ALL", "threshold_triggered", len(triggers))
+    emit("ALL", "fractures_integrated", len(fractures))
+    emit("ALL", "roots", join(roots, ","))
+}

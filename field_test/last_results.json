@@ -357,7 +357,7 @@
     "section": "C",
     "name": "duplicate signal is answered from the stored result, artifact untouched",
     "ok": true,
-    "detail": "{\"artifact_path\":\"/tmp/blackout-8r6feccx/state-happy/happy.json\",\"artifact_revision\":3,\"correlation_id\":null,\"exit_code\":20,\"history_hash\":\"90a55626c04f9a1c83ac"
+    "detail": "{\"artifact_path\":\"/tmp/blackout-uwunm_f0/state-happy/happy.json\",\"artifact_revision\":3,\"correlation_id\":null,\"exit_code\":20,\"history_hash\":\"08f7d26760a988441fa3"
   },
   {
     "section": "C",
@@ -374,8 +374,8 @@
   {
     "section": "D",
     "name": "full Blackout scenario replays without drift",
-    "ok": false,
-    "detail": "or: golden replay drift detected: drift=11, expected_hash=51b87dacfa07a5dcfae61b1f19a4955b1474e85940bd3c631a407863de25d771, actual_hash=bd77c162f0d657c02e022358a3a207afdcaf0307d357047710b17cbf506be308"
+    "ok": true,
+    "detail": "deploy\", \"runbook_habit\"], \"mailbox_count\": 0, \"memory_audit_length\": 14, \"output_hash\": \"5eaac95eadefb2e022ca3227e70cf071de5ad9324ae08e5d99375d23e66e96d7\", \"policy_stack_depth\": 0, \"stack_depth\": 0}}"
   },
   {
     "section": "D",
@@ -404,14 +404,14 @@
   {
     "section": "D",
     "name": "minimal imprint replays without drift",
-    "ok": false,
-    "detail": "ror: golden replay drift detected: drift=3, expected_hash=d2560161d76512c7c17ec2248a307ebe16bb6f66ad398cf369b8f45a63a1b987, actual_hash=f0ff9e897593fab30c4bbb96946e8071fa6813f5f060d6b79737d7ed8a27457b"
+    "ok": true,
+    "detail": "ys\": [\"P\", \"id\", \"palace\"], \"mailbox_count\": 0, \"memory_audit_length\": 2, \"output_hash\": \"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945\", \"policy_stack_depth\": 0, \"stack_depth\": 0}}"
   },
   {
     "section": "D",
     "name": "minimal intention cascade replays without drift",
-    "ok": false,
-    "detail": "ror: golden replay drift detected: drift=3, expected_hash=c8528545c77256bcc861a63325790679cf2a5eab94864b9e95bb0e0a31894a84, actual_hash=439b56fbcbe7c77bf6f63655b36dd53ab3f5a8309c34769ab9237c7470bcfb5c"
+    "ok": true,
+    "detail": "ocals_keys\": [\"R\", \"plan\"], \"mailbox_count\": 0, \"memory_audit_length\": 0, \"output_hash\": \"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945\", \"policy_stack_depth\": 0, \"stack_depth\": 0}}"
   },
   {
     "section": "E",
@@ -434,8 +434,8 @@
   {
     "section": "E",
     "name": "`imprint` inside `dream` escapes the sandbox into long-term memory",
-    "ok": false,
-    "detail": "REPRODUCED"
+    "ok": true,
+    "detail": "not reproduced"
   },
   {
     "section": "E",

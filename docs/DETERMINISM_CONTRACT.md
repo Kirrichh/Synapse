@@ -193,6 +193,15 @@ user-visible `time`, `random`, and `uuid` builtins when their values enter
 canonical history; storage-generated UUID/time values if surfaced into
 canonical artifacts.
 
+*Later change (field test, 2026-10-21):* memory palace records and intention
+cascades no longer carry storage-generated UUID/time values. A record's id is
+derived from its palace, room, the palace's record sequence and its content,
+and its `created_at` is that sequence; a cascade's id is derived from the run
+id, the event index where it is declared and its declaration, and its
+`created_at` is that event index. `memory_imprinted`,
+`intention_cascade_created` and `plan_weave_completed` replay under `replay
+--mock` without drift.
+
 ---
 
 ## 4. Contagion rule: nondeterminism propagates through the hash chain

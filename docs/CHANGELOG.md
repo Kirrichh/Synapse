@@ -1,5 +1,35 @@
 # Synapse Changelog
 
+## Field test fixes: replayable memory identities, dream memory isolation — 2026-10-21
+
+Two defects found by the Operation Blackout field test (`field_test/`), a
+multi-stage incident investigation written in Synapse and run through the
+canonical CLI.
+
+- A recorded run that imprints into a memory palace or declares an intention
+  cascade replays without drift. `MemoryPalace.imprint` drew a record's id from
+  `uuid4` and its `created_at` from the host clock, `IntentionCascade` its id
+  and `created_at` likewise; none of them was recorded, so `replay --mock` of a
+  run with a single `imprint` drifted (drift 3) and the whole field scenario
+  drifted (drift 11). A record is now named by the palace from its own sequence
+  (`sequence`, which is also its `created_at`) and its content; a cascade by
+  the run id, its event index (also its `created_at`) and its declaration. The
+  storage backends no longer invent an id or a time: the palace names its
+  records. Recall ranks equal scores by id, so the order of equally relevant
+  memories is now the same in every replay. Tests:
+  `tests/test_golden_replay_recorded_side_effects.py`.
+- A dream can no longer change a memory palace. `memory.write`, `forget` and
+  `send` were refused inside `dream`, but `imprint`, `consolidate` (its
+  promotions), `plan weave` (the episode it imprints) and a palace declared
+  again (which replaced the held palace with an empty one) went through and
+  outlived the dream. The interpreter refuses them inside a dream with
+  `DreamIsolationViolation` (one table, `_DREAM_FORBIDDEN_OPERATIONS`, checked
+  where the policy guard's table is); reading memory (`recall`) stays allowed,
+  and an insight reaches memory through `integrate`. Like the other dream
+  refusals this raises and records no `dream_isolation_violation` event,
+  which `docs/SEMANTICS.md` names but no path records. Tests:
+  `tests/test_dream_memory_isolation.py`.
+
 ## A live trial of the owner-decisions package: fixes — 2026-10-17
 
 Findings of a live trial of the package through the canonical CLI, installed

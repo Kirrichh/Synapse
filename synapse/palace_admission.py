@@ -71,7 +71,7 @@ DEFAULT_THRESHOLD = 0.5
 _TOKEN = re.compile(r"\w+", re.UNICODE)
 #: Fields that describe a record rather than state its content.
 METADATA_FIELDS = frozenset({
-    "id", "trace_id", "created_at", "confidence", "room", "palace", "score", "matched_tokens", "scorer",
+    "id", "trace_id", "created_at", "sequence", "confidence", "room", "palace", "score", "matched_tokens", "scorer",
     "source", "status", "hypothesis", "kind", "valid_from", "valid_until", "scope", "source_room",
     "routing_tags", "affective_tag", "affective_tag_id", "affective_tag_snapshot", "affective_expires_at_event",
     "affective_decay", "affective_decay_original", "affective_expired",

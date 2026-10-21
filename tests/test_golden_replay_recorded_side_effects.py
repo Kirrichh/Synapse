@@ -146,3 +146,59 @@ def test_a_malformed_run_id_is_an_artifact_error(tmp_path: Path, run_id) -> None
 
     with pytest.raises(ReplayArtifactError, match="run_id must be a non-empty string"):
         replay_mock_artifact(artifact)
+
+
+INCIDENT_MEMORY = '''
+agent Lead { model "mock" }
+let self = Lead
+memory palace "Incidents" {
+    rooms { episodic semantic }
+    backend sqlite
+    bind palace
+}
+imprint into palace.episodic { content "pool exhausted on db" confidence 0.9 source "rca" bind first }
+imprint into palace.episodic { content "pool exhausted on cache" confidence 0.9 source "rca" bind second }
+recall from palace.episodic { query "pool exhausted" threshold 0.1 limit 5 bind found }
+integrate "draft" {
+    imprint into palace.semantic { content "root is the cache" confidence 0.5 source "draft" bind draft }
+    assert false, "the draft names the wrong root"
+} on fail rollback
+imprint into palace.semantic { content "root is the db pool" confidence 0.9 source "rca" bind verified }
+intention cascade "Remediate" {
+    mission "Restore service"
+    task "Roll back the deploy"
+    bind plan
+}
+plan weave with [self] under "Ops" {
+    intention plan
+    timeout 60
+    bind execution
+}
+print(first + " " + second + " " + plan.id)
+print(found)
+'''
+
+
+def test_memory_and_intention_identities_replay_without_drift(tmp_path: Path, monkeypatch) -> None:
+    # Imprint ids, creation times and cascade ids come from the run, never from uuid4 or the host clock.
+    artifact = tmp_path / "incident-memory"
+    record_source(INCIDENT_MEMORY, artifact)
+    history = json.loads((artifact / "history.json").read_text(encoding="utf-8"))
+    assert not [event for event in history if event["type"] == "side_effect"]
+
+    _refuse_live_draw(monkeypatch)
+    assert replay_mock_artifact(artifact).drift == 0
+
+
+
+def test_held_records_keep_distinct_names_across_a_rolled_back_imprint() -> None:
+    from synapse import Interpreter, compile_to_ast
+
+    interp = Interpreter()
+    interp.interpret(compile_to_ast(INCIDENT_MEMORY))
+    held = interp.memory_palaces["Incidents"].content()["records"]
+    assert [record["content"] for record in held] == [
+        "pool exhausted on db", "pool exhausted on cache", "root is the db pool", "Plan weave completed: completed"]
+    # The rolled-back draft gave its position back: the sequence continues from what the palace holds.
+    assert [record["sequence"] for record in held] == [0, 1, 2, 3]
+    assert len({record["id"] for record in held}) == len(held)

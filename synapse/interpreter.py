@@ -213,6 +213,15 @@ _POLICY_GUARD_OPERATIONS = {
     if name not in _POLICY_GUARD_ALLOWED
 }
 
+# A dream is a sandbox: nothing it does may outlive it. These statements change a
+# memory palace (an imprint, a consolidation's promotions, a plan weave's episode,
+# a palace declared again in place of the one held), so a dream refuses them as it
+# refuses memory.write; an insight reaches memory only through integrate.
+_DREAM_FORBIDDEN_OPERATIONS = {
+    name: _CONSENSUS_VOTE_OPERATIONS[name]
+    for name in ("ImprintStmt", "ConsolidateStmt", "MemoryPalaceDef", "PlanWeaveStmt")
+}
+
 
 # Runtime-owned state an integrate transaction can change besides the
 # environment, the agents and the durable logs. Owners are replaced by their
@@ -1374,6 +1383,9 @@ class Interpreter:
         if self.policy_guard_depth > 0 and type(node).__name__ in _POLICY_GUARD_OPERATIONS:
             raise PolicyCompilationError(
                 f"Policy guard cannot perform {_POLICY_GUARD_OPERATIONS[type(node).__name__]}")
+        if self.dream_depth > 0 and type(node).__name__ in _DREAM_FORBIDDEN_OPERATIONS:
+            raise DreamIsolationViolation(
+                f"dream cannot perform {_DREAM_FORBIDDEN_OPERATIONS[type(node).__name__]}; use integrate")
         if self._consensus_vote_query_depth > 0:
             return self._evaluate_impl(node, env)
         _audit_fallback = self._audit_runtime_routing_decision(node)
@@ -5088,7 +5100,8 @@ class Interpreter:
 
     def evaluate_intention_cascade(self, node: IntentionCascadeDef, env: Environment) -> Dict[str, Any]:
         levels = {k: self.evaluate(v, env) for k, v in (node.levels or {}).items()}
-        cascade = IntentionCascade(node.name, levels).to_dict()
+        cascade = IntentionCascade(node.name, levels, run_id=self.run_id,
+                                   position=self.runtime.replay.recorded_length()).to_dict()
         self.intention_cascades[node.name] = cascade
         event = {"type": "intention_cascade_created", "name": node.name, "cascade_id": cascade["id"], "levels": levels, "trace_id": self.current_trace_id()}
         self.record_history_event(event)

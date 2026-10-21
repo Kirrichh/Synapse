@@ -1,6 +1,6 @@
 """Synapse v1.9 Memory Palace engine."""
 from __future__ import annotations
-import copy, hashlib, json, time
+import copy, hashlib, json
 from typing import Any, Dict, List, Optional
 from .storage_backends import InMemoryCognitiveStorage, SQLiteCognitiveStorage, PostgreSQLCognitiveStorage, CognitiveStorageBackend
 
@@ -24,6 +24,7 @@ class MemoryPalace:
         self.backend_name = backend
         self.backend = make_storage(backend)
         self.consolidate_during_dream = consolidate_during_dream
+        self._next_sequence: Optional[int] = None  # read from the held records when first needed
 
     def to_dict(self) -> Dict[str, Any]:
         return {"type": "memory_palace", "name": self.name, "rooms": list(self.rooms), "decay_policy": copy.deepcopy(self.decay_policy), "backend": self.backend_name, "consolidate_during_dream": self.consolidate_during_dream}
@@ -39,6 +40,7 @@ class MemoryPalace:
     def restore_content(self, content: Dict[str, Any]) -> None:
         self.rooms = list(content["rooms"])
         self.backend.replace_records(self.name, content["records"])
+        self._next_sequence = None  # the restored records decide where the sequence continues
 
     def snapshot(self) -> Dict[str, Any]:
         return {**self.to_dict(), **self.content()}
@@ -57,9 +59,24 @@ class MemoryPalace:
         payload = dict(record)
         payload.setdefault("trace_id", self._trace_id(payload))
         payload.setdefault("confidence", 1.0)
-        payload.setdefault("created_at", time.time())
         payload.setdefault("room", room)
+        # A record's identity and creation time come from the palace's own sequence, never from host time or a
+        # random draw: a replay that imprints the same records in the same order names them identically.
+        sequence = self._sequence()
+        payload["sequence"] = sequence
+        payload.setdefault("created_at", sequence)
+        if not payload.get("id"):  # an id the caller gives is kept, as the backends always kept it
+            payload["id"] = "mem-" + hashlib.sha256(json.dumps(
+                {"palace": self.name, "room": room, "record": payload}, sort_keys=True, default=str).encode()).hexdigest()[:12]
+        self._next_sequence = sequence + 1
         return self.backend.put_memory(self.name, room, payload)
+
+    def _sequence(self) -> int:
+        """The next position after every record the palace holds, so a new identity never names a held record."""
+        if self._next_sequence is None:
+            held = [r.get("sequence") for r in self.backend.records(self.name)]
+            self._next_sequence = max((s for s in held if type(s) is int), default=-1) + 1
+        return self._next_sequence
 
     def recall(self, room: str, query: str, threshold: float = 0.0, limit: int = 10,
                affective_filter: Any = None, affective_sort: Any = None, current_event_index: Optional[int] = None) -> List[Dict[str, Any]]:

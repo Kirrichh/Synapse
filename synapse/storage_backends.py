@@ -56,8 +56,8 @@ class InMemoryCognitiveStorage(CognitiveStorageBackend):
         self.habits: List[Dict[str, Any]] = []
 
     def put_memory(self, palace: str, room: str, record: Dict[str, Any]) -> str:
-        rid = record.get("id") or f"mem-{uuid.uuid4().hex[:12]}"
-        payload = dict(record, id=rid, palace=palace, room=room, created_at=record.get("created_at", time.time()))
+        rid = record["id"]  # the palace names its records (``MemoryPalace.imprint``)
+        payload = dict(record, palace=palace, room=room)
         self.memories.append(payload)
         return rid
 
@@ -102,8 +102,8 @@ class SQLiteCognitiveStorage(InMemoryCognitiveStorage):
         self.conn.commit()
 
     def put_memory(self, palace: str, room: str, record: Dict[str, Any]) -> str:
-        rid = record.get("id") or f"mem-{uuid.uuid4().hex[:12]}"
-        payload = dict(record, id=rid, palace=palace, room=room, created_at=record.get("created_at", time.time()))
+        rid = record["id"]  # the palace names its records (``MemoryPalace.imprint``)
+        payload = dict(record, palace=palace, room=room)
         self.conn.execute("INSERT OR REPLACE INTO memories VALUES (?, ?, ?, ?, ?)", (rid, palace, room, json.dumps(payload, ensure_ascii=False, default=str), payload["created_at"]))
         self.conn.commit()
         return rid

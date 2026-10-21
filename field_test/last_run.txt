@@ -1,7 +1,7 @@
-work dir: /tmp/blackout-8r6feccx
+work dir: /tmp/blackout-uwunm_f0
 
 A. Correctness: 50 worlds x 4 incidents
-  conclusions checked: 3800, wrong: 0; run time per world: min 0.50s, max 0.98s
+  conclusions checked: 3800, wrong: 0; run time per world: min 0.52s, max 1.06s
 
 B. Sabotage: one injected fault per run; governance must stop it
   [PASS] blast radius above approval (INC-2)
@@ -20,19 +20,19 @@ C. Durable approval workflow: every step is a separate OS process
   [PASS] tampered source in artifact is refused (exit 21)
 
 D. Golden record + mock replay
-  [FAIL] full Blackout scenario replays without drift — or: golden replay drift detected: drift=11, expected_hash=51b87dacfa07a5dcfae61b1f19a4955b1474e85940bd3c631a407863de25d771, actual_hash=bd77c162f0d657c02e022358a3a207afdcaf0307d357047710b17cbf506be308
+  [PASS] full Blackout scenario replays without drift
   [PASS] forged event in recorded history is detected
   [PASS] minimal debate replays without drift
   [PASS] minimal fracture replays without drift
   [PASS] minimal integrate rollback replays without drift
-  [FAIL] minimal imprint replays without drift — ror: golden replay drift detected: drift=3, expected_hash=d2560161d76512c7c17ec2248a307ebe16bb6f66ad398cf369b8f45a63a1b987, actual_hash=f0ff9e897593fab30c4bbb96946e8071fa6813f5f060d6b79737d7ed8a27457b
-  [FAIL] minimal intention cascade replays without drift — ror: golden replay drift detected: drift=3, expected_hash=c8528545c77256bcc861a63325790679cf2a5eab94864b9e95bb0e0a31894a84, actual_hash=439b56fbcbe7c77bf6f63655b36dd53ab3f5a8309c34769ab9237c7470bcfb5c
+  [PASS] minimal imprint replays without drift
+  [PASS] minimal intention cascade replays without drift
 
 E. Defect probes (BUG = still reproducible)
   [BUG ] VM resume inside `context` clobbers the host context stack
   [BUG ] affective threshold never fires for events inside a function
   [BUG ] threshold action `reflect on self` (spec example) fails
-  [BUG ] `imprint` inside `dream` escapes the sandbox into long-term memory
+  [OK  ] `imprint` inside `dream` escapes the sandbox into long-term memory
   [BUG ] fracture `consensus majority` does not pick the majority position
   [BUG ] `distributed consensus` cannot collect votes from .syn (always deferred)
   [BUG ] string literals have no escapes (\n printed literally)
@@ -43,6 +43,6 @@ SUMMARY
   A: 50 ok, 0 failed
   B: 6 ok, 0 failed
   C: 6 ok, 0 failed
-  D: 4 ok, 3 failed
-  E: 0 ok, 9 bugs reproduced
-  wall time 47.3s
+  D: 7 ok, 0 failed
+  E: 1 ok, 8 bugs reproduced
+  wall time 49.6s

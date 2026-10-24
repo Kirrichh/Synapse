@@ -136,8 +136,8 @@
     "id": "ACCESS-membership",
     "kind": "python",
     "target": "synapse/machine/invocations.py",
-    "before": "            store.require_membership(objects)",
-    "after": "            pass",
+    "before": "            store = InvocationStore.open_existing(root)\n            store.require_membership(objects)",
+    "after": "            store = InvocationStore.open_existing(root)\n            pass",
     "cases": [
       "acceptance/ui_bridge/test_authorized_invocations_acceptance.py"
     ],
@@ -147,8 +147,8 @@
     "id": "ACCESS-response-authorization",
     "kind": "python",
     "target": "synapse/machine/invocations.py",
-    "before": "with self.authority.authorize(connection, grant_id, version, method, objects) as (scope, resource):",
-    "after": "with self.authority.authorize(connection, grant_id, version, 'invocation.inspect', objects) as (scope, resource):",
+    "before": "            objects = tuple(params[\"invocation_ids\"])\n        with self.authority.authorize(connection, grant_id, version, method, objects) as (scope, resource):",
+    "after": "            objects = tuple(params[\"invocation_ids\"])\n        with self.authority.authorize(connection, grant_id, version, 'invocation.inspect', objects) as (scope, resource):",
     "cases": [
       "acceptance/ui_bridge/test_authorized_invocations_acceptance.py"
     ],

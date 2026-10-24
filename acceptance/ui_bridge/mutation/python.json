@@ -323,8 +323,8 @@
     "kind": "python",
     "behavior": "invalid outgoing envelope cannot reach the pipe",
     "target": "synapse/machine/transport.py",
-    "before": "        validate(value)\n        item = _Write",
-    "after": "        item = _Write",
+    "before": "        else:\n            validate(value)\n",
+    "after": "        else:\n            pass\n",
     "cases": [
       "acceptance/ui_bridge/test_transport_acceptance.py"
     ]

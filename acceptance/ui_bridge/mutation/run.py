@@ -33,6 +33,9 @@ def copy_subject(destination):
         (resource / "core").symlink_to(core, target_is_directory=True)
     (destination / "tests").mkdir()
     shutil.copy2(ROOT / "tests/test_system_execution_path.py", destination / "tests")
+    # The invocation command cases reuse the agent execution retention fixtures.
+    (destination / "acceptance/agents").mkdir()
+    shutil.copy2(ROOT / "acceptance/agents/test_execution_retention_acceptance.py", destination / "acceptance/agents")
     for name in ("pyproject.toml", "README.md", "LICENSE", "main.py"):
         shutil.copy2(ROOT / name, destination / name)
 
@@ -115,12 +118,8 @@ def main(args):
             subject = Path(temporary)
             copy_subject(subject)
             if signature not in baseline_signatures:
-                status, baseline_output = execute(seed, subject, args.python, args.cargo, args.timeout)
+                status, _ = execute(seed, subject, args.python, args.cargo, args.timeout)
                 if status != "SURVIVED":
-                    # Raw diagnostics can contain local paths. Preserve them
-                    # only in an explicitly external campaign directory.
-                    if not args.output.resolve().is_relative_to(ROOT):
-                        (args.output / (seed["id"] + "-baseline.txt")).write_text(baseline_output, encoding="utf-8")
                     raise RuntimeError(f"Baseline failed for {seed['id']}: {status}")
                 baseline_signatures.add(signature)
             path = subject / seed["target"]

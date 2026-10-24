@@ -31,8 +31,8 @@
     "kind": "rust",
     "behavior": "schema refusal",
     "target": "synapse/ui/src-tauri/src/protocol.rs",
-    "before": "if !VALIDATOR.is_valid(&value) {",
-    "after": "if false {",
+    "before": "    if !valid {\n        return Err(Failure(\"PROTOCOL_ERROR\"));",
+    "after": "    if false {\n        return Err(Failure(\"PROTOCOL_ERROR\"));",
     "case": "protocol"
   },
   {
@@ -283,8 +283,8 @@
     "kind": "rust",
     "behavior": "heartbeat deadline",
     "target": "synapse/ui/src-tauri/src/controller.rs",
-    "before": "let interval = Duration::from_secs(2);",
-    "after": "let interval = Duration::from_secs(60);",
+    "before": "        let interval = Duration::from_secs(PROFILE.heartbeat_interval_seconds);",
+    "after": "        let interval = Duration::from_secs(60);",
     "case": "controller"
   },
   {

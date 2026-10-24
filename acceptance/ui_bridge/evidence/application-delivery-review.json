@@ -1,0 +1,1330 @@
+{
+  "schema_version": "synapse.ui.acceptance/v1",
+  "scope": "Current Windows PC; canonical installed invocation application, access, recovery and three delivery classes. Not complete multi-platform P1/P2/P3 acceptance.",
+  "date": "2026-10-19",
+  "environment": {
+    "architecture": "x86_64",
+    "python": "3.12.14",
+    "rust": "1.99.1 MSVC",
+    "installed_application_elevated": false,
+    "administrative_issuance": "Separate real UAC process"
+  },
+  "artifacts": {
+    "release_shell_sha256": "22d6635a71e1f8fd22e1f94e1fd290ec1fbf4f48f4016c711cf41cf3eae358b8",
+    "installed_shell_sha256": "d41312388c39c53c411bb675113668956c501c5b5749f5ce372cd28fa0b857ea",
+    "installer_sha256": "fed31aa971a6bfaf4cea0c46fa6ef9fb5452630f8e0ee7c70ffbae8506129566",
+    "core_inventory_sha256": "d7efe9ce745b0d57e8a30691a9f83f4040f6a09afba9dd71a1942f8bf195cb47",
+    "signature": "NotSigned"
+  },
+  "installed_application": [
+    {
+      "name": "installed native registration key has the declared public format",
+      "status": "PASS"
+    },
+    {
+      "name": "ordinary installed application cannot enroll its own access",
+      "status": "PASS"
+    },
+    {
+      "name": "installed canonical CLI requires separate administrative context",
+      "status": "PASS"
+    },
+    {
+      "name": "ordinary installed core reads the protected canonical registry",
+      "status": "PASS"
+    },
+    {
+      "name": "installed canonical session discovers only the explicit synthetic grant",
+      "status": "PASS"
+    },
+    {
+      "name": "shipped UI reads StateSync, retained evidence and connection observation",
+      "status": "PASS"
+    },
+    {
+      "name": "foreign object identifier cannot cross the installed workspace scope",
+      "status": "PASS"
+    },
+    {
+      "name": "owner accepts cancellation before an unacknowledged renderer result",
+      "status": "PASS"
+    },
+    {
+      "name": "lost application ACK bounds request admission",
+      "status": "PASS"
+    },
+    {
+      "name": "cold installed restart recovers the original native command identity",
+      "status": "PASS"
+    },
+    {
+      "name": "recovery without a renderer draft reads the same durable receipt",
+      "status": "PASS"
+    },
+    {
+      "name": "real separate-process read custody serializes canonical revocation",
+      "status": "PASS"
+    },
+    {
+      "name": "revocation prevents disclosure of queued protected evidence",
+      "status": "PASS"
+    },
+    {
+      "name": "revoked access cannot read retained receipts or resend commands",
+      "status": "PASS"
+    },
+    {
+      "name": "temporary installation registry is removed after actual window checks",
+      "status": "PASS"
+    }
+  ],
+  "installed_process_and_inventory": [
+    {
+      "name": "installation stays in the task workspace",
+      "status": "PASS"
+    },
+    {
+      "name": "only the previous verified task installation is updated",
+      "status": "PASS"
+    },
+    {
+      "name": "existing installer registration belongs to this test",
+      "status": "PASS"
+    },
+    {
+      "name": "NSIS install success",
+      "status": "PASS"
+    },
+    {
+      "name": "build bundle marker is present",
+      "status": "PASS"
+    },
+    {
+      "name": "installed shell matches exact NSIS transformation",
+      "status": "PASS"
+    },
+    {
+      "name": "installed inventory matches staged inventory",
+      "status": "PASS"
+    },
+    {
+      "name": "installed resource hashes",
+      "status": "PASS"
+    },
+    {
+      "name": "no local pip provenance",
+      "status": "PASS"
+    },
+    {
+      "name": "installed canonical command",
+      "status": "PASS"
+    },
+    {
+      "name": "second shell admits no overlapping core",
+      "status": "PASS"
+    },
+    {
+      "name": "refused shell termination preserves active core",
+      "status": "PASS"
+    },
+    {
+      "name": "abrupt installed shell death terminates its core",
+      "status": "PASS"
+    },
+    {
+      "name": "installed canonical command",
+      "status": "PASS"
+    },
+    {
+      "name": "replacement starts after old core exit",
+      "status": "PASS"
+    },
+    {
+      "name": "core crash leaves shell available for explicit recovery",
+      "status": "PASS"
+    }
+  ],
+  "installed_security": [
+    {
+      "name": "actual installed native session ready",
+      "status": "PASS"
+    },
+    {
+      "name": "force close refused while core is ready",
+      "status": "PASS"
+    },
+    {
+      "name": "foreign subscription ACK refused",
+      "status": "PASS"
+    },
+    {
+      "name": "ungranted native command refused: plugin:shell|execute",
+      "status": "PASS"
+    },
+    {
+      "name": "ungranted native command refused: plugin:fs|read_file",
+      "status": "PASS"
+    },
+    {
+      "name": "ungranted native command refused: plugin:webview|create_webview_window",
+      "status": "PASS"
+    },
+    {
+      "name": "CSP blocks JavaScript eval",
+      "status": "PASS"
+    },
+    {
+      "name": "CSP blocks DOM inline script",
+      "status": "PASS"
+    },
+    {
+      "name": "CSP blocks non-IPC fetch",
+      "status": "PASS"
+    },
+    {
+      "name": "CSP blocks frame and image loads",
+      "status": "PASS"
+    },
+    {
+      "name": "new window denied",
+      "status": "PASS"
+    },
+    {
+      "name": "foreign top-level navigation denied",
+      "status": "PASS"
+    },
+    {
+      "name": "unacknowledged Channel has one outstanding snapshot",
+      "status": "PASS"
+    },
+    {
+      "name": "native heartbeat progresses despite missing Channel ACK",
+      "status": "PASS"
+    },
+    {
+      "name": "old Channel cannot acknowledge replacement subscription",
+      "status": "PASS"
+    },
+    {
+      "name": "shutdown completes despite unacknowledged real Channel",
+      "status": "PASS"
+    },
+    {
+      "name": "renderer recovers confirmed stopped state after reload",
+      "status": "PASS"
+    },
+    {
+      "name": "blocked content made no network request",
+      "status": "PASS"
+    }
+  ],
+  "installed_crash_consent": [
+    {
+      "name": "actual installed native session ready",
+      "status": "PASS"
+    },
+    {
+      "name": "crash target is the owned installed canonical core",
+      "status": "PASS"
+    },
+    {
+      "name": "actual renderer displays core loss and explicit recovery",
+      "status": "PASS"
+    },
+    {
+      "name": "force close asks for confirmation",
+      "status": "PASS"
+    },
+    {
+      "name": "cancel keeps failed shell open",
+      "status": "PASS"
+    },
+    {
+      "name": "second force close asks for confirmation",
+      "status": "PASS"
+    },
+    {
+      "name": "confirmed force close exits actual installed shell",
+      "status": "PASS"
+    }
+  ],
+  "installed_transport_damage": {
+    "zero": [
+      {
+        "name": "actual installed native session ready",
+        "status": "PASS"
+      },
+      {
+        "name": "synthetic fault enters only the owned installed stdout pipe",
+        "status": "PASS"
+      },
+      {
+        "name": "actual release renderer shows failed transport and recovery",
+        "status": "PASS"
+      },
+      {
+        "name": "native failure matches the injected transport boundary",
+        "status": "PASS"
+      },
+      {
+        "name": "transport failure does not report successful shutdown",
+        "status": "PASS"
+      }
+    ],
+    "oversize": [
+      {
+        "name": "actual installed native session ready",
+        "status": "PASS"
+      },
+      {
+        "name": "synthetic fault enters only the owned installed stdout pipe",
+        "status": "PASS"
+      },
+      {
+        "name": "actual release renderer shows failed transport and recovery",
+        "status": "PASS"
+      },
+      {
+        "name": "native failure matches the injected transport boundary",
+        "status": "PASS"
+      },
+      {
+        "name": "transport failure does not report successful shutdown",
+        "status": "PASS"
+      }
+    ],
+    "maximum": [
+      {
+        "name": "actual installed native session ready",
+        "status": "PASS"
+      },
+      {
+        "name": "synthetic fault enters only the owned installed stdout pipe",
+        "status": "PASS"
+      },
+      {
+        "name": "actual release renderer shows failed transport and recovery",
+        "status": "PASS"
+      },
+      {
+        "name": "native failure matches the injected transport boundary",
+        "status": "PASS"
+      },
+      {
+        "name": "transport failure does not report successful shutdown",
+        "status": "PASS"
+      }
+    ],
+    "utf8": [
+      {
+        "name": "actual installed native session ready",
+        "status": "PASS"
+      },
+      {
+        "name": "synthetic fault enters only the owned installed stdout pipe",
+        "status": "PASS"
+      },
+      {
+        "name": "actual release renderer shows failed transport and recovery",
+        "status": "PASS"
+      },
+      {
+        "name": "native failure matches the injected transport boundary",
+        "status": "PASS"
+      },
+      {
+        "name": "transport failure does not report successful shutdown",
+        "status": "PASS"
+      }
+    ],
+    "json": [
+      {
+        "name": "actual installed native session ready",
+        "status": "PASS"
+      },
+      {
+        "name": "synthetic fault enters only the owned installed stdout pipe",
+        "status": "PASS"
+      },
+      {
+        "name": "actual release renderer shows failed transport and recovery",
+        "status": "PASS"
+      },
+      {
+        "name": "native failure matches the injected transport boundary",
+        "status": "PASS"
+      },
+      {
+        "name": "transport failure does not report successful shutdown",
+        "status": "PASS"
+      }
+    ],
+    "header_eof": [
+      {
+        "name": "actual installed native session ready",
+        "status": "PASS"
+      },
+      {
+        "name": "synthetic fault enters only the owned installed stdout pipe",
+        "status": "PASS"
+      },
+      {
+        "name": "actual release renderer shows failed transport and recovery",
+        "status": "PASS"
+      },
+      {
+        "name": "native failure matches the injected transport boundary",
+        "status": "PASS"
+      },
+      {
+        "name": "transport failure does not report successful shutdown",
+        "status": "PASS"
+      }
+    ],
+    "body_eof": [
+      {
+        "name": "actual installed native session ready",
+        "status": "PASS"
+      },
+      {
+        "name": "synthetic fault enters only the owned installed stdout pipe",
+        "status": "PASS"
+      },
+      {
+        "name": "actual release renderer shows failed transport and recovery",
+        "status": "PASS"
+      },
+      {
+        "name": "native failure matches the injected transport boundary",
+        "status": "PASS"
+      },
+      {
+        "name": "transport failure does not report successful shutdown",
+        "status": "PASS"
+      }
+    ]
+  },
+  "native_acceptance": {
+    "passed": 58,
+    "failed": 0,
+    "ignored": 0,
+    "method": "cargo test --offline --locked --manifest-path acceptance/ui_bridge/native/Cargo.toml -- --test-threads=1"
+  },
+  "frontend_acceptance": {
+    "passed": 100,
+    "failed": 0,
+    "method": "Node test runner with tsx, all acceptance/ui_bridge/typescript/*.test.ts"
+  },
+  "installed_canonical_corpus": {
+    "passed": 52,
+    "failed": 0,
+    "method": "Final installed core through windows_installed_pipe; test_pipe_corpus_acceptance.py and test_machine_cli_acceptance.py"
+  },
+  "python_acceptance": [
+    {
+      "passed": 148,
+      "scope": "Selected access, Windows custody, owner/domain/subscription, command, JCS, queue and transport suites before the location fix"
+    },
+    {
+      "passed": 12,
+      "scope": "Final Windows location and resource custody suites"
+    },
+    {
+      "passed": 18,
+      "scope": "Final canonical machine CLI and bundle/privacy suites"
+    }
+  ],
+  "campaigns": [
+    {
+      "baseline": "PASS",
+      "mutants": [
+        {
+          "id": "STREAM-boundary",
+          "behavior": "Confirmation must name the actual inclusive owner basis.",
+          "target": "synapse/machine/subscriptions.py",
+          "source_sha256": "f5e0f03773b4b350d454b19084454ba3e93bc4afc8a12ce0fc528a5dce37f735",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_subscription_acceptance.py"
+          ]
+        },
+        {
+          "id": "STREAM-snapshot-first",
+          "behavior": "Collection before a confirmed snapshot is refused.",
+          "target": "synapse/machine/subscriptions.py",
+          "source_sha256": "f5e0f03773b4b350d454b19084454ba3e93bc4afc8a12ce0fc528a5dce37f735",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_subscription_acceptance.py"
+          ]
+        },
+        {
+          "id": "STREAM-one-snapshot",
+          "behavior": "An epoch cannot replace its baseline after beginning delivery.",
+          "target": "synapse/machine/subscriptions.py",
+          "source_sha256": "f5e0f03773b4b350d454b19084454ba3e93bc4afc8a12ce0fc528a5dce37f735",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_subscription_acceptance.py"
+          ]
+        },
+        {
+          "id": "STREAM-generation",
+          "behavior": "A changed owner generation invalidates the epoch.",
+          "target": "synapse/machine/subscriptions.py",
+          "source_sha256": "f5e0f03773b4b350d454b19084454ba3e93bc4afc8a12ce0fc528a5dce37f735",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_subscription_acceptance.py"
+          ]
+        },
+        {
+          "id": "STREAM-advance",
+          "behavior": "Quiet coverage starts after the complete delivered producer range.",
+          "target": "synapse/machine/subscriptions.py",
+          "source_sha256": "f5e0f03773b4b350d454b19084454ba3e93bc4afc8a12ce0fc528a5dce37f735",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_subscription_acceptance.py"
+          ]
+        },
+        {
+          "id": "STREAM-invalidate",
+          "behavior": "Loss freezes retained/state delivery until a new subscription.",
+          "target": "synapse/machine/subscriptions.py",
+          "source_sha256": "f5e0f03773b4b350d454b19084454ba3e93bc4afc8a12ce0fc528a5dce37f735",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_subscription_acceptance.py"
+          ]
+        },
+        {
+          "id": "STREAM-gap",
+          "behavior": "Live loss is visible at delivery.",
+          "target": "synapse/machine/subscriptions.py",
+          "source_sha256": "f5e0f03773b4b350d454b19084454ba3e93bc4afc8a12ce0fc528a5dce37f735",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_subscription_acceptance.py"
+          ]
+        },
+        {
+          "id": "STREAM-disposal",
+          "behavior": "Unsubscription removes queued payloads without cancelling work.",
+          "target": "synapse/machine/subscriptions.py",
+          "source_sha256": "f5e0f03773b4b350d454b19084454ba3e93bc4afc8a12ce0fc528a5dce37f735",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_subscription_acceptance.py"
+          ]
+        },
+        {
+          "id": "STREAM-membership",
+          "behavior": "Subscribed IDs require real retained owner membership.",
+          "target": "synapse/machine/invocations.py",
+          "source_sha256": "3df1ca0c20898f3fdda0a5b5adf53c40bafe22d43d2a10b5229d8b336c105921",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_subscription_acceptance.py"
+          ]
+        },
+        {
+          "id": "STREAM-revoke",
+          "behavior": "A queued payload must recheck current authorization at consumption.",
+          "target": "synapse/access/authority.py",
+          "source_sha256": "a384bfd0629a44e6a7a2b44c52059e087973d4d76be085ed9cc318970f3f77a8",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_subscription_acceptance.py"
+          ]
+        },
+        {
+          "id": "STREAM-expiry",
+          "behavior": "Expiry stops already queued protected delivery.",
+          "target": "synapse/access/authority.py",
+          "source_sha256": "a384bfd0629a44e6a7a2b44c52059e087973d4d76be085ed9cc318970f3f77a8",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_subscription_acceptance.py"
+          ]
+        },
+        {
+          "id": "STREAM-reset",
+          "behavior": "Renderer replacement disposes queued projection state.",
+          "target": "synapse/machine/domain_session.py",
+          "source_sha256": "e96fbd7d25923456587edf7ce7a8f78b66b1c2d511ce1eceefcd6dad1cc1a080",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_subscription_acceptance.py"
+          ]
+        },
+        {
+          "id": "STREAM-native-reset",
+          "behavior": "Native Channel replacement opens a fresh core delivery lifetime.",
+          "target": "synapse/ui/src-tauri/src/application.rs",
+          "source_sha256": "a85bec287b5e689ceab11f37a6c7dd012f6e1b48891987aabf3f161f57c66c67",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application.rs"
+          ]
+        },
+        {
+          "id": "STREAM-native-method",
+          "behavior": "Delivery requests cannot invoke mutations.",
+          "target": "synapse/ui/src-tauri/src/application.rs",
+          "source_sha256": "a85bec287b5e689ceab11f37a6c7dd012f6e1b48891987aabf3f161f57c66c67",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application.rs"
+          ]
+        },
+        {
+          "id": "STREAM-view-grant",
+          "behavior": "Wrong-grant source replies cannot populate this view.",
+          "target": "synapse/ui/src/application/observations.ts",
+          "source_sha256": "b1ec3b01fe893995e0201c447a1fd5dc6cc78103494c86f6554959dd90e1f36b",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/typescript/application-observations.test.ts"
+          ]
+        },
+        {
+          "id": "STREAM-view-filter",
+          "behavior": "The fixed invocation filter is checked on confirmation.",
+          "target": "synapse/ui/src/application/observations.ts",
+          "source_sha256": "b1ec3b01fe893995e0201c447a1fd5dc6cc78103494c86f6554959dd90e1f36b",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/typescript/application-observations.test.ts"
+          ]
+        },
+        {
+          "id": "STREAM-view-epoch",
+          "behavior": "A snapshot from another epoch cannot replace this view.",
+          "target": "synapse/ui/src/application/observations.ts",
+          "source_sha256": "b1ec3b01fe893995e0201c447a1fd5dc6cc78103494c86f6554959dd90e1f36b",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/typescript/application-observations.test.ts"
+          ]
+        },
+        {
+          "id": "STREAM-view-generation",
+          "behavior": "Snapshot data generation matches its confirmed identity.",
+          "target": "synapse/ui/src/application/observations.ts",
+          "source_sha256": "b1ec3b01fe893995e0201c447a1fd5dc6cc78103494c86f6554959dd90e1f36b",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/typescript/application-observations.test.ts"
+          ]
+        },
+        {
+          "id": "STREAM-view-boundary",
+          "behavior": "The snapshot cannot precede the confirmed opening boundary.",
+          "target": "synapse/ui/src/application/observations.ts",
+          "source_sha256": "b1ec3b01fe893995e0201c447a1fd5dc6cc78103494c86f6554959dd90e1f36b",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/typescript/application-observations.test.ts"
+          ]
+        },
+        {
+          "id": "STREAM-view-loss",
+          "behavior": "Lost collection does not initiate another read or mutation.",
+          "target": "synapse/ui/src/application/observations.ts",
+          "source_sha256": "b1ec3b01fe893995e0201c447a1fd5dc6cc78103494c86f6554959dd90e1f36b",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/typescript/application-observations.test.ts"
+          ]
+        },
+        {
+          "id": "STREAM-current-ticket",
+          "behavior": "A replaced renderer ticket is rejected before dispatch.",
+          "target": "synapse/ui/src-tauri/src/controller.rs",
+          "source_sha256": "efdd894e78ecaec59f0b93f38b41218984e08fa94d2e902b51495e7f2344e0a1",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/controller_delivery.rs"
+          ]
+        },
+        {
+          "id": "STREAM-command-capacity",
+          "behavior": "Application admission has its own bounded usable capacity independent of controls.",
+          "target": "synapse/ui/src-tauri/src/controller.rs",
+          "source_sha256": "efdd894e78ecaec59f0b93f38b41218984e08fa94d2e902b51495e7f2344e0a1",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/controller_delivery.rs"
+          ]
+        },
+        {
+          "id": "APP-pending-page",
+          "behavior": "A saved-command page fits the bounded delivery contract.",
+          "target": "synapse/ui/src-tauri/src/application.rs",
+          "source_sha256": "a85bec287b5e689ceab11f37a6c7dd012f6e1b48891987aabf3f161f57c66c67",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application.rs"
+          ]
+        },
+        {
+          "id": "APP-pending-cursor",
+          "behavior": "Resuming pages cannot repeat the first page.",
+          "target": "synapse/ui/src-tauri/src/application.rs",
+          "source_sha256": "a85bec287b5e689ceab11f37a6c7dd012f6e1b48891987aabf3f161f57c66c67",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application.rs"
+          ]
+        },
+        {
+          "id": "STREAM-reply-budget",
+          "behavior": "An oversized owner reply preserves a named bounded refusal.",
+          "target": "synapse/machine/domain_contract.py",
+          "source_sha256": "c5d93aca754c9c55ac1ca7c0d34e3f514cc9b3afd905e11bc8943ee7869af405",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_transport_acceptance.py"
+          ]
+        },
+        {
+          "id": "STREAM-negotiated-budget",
+          "behavior": "The selected pipe limit must not turn a domain result into a fatal transport error.",
+          "target": "synapse/machine/transport.py",
+          "source_sha256": "caaeda970870ee5a8337984e58ad742003aba8d41f574dbc8fc543661cb69d44",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_transport_acceptance.py"
+          ]
+        },
+        {
+          "id": "STREAM-view-items",
+          "behavior": "The snapshot items themselves match the confirmed object selection.",
+          "target": "synapse/ui/src/application/observations.ts",
+          "source_sha256": "b1ec3b01fe893995e0201c447a1fd5dc6cc78103494c86f6554959dd90e1f36b",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/typescript/application-observations.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "baseline": "PASS",
+      "mutants": [
+        {
+          "id": "DOMAIN-unique-key",
+          "behavior": "One public key cannot identify two registered instances.",
+          "target": "synapse/access/authority.py",
+          "source_sha256": "a384bfd0629a44e6a7a2b44c52059e087973d4d76be085ed9cc318970f3f77a8",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_domain_session_acceptance.py"
+          ]
+        },
+        {
+          "id": "DOMAIN-stored-key-ambiguity",
+          "behavior": "Persisted duplicate public keys are refused.",
+          "target": "synapse/access/registry_codec.py",
+          "source_sha256": "7cb13e7a2195cbd6e1764da585ad1daaa14acbb2e0f92aa3b9679b965d9eb44e",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_domain_session_acceptance.py"
+          ]
+        },
+        {
+          "id": "DOMAIN-grant-list-application",
+          "behavior": "Grant discovery rechecks the current registered application.",
+          "target": "synapse/access/authority.py",
+          "source_sha256": "a384bfd0629a44e6a7a2b44c52059e087973d4d76be085ed9cc318970f3f77a8",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_domain_session_acceptance.py"
+          ]
+        },
+        {
+          "id": "DOMAIN-grant-list-scope",
+          "behavior": "Grant discovery never exposes another application's objects.",
+          "target": "synapse/access/authority.py",
+          "source_sha256": "a384bfd0629a44e6a7a2b44c52059e087973d4d76be085ed9cc318970f3f77a8",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_domain_session_acceptance.py"
+          ]
+        },
+        {
+          "id": "DOMAIN-grant-list-expiry",
+          "behavior": "Expired rights disappear from application discovery.",
+          "target": "synapse/access/authority.py",
+          "source_sha256": "a384bfd0629a44e6a7a2b44c52059e087973d4d76be085ed9cc318970f3f77a8",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_domain_session_acceptance.py"
+          ]
+        },
+        {
+          "id": "DOMAIN-close-reset",
+          "behavior": "Explicit access close starts a fresh challenge without reusing proof.",
+          "target": "synapse/machine/domain_session.py",
+          "source_sha256": "e96fbd7d25923456587edf7ce7a8f78b66b1c2d511ce1eceefcd6dad1cc1a080",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_domain_session_acceptance.py"
+          ]
+        },
+        {
+          "id": "DOMAIN-before-ready",
+          "behavior": "Domain requests before the control handshake create no authority context.",
+          "target": "synapse/machine/domain_session.py",
+          "source_sha256": "e96fbd7d25923456587edf7ce7a8f78b66b1c2d511ce1eceefcd6dad1cc1a080",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_domain_session_acceptance.py"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-correlation",
+          "behavior": "Only the corresponding request can consume a reply.",
+          "target": "synapse/ui/src-tauri/src/domain_protocol.rs",
+          "source_sha256": "d4d0f3af1a1efe93fa5dcc293fa7f4b692e7320326e63e7c286929cb32ddd518",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/domain_protocol.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-method",
+          "behavior": "A result from another method is not an answer.",
+          "target": "synapse/ui/src-tauri/src/domain_protocol.rs",
+          "source_sha256": "d4d0f3af1a1efe93fa5dcc293fa7f4b692e7320326e63e7c286929cb32ddd518",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/domain_protocol.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-schema",
+          "behavior": "Unknown refusal vocabulary is rejected at the reply boundary.",
+          "target": "synapse/ui/src-tauri/src/domain_protocol.rs",
+          "source_sha256": "d4d0f3af1a1efe93fa5dcc293fa7f4b692e7320326e63e7c286929cb32ddd518",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/domain_protocol.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-instance-reuse",
+          "behavior": "Restart must reuse the registered private key.",
+          "target": "synapse/ui/src-tauri/src/client_identity.rs",
+          "source_sha256": "0b3f10b3f4075e617d7ee7bf250c4026a40fcf89f3ef47909e001d8250179497",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/client_identity.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-credential-tag",
+          "behavior": "A malformed credential is not an application identity.",
+          "target": "synapse/ui/src-tauri/src/client_identity.rs",
+          "source_sha256": "0b3f10b3f4075e617d7ee7bf250c4026a40fcf89f3ef47909e001d8250179497",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/client_identity.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-credential-persistence",
+          "behavior": "Session-only key persistence does not satisfy restart recovery.",
+          "target": "synapse/ui/src-tauri/src/client_identity.rs",
+          "source_sha256": "0b3f10b3f4075e617d7ee7bf250c4026a40fcf89f3ef47909e001d8250179497",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/client_identity.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-signature",
+          "behavior": "A real Python verifier rejects a signature over a different challenge.",
+          "target": "synapse/ui/src-tauri/src/client_identity.rs",
+          "source_sha256": "0b3f10b3f4075e617d7ee7bf250c4026a40fcf89f3ef47909e001d8250179497",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-identity-selection",
+          "behavior": "The signed native instance must match the registered public key.",
+          "target": "synapse/ui/src-tauri/src/client_identity.rs",
+          "source_sha256": "0b3f10b3f4075e617d7ee7bf250c4026a40fcf89f3ef47909e001d8250179497",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-closed-renderer",
+          "behavior": "Renderer fields cannot assign native context.",
+          "target": "synapse/ui/src-tauri/src/application.rs",
+          "source_sha256": "a85bec287b5e689ceab11f37a6c7dd012f6e1b48891987aabf3f161f57c66c67",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-read-mutation",
+          "behavior": "The read API cannot submit a renderer-issued mutation identity.",
+          "target": "synapse/ui/src-tauri/src/application.rs",
+          "source_sha256": "a85bec287b5e689ceab11f37a6c7dd012f6e1b48891987aabf3f161f57c66c67",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-intent-permission",
+          "behavior": "Read-only grants cannot issue mutation intents.",
+          "target": "synapse/ui/src-tauri/src/application.rs",
+          "source_sha256": "a85bec287b5e689ceab11f37a6c7dd012f6e1b48891987aabf3f161f57c66c67",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-selected-grant",
+          "behavior": "An unlisted grant reference cannot select another granted scope.",
+          "target": "synapse/ui/src-tauri/src/application.rs",
+          "source_sha256": "a85bec287b5e689ceab11f37a6c7dd012f6e1b48891987aabf3f161f57c66c67",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-retry-status",
+          "behavior": "Repeated submission reconciles the original identity before any resend.",
+          "target": "synapse/ui/src-tauri/src/application.rs",
+          "source_sha256": "a85bec287b5e689ceab11f37a6c7dd012f6e1b48891987aabf3f161f57c66c67",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application.rs"
+          ]
+        }
+      ]
+    },
+    {
+      "baseline": "PASS",
+      "mutants": [
+        {
+          "id": "APP-CHANNEL-slot",
+          "behavior": "A slow renderer cannot admit another application request.",
+          "target": "synapse/ui/src-tauri/src/application_delivery.rs",
+          "source_sha256": "96bea0d88e5b87fd33744432e7797579ae755a48a0c3918fb192dc25ede993a6",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application_delivery.rs"
+          ]
+        },
+        {
+          "id": "APP-CHANNEL-early-ack",
+          "behavior": "An ACK before a result cannot release the request slot.",
+          "target": "synapse/ui/src-tauri/src/application_delivery.rs",
+          "source_sha256": "96bea0d88e5b87fd33744432e7797579ae755a48a0c3918fb192dc25ede993a6",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application_delivery.rs"
+          ]
+        },
+        {
+          "id": "APP-CHANNEL-ack-binding",
+          "behavior": "An unrelated ACK cannot acknowledge the occupied result.",
+          "target": "synapse/ui/src-tauri/src/application_delivery.rs",
+          "source_sha256": "96bea0d88e5b87fd33744432e7797579ae755a48a0c3918fb192dc25ede993a6",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application_delivery.rs"
+          ]
+        },
+        {
+          "id": "APP-CHANNEL-failed-delivery",
+          "behavior": "A failed sink is unresolved delivery, not a pre-enqueue refusal.",
+          "target": "synapse/ui/src-tauri/src/application_delivery.rs",
+          "source_sha256": "96bea0d88e5b87fd33744432e7797579ae755a48a0c3918fb192dc25ede993a6",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application_delivery.rs"
+          ]
+        },
+        {
+          "id": "APP-CHANNEL-unsubscription",
+          "behavior": "Unsubscription discards only that delivery context.",
+          "target": "synapse/ui/src-tauri/src/application_delivery.rs",
+          "source_sha256": "96bea0d88e5b87fd33744432e7797579ae755a48a0c3918fb192dc25ede993a6",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application_delivery.rs"
+          ]
+        },
+        {
+          "id": "APP-CHANNEL-renderer-busy",
+          "behavior": "One unresolved operation bounds renderer state.",
+          "target": "synapse/ui/src/application/session.ts",
+          "source_sha256": "3961c41a600b4e0b7bbd622106efbdd1b48a97b86473c0c0ca35ec48a8363d85",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/typescript/application-session.test.ts"
+          ]
+        },
+        {
+          "id": "APP-CHANNEL-old-subscription",
+          "behavior": "Old subscription replies cannot populate the new view.",
+          "target": "synapse/ui/src/application/session.ts",
+          "source_sha256": "3961c41a600b4e0b7bbd622106efbdd1b48a97b86473c0c0ca35ec48a8363d85",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/typescript/application-session.test.ts"
+          ]
+        },
+        {
+          "id": "APP-CHANNEL-request-correlation",
+          "behavior": "A reply must match the native-issued request identity.",
+          "target": "synapse/ui/src/application/session.ts",
+          "source_sha256": "3961c41a600b4e0b7bbd622106efbdd1b48a97b86473c0c0ca35ec48a8363d85",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/typescript/application-session.test.ts"
+          ]
+        },
+        {
+          "id": "APP-CHANNEL-ack-before-release",
+          "behavior": "UI admission remains blocked until its exact ACK completes.",
+          "target": "synapse/ui/src/application/session.ts",
+          "source_sha256": "3961c41a600b4e0b7bbd622106efbdd1b48a97b86473c0c0ca35ec48a8363d85",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/typescript/application-session.test.ts"
+          ]
+        },
+        {
+          "id": "APP-CHANNEL-closed-vocabulary",
+          "behavior": "Decoded results obey the product-owned closed schema.",
+          "target": "synapse/ui/src/contracts/application-decode.ts",
+          "source_sha256": "7083827c26f0d44f94966c21cbc1fdde40573fa2a163f8df4971f7f916f18ad4",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/typescript/application-session.test.ts"
+          ]
+        },
+        {
+          "id": "APP-CHANNEL-synchronous-refusal",
+          "behavior": "A synchronous transport refusal must release the local request slot.",
+          "target": "synapse/ui/src/application/session.ts",
+          "source_sha256": "3961c41a600b4e0b7bbd622106efbdd1b48a97b86473c0c0ca35ec48a8363d85",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/typescript/application-session.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "baseline": "PASS",
+      "mutants": [
+        {
+          "id": "LOCATION-caller-environment",
+          "behavior": "Caller environment cannot redirect the machine authority root.",
+          "target": "synapse/access/windows_location.py",
+          "source_sha256": "6cfd9ac5c98530fdd665bc6ed0624d1f8483ee0e5e8689768995540611e3d96d",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_windows_location_acceptance.py"
+          ]
+        },
+        {
+          "id": "LOCATION-system-expansion",
+          "behavior": "A native minimal environment still resolves the configured system drive.",
+          "target": "synapse/access/windows_location.py",
+          "source_sha256": "6cfd9ac5c98530fdd665bc6ed0624d1f8483ee0e5e8689768995540611e3d96d",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_windows_location_acceptance.py"
+          ]
+        },
+        {
+          "id": "LOCATION-absolute-config",
+          "behavior": "An absolute machine configuration is not replaced by an assumed default.",
+          "target": "synapse/access/windows_location.py",
+          "source_sha256": "6cfd9ac5c98530fdd665bc6ed0624d1f8483ee0e5e8689768995540611e3d96d",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_windows_location_acceptance.py"
+          ]
+        },
+        {
+          "id": "LOCATION-local-scope",
+          "behavior": "Unknown expansions, relative locations and nonlocal paths fail closed.",
+          "target": "synapse/access/windows_location.py",
+          "source_sha256": "6cfd9ac5c98530fdd665bc6ed0624d1f8483ee0e5e8689768995540611e3d96d",
+          "result": "KILLED",
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_windows_location_acceptance.py"
+          ]
+        }
+      ]
+    }
+  ],
+  "foreign_native_contexts": {
+    "target": "synapse/ui/src-tauri/src/caller.rs",
+    "source_sha256": "b32e45fcddb877a73a6d7e480ba057a9c82f1429d2742deedfda96af325e2c46",
+    "scope": "external topology copies; actual Tauri command handlers and native context; not installed artifacts",
+    "variants": [
+      {
+        "context": "label",
+        "mutant": false,
+        "artifact": "label-baseline.exe",
+        "sha256": "2a0f024e31b209447ae489952b2439df7244a415a1c7483e98c4d50c14232745",
+        "before": "label != \"main\"",
+        "after": "false",
+        "observation": {
+          "schema": 1,
+          "context": "label",
+          "status": "PASS",
+          "commands": [
+            {
+              "command": "desktop_subscribe",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_start",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_stop",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_ack",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_force_close",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_identity",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_application_subscribe",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_application",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_application_ack",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_application_unsubscribe",
+              "result": "CALLER_REFUSED"
+            }
+          ],
+          "actualContext": true
+        },
+        "result": "PASS"
+      },
+      {
+        "context": "label",
+        "mutant": true,
+        "artifact": "label-mutant.exe",
+        "sha256": "6ed2b32b0398d204aaf3fd3ac9e24bfce79e1bf4701b557787ba792a1687e580",
+        "before": "label != \"main\"",
+        "after": "false",
+        "observation": {
+          "schema": 1,
+          "context": "label",
+          "status": "BYPASS_DETECTED",
+          "commands": [
+            {
+              "command": "desktop_subscribe",
+              "result": "ALLOWED"
+            },
+            {
+              "command": "desktop_start",
+              "result": "ALLOWED"
+            },
+            {
+              "command": "desktop_stop",
+              "result": "ALLOWED"
+            },
+            {
+              "command": "desktop_ack",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_force_close",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_identity",
+              "result": "ALLOWED"
+            },
+            {
+              "command": "desktop_application_subscribe",
+              "result": "ALLOWED"
+            },
+            {
+              "command": "desktop_application",
+              "result": "OTHER_REFUSAL"
+            },
+            {
+              "command": "desktop_application_ack",
+              "result": "OTHER_REFUSAL"
+            },
+            {
+              "command": "desktop_application_unsubscribe",
+              "result": "ALLOWED"
+            }
+          ],
+          "actualContext": true
+        },
+        "result": "KILLED"
+      },
+      {
+        "context": "origin",
+        "mutant": false,
+        "artifact": "origin-baseline.exe",
+        "sha256": "e86ef3720cedec8b2e01033178771ebe206376e42facb5eb95c4da07e0f4d2e6",
+        "before": "|| !local",
+        "after": "|| false",
+        "observation": {
+          "schema": 1,
+          "context": "origin",
+          "status": "PASS",
+          "commands": [
+            {
+              "command": "desktop_subscribe",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_start",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_stop",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_ack",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_force_close",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_identity",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_application_subscribe",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_application",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_application_ack",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_application_unsubscribe",
+              "result": "CALLER_REFUSED"
+            }
+          ],
+          "actualContext": true
+        },
+        "result": "PASS"
+      },
+      {
+        "context": "origin",
+        "mutant": true,
+        "artifact": "origin-mutant.exe",
+        "sha256": "88addc95fdf9c9104ce6a7858f6e817b4837bc7d50a5c79220b1d638f425754c",
+        "before": "|| !local",
+        "after": "|| false",
+        "observation": {
+          "schema": 1,
+          "context": "origin",
+          "status": "BYPASS_DETECTED",
+          "commands": [
+            {
+              "command": "desktop_subscribe",
+              "result": "ALLOWED"
+            },
+            {
+              "command": "desktop_start",
+              "result": "ALLOWED"
+            },
+            {
+              "command": "desktop_stop",
+              "result": "ALLOWED"
+            },
+            {
+              "command": "desktop_ack",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_force_close",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_identity",
+              "result": "ALLOWED"
+            },
+            {
+              "command": "desktop_application_subscribe",
+              "result": "ALLOWED"
+            },
+            {
+              "command": "desktop_application",
+              "result": "OTHER_REFUSAL"
+            },
+            {
+              "command": "desktop_application_ack",
+              "result": "OTHER_REFUSAL"
+            },
+            {
+              "command": "desktop_application_unsubscribe",
+              "result": "ALLOWED"
+            }
+          ],
+          "actualContext": true
+        },
+        "result": "KILLED"
+      }
+    ]
+  },
+  "investigation_history": [
+    "The first subscription campaign killed sixteen mutants and left four survivors. Added pre-next invalidation, a valid alternate forbidden native method, and independently valid mismatched grant/filter snapshots; all twenty-seven final variants are killed.",
+    "One intermediate native baseline failed without retained diagnostics. It supplies no mutation success. Baseline diagnostics now stay outside the checkout; the complete final serial campaign passed. No product concurrency guarantee is inferred from serial suite scheduling.",
+    "An intermediate domain campaign stopped at a stale close-reset mutation site. The point was updated for subscription disposal and the complete twenty-mutant campaign passed.",
+    "Installed access first failed because Shell known-folder expansion needed a variable absent from the native minimal environment. The location adapter now uses machine configuration and the OS system drive; four final mutants are killed.",
+    "The first installed owner fixture was created under elevation with private owner ACLs. Correctly refused reads were not a product regression. The fixture is now created by the ordinary owner; only access issuance/revocation uses UAC.",
+    "The first frontend observation baseline used an invalid empty snapshot fixture. A valid ABSENT item fixed the fixture; all one hundred frontend cases pass.",
+    "Two release packaging attempts used the old core because staging was refused by sandbox filesystem access. Neither was installed or counted as fixed-artifact evidence. The final staging used verified same-workspace moves and the installed inventory was checked byte-for-byte."
+  ],
+  "limits": [
+    "Native Linux graphical systemd/cgroup and installed access storage remain owner-deferred and unverified.",
+    "Clean-machine provisioning, signed distribution and wider Windows/WebView2 versions are not established on this PC.",
+    "Fresh invocation observations do not implement complete P2 continuous multi-domain synchronization or all P3-P6 command owners.",
+    "Trusted graphical administrative confirmation and the separate F-05 human-consent assurance remain future required work.",
+    "The full repository suite was not rerun. Historical unrelated Windows replay failure remains recorded separately."
+  ]
+}

@@ -366,8 +366,8 @@ def test_contracts_module_holds_no_mutable_domain_state() -> None:
     )
 
 
-def test_swebench_gold_runner_stays_a_single_attempt_c1_adapter() -> None:
-    path = REPO_ROOT / "synapse" / "experiments" / "swebench" / "gold_runner.py"
+def test_applied_verification_gold_runner_stays_a_single_attempt_c1_adapter() -> None:
+    path = REPO_ROOT / "synapse" / "experiments" / "applied_verification" / "gold_runner.py"
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
     defined = {

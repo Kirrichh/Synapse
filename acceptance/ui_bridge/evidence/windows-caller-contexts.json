@@ -1,0 +1,444 @@
+{
+  "schema": 1,
+  "target": "synapse/ui/src-tauri/src/caller.rs",
+  "source_sha256": "b32e45fcddb877a73a6d7e480ba057a9c82f1429d2742deedfda96af325e2c46",
+  "scope": "external topology copies; actual Tauri command handlers and native context; not installed artifacts",
+  "accepted_evidence": [
+    {
+      "context": "label",
+      "mutant": false,
+      "artifact": "label-baseline.exe",
+      "sha256": "e4babbc0c4c51e776058b5f9ebc72e2239d783eee35b3f991522322682abe7bc",
+      "before": "label != \"main\"",
+      "after": "false",
+      "observation": {
+        "schema": 1,
+        "context": "label",
+        "status": "PASS",
+        "commands": [
+          {
+            "command": "desktop_subscribe",
+            "result": "CALLER_REFUSED"
+          },
+          {
+            "command": "desktop_start",
+            "result": "CALLER_REFUSED"
+          },
+          {
+            "command": "desktop_stop",
+            "result": "CALLER_REFUSED"
+          },
+          {
+            "command": "desktop_ack",
+            "result": "CALLER_REFUSED"
+          },
+          {
+            "command": "desktop_force_close",
+            "result": "CALLER_REFUSED"
+          }
+        ],
+        "actualContext": true
+      },
+      "result": "PASS"
+    },
+    {
+      "context": "label",
+      "mutant": true,
+      "artifact": "label-mutant.exe",
+      "sha256": "e54ad870043ed27d7b896424897df05d71d8e36ecf0ffee8f2aa5b5859ca2c8d",
+      "before": "label != \"main\"",
+      "after": "false",
+      "observation": {
+        "schema": 1,
+        "context": "label",
+        "status": "BYPASS_DETECTED",
+        "commands": [
+          {
+            "command": "desktop_subscribe",
+            "result": "ALLOWED"
+          },
+          {
+            "command": "desktop_start",
+            "result": "ALLOWED"
+          },
+          {
+            "command": "desktop_stop",
+            "result": "ALLOWED"
+          },
+          {
+            "command": "desktop_ack",
+            "result": "CALLER_REFUSED"
+          },
+          {
+            "command": "desktop_force_close",
+            "result": "CALLER_REFUSED"
+          }
+        ],
+        "actualContext": true
+      },
+      "result": "KILLED"
+    },
+    {
+      "context": "origin",
+      "mutant": false,
+      "artifact": "origin-baseline.exe",
+      "sha256": "cd608bfdbd3a732e07215b1dc20695a579ed30262e1184913707d210c4514791",
+      "before": "|| !local",
+      "after": "|| false",
+      "observation": {
+        "schema": 1,
+        "context": "origin",
+        "status": "PASS",
+        "commands": [
+          {
+            "command": "desktop_subscribe",
+            "result": "CALLER_REFUSED"
+          },
+          {
+            "command": "desktop_start",
+            "result": "CALLER_REFUSED"
+          },
+          {
+            "command": "desktop_stop",
+            "result": "CALLER_REFUSED"
+          },
+          {
+            "command": "desktop_ack",
+            "result": "CALLER_REFUSED"
+          },
+          {
+            "command": "desktop_force_close",
+            "result": "CALLER_REFUSED"
+          }
+        ],
+        "actualContext": true
+      },
+      "result": "PASS"
+    },
+    {
+      "context": "origin",
+      "mutant": true,
+      "artifact": "origin-mutant.exe",
+      "sha256": "93e6651e291bab641ebd6dd65dc24f22cd35fc74a3666ff0823826c14321fb04",
+      "before": "|| !local",
+      "after": "|| false",
+      "observation": {
+        "schema": 1,
+        "context": "origin",
+        "status": "BYPASS_DETECTED",
+        "commands": [
+          {
+            "command": "desktop_subscribe",
+            "result": "ALLOWED"
+          },
+          {
+            "command": "desktop_start",
+            "result": "ALLOWED"
+          },
+          {
+            "command": "desktop_stop",
+            "result": "ALLOWED"
+          },
+          {
+            "command": "desktop_ack",
+            "result": "CALLER_REFUSED"
+          },
+          {
+            "command": "desktop_force_close",
+            "result": "CALLER_REFUSED"
+          }
+        ],
+        "actualContext": true
+      },
+      "result": "KILLED"
+    }
+  ],
+  "attempts": {
+    "random_port": [
+      {
+        "context": "label",
+        "mutant": false,
+        "artifact": "label-baseline.exe",
+        "sha256": "e4babbc0c4c51e776058b5f9ebc72e2239d783eee35b3f991522322682abe7bc",
+        "before": "label != \"main\"",
+        "after": "false",
+        "observation": {
+          "schema": 1,
+          "context": "label",
+          "status": "PASS",
+          "commands": [
+            {
+              "command": "desktop_subscribe",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_start",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_stop",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_ack",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_force_close",
+              "result": "CALLER_REFUSED"
+            }
+          ],
+          "actualContext": true
+        },
+        "result": "PASS"
+      },
+      {
+        "context": "label",
+        "mutant": true,
+        "artifact": "label-mutant.exe",
+        "sha256": "e54ad870043ed27d7b896424897df05d71d8e36ecf0ffee8f2aa5b5859ca2c8d",
+        "before": "label != \"main\"",
+        "after": "false",
+        "observation": {
+          "schema": 1,
+          "context": "label",
+          "status": "BYPASS_DETECTED",
+          "commands": [
+            {
+              "command": "desktop_subscribe",
+              "result": "ALLOWED"
+            },
+            {
+              "command": "desktop_start",
+              "result": "ALLOWED"
+            },
+            {
+              "command": "desktop_stop",
+              "result": "ALLOWED"
+            },
+            {
+              "command": "desktop_ack",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_force_close",
+              "result": "CALLER_REFUSED"
+            }
+          ],
+          "actualContext": true
+        },
+        "result": "KILLED"
+      },
+      {
+        "context": "origin",
+        "mutant": false,
+        "artifact": "origin-baseline.exe",
+        "sha256": "cd608bfdbd3a732e07215b1dc20695a579ed30262e1184913707d210c4514791",
+        "before": "|| !local",
+        "after": "|| false",
+        "observation": {
+          "schema": 1,
+          "context": "origin",
+          "status": "PASS",
+          "commands": [
+            {
+              "command": "desktop_subscribe",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_start",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_stop",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_ack",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_force_close",
+              "result": "CALLER_REFUSED"
+            }
+          ],
+          "actualContext": true
+        },
+        "result": "PASS"
+      },
+      {
+        "context": "origin",
+        "mutant": true,
+        "artifact": "origin-mutant.exe",
+        "sha256": "93e6651e291bab641ebd6dd65dc24f22cd35fc74a3666ff0823826c14321fb04",
+        "before": "|| !local",
+        "after": "|| false",
+        "observation": {
+          "schema": 1,
+          "context": "origin",
+          "status": "PASS",
+          "commands": [
+            {
+              "command": "desktop_subscribe",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_start",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_stop",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_ack",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_force_close",
+              "result": "CALLER_REFUSED"
+            }
+          ],
+          "actualContext": true
+        },
+        "result": "SURVIVED"
+      }
+    ],
+    "default_port": [
+      {
+        "context": "label",
+        "mutant": false,
+        "artifact": "label-baseline.exe",
+        "sha256": "e4babbc0c4c51e776058b5f9ebc72e2239d783eee35b3f991522322682abe7bc",
+        "before": "label != \"main\"",
+        "after": "false",
+        "observation": {
+          "schema": 1,
+          "context": "label",
+          "status": "PASS",
+          "commands": [
+            {
+              "command": "desktop_subscribe",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_start",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_stop",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_ack",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_force_close",
+              "result": "CALLER_REFUSED"
+            }
+          ],
+          "actualContext": true
+        },
+        "result": "PASS"
+      },
+      {
+        "context": "label",
+        "mutant": true,
+        "artifact": "label-mutant.exe",
+        "sha256": "e54ad870043ed27d7b896424897df05d71d8e36ecf0ffee8f2aa5b5859ca2c8d",
+        "before": "label != \"main\"",
+        "after": "false",
+        "observation": {
+          "schema": 1,
+          "context": "label",
+          "status": "INFRASTRUCTURE_FAILURE",
+          "commands": []
+        },
+        "result": "INFRASTRUCTURE_FAILURE"
+      },
+      {
+        "context": "origin",
+        "mutant": false,
+        "artifact": "origin-baseline.exe",
+        "sha256": "cd608bfdbd3a732e07215b1dc20695a579ed30262e1184913707d210c4514791",
+        "before": "|| !local",
+        "after": "|| false",
+        "observation": {
+          "schema": 1,
+          "context": "origin",
+          "status": "PASS",
+          "commands": [
+            {
+              "command": "desktop_subscribe",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_start",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_stop",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_ack",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_force_close",
+              "result": "CALLER_REFUSED"
+            }
+          ],
+          "actualContext": true
+        },
+        "result": "PASS"
+      },
+      {
+        "context": "origin",
+        "mutant": true,
+        "artifact": "origin-mutant.exe",
+        "sha256": "93e6651e291bab641ebd6dd65dc24f22cd35fc74a3666ff0823826c14321fb04",
+        "before": "|| !local",
+        "after": "|| false",
+        "observation": {
+          "schema": 1,
+          "context": "origin",
+          "status": "BYPASS_DETECTED",
+          "commands": [
+            {
+              "command": "desktop_subscribe",
+              "result": "ALLOWED"
+            },
+            {
+              "command": "desktop_start",
+              "result": "ALLOWED"
+            },
+            {
+              "command": "desktop_stop",
+              "result": "ALLOWED"
+            },
+            {
+              "command": "desktop_ack",
+              "result": "CALLER_REFUSED"
+            },
+            {
+              "command": "desktop_force_close",
+              "result": "CALLER_REFUSED"
+            }
+          ],
+          "actualContext": true
+        },
+        "result": "KILLED"
+      }
+    ]
+  },
+  "analysis": [
+    "The initial origin mutant survived because the independently forbidden non-default port still refused the caller.",
+    "A default-port loopback origin isolates the origin predicate; the same origin mutant then permits commands and is killed.",
+    "The repeated label-mutant attempt did not establish the IPC context and is infrastructure failure, never a kill.",
+    "Label evidence comes from the earlier successful run of the identical binaries; origin evidence comes from the default-port run.",
+    "Private topology changes grant capabilities and relax earlier origin admission only to reach the actual production caller filter.",
+    "No modified topology or mutant is installed or shipped; no full foreign-caller production topology claim is inferred."
+  ]
+}

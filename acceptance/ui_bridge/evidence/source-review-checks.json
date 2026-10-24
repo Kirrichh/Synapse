@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "scope": "Windows directory lifetime and CPython packaging; not P1 completion or installed application acceptance.",
+  "environment": {
+    "platform": "Windows x86_64",
+    "python": "3.12.14",
+    "rust": "1.99.1 MSVC"
+  },
+  "directory_acceptance": {
+    "passed": 2,
+    "product_changed": false
+  },
+  "directory_first_round": {
+    "baseline": "PASS",
+    "mutants": [
+      {
+        "id": "INTENT-directory-owner-lifetime",
+        "behavior": "Open intent storage retains its root and ancestor directory objects on Windows",
+        "target": "synapse/ui/src-tauri/src/intent_store.rs",
+        "source_sha256": "f43ee4e9004d6b102629ad2cc6a3c6c367c7386abaad3f7a43ba2e2d9c64cce8",
+        "result": "SURVIVED",
+        "seconds": 2.109,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/intent_directory.rs"
+        ]
+      },
+      {
+        "id": "INTENT-directory-exclusion-before-create",
+        "behavior": "Excluded agent storage is refused without creating a directory or retaining a handle",
+        "target": "synapse/ui/src-tauri/src/intent_store.rs",
+        "source_sha256": "f43ee4e9004d6b102629ad2cc6a3c6c367c7386abaad3f7a43ba2e2d9c64cce8",
+        "result": "KILLED",
+        "seconds": 3.36,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/intent_directory.rs"
+        ]
+      }
+    ]
+  },
+  "directory_survivor_explanation": "Removing the byte-range lock retains the open owner file, so it does not remove directory lifetime protection. The corrected mutation closes that handle; the independent exclusive-owner test covers removal of the byte-range lock.",
+  "directory_final_round": {
+    "baseline": "PASS",
+    "mutants": [
+      {
+        "id": "INTENT-directory-owner-lifetime",
+        "behavior": "Open intent storage retains its root and ancestor directory objects on Windows",
+        "target": "synapse/ui/src-tauri/src/intent_store.rs",
+        "source_sha256": "f43ee4e9004d6b102629ad2cc6a3c6c367c7386abaad3f7a43ba2e2d9c64cce8",
+        "result": "KILLED",
+        "seconds": 2.094,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/intent_directory.rs"
+        ]
+      },
+      {
+        "id": "INTENT-directory-exclusion-before-create",
+        "behavior": "Excluded agent storage is refused without creating a directory or retaining a handle",
+        "target": "synapse/ui/src-tauri/src/intent_store.rs",
+        "source_sha256": "f43ee4e9004d6b102629ad2cc6a3c6c367c7386abaad3f7a43ba2e2d9c64cce8",
+        "result": "KILLED",
+        "seconds": 3.375,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/intent_directory.rs"
+        ]
+      }
+    ]
+  },
+  "packaging_acceptance": {
+    "before": {
+      "failed": 2,
+      "passed": 3
+    },
+    "after": {
+      "passed": 5
+    }
+  },
+  "packaging_initial_campaign": {
+    "baseline": "FAILED",
+    "counted_as_success": false,
+    "reason": "Isolated copy omitted LICENSE; corrected before rerun."
+  },
+  "packaging_final_round": {
+    "baseline": "PASS",
+    "mutants": [
+      {
+        "id": "BUNDLE-Windows-native-test-filter",
+        "behavior": "Native CPython tests cannot enter the Windows bundle or its authorized inventory",
+        "target": "scripts/ui/build_core_bundle.py",
+        "source_sha256": "4fce05708bbff3ba976b1e34d8d135ad3a956f53959a974c605264aa016b45b3",
+        "result": "KILLED",
+        "seconds": 0.453,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_bundle_privacy_acceptance.py"
+        ]
+      },
+      {
+        "id": "BUNDLE-CPython-nonprefix-tests",
+        "behavior": "Non-_test-prefixed CPython test extensions are excluded with debug and ABI suffixes",
+        "target": "scripts/ui/build_core_bundle.py",
+        "source_sha256": "4fce05708bbff3ba976b1e34d8d135ad3a956f53959a974c605264aa016b45b3",
+        "result": "KILLED",
+        "seconds": 0.39,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_bundle_tool_acceptance.py"
+        ]
+      },
+      {
+        "id": "BUNDLE-CPython-preserve-runtime",
+        "behavior": "Removing native tests must preserve required runtime extensions and their inventory hashes",
+        "target": "scripts/ui/build_core_bundle.py",
+        "source_sha256": "4fce05708bbff3ba976b1e34d8d135ad3a956f53959a974c605264aa016b45b3",
+        "result": "KILLED",
+        "seconds": 0.453,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_bundle_privacy_acceptance.py"
+        ]
+      }
+    ]
+  },
+  "real_staged_interpreter": {
+    "isolated_prefix": true,
+    "test_extensions_absent": true,
+    "ctypes": "PASS",
+    "sqlite_query": "PASS",
+    "tls_context": "PASS",
+    "sqlite_version": "3.53.1"
+  },
+  "rebuilt_canonical_core": {
+    "manifest_sha256": "76d22d6065250d024fab4a140b00d3ec3f39996793c5fec9e07c1f267745b7e5",
+    "inventory_verified": true,
+    "native_test_extensions_absent": true,
+    "canonical_pipe_cases_passed": 36,
+    "installed_desktop_acceptance": false
+  },
+  "initial_core_corpus_attempt": {
+    "result": "ENVIRONMENT_FAILURE",
+    "counted_as_acceptance": false,
+    "reason": "Agent sandbox could not resolve the host-created core path; acceptance stopped before product launch. The host rerun passed."
+  },
+  "limits": [
+    "No claim about initial path-admission races or arbitrary same-user process isolation.",
+    "No newly installed desktop artifact was accepted in these checks.",
+    "No native Linux acceptance."
+  ]
+}

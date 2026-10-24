@@ -1,0 +1,66 @@
+{
+  "baseline": "PASS",
+  "method": "isolated source copies; no node/core symlinks required",
+  "mutants": [
+    {
+      "id": "PKG-local-provenance",
+      "behavior": "local installation provenance cannot ship",
+      "target": "scripts/ui/build_core_bundle.py",
+      "source_sha256": "b2fab5fc92074c05d52f0a42cffe4e34de5356d114697ac8cb8edf92e963fffc",
+      "result": "KILLED",
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_bundle_privacy_acceptance.py"
+      ]
+    },
+    {
+      "id": "PKG-bound-launchers",
+      "behavior": "build-interpreter console launchers cannot ship",
+      "target": "scripts/ui/build_core_bundle.py",
+      "source_sha256": "b2fab5fc92074c05d52f0a42cffe4e34de5356d114697ac8cb8edf92e963fffc",
+      "result": "KILLED",
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_bundle_privacy_acceptance.py"
+      ]
+    },
+    {
+      "id": "PKG-record-hashes",
+      "behavior": "removed private installation data must not survive through RECORD hashes",
+      "target": "scripts/ui/build_core_bundle.py",
+      "source_sha256": "b2fab5fc92074c05d52f0a42cffe4e34de5356d114697ac8cb8edf92e963fffc",
+      "result": "KILLED",
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_bundle_privacy_acceptance.py"
+      ]
+    },
+    {
+      "id": "PKG-cleanup-integration",
+      "behavior": "the actual builder must sanitize packages before inventory publication",
+      "target": "scripts/ui/build_core_bundle.py",
+      "source_sha256": "b2fab5fc92074c05d52f0a42cffe4e34de5356d114697ac8cb8edf92e963fffc",
+      "result": "KILLED",
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_bundle_privacy_acceptance.py"
+      ]
+    },
+    {
+      "id": "PKG-private-staging-location",
+      "behavior": "raw installer output must stay outside the publication tree",
+      "target": "scripts/ui/build_core_bundle.py",
+      "source_sha256": "b2fab5fc92074c05d52f0a42cffe4e34de5356d114697ac8cb8edf92e963fffc",
+      "result": "KILLED",
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_bundle_privacy_acceptance.py"
+      ]
+    },
+    {
+      "id": "PKG-source-temp-refusal",
+      "behavior": "a source-local temporary directory must be refused before staging",
+      "target": "scripts/ui/build_core_bundle.py",
+      "source_sha256": "b2fab5fc92074c05d52f0a42cffe4e34de5356d114697ac8cb8edf92e963fffc",
+      "result": "KILLED",
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_bundle_privacy_acceptance.py"
+      ]
+    }
+  ]
+}

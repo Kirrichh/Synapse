@@ -6,7 +6,7 @@ from acceptance.stage4.stage15._run_case import completed_run
 from acceptance.stage4.stage15._retained_sources import changed_source, inventory
 from synapse.experiments.gold.stage15.run_observability import inspect_observability
 from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V1, LOCAL_EDIT_PROPOSAL_V1
-from tests.test_swebench_gold_runner import OLD_SOURCE, NEW_SOURCE
+from tests.test_applied_verification_gold_runner import OLD_SOURCE, NEW_SOURCE
 
 
 def test_captured_patch_publication_retains_real_verification_measurements(tmp_path, monkeypatch):

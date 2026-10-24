@@ -1,0 +1,187 @@
+[
+  {
+    "id": "DEL-closed-transport",
+    "kind": "python",
+    "behavior": "closed output reports a declared pipe failure",
+    "target": "synapse/machine/transport.py",
+    "before": "except DeliveryClosed:\n            raise ProtocolError(\"PIPE_CLOSED\") from None",
+    "after": "except DeliveryClosed:\n            return",
+    "cases": ["acceptance/ui_bridge/test_transport_acceptance.py"]
+  },
+  {
+    "id": "DEL-control-bound",
+    "kind": "python",
+    "behavior": "control traffic has its own hard capacity",
+    "target": "synapse/machine/delivery.py",
+    "before": "while len(self._controls) >= self._control_capacity:",
+    "after": "while False:",
+    "cases": [
+      "acceptance/ui_bridge/test_delivery_acceptance.py"
+    ]
+  },
+  {
+    "id": "DEL-projection-bound",
+    "kind": "python",
+    "behavior": "projection overflow has explicit class semantics",
+    "target": "synapse/machine/delivery.py",
+    "before": "if len(self._projections) >= self._projection_capacity:",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_delivery_acceptance.py"
+    ]
+  },
+  {
+    "id": "DEL-control-priority",
+    "kind": "python",
+    "behavior": "live flood cannot starve control",
+    "target": "synapse/machine/delivery.py",
+    "before": "self._control_run < self._burst or not projected",
+    "after": "not projected",
+    "cases": [
+      "acceptance/ui_bridge/test_delivery_acceptance.py"
+    ]
+  },
+  {
+    "id": "DEL-projection-fairness",
+    "kind": "python",
+    "behavior": "continuous control has a bounded burst",
+    "target": "synapse/machine/delivery.py",
+    "before": "self._control_run < self._burst or not projected",
+    "after": "True",
+    "cases": [
+      "acceptance/ui_bridge/test_delivery_acceptance.py"
+    ]
+  },
+  {
+    "id": "DEL-live-gap",
+    "kind": "python",
+    "behavior": "lost live data marks the next delivery",
+    "target": "synapse/machine/delivery.py",
+    "before": "state.gap = True",
+    "after": "state.gap = False",
+    "cases": [
+      "acceptance/ui_bridge/test_delivery_acceptance.py"
+    ]
+  },
+  {
+    "id": "DEL-live-gap-clear",
+    "kind": "python",
+    "behavior": "a delivered gap does not contaminate every later item",
+    "target": "synapse/machine/delivery.py",
+    "before": "state.gap = False",
+    "after": "state.gap = True",
+    "cases": [
+      "acceptance/ui_bridge/test_delivery_acceptance.py"
+    ]
+  },
+  {
+    "id": "DEL-statesync-recovery",
+    "kind": "python",
+    "behavior": "StateSync loss requires a replacement snapshot",
+    "target": "synapse/machine/delivery.py",
+    "before": "\"RESNAPSHOT\" if state.kind is DeliveryClass.STATE_SYNC else \"REREAD\"",
+    "after": "\"REREAD\"",
+    "cases": [
+      "acceptance/ui_bridge/test_delivery_acceptance.py"
+    ]
+  },
+  {
+    "id": "DEL-evidence-recovery",
+    "kind": "python",
+    "behavior": "Evidential loss requires rereading retained sources",
+    "target": "synapse/machine/delivery.py",
+    "before": "\"RESNAPSHOT\" if state.kind is DeliveryClass.STATE_SYNC else \"REREAD\"",
+    "after": "\"RESNAPSHOT\"",
+    "cases": [
+      "acceptance/ui_bridge/test_delivery_acceptance.py"
+    ]
+  },
+  {
+    "id": "DEL-invalid-epoch",
+    "kind": "python",
+    "behavior": "invalidated epoch cannot resume with late progress",
+    "target": "synapse/machine/delivery.py",
+    "before": "if state.recovery is not None:",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_delivery_acceptance.py"
+    ]
+  },
+  {
+    "id": "DEL-one-notice",
+    "kind": "python",
+    "behavior": "a loss notice is not delivered indefinitely",
+    "target": "synapse/machine/delivery.py",
+    "before": "state.recovery = \"NOTIFIED\"",
+    "after": "state.recovery = state.recovery",
+    "cases": [
+      "acceptance/ui_bridge/test_delivery_acceptance.py"
+    ]
+  },
+  {
+    "id": "DEL-subscription-bound",
+    "kind": "python",
+    "behavior": "loss state is bounded by registered subscriptions",
+    "target": "synapse/machine/delivery.py",
+    "before": "if len(self._streams) >= self._stream_capacity:",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_delivery_acceptance.py"
+    ]
+  },
+  {
+    "id": "DEL-duplicate-stream",
+    "kind": "python",
+    "behavior": "a registered epoch cannot silently change delivery class",
+    "target": "synapse/machine/delivery.py",
+    "before": "if stream in self._streams:",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_delivery_acceptance.py"
+    ]
+  },
+  {
+    "id": "DEL-payload-bound",
+    "kind": "python",
+    "behavior": "payload bytes are bounded before queue admission",
+    "target": "synapse/machine/delivery.py",
+    "before": "not 0 < len(payload) <= self._max_payload",
+    "after": "not 0 < len(payload)",
+    "cases": [
+      "acceptance/ui_bridge/test_delivery_acceptance.py"
+    ]
+  },
+  {
+    "id": "DEL-closed-refusal",
+    "kind": "python",
+    "behavior": "close cannot resurrect queued work",
+    "target": "synapse/machine/delivery.py",
+    "before": "if self._closed:",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_delivery_acceptance.py"
+    ]
+  },
+  {
+    "id": "DEL-unsubscribe",
+    "kind": "python",
+    "behavior": "unsubscription discards only obsolete delivery data",
+    "target": "synapse/machine/delivery.py",
+    "before": "self._streams.pop(stream, None)\n            self._projections = deque(item for item in self._projections if item.stream != stream)",
+    "after": "self._streams.pop(stream, None)",
+    "cases": [
+      "acceptance/ui_bridge/test_delivery_acceptance.py"
+    ]
+  },
+  {
+    "id": "DEL-close-wakeup",
+    "kind": "python",
+    "behavior": "close wakes blocked consumers",
+    "target": "synapse/machine/delivery.py",
+    "before": "self._streams.clear()\n            self._condition.notify_all()",
+    "after": "self._streams.clear()",
+    "cases": [
+      "acceptance/ui_bridge/test_delivery_acceptance.py"
+    ]
+  }
+]

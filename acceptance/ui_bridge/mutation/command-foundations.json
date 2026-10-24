@@ -1,0 +1,461 @@
+[
+  {
+    "id": "BUNDLE-Windows-native-test-filter",
+    "kind": "python",
+    "target": "scripts/ui/build_core_bundle.py",
+    "before": "copy_standard_library(base / \"DLLs\", staging / \"DLLs\")",
+    "after": "shutil.copytree(base / \"DLLs\", staging / \"DLLs\", symlinks=False)",
+    "behavior": "Native CPython tests cannot enter the Windows bundle or its authorized inventory",
+    "cases": ["acceptance/ui_bridge/test_bundle_privacy_acceptance.py"]
+  },
+  {
+    "id": "BUNDLE-CPython-nonprefix-tests",
+    "kind": "python",
+    "target": "scripts/ui/build_core_bundle.py",
+    "before": "TEST_EXTENSIONS = {\"_ctypes_test\", \"xxlimited\", \"xxlimited_35\"}",
+    "after": "TEST_EXTENSIONS = set()",
+    "behavior": "Non-_test-prefixed CPython test extensions are excluded with debug and ABI suffixes",
+    "cases": ["acceptance/ui_bridge/test_bundle_tool_acceptance.py"]
+  },
+  {
+    "id": "BUNDLE-CPython-preserve-runtime",
+    "kind": "python",
+    "target": "scripts/ui/build_core_bundle.py",
+    "before": "TEST_EXTENSIONS = {\"_ctypes_test\", \"xxlimited\", \"xxlimited_35\"}",
+    "after": "TEST_EXTENSIONS = {\"_ctypes\", \"_ctypes_test\", \"xxlimited\", \"xxlimited_35\"}",
+    "behavior": "Removing native tests must preserve required runtime extensions and their inventory hashes",
+    "cases": ["acceptance/ui_bridge/test_bundle_privacy_acceptance.py"]
+  },
+  {
+    "id": "INTENT-directory-owner-lifetime",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/intent_store.rs",
+    "before": "Ok(Self { root, scope, protector, _lock: lock })",
+    "after": "drop(lock); let lock = File::open(std::env::current_exe().unwrap()).unwrap(); Ok(Self { root, scope, protector, _lock: lock })",
+    "behavior": "Open intent storage retains its root and ancestor directory objects on Windows",
+    "case": "intent_directory"
+  },
+  {
+    "id": "INTENT-directory-exclusion-before-create",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/intent_store.rs",
+    "before": "if resolved.starts_with(&excluded)",
+    "after": "if false",
+    "behavior": "Excluded agent storage is refused without creating a directory or retaining a handle",
+    "case": "intent_directory"
+  },
+  {
+    "id": "JCS-PY-rounding",
+    "kind": "python",
+    "target": "synapse/commands/jcs.py",
+    "before": "if Decimal(token) != Decimal(encoded):",
+    "after": "if False:",
+    "behavior": "Reject decimal precision loss before binding",
+    "cases": [
+      "acceptance/ui_bridge/test_jcs_acceptance.py"
+    ]
+  },
+  {
+    "id": "JCS-PY-duplicates",
+    "kind": "python",
+    "target": "synapse/commands/jcs.py",
+    "before": "if key in result:",
+    "after": "if False:",
+    "behavior": "Reject duplicate keys at every nesting level",
+    "cases": [
+      "acceptance/ui_bridge/test_jcs_acceptance.py"
+    ]
+  },
+  {
+    "id": "JCS-PY-depth",
+    "kind": "python",
+    "target": "synapse/commands/jcs.py",
+    "before": "MAX_DEPTH = 32",
+    "after": "MAX_DEPTH = 33",
+    "behavior": "Bound input and canonical nesting",
+    "cases": [
+      "acceptance/ui_bridge/test_jcs_acceptance.py"
+    ]
+  },
+  {
+    "id": "JCS-PY-bytes",
+    "kind": "python",
+    "target": "synapse/commands/jcs.py",
+    "before": "MAX_BYTES = 65536",
+    "after": "MAX_BYTES = 131072",
+    "behavior": "Bound command payloads",
+    "cases": [
+      "acceptance/ui_bridge/test_jcs_acceptance.py"
+    ]
+  },
+  {
+    "id": "JCS-PY-canonical",
+    "kind": "python",
+    "target": "synapse/commands/jcs.py",
+    "before": "payload = rfc8785.dumps(value)",
+    "after": "payload = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(\",\", \":\")).encode(\"utf-8\")",
+    "behavior": "Use RFC8785 numeric and UTF16 serialization",
+    "cases": [
+      "acceptance/ui_bridge/test_jcs_acceptance.py"
+    ]
+  },
+  {
+    "id": "JCS-PY-parameter-object",
+    "kind": "python",
+    "target": "synapse/commands/jcs.py",
+    "before": "if type(params) is not dict:",
+    "after": "if False:",
+    "behavior": "Hash only object parameters",
+    "cases": [
+      "acceptance/ui_bridge/test_jcs_acceptance.py"
+    ]
+  },
+  {
+    "id": "JCS-TS-rounding",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/jcs.ts",
+    "before": "decimal(token) !== decimal(JSON.stringify(number))",
+    "after": "false",
+    "behavior": "Reject precision loss before binary64 conversion"
+  },
+  {
+    "id": "JCS-TS-duplicates",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/jcs.ts",
+    "before": "requireUniqueJsonKeys(text);",
+    "after": "void text;",
+    "behavior": "Reject duplicate object properties including deeply equal values"
+  },
+  {
+    "id": "JCS-TS-order",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/jcs.ts",
+    "before": "Object.keys(properties).sort()",
+    "after": "Object.keys(properties)",
+    "behavior": "Canonical UTF16 property order"
+  },
+  {
+    "id": "JCS-TS-surrogates",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/jcs.ts",
+    "before": "if (!(next >= 0xdc00 && next <= 0xdfff))",
+    "after": "if (false)",
+    "behavior": "Reject unmatched high surrogates"
+  },
+  {
+    "id": "JCS-TS-depth",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/jcs.ts",
+    "before": "const MAX_DEPTH = 32;",
+    "after": "const MAX_DEPTH = 33;",
+    "behavior": "Bound nesting before use"
+  },
+  {
+    "id": "JCS-TS-bytes",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/jcs.ts",
+    "before": "const MAX_BYTES = 65536;",
+    "after": "const MAX_BYTES = 131072;",
+    "behavior": "Bound input and canonical output bytes"
+  },
+  {
+    "id": "JCS-TS-array-properties",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/jcs.ts",
+    "before": "if (Object.keys(properties).length !== item.length + 1)",
+    "after": "if (false)",
+    "behavior": "Do not discard significant array properties"
+  },
+  {
+    "id": "JCS-TS-array-symbols",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/jcs.ts",
+    "before": "Object.getOwnPropertySymbols(item).length)\n        throw",
+    "after": "false)\n        throw",
+    "behavior": "Reject symbol properties on arrays"
+  },
+  {
+    "id": "JCS-TS-array-getter",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/jcs.ts",
+    "before": "if (!property || !property.enumerable || !(\"value\" in property)) throw new InvalidCommandValue();\n        values.push(encode(property.value, depth + 1));",
+    "after": "if (!property || !property.enumerable) throw new InvalidCommandValue();\n        values.push(encode(item[index], depth + 1));",
+    "behavior": "Avoid invoking array getters while hashing"
+  },
+  {
+    "id": "JCS-TS-array-enumerability",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/jcs.ts",
+    "before": "!property || !property.enumerable || !(\"value\" in property)",
+    "after": "!property || !(\"value\" in property)",
+    "behavior": "Refuse hidden array elements"
+  },
+  {
+    "id": "JCS-RS-rounding",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/jcs.rs",
+    "before": "if decimal(token)? != decimal(&encoded)?",
+    "after": "if false",
+    "behavior": "Reject numeric precision loss",
+    "case": "jcs"
+  },
+  {
+    "id": "JCS-RS-duplicates",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/jcs.rs",
+    "before": "if values.contains_key(&key)",
+    "after": "if false",
+    "behavior": "Reject duplicate keys",
+    "case": "jcs"
+  },
+  {
+    "id": "JCS-RS-depth",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/jcs.rs",
+    "before": "pub const MAX_DEPTH: usize = 32;",
+    "after": "pub const MAX_DEPTH: usize = 33;",
+    "behavior": "Bound nested input/output",
+    "case": "jcs"
+  },
+  {
+    "id": "JCS-RS-bytes",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/jcs.rs",
+    "before": "pub const MAX_BYTES: usize = 65536;",
+    "after": "pub const MAX_BYTES: usize = 131072;",
+    "behavior": "Bound command payloads",
+    "case": "jcs"
+  },
+  {
+    "id": "JCS-RS-canonical",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/jcs.rs",
+    "before": "serde_json_canonicalizer::to_vec(value)",
+    "after": "serde_json::to_vec(value)",
+    "behavior": "Preserve RFC8785 serialization",
+    "case": "jcs"
+  },
+  {
+    "id": "JCS-RS-parameter-object",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/jcs.rs",
+    "before": "if !params.is_object()",
+    "after": "if false",
+    "behavior": "Only object parameters receive command hashes",
+    "case": "jcs"
+  },
+  {
+    "id": "INTENT-persist-before-send",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/intent_store.rs",
+    "before": "self.save(&intent)?;\n        }",
+    "after": "/* omitted durable prepare */\n        }",
+    "behavior": "Never return sendable content before durable binding",
+    "case": "intent_store"
+  },
+  {
+    "id": "INTENT-conflict",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/intent_store.rs",
+    "before": "return Err(Failure(\"BINDING_CONFLICT\"));",
+    "after": "/* accept changed intent */",
+    "behavior": "Reject changed content under the same intent",
+    "case": "intent_store"
+  },
+  {
+    "id": "INTENT-scope",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/intent_store.rs",
+    "before": "if intent.scope != self.scope",
+    "after": "if false",
+    "behavior": "Reject foreign protected scope",
+    "case": "intent_store"
+  },
+  {
+    "id": "INTENT-lock",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/intent_store.rs",
+    "before": "lock.try_lock().map_err(|_| Failure(\"INTENT_STORE_BUSY\"))?;",
+    "after": "/* lock removed */",
+    "behavior": "Only one native intent store owner",
+    "case": "intent_store"
+  },
+  {
+    "id": "INTENT-agent-root",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/intent_store.rs",
+    "before": "if resolved.starts_with(&excluded)",
+    "after": "if false",
+    "behavior": "Keep pre-send storage outside agent workspaces",
+    "case": "intent_store"
+  },
+  {
+    "id": "INTENT-recovery-read-only",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/intent_store.rs",
+    "before": "let intent = self.load(intent_id)?;",
+    "after": "let intent = self.load(intent_id)?; self.save(&intent)?;",
+    "behavior": "Recovery reads never rewrite protected intent records",
+    "case": "command_recovery"
+  },
+  {
+    "id": "INTENT-recovery-binding",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/intent_store.rs",
+    "before": "let binding_digest = commands::binding_digest(&self.scope, command)?;",
+    "after": "let binding_digest = \"0\".repeat(64);",
+    "behavior": "Recovered content preserves the independently specified owner binding",
+    "case": "command_recovery"
+  },
+  {
+    "id": "BINDING-client-id",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/commands.rs",
+    "before": "if object.contains_key(\"command_id\")",
+    "after": "if false",
+    "behavior": "Renderer cannot select command identity",
+    "case": "intent_store"
+  },
+  {
+    "id": "BINDING-schema",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/commands.rs",
+    "before": "if !VALIDATOR.is_valid(command)",
+    "after": "if false",
+    "behavior": "Closed versioned command admission",
+    "case": "intent_store"
+  },
+  {
+    "id": "BINDING-owner",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/commands.rs",
+    "before": "\"owner\":\"agent.invocations\"",
+    "after": "\"owner\":\"foreign\"",
+    "behavior": "Bind target domain owner",
+    "case": "intent_store"
+  },
+  {
+    "id": "RECOVERY-absence-scope",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/command_recovery.rs",
+    "before": "if reply != expected { return Err(Failure(\"SCOPE_REFUSED\")); }",
+    "after": "/* scoped absence check removed */",
+    "behavior": "Foreign absence never permits retry",
+    "case": "command_recovery"
+  },
+  {
+    "id": "RECOVERY-result-binding",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/command_recovery.rs",
+    "before": "if reply != expected { return Err(Failure(\"RECORD_INVALID\")); }",
+    "after": "/* receipt binding check removed */",
+    "behavior": "Historical receipt matches exact persisted command",
+    "case": "command_recovery"
+  },
+  {
+    "id": "RECOVERY-outcome",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/command_recovery.rs",
+    "before": "if !VALIDATOR.is_valid(&reply)",
+    "after": "if false",
+    "behavior": "Do not invent confirmed process cancellation",
+    "case": "command_recovery"
+  },
+  {
+    "id": "RECOVERY-replay",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/command_recovery.rs",
+    "before": "\"replayed\":true",
+    "after": "\"replayed\":false",
+    "behavior": "Recovery returns historical owner result",
+    "case": "command_recovery"
+  },
+  {
+    "id": "STATUS-query-validation",
+    "kind": "python",
+    "target": "synapse/commands/reconciliation.py",
+    "before": "if not QUERY.is_valid(query):",
+    "after": "if False:",
+    "behavior": "Refuse malformed reconciliation before any owner lookup",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+    ]
+  },
+  {
+    "id": "BINDING-identifier-newline",
+    "kind": "python",
+    "target": "synapse/commands/binding.schema.json",
+    "before": "\"not\":{\"pattern\":\"[^A-Za-z0-9._:/-]\"}",
+    "after": "\"not\":{\"pattern\":\"[^A-Za-z0-9._:/\\n-]\"}",
+    "behavior": "Reject line terminators inside object identities",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+    ]
+  },
+  {
+    "id": "STATUS-identifier-newline",
+    "kind": "python",
+    "target": "synapse/commands/reconciliation.schema.json",
+    "before": "\"not\":{\"pattern\":\"[^A-Za-z0-9._:/-]\"}",
+    "after": "\"not\":{\"pattern\":\"[^A-Za-z0-9._:/\\n-]\"}",
+    "behavior": "Reject line terminators inside object identities",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+    ]
+  },
+  {
+    "id": "STATUS-query-before-read",
+    "kind": "python",
+    "target": "synapse/agents/invocation_commands.py",
+    "before": "        status_query(command_id, recipient)",
+    "after": "        # query validation omitted",
+    "behavior": "Reject invalid identities before touching the journal",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+    ]
+  },
+  {
+    "id": "STATUS-absence-recipient",
+    "kind": "python",
+    "target": "synapse/agents/invocation_commands.py",
+    "before": "\"recipient\": recipient}",
+    "after": "\"recipient\": \"foreign\"}",
+    "behavior": "Bind absence to the requested object",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+    ]
+  },
+  {
+    "id": "ADMISSION-command-code",
+    "kind": "python",
+    "target": "synapse/agents/configuration.py",
+    "before": "for pattern in (\"*.py\", \"*.schema.json\")",
+    "after": "for pattern in (\"*.schema.json\",)",
+    "behavior": "Command runtime code participates in admitted identity",
+    "cases": [
+      "acceptance/ui_bridge/test_command_admission_drift_acceptance.py"
+    ]
+  },
+  {
+    "id": "ADMISSION-command-schema",
+    "kind": "python",
+    "target": "synapse/agents/configuration.py",
+    "before": "for pattern in (\"*.py\", \"*.schema.json\")",
+    "after": "for pattern in (\"*.py\",)",
+    "behavior": "Command schemas participate in admitted identity",
+    "cases": [
+      "acceptance/ui_bridge/test_command_admission_drift_acceptance.py"
+    ]
+  },
+  {
+    "id": "ADMISSION-jcs-dependency",
+    "kind": "python",
+    "target": "synapse/agents/configuration.py",
+    "before": "\"packaging\", \"rfc8785\"",
+    "after": "\"packaging\"",
+    "behavior": "Require JCS dependency identity before execution",
+    "cases": [
+      "acceptance/ui_bridge/test_command_admission_drift_acceptance.py"
+    ]
+  }
+]

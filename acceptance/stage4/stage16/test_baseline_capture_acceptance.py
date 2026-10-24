@@ -10,10 +10,10 @@ from synapse.experiments.gold.stage15.capture_store import CaptureStore, inspect
 from synapse.experiments.gold.stage15.reconciliation import reconcile_telemetry, TelemetryStatus
 from synapse.experiments.gold.stage15.telemetry import reference
 from synapse.experiments.gold.stage15.worker_accounting import WorkerAccounting
-from synapse.experiments.swebench.baseline import run_baseline_task
-from synapse.experiments.swebench.contract import BaselineTask
-from synapse.experiments.swebench.oracle import CommandOracleRunner
-from tests.test_swebench_gold_runner import build_candidate_repo
+from synapse.experiments.applied_verification.baseline import run_baseline_task
+from synapse.experiments.applied_verification.contract import BaselineTask
+from synapse.experiments.applied_verification.oracle import CommandOracleRunner
+from tests.test_applied_verification_gold_runner import build_candidate_repo
 
 
 def test_raw_carry_attempts_capture_real_requests_and_agent_inventories(tmp_path, monkeypatch):

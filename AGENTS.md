@@ -30,6 +30,56 @@ This repository contains the Synapse DSL/runtime and AS2 verification work.
   the acceptance/test layer. Product code must never import them, depend on
   them, or contain an alternate implementation used to satisfy a test.
 
+## Permanent Development Requirements
+
+- Never write the owner's or other users' personal/private data into repository
+  files. This includes credentials, account identifiers, private local paths,
+  conversations, private document contents, and data copied from a real profile
+  or environment. The prohibition covers code, documentation, examples, fixtures,
+  logs, evidence, screenshots, generated files, and ignored/untracked files.
+- Use invented, non-identifying data for examples and acceptance. Permission to
+  inspect private input does not authorize retaining or publishing it. Review
+  artifacts before staging or publishing; retain only necessary, non-sensitive
+  structured evidence, never raw diagnostic dumps containing user data.
+- Agents must never merge branches or pull requests. This includes local
+  `git merge`, pull-request merge actions, enabling auto-merge, and adding work
+  to a merge queue. Merging is reserved for the repository owner.
+- Authorization to implement, commit, push a task branch, or open/update a pull
+  request does not authorize merging. Do not bypass this prohibition through
+  direct target-branch updates or history rewrites that integrate the work.
+- Write new repository documentation, comments, identifiers, and development
+  records in English. Product localization and unchanged supplied reference
+  artifacts may retain their intended languages.
+- Fulfill the entire assigned task contract. Partial implementation is unfinished;
+  there is no "minimally completed" substitute for the requested behavior.
+- Tests, fixtures, mocks, scenario builders, and harnesses belong exclusively
+  to the acceptance layer, outside product code, imports, dependencies, and
+  distributed runtime artifacts. Do not add inline product-source tests or
+  product branches/state whose purpose is passing acceptance. Product UI must
+  not reference acceptance files as navigation targets, assets, runtime data,
+  status feeds, startup hooks, or implementation dependencies. Test-source
+  references belong only to developer documentation and acceptance tooling.
+- Isolate heavy acceptance scenarios in separate files for independent parallel
+  execution. Group smaller scenarios by coherent behavior across multiple files;
+  do not accumulate unrelated checks in one giant suite.
+- Acceptance must exercise the written code and its observable contract, including
+  applicable refusal, recovery, concurrency, and effect boundaries.
+- Mutation-check every new or changed executable behavior. Investigate meaningful
+  surviving mutants; record the changed behavior, method, outcomes, and evidence.
+  Documentation-only work records mutation as not applicable, never as passed.
+- Do not write meaningless tests of filenames, branch/commit names, line/file/test
+  counts, naming conventions, or similar metadata unrelated to behavior.
+- Review security while designing and implementing each affected boundary; verify
+  authority, scope, input, secret, resource, and recovery checks against bypass.
+- Prevent monoliths by cohesive responsibilities and explicit ownership. Preserve
+  NR-04: arbitrary line counts are not architectural acceptance criteria.
+- For the UI workstream and its supporting changes, follow
+  [coding rules](docs/ui/CODING_RULES.md),
+  [acceptance rules](docs/ui/ACCEPTANCE_RULES.md), and
+  [security rules](docs/ui/SECURITY_RULES.md). Keep the
+  [implementation status](docs/ui/IMPLEMENTATION_STATUS.md) and linked requirement,
+  acceptance, and open-condition records current as evidence changes.
+
 ## Local Setup
 
 Use Python 3.10 or newer. In local Windows workspaces, a virtual environment may already exist at `.venv/`.

@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synapse.invalid/contracts/application-delivery-v1",
+  "$defs": {
+    "errorCode": {
+      "enum": [
+        "ACCESS_DENIED",
+        "ACCESS_INVALID",
+        "ACCESS_UNAVAILABLE",
+        "ADMIN_REQUIRED",
+        "AUTHENTICATION_FAILED",
+        "BINDING_CONFLICT",
+        "BUSY",
+        "COMMAND_INVALID",
+        "CORE_EXITED",
+        "CURSOR_UNAVAILABLE",
+        "DELIVERY_FAILED",
+        "DELIVERY_TIMEOUT",
+        "INTENT_STORE_BUSY",
+        "INTENT_STORE_FAILED",
+        "INTENT_STORE_FULL",
+        "INTENT_STORE_INVALID",
+        "INTENT_UNKNOWN",
+        "INTERNAL_ERROR",
+        "NOT_READY",
+        "OBJECT_UNAVAILABLE",
+        "PROTECTED_STORAGE_FAILED",
+        "PROTECTED_STORAGE_UNAVAILABLE",
+        "PROTOCOL_ERROR",
+        "RECORD_INVALID",
+        "RESOURCE_CHANGED",
+        "RESPONSE_TOO_LARGE",
+        "REVISION_CONFLICT",
+        "SCHEMA_INVALID",
+        "SCOPE_REFUSED",
+        "SUBSCRIPTION_UNKNOWN",
+        "TRANSPORT_TIMEOUT"
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "subscription_id",
+        "request_id",
+        "type",
+        "result"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.application.delivery/v1"
+        },
+        "subscription_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "type": {
+          "const": "result"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "https://synapse.invalid/contracts/machine-domain-v1#/$defs/result_access_grants"
+            },
+            {
+              "$ref": "https://synapse.invalid/contracts/machine-domain-v1#/$defs/result_invocation_inspect"
+            },
+            {
+              "$ref": "https://synapse.invalid/contracts/machine-domain-v1#/$defs/result_invocation_snapshot"
+            },
+            {
+              "$ref": "https://synapse.invalid/contracts/machine-domain-v1#/$defs/result_invocation_changes"
+            },
+            {
+              "$ref": "https://synapse.invalid/contracts/machine-domain-v1#/$defs/result_command_status"
+            },
+            {
+              "$ref": "https://synapse.invalid/contracts/machine-domain-v1#/$defs/result_invocation_cancel"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "intent_id"
+              ],
+              "properties": {
+                "intent_id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "minLength": 36,
+                  "maxLength": 36
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "intents",
+                "next_after"
+              ],
+              "properties": {
+                "intents": {
+                  "type": "array",
+                  "maxItems": 32,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "intent_id",
+                      "command_id",
+                      "prepared",
+                      "recipient"
+                    ],
+                    "properties": {
+                      "intent_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "minLength": 36,
+                        "maxLength": 36
+                      },
+                      "command_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "minLength": 36,
+                        "maxLength": 36
+                      },
+                      "prepared": {
+                        "type": "boolean"
+                      },
+                      "recipient": {
+                        "anyOf": [
+                          {
+                            "$ref": "https://synapse.invalid/contracts/machine-domain-v1#/$defs/identifier"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "oneOf": [
+                      {
+                        "properties": {
+                          "prepared": {
+                            "const": false
+                          },
+                          "recipient": {
+                            "type": "null"
+                          }
+                        }
+                      },
+                      {
+                        "properties": {
+                          "prepared": {
+                            "const": true
+                          },
+                          "recipient": {
+                            "$ref": "https://synapse.invalid/contracts/machine-domain-v1#/$defs/identifier"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "next_after": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "uuid",
+                      "minLength": 36,
+                      "maxLength": 36
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "state",
+                "intent_id"
+              ],
+              "properties": {
+                "state": {
+                  "enum": [
+                    "UNPREPARED",
+                    "ABSENT"
+                  ]
+                },
+                "intent_id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "minLength": 36,
+                  "maxLength": 36
+                }
+              }
+            },
+            {
+              "$ref": "https://synapse.invalid/contracts/machine-domain-v1#/$defs/result_delivery_subscribe"
+            },
+            {
+              "$ref": "https://synapse.invalid/contracts/machine-domain-v1#/$defs/result_delivery_snapshot"
+            },
+            {
+              "$ref": "https://synapse.invalid/contracts/machine-domain-v1#/$defs/result_delivery_collect"
+            },
+            {
+              "$ref": "https://synapse.invalid/contracts/machine-domain-v1#/$defs/result_delivery_next"
+            },
+            {
+              "$ref": "https://synapse.invalid/contracts/machine-domain-v1#/$defs/result_delivery_unsubscribe"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "subscription_id",
+        "request_id",
+        "type",
+        "code"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synapse.application.delivery/v1"
+        },
+        "subscription_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "type": {
+          "const": "error"
+        },
+        "code": {
+          "$ref": "#/$defs/errorCode"
+        }
+      }
+    }
+  ]
+}

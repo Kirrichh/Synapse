@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import runpy
 from pathlib import Path
 import subprocess
 import sys
@@ -32,18 +33,28 @@ def run_cmd(args: list[str], cwd: Path | None = None, stdin: str | None = None) 
     )
 
 
-def test_package_entry_point_is_thin_adapter_and_help_surfaces_match():
-    module = REPO_ROOT / "synapse" / "__main__.py"
-    text = module.read_text(encoding="utf-8")
-    assert "from .cli import main" in text
-    forbidden = ["argparse", "Interpreter", "Lexer", "Parser", "record_source", "execute_controlled_change"]
-    assert not any(token in text for token in forbidden)
-
+def test_canonical_cli_entries_present_the_same_help():
     package_help = run_cmd([sys.executable, "-m", "synapse", "--help"])
     cli_help = run_cmd([sys.executable, "-m", "synapse.cli", "--help"])
     assert package_help.returncode == cli_help.returncode == 0
     assert package_help.stdout == cli_help.stdout
-    assert "{run,repl,replay,resume,project,memory,debug,metrics,change,approve,revoke-approval}" in package_help.stdout
+
+
+def test_package_entrypoint_only_delegates_to_cli_and_propagates_its_exit(monkeypatch):
+    calls = []
+    def entry():
+        calls.append(tuple(sys.argv))
+        return 17
+    monkeypatch.setattr(cli, "main", entry)
+    monkeypatch.setattr(sys, "argv", ["synapse", "synthetic-command"])
+    with pytest.raises(SystemExit) as stopped:
+        runpy.run_module("synapse", run_name="__main__")
+    assert stopped.value.code == 17
+    assert calls == [("synapse", "synthetic-command")]
+    # The canonical adapter may not acquire argument parsing or execution owners.
+    source = (REPO_ROOT / "synapse/__main__.py").read_text(encoding="utf-8")
+    for forbidden in ("argparse", "Interpreter", "Lexer", "Parser", "record_source", "execute_controlled_change"):
+        assert forbidden not in source
 
 
 def test_synapse_cli_run_delegates_file_execution(monkeypatch, capsys, tmp_path):

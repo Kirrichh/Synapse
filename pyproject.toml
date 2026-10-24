@@ -13,7 +13,7 @@ dynamic = ["version"]
 description = "A programming language and runtime for governed, durable, reproducible, and auditable AI behavior."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["jsonschema==4.26.0", "psutil==7.2.2", "filelock==3.32.6", "packaging==26.3"]
+dependencies = ["jsonschema==4.26.0", "psutil==7.2.2", "filelock==3.32.6", "packaging==26.3", "rfc8785==0.1.4", "cryptography==50.0.2"]
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Kirrichh" }]
@@ -68,4 +68,8 @@ version = { attr = "synapse.version.PEP440_VERSION" }
 
 [tool.setuptools.packages.find]
 include = ["synapse*"]
-exclude = ["tests*", "examples*", "personal_slice*", "scripts*", "reports*", "docs*"]
+exclude = ["synapse.ui", "synapse.ui.*", "tests*", "examples*", "personal_slice*", "scripts*", "reports*", "docs*"]
+
+[tool.setuptools.package-data]
+"synapse.machine" = ["release_profile.json", "schemas/*.json"]
+"synapse.commands" = ["*.schema.json"]

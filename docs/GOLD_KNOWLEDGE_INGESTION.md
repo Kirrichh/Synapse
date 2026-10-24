@@ -225,7 +225,7 @@ is `AgentExecutionPort`, for Gold and for Baseline; there is no parallel path.
 | Protocol and proposal interpretation | `synapse/worker/local_edits.py`, `stage10/local_candidate.py` |
 | Broker lifecycle in an agent call | `synapse/agents/stdio_adapter.py` (`LOCAL_BROKER` profiles) |
 | Durable accounting of physical calls | `stage15/worker_accounting.py` (`WorkerAccounting.open_capture`) |
-| Baseline-arm | `synapse/experiments/swebench/baseline.py` through `AgentExecutionPort` |
+| Baseline-arm | `synapse/experiments/applied_verification/baseline.py` through `AgentExecutionPort` |
 
 New runs accept only experiment input v4 (`agents`). Agent selection is
 orthogonal to the way targets are resolved: v4 admits both explicit
@@ -2749,14 +2749,6 @@ useful application and does not create a `MechanismUseRecord` on the model's
 behalf. The earlier evidence of a prevented repeat of a rejected patch keeps
 its own semantics.
 
-For the live Astropy scenario, the external command `prepare-astropy-pair`
-checks the real environment of the worker agent and calls exactly this
-product process. It stores the full receipts and the time of each learning
-call separately from solving the task. The internal `elapsed_ns` of the
-`learn` result covers only the verifier and does not include publication. The
-order of preparing, running and reading the results is given in the
-[stand instructions](../acceptance/stage4/stage16/README.md).
-
 The existing compatibility owner compares two verified records. Different
 historical facts without joint effects can coexist; mismatched sources and
 competing expectations of one command require a refusal/review. An answer of
@@ -2960,24 +2952,6 @@ in CI.
   conditions of use are rejected.
 - Preparation costs are stored separately from the costs of solving the task.
   Missing measurements stay unknown.
-
-## Use in the Astropy experiment
-
-Initial ingestion uses only the permitted original version of the repository.
-The SWE-bench reference fix, the evaluator test patch, calibration results and
-the answers of earlier experimental replicates do not get into the sources or
-the worker's context. The prepared corpus is frozen before the comparison;
-each Gold replicate receives the same initial state in independent stores.
-
-The report shows preparation and solving costs separately. A conclusion about
-savings must account for the preparation and the actual number of reuses. The
-result of one pair does not prove a causal benefit of memory. The differences
-between the Baseline/Gold policies stay explicit; no additional control Gold
-is introduced.
-
-The oracle environment and the environment of worker commands are checked
-separately: a successful calibration of the Docker oracle does not prove that
-the Mini-worker environment is ready.
 
 ## Rationale for design decisions
 

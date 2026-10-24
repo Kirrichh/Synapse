@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from acceptance.agents.coding_agents import agents_configuration, model_agent_definition
 from acceptance.stage4.stage11._project_inputs import project_input_case
-from acceptance.stage4.stage11._oracle_process import create_oracle_process
+from acceptance.stage4.stage11._oracle_process import acceptance_oracle, create_oracle_process, oracle_payload
 from synapse.experiments.gold.run_inputs import EXPERIMENT_INPUT_SCHEMA_V4
 from synapse.worker.local_edits import LOCAL_EDIT_PROFILE_V1
 
@@ -51,12 +51,12 @@ def paired_case(root, endpoint, *, replicates=1, max_attempts=1, oracle_outcomes
             "task": {"task_id": declaration["config"]["task_id"], "instance_id": declaration["config"]["instance_id"],
                 "statement": declaration["task_contract"]["task_statement"], "allowed_scope": ["src/calc.py"]},
             "agents": declaration["agents"],
-            "oracle": {**declaration["oracle"], "swebench_work_dir": str(baseline_root / "harness")}}
+            "oracle": oracle_payload(acceptance_oracle(baseline_root / "harness"))}
         definitions = {"BASELINE": baseline, "GOLD": {"arm": "GOLD", "repo_root": str(gold.repo),
             "run_root": str(gold.run_root), "state_root": str(gold.state_root), "declaration_ref": source(gold.input_path)}}
         if oracle_outcomes is not None:
             for configuration in (baseline["oracle"], declaration["oracle"]):
-                create_oracle_process(Path(configuration["swebench_work_dir"]), oracle_outcomes)
+                create_oracle_process(Path(configuration["work_dir"]), oracle_outcomes)
         inputs = {}
         for arm, value in definitions.items():
             path = base / (arm.lower() + "-definition.json")

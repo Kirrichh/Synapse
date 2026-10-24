@@ -1,0 +1,99 @@
+{
+  "schema": 1,
+  "elevated": true,
+  "checks": [
+    {
+      "name": "build bundle marker is present",
+      "status": "PASS"
+    },
+    {
+      "name": "installed shell matches exact NSIS transformation",
+      "status": "PASS"
+    },
+    {
+      "name": "installed inventory matches staged inventory",
+      "status": "PASS"
+    },
+    {
+      "name": "installed resource hashes",
+      "status": "PASS"
+    },
+    {
+      "name": "no local pip provenance",
+      "status": "PASS"
+    },
+    {
+      "name": "installed canonical command",
+      "status": "PASS"
+    },
+    {
+      "name": "second shell admits no overlapping core",
+      "status": "PASS"
+    },
+    {
+      "name": "refused shell termination preserves active core",
+      "status": "PASS"
+    },
+    {
+      "name": "abrupt installed shell death terminates its core",
+      "status": "PASS"
+    },
+    {
+      "name": "installed canonical command",
+      "status": "PASS"
+    },
+    {
+      "name": "replacement starts after old core exit",
+      "status": "PASS"
+    },
+    {
+      "name": "core crash leaves shell available for explicit recovery",
+      "status": "PASS"
+    }
+  ],
+  "shell_sha256": "0a741301baf1cc7415cfb02e93e17676a8887364ddf742b3a24ab1336fc4424e",
+  "installer_sha256": "a727f12d76c4493875b3968a5875a48a08c3c4f55ea919a670808c743d465f71",
+  "window_after_core_crash": "OBSERVED_CORE_EXITED",
+  "status": "PASS",
+  "ui_observations": [
+    {
+      "scenario": "core crash",
+      "result": "OBSERVED_PASS",
+      "method": "actual installed WebView2 inspection",
+      "observed": "CORE_EXITED and explicit recovery controls"
+    },
+    {
+      "scenario": "force close after crash",
+      "result": "USER_ASSISTED_PASS",
+      "method": "user clicked and confirmed elevated window closure; disappearance observed"
+    },
+    {
+      "scenario": "subsequent desktop launch and stop",
+      "result": "OBSERVED_PASS",
+      "method": "ordinary desktop application launch and UI input",
+      "observed": "ready, confirmed shutdown, window closed",
+      "token_elevation_measured": false
+    }
+  ],
+  "status_scope": "Only listed installed checks; not TR-2/P1 acceptance",
+  "date": "2026-10-19",
+  "pr_head": "330483bc33bdba1e5d3901a44abd30fe82e29fe3",
+  "build_profile": "Windows x86_64 debug NSIS on existing PC",
+  "installer_shell_transformation": "__TAURI_BUNDLE_TYPE_VAR_UNK -> __TAURI_BUNDLE_TYPE_VAR_NSS exactly once; all remaining bytes equal",
+  "build_shell_sha256": "50d6b68287b3a8ec3d8953930a20b37501eaccaddc608a255156f418f5c75460",
+  "manifest_sha256": "e053d535c389fb3b66d2e00ce62e4d240fc6c39022f81122aad45c3df9ce15f7",
+  "limitations": [
+    "elevated automatic host harness",
+    "no signed release or clean-machine acceptance",
+    "no actual adapter/MCP descendants",
+    "no assignment/resume/interrupted-startup injection",
+    "no negative installed caller/CSP/navigation/stalled-Channel tests",
+    "no Linux installed/systemd run",
+    "no JCS/domain-owner readiness"
+  ],
+  "source_sha256_utf8_lf": {
+    "scripts/ui/build_core_bundle.py": "b2fab5fc92074c05d52f0a42cffe4e34de5356d114697ac8cb8edf92e963fffc",
+    "synapse/ui/src-tauri/src/lifecycle/windows/job.rs": "7c49c4d7698de717637012eccf563736cf237ca7d71c5f91bda3f146152ce55c",
+    "synapse/ui/src-tauri/src/transport.rs": "83c9449571921b8916a633240ee77ad21916a644ec0952b26a0de266bdcae611"
+  }
+}

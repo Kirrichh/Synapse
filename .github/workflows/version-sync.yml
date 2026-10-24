@@ -1,10 +1,18 @@
 name: Version Sync Check
-on: [push, pull_request]
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - name: Setup Python
         uses: actions/setup-python@v5
         with: { python-version: "3.10" }

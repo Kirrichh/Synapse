@@ -1,0 +1,642 @@
+{
+  "schema": 1,
+  "date": "2026-10-19",
+  "scope": "Bounded delivery scheduler, shared command decoders and current Windows control release; not complete P1 domain integration",
+  "checks": {
+    "python_contracts": {
+      "passed": 102
+    },
+    "typescript_all": {
+      "passed": 91
+    },
+    "native_contracts_dpapi": {
+      "passed": 16
+    },
+    "installed_canonical_pipe_corpus": {
+      "passed": 39
+    },
+    "typescript_typecheck": "PASS",
+    "release_build": "PASS"
+  },
+  "delivery_mutations": {
+    "baseline": "PASS",
+    "mutants": [
+      {
+        "id": "DEL-control-bound",
+        "behavior": "control traffic has its own hard capacity",
+        "target": "synapse/machine/delivery.py",
+        "source_sha256": "b5d1ae2615e166c86cec66dd640a0ebbecd104f4367b1bb9e2af60b6cd2821c2",
+        "result": "KILLED",
+        "seconds": 1.609,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_delivery_acceptance.py"
+        ]
+      },
+      {
+        "id": "DEL-projection-bound",
+        "behavior": "projection overflow has explicit class semantics",
+        "target": "synapse/machine/delivery.py",
+        "source_sha256": "b5d1ae2615e166c86cec66dd640a0ebbecd104f4367b1bb9e2af60b6cd2821c2",
+        "result": "KILLED",
+        "seconds": 0.828,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_delivery_acceptance.py"
+        ]
+      },
+      {
+        "id": "DEL-control-priority",
+        "behavior": "live flood cannot starve control",
+        "target": "synapse/machine/delivery.py",
+        "source_sha256": "b5d1ae2615e166c86cec66dd640a0ebbecd104f4367b1bb9e2af60b6cd2821c2",
+        "result": "KILLED",
+        "seconds": 0.812,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_delivery_acceptance.py"
+        ]
+      },
+      {
+        "id": "DEL-projection-fairness",
+        "behavior": "continuous control has a bounded burst",
+        "target": "synapse/machine/delivery.py",
+        "source_sha256": "b5d1ae2615e166c86cec66dd640a0ebbecd104f4367b1bb9e2af60b6cd2821c2",
+        "result": "KILLED",
+        "seconds": 0.813,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_delivery_acceptance.py"
+        ]
+      },
+      {
+        "id": "DEL-live-gap",
+        "behavior": "lost live data marks the next delivery",
+        "target": "synapse/machine/delivery.py",
+        "source_sha256": "b5d1ae2615e166c86cec66dd640a0ebbecd104f4367b1bb9e2af60b6cd2821c2",
+        "result": "KILLED",
+        "seconds": 0.812,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_delivery_acceptance.py"
+        ]
+      },
+      {
+        "id": "DEL-live-gap-clear",
+        "behavior": "a delivered gap does not contaminate every later item",
+        "target": "synapse/machine/delivery.py",
+        "source_sha256": "b5d1ae2615e166c86cec66dd640a0ebbecd104f4367b1bb9e2af60b6cd2821c2",
+        "result": "KILLED",
+        "seconds": 0.797,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_delivery_acceptance.py"
+        ]
+      },
+      {
+        "id": "DEL-statesync-recovery",
+        "behavior": "StateSync loss requires a replacement snapshot",
+        "target": "synapse/machine/delivery.py",
+        "source_sha256": "b5d1ae2615e166c86cec66dd640a0ebbecd104f4367b1bb9e2af60b6cd2821c2",
+        "result": "KILLED",
+        "seconds": 0.796,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_delivery_acceptance.py"
+        ]
+      },
+      {
+        "id": "DEL-evidence-recovery",
+        "behavior": "Evidential loss requires rereading retained sources",
+        "target": "synapse/machine/delivery.py",
+        "source_sha256": "b5d1ae2615e166c86cec66dd640a0ebbecd104f4367b1bb9e2af60b6cd2821c2",
+        "result": "KILLED",
+        "seconds": 0.797,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_delivery_acceptance.py"
+        ]
+      },
+      {
+        "id": "DEL-invalid-epoch",
+        "behavior": "invalidated epoch cannot resume with late progress",
+        "target": "synapse/machine/delivery.py",
+        "source_sha256": "b5d1ae2615e166c86cec66dd640a0ebbecd104f4367b1bb9e2af60b6cd2821c2",
+        "result": "KILLED",
+        "seconds": 0.812,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_delivery_acceptance.py"
+        ]
+      },
+      {
+        "id": "DEL-one-notice",
+        "behavior": "a loss notice is not delivered indefinitely",
+        "target": "synapse/machine/delivery.py",
+        "source_sha256": "b5d1ae2615e166c86cec66dd640a0ebbecd104f4367b1bb9e2af60b6cd2821c2",
+        "result": "KILLED",
+        "seconds": 0.844,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_delivery_acceptance.py"
+        ]
+      },
+      {
+        "id": "DEL-subscription-bound",
+        "behavior": "loss state is bounded by registered subscriptions",
+        "target": "synapse/machine/delivery.py",
+        "source_sha256": "b5d1ae2615e166c86cec66dd640a0ebbecd104f4367b1bb9e2af60b6cd2821c2",
+        "result": "KILLED",
+        "seconds": 0.797,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_delivery_acceptance.py"
+        ]
+      },
+      {
+        "id": "DEL-duplicate-stream",
+        "behavior": "a registered epoch cannot silently change delivery class",
+        "target": "synapse/machine/delivery.py",
+        "source_sha256": "b5d1ae2615e166c86cec66dd640a0ebbecd104f4367b1bb9e2af60b6cd2821c2",
+        "result": "KILLED",
+        "seconds": 0.797,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_delivery_acceptance.py"
+        ]
+      },
+      {
+        "id": "DEL-payload-bound",
+        "behavior": "payload bytes are bounded before queue admission",
+        "target": "synapse/machine/delivery.py",
+        "source_sha256": "b5d1ae2615e166c86cec66dd640a0ebbecd104f4367b1bb9e2af60b6cd2821c2",
+        "result": "KILLED",
+        "seconds": 0.782,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_delivery_acceptance.py"
+        ]
+      },
+      {
+        "id": "DEL-closed-refusal",
+        "behavior": "close cannot resurrect queued work",
+        "target": "synapse/machine/delivery.py",
+        "source_sha256": "b5d1ae2615e166c86cec66dd640a0ebbecd104f4367b1bb9e2af60b6cd2821c2",
+        "result": "KILLED",
+        "seconds": 2.813,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_delivery_acceptance.py"
+        ]
+      },
+      {
+        "id": "DEL-unsubscribe",
+        "behavior": "unsubscription discards only obsolete delivery data",
+        "target": "synapse/machine/delivery.py",
+        "source_sha256": "b5d1ae2615e166c86cec66dd640a0ebbecd104f4367b1bb9e2af60b6cd2821c2",
+        "result": "KILLED",
+        "seconds": 0.797,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_delivery_acceptance.py"
+        ]
+      },
+      {
+        "id": "DEL-close-wakeup",
+        "behavior": "close wakes blocked consumers",
+        "target": "synapse/machine/delivery.py",
+        "source_sha256": "b5d1ae2615e166c86cec66dd640a0ebbecd104f4367b1bb9e2af60b6cd2821c2",
+        "result": "KILLED",
+        "seconds": 2.86,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_delivery_acceptance.py"
+        ]
+      }
+    ]
+  },
+  "transport_mutations": {
+    "baseline": "PASS",
+    "mutants": [
+      {
+        "id": "DEL-closed-transport",
+        "behavior": "closed output reports a declared pipe failure",
+        "target": "synapse/machine/transport.py",
+        "source_sha256": "c54f65f18f2452df566c8996d4781c8f80d15d60fbeaeec25c8bb1e3ad0a3db7",
+        "result": "KILLED",
+        "seconds": 0.734,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_transport_acceptance.py"
+        ]
+      }
+    ]
+  },
+  "decoder_mutations": {
+    "baseline": "PASS",
+    "mutants": [
+      {
+        "id": "DEC-key-check",
+        "behavior": "all duplicate keys are refused",
+        "target": "synapse/ui/src/contracts/json-keys.ts",
+        "source_sha256": "85ea7dfeeae5d8c53df3b8326a478000dac5eaee79b2876d809f7576fb3f05cf",
+        "result": "KILLED",
+        "seconds": 0.219,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts",
+          "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+          "acceptance/ui_bridge/typescript/contracts.test.ts"
+        ]
+      },
+      {
+        "id": "DEC-decoded-key",
+        "behavior": "escaped property names preserve lexical identity",
+        "target": "synapse/ui/src/contracts/json-keys.ts",
+        "source_sha256": "85ea7dfeeae5d8c53df3b8326a478000dac5eaee79b2876d809f7576fb3f05cf",
+        "result": "KILLED",
+        "seconds": 0.313,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts",
+          "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+          "acceptance/ui_bridge/typescript/contracts.test.ts"
+        ]
+      },
+      {
+        "id": "DEC-object-scope",
+        "behavior": "sibling containers have independent property sets",
+        "target": "synapse/ui/src/contracts/json-keys.ts",
+        "source_sha256": "85ea7dfeeae5d8c53df3b8326a478000dac5eaee79b2876d809f7576fb3f05cf",
+        "result": "KILLED",
+        "seconds": 0.313,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts",
+          "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+          "acceptance/ui_bridge/typescript/contracts.test.ts"
+        ]
+      },
+      {
+        "id": "DEC-key-whitespace",
+        "behavior": "whitespace before colon cannot bypass duplicate refusal",
+        "target": "synapse/ui/src/contracts/json-keys.ts",
+        "source_sha256": "85ea7dfeeae5d8c53df3b8326a478000dac5eaee79b2876d809f7576fb3f05cf",
+        "result": "KILLED",
+        "seconds": 0.297,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts",
+          "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+          "acceptance/ui_bridge/typescript/contracts.test.ts"
+        ]
+      },
+      {
+        "id": "DEC-quoted-content",
+        "behavior": "escaped quotes and key-like string content remain data",
+        "target": "synapse/ui/src/contracts/json-keys.ts",
+        "source_sha256": "85ea7dfeeae5d8c53df3b8326a478000dac5eaee79b2876d809f7576fb3f05cf",
+        "result": "KILLED",
+        "seconds": 0.312,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts",
+          "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+          "acceptance/ui_bridge/typescript/contracts.test.ts"
+        ]
+      },
+      {
+        "id": "DEC-control-admission",
+        "behavior": "control path also refuses identical duplicate authoritative fields",
+        "target": "synapse/ui/src/contracts/decode.ts",
+        "source_sha256": "1b061324de9a7ed7f71b9c9bc99bed5028ce1ff69ba248cf9f61028b73fa40e7",
+        "result": "KILLED",
+        "seconds": 0.313,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts",
+          "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+          "acceptance/ui_bridge/typescript/contracts.test.ts"
+        ]
+      },
+      {
+        "id": "DEC-command-admission",
+        "behavior": "command path refuses equal duplicate fields before hashing",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "34716297a7ab362848ca3cac5256e9ffca3b9893b595799e10cd3433bdc2886e",
+        "result": "KILLED",
+        "seconds": 0.297,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts",
+          "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+          "acceptance/ui_bridge/typescript/contracts.test.ts"
+        ]
+      },
+      {
+        "id": "DEC-mutation-schema",
+        "behavior": "mutation decoder enforces owner schema",
+        "target": "synapse/ui/src/contracts/command-decode.ts",
+        "source_sha256": "2cd2908bcda189b3194a96037b1b09e992c124867ece43c9f0ea0f18bedd6d3b",
+        "result": "KILLED",
+        "seconds": 0.297,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts",
+          "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+          "acceptance/ui_bridge/typescript/contracts.test.ts"
+        ]
+      },
+      {
+        "id": "DEC-target-binding",
+        "behavior": "command recipient must match the declared operation object",
+        "target": "synapse/ui/src/contracts/command-decode.ts",
+        "source_sha256": "2cd2908bcda189b3194a96037b1b09e992c124867ece43c9f0ea0f18bedd6d3b",
+        "result": "KILLED",
+        "seconds": 0.297,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts",
+          "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+          "acceptance/ui_bridge/typescript/contracts.test.ts"
+        ]
+      },
+      {
+        "id": "DEC-status-schema",
+        "behavior": "reconciliation remains a closed owner contract",
+        "target": "synapse/ui/src/contracts/command-decode.ts",
+        "source_sha256": "2cd2908bcda189b3194a96037b1b09e992c124867ece43c9f0ea0f18bedd6d3b",
+        "result": "KILLED",
+        "seconds": 0.297,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts",
+          "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+          "acceptance/ui_bridge/typescript/contracts.test.ts"
+        ]
+      },
+      {
+        "id": "DEC-format-generation",
+        "behavior": "generated UUID validation is an assertion",
+        "target": "synapse/ui/tooling/generate-contracts.mjs",
+        "source_sha256": "88e0ebc386481c2d3d3cfe44973728b559e10e33726713840fc37a48265a5cea",
+        "result": "KILLED",
+        "seconds": 2.719,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts",
+          "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+          "acceptance/ui_bridge/typescript/contracts.test.ts"
+        ]
+      },
+      {
+        "id": "DEC-constraint-stripping",
+        "behavior": "unknown fields cannot be silently removed",
+        "target": "synapse/ui/tooling/generate-contracts.mjs",
+        "source_sha256": "88e0ebc386481c2d3d3cfe44973728b559e10e33726713840fc37a48265a5cea",
+        "result": "KILLED",
+        "seconds": 2.656,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts",
+          "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+          "acceptance/ui_bridge/typescript/contracts.test.ts"
+        ]
+      },
+      {
+        "id": "DEC-coercion",
+        "behavior": "wire fields cannot be silently coerced",
+        "target": "synapse/ui/tooling/generate-contracts.mjs",
+        "source_sha256": "88e0ebc386481c2d3d3cfe44973728b559e10e33726713840fc37a48265a5cea",
+        "result": "KILLED",
+        "seconds": 2.563,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts",
+          "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+          "acceptance/ui_bridge/typescript/contracts.test.ts"
+        ]
+      }
+    ]
+  },
+  "earlier_attempts": [
+    {
+      "scope": "decoder mutation infrastructure",
+      "result": "INVALID_BASELINE",
+      "reason": "Windows absolute loader path was not an import URL; no mutation conclusion"
+    },
+    {
+      "scope": "decoder acceptance before lexical key check",
+      "passed": 29,
+      "failed": 1,
+      "reason": "Identical duplicate method_version was accepted by lossless-json"
+    },
+    {
+      "scope": "decoder first executable campaign",
+      "killed": 12,
+      "survived": [
+        "DEC-quoted-content"
+      ],
+      "resolution": "Added equal duplicate keys containing escaped quote/backslash, then reran all thirteen variants"
+    }
+  ],
+  "windows": {
+    "elevated": false,
+    "installed_checks": [
+      {
+        "name": "installation stays in the task workspace",
+        "status": "PASS"
+      },
+      {
+        "name": "only the previous verified task installation is updated",
+        "status": "PASS"
+      },
+      {
+        "name": "existing installer registration belongs to this test",
+        "status": "PASS"
+      },
+      {
+        "name": "NSIS install success",
+        "status": "PASS"
+      },
+      {
+        "name": "build bundle marker is present",
+        "status": "PASS"
+      },
+      {
+        "name": "installed shell matches exact NSIS transformation",
+        "status": "PASS"
+      },
+      {
+        "name": "installed inventory matches staged inventory",
+        "status": "PASS"
+      },
+      {
+        "name": "installed resource hashes",
+        "status": "PASS"
+      },
+      {
+        "name": "no local pip provenance",
+        "status": "PASS"
+      },
+      {
+        "name": "installed canonical command",
+        "status": "PASS"
+      },
+      {
+        "name": "second shell admits no overlapping core",
+        "status": "PASS"
+      },
+      {
+        "name": "refused shell termination preserves active core",
+        "status": "PASS"
+      },
+      {
+        "name": "abrupt installed shell death terminates its core",
+        "status": "PASS"
+      },
+      {
+        "name": "installed canonical command",
+        "status": "PASS"
+      },
+      {
+        "name": "replacement starts after old core exit",
+        "status": "PASS"
+      },
+      {
+        "name": "core crash leaves shell available for explicit recovery",
+        "status": "PASS"
+      }
+    ],
+    "security_checks": [
+      {
+        "name": "actual installed native session ready",
+        "status": "PASS"
+      },
+      {
+        "name": "force close refused while core is ready",
+        "status": "PASS"
+      },
+      {
+        "name": "foreign subscription ACK refused",
+        "status": "PASS"
+      },
+      {
+        "name": "ungranted native command refused: plugin:shell|execute",
+        "status": "PASS"
+      },
+      {
+        "name": "ungranted native command refused: plugin:fs|read_file",
+        "status": "PASS"
+      },
+      {
+        "name": "ungranted native command refused: plugin:webview|create_webview_window",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks JavaScript eval",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks DOM inline script",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks non-IPC fetch",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks frame and image loads",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks script-src-elem probe",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks style-src-elem probe",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks object-src probe",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks form-action probe",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks worker-src probe",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks connect-src probe",
+        "status": "PASS"
+      },
+      {
+        "name": "blocked worker executes no code",
+        "status": "PASS"
+      },
+      {
+        "name": "extended content probes preserve packaged origin without outbound requests",
+        "status": "PASS"
+      },
+      {
+        "name": "new window denied",
+        "status": "PASS"
+      },
+      {
+        "name": "foreign top-level navigation denied",
+        "status": "PASS",
+        "observed": {
+          "sameOrigin": true,
+          "networkRequests": 0,
+          "requests": []
+        }
+      },
+      {
+        "name": "unacknowledged Channel has one outstanding snapshot",
+        "status": "PASS"
+      },
+      {
+        "name": "native heartbeat progresses despite missing Channel ACK",
+        "status": "PASS"
+      },
+      {
+        "name": "old Channel cannot acknowledge replacement subscription",
+        "status": "PASS"
+      },
+      {
+        "name": "shutdown completes despite unacknowledged real Channel",
+        "status": "PASS"
+      },
+      {
+        "name": "renderer recovers confirmed stopped state after reload",
+        "status": "PASS"
+      },
+      {
+        "name": "blocked content made no network request",
+        "status": "PASS"
+      }
+    ],
+    "consent_checks": [
+      {
+        "name": "actual installed native session ready",
+        "status": "PASS"
+      },
+      {
+        "name": "crash target is the owned installed canonical core",
+        "status": "PASS"
+      },
+      {
+        "name": "actual renderer displays core loss and explicit recovery",
+        "status": "PASS"
+      },
+      {
+        "name": "force close asks for confirmation",
+        "status": "PASS"
+      },
+      {
+        "name": "cancel keeps failed shell open",
+        "status": "PASS"
+      },
+      {
+        "name": "second force close asks for confirmation",
+        "status": "PASS"
+      },
+      {
+        "name": "confirmed force close exits actual installed shell",
+        "status": "PASS"
+      }
+    ],
+    "runtime": {
+      "sqlite": "3.53.1",
+      "pointer_bytes": 8,
+      "query": 42,
+      "tls": true
+    },
+    "native_test_extensions_absent": "PASS",
+    "artifacts": {
+      "built_shell_sha256": "8e543ebb923705d40125e3f4f686b82ada4f4a82e21cb98069e384f44bade656",
+      "installed_shell_sha256": "6b6774bde319cc4efca5e73abb0addcdca20e4066ed7bbe10494500e31d8d87d",
+      "installer_sha256": "9309167d5597debcbb7cf8c8b3adf3a8b204db96e4b2374ea5e2537e3043845a",
+      "core_manifest_sha256": "710b1b6e65be98c00ca030c01270a8c391bba54f8455499eb7ddf85fc147ba56"
+    }
+  },
+  "limits": [
+    "Control profile remains domain_ready=false; scheduler projection branches are component evidence",
+    "No authorization, command acceptance or source history is created by queue insertion",
+    "Application workspace access, owner routing and end-to-end protected restart remain incomplete",
+    "Native Linux, signing, clean-machine and other Windows versions were not verified"
+  ]
+}

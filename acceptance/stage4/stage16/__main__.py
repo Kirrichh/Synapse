@@ -24,20 +24,8 @@ def main(argv=None):
     report = commands.add_parser("report", help="physically reopen every arm and emit a diagnostic assessment")
     report.add_argument("--experiment", type=Path, required=True)
     report.add_argument("--format", choices=("json", "table"), default="json")
-    prepare = commands.add_parser("prepare-astropy", help="prepare pinned external Astropy pilot inputs")
-    prepare.add_argument("--root", type=Path, required=True)
-    calibrate = commands.add_parser("calibrate-astropy", help="check real negative and reference-fix oracle outcomes")
-    calibrate.add_argument("--root", type=Path, required=True)
-    pair = commands.add_parser("prepare-astropy-pair", help="verify the worker environment, ingest source knowledge and freeze one live pair")
-    pair.add_argument("--root", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        if args.command in {"prepare-astropy", "calibrate-astropy", "prepare-astropy-pair"}:
-            from .astropy_pilot import prepare_astropy, calibrate_astropy, prepare_astropy_pair
-            value = (prepare_astropy_pair(args.root, repository=args.repository) if args.command == "prepare-astropy-pair"
-                     else (prepare_astropy if args.command == "prepare-astropy" else calibrate_astropy)(args.root))
-            print(canonical(value).decode())
-            return 2 if value["status"] == "CALIBRATION_FAILED" else 0
         if args.command == "freeze":
             design = json.loads(args.design.read_bytes())
             specification = design.pop("specification")

@@ -503,7 +503,11 @@ def _durable_invalid_input() -> DurableRunResult:
 def main(argv=None) -> int:
     ap = ARGUMENT_PARSER(prog="synapse")
     sub = ap.add_subparsers(
-        dest="cmd", metavar="{run,repl,replay,resume,project,memory,debug,metrics,change,approve,revoke-approval}")
+        dest="cmd", metavar="{run,repl,replay,resume,project,memory,debug,metrics,change,approve,revoke-approval,machine,access}")
+
+    sub.add_parser("machine", help="serve the bounded desktop control protocol over binary stdin/stdout")
+    from .access.cli import configure as configure_access
+    configure_access(sub.add_parser("access", help="manage explicit operator-delegated application access"))
 
     run = sub.add_parser("run")
     run.add_argument("file", nargs="?")
@@ -603,6 +607,13 @@ def main(argv=None) -> int:
     revoke.add_argument("--store", required=True)
 
     args = ap.parse_args(argv)
+
+    if args.cmd == "machine":
+        from .machine.entry import run_machine
+        return run_machine()
+    if args.cmd == "access":
+        from .access.cli import run as run_access
+        return run_access(args, sys.stdout, sys.stderr)
 
     if args.cmd in {"approve", "revoke-approval"}:
         from .experiments.gold.stage10_composition import execute_approval_action

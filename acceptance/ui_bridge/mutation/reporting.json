@@ -1,0 +1,29 @@
+[
+  {
+    "id": "EVIDENCE-raw-result-output",
+    "kind": "python",
+    "behavior": "Subprocess diagnostics must not be printed by the mutation runner",
+    "target": "acceptance/ui_bridge/mutation/run.py",
+    "before": "        return \"KILLED\", result.stdout",
+    "after": "        print(result.stdout)\n        return \"KILLED\", result.stdout",
+    "cases": ["acceptance/ui_bridge/test_mutation_evidence_acceptance.py"]
+  },
+  {
+    "id": "EVIDENCE-raw-result-record",
+    "kind": "python",
+    "behavior": "Structured mutation evidence must not contain raw subprocess diagnostics",
+    "target": "acceptance/ui_bridge/mutation/run.py",
+    "before": "\"selected_acceptance\": selected_cases(seed)})",
+    "after": "\"selected_acceptance\": selected_cases(seed), \"raw_output\": _})",
+    "cases": ["acceptance/ui_bridge/test_mutation_evidence_acceptance.py"]
+  },
+  {
+    "id": "EVIDENCE-raw-baseline-output",
+    "kind": "python",
+    "behavior": "A failed baseline must not persist raw subprocess diagnostics",
+    "target": "acceptance/ui_bridge/mutation/run.py",
+    "before": "                if status != \"SURVIVED\":\n                    raise RuntimeError",
+    "after": "                if status != \"SURVIVED\":\n                    (args.output / \"baseline-failure.log\").write_text(_)\n                    raise RuntimeError",
+    "cases": ["acceptance/ui_bridge/test_mutation_evidence_acceptance.py"]
+  }
+]

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Packaged main window: bounded controls and core-authorized application requests.",
+  "windows": ["main"],
+  "permissions": ["allow-desktop-subscribe", "allow-desktop-ack", "allow-desktop-start", "allow-desktop-stop", "allow-desktop-force-close", "allow-desktop-identity", "allow-desktop-application", "allow-desktop-application-subscribe", "allow-desktop-application-ack", "allow-desktop-application-unsubscribe"]
+}

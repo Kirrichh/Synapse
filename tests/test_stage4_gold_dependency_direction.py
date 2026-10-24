@@ -1,7 +1,7 @@
 """Stage 4 dependency-direction tripwire (Patch 1 artifact, added in Patch 6.5).
 
-NR-05 fixes a single production dependency direction: ``gold/* -> swebench/*``.
-No swebench production module may import ``synapse.experiments.gold``. Outbound
+NR-05 fixes a single production dependency direction: ``gold/* -> applied_verification/*``.
+No applied_verification production module may import ``synapse.experiments.gold``. Outbound
 imports from the gold package are limited to an approved whitelist so that a new
 cross-boundary dependency is a deliberate, reviewed change rather than a silent
 one.
@@ -20,7 +20,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GOLD_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "gold"
-SWEBENCH_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "swebench"
+APPLIED_VERIFICATION_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "applied_verification"
 GOLD_MODULE_PREFIX = "synapse.experiments.gold"
 OWNERSHIP_MANIFEST = REPO_ROOT / "governance" / "stage4_ownership_v2.json"
 STAGE4_ADAPTER_COMPONENTS = json.loads(
@@ -88,20 +88,19 @@ MODULE_SPECIFIC_GOLD_OUTBOUND = {
     # NR-05 explicitly requires read-only use of the unchanged Stage 3A writer contract.
     # Agents report a neutral response inventory; Synapse reads no agent record.
     "stage15/reconciliation.py": frozenset({"synapse.llm.capture",
-        "synapse.worker", "synapse.experiments.swebench.telemetry"}),
+        "synapse.worker", "synapse.experiments.applied_verification.telemetry"}),
     # NR-05: Stage 11 calls the unchanged single-attempt C1 adapter rather than
     # absorbing it. The edge is one module's, not the package's: the stop policy,
-    # the records and the controller stay free of any swebench import, so a C1
+    # the records and the controller stay free of any applied_verification import, so a C1
     # status can never leak into a decision that is not the classifier's.
     "runner/c1_boundary.py": frozenset(
         {
-            "synapse.experiments.swebench.contract",
-            "synapse.experiments.swebench.gold_attempt_writer",
-            "synapse.experiments.swebench.gold_runner",
-            "synapse.experiments.swebench.gold_oracle_binding",
-            "synapse.experiments.swebench.swebench_harness_oracle",
-            "synapse.experiments.swebench.gold_evidence",
-            "synapse.experiments.swebench.swebench_reports",
+            "synapse.experiments.applied_verification.contract",
+            "synapse.experiments.applied_verification.gold_attempt_writer",
+            "synapse.experiments.applied_verification.gold_runner",
+            "synapse.experiments.applied_verification.gold_oracle_binding",
+            "synapse.experiments.applied_verification.change_oracle",
+            "synapse.experiments.applied_verification.gold_evidence",
             "synapse.worker.contract",
         }
     ),
@@ -162,13 +161,13 @@ def _imported_modules(path: Path) -> set[str]:
 def test_gold_package_has_sources_to_inspect() -> None:
     # Guards against the tripwire silently passing on an empty glob.
     assert _python_sources(GOLD_PACKAGE)
-    assert _python_sources(SWEBENCH_PACKAGE)
+    assert _python_sources(APPLIED_VERIFICATION_PACKAGE)
 
 
 @pytest.mark.parametrize(
-    "path", _python_sources(SWEBENCH_PACKAGE), ids=lambda p: p.name
+    "path", _python_sources(APPLIED_VERIFICATION_PACKAGE), ids=lambda p: p.name
 )
-def test_swebench_production_module_never_imports_gold(path: Path) -> None:
+def test_applied_verification_production_module_never_imports_gold(path: Path) -> None:
     offending = {
         module
         for module in _imported_modules(path)
@@ -176,7 +175,7 @@ def test_swebench_production_module_never_imports_gold(path: Path) -> None:
     }
     assert not offending, (
         f"{path.relative_to(REPO_ROOT)} imports {sorted(offending)}; NR-05 fixes the "
-        "production dependency direction as gold/* -> swebench/* only"
+        "production dependency direction as gold/* -> applied_verification/* only"
     )
 
 
@@ -1384,7 +1383,7 @@ def test_a_store_takes_its_mutation_fence_as_a_required_argument(
 #: call the unchanged single-attempt adapter; it does not permit that knowledge
 #: to spread. One module holds it, and this is the check that keeps it one.
 C1_BOUNDARY_MODULE = "runner/c1_boundary.py"
-C1_PACKAGE_PREFIX = "synapse.experiments.swebench"
+C1_PACKAGE_PREFIX = "synapse.experiments.applied_verification"
 
 #: The exact C1 names the boundary may bind. A new name here is a widened edge
 #: and has to be argued as one rather than appear as an import.
@@ -1405,8 +1404,8 @@ APPROVED_C1_ADAPTER_SURFACE = frozenset(
         # Decode frozen command expectations and compose the existing C2 oracle
         # inside the sole C1 boundary; no other Gold owner gains these imports.
         "GoldRunnerCommandExpectation",
-        "GoldSWEbenchOracleBinding",
-        "SWEbenchHarnessOracleConfig",
+        "GoldChangeOracleBinding",
+        "ChangeOracleConfig",
         "GoldRunnerResult",
         "run_gold_attempt",
         "validate_attempt_id",
@@ -1416,7 +1415,8 @@ APPROVED_C1_ADAPTER_SURFACE = frozenset(
         "GoldEvidence",
         "GoldEvidenceSealError",  # Preserve physical report I/O failure during read-only reconciliation.
         "seal_gold_evidence",
-        "parse_swebench_report",
+        "parse_change_oracle_report",
+        "ORACLE_REPORT_KIND",
         "compute_oracle_config_fingerprint",
         # The same read-only C1 boundary verifies retained environment bytes;
         # it neither starts an oracle nor grants a new executor capability.
@@ -1426,7 +1426,7 @@ APPROVED_C1_ADAPTER_SURFACE = frozenset(
 )
 
 
-def test_only_the_c1_boundary_module_holds_the_swebench_dependency() -> None:
+def test_only_the_c1_boundary_module_holds_the_applied_verification_dependency() -> None:
     """NR-05 permits one C1 edge, and it belongs to the declared boundary.
 
     A second importer would mean two modules deciding what a C1 status means,
@@ -1438,7 +1438,7 @@ def test_only_the_c1_boundary_module_holds_the_swebench_dependency() -> None:
         for path in _python_sources(GOLD_PACKAGE)
         if any(module.startswith(C1_PACKAGE_PREFIX)
                and not (path.relative_to(GOLD_PACKAGE).as_posix() == "stage15/reconciliation.py"
-                        and module == "synapse.experiments.swebench.telemetry")
+                        and module == "synapse.experiments.applied_verification.telemetry")
                for module in _imported_modules(path))
     }
     assert importers <= {C1_BOUNDARY_MODULE}, (

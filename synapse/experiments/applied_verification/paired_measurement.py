@@ -1,7 +1,7 @@
 """Stage 3C C2-S2 paired Baseline/GOLD measurement contract.
 
 This module validates whether already-produced Baseline and GOLD measurements
-can be compared as a success-only SWE-bench oracle diagnostic. It does not run
+can be compared as a success-only change-oracle diagnostic. It does not run
 workers, runners, telemetry, carry admission, controlled-change, or FULL
 verification.
 """
@@ -15,13 +15,13 @@ import json
 import math
 from types import MappingProxyType
 
-from synapse.experiments.swebench.contract import (
+from synapse.experiments.applied_verification.contract import (
     AttemptVerdict,
     BaselineRunRecord,
     BaselineTask,
     OracleResult,
 )
-from synapse.experiments.swebench.gold_runner import (
+from synapse.experiments.applied_verification.gold_runner import (
     GOLD_APPLIED_WITH_EVIDENCE,
     GOLD_INFRA_ERROR,
     GOLD_ORACLE_UNRESOLVED,

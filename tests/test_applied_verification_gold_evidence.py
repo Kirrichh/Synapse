@@ -12,11 +12,11 @@ from typing import Any, Callable
 
 import pytest
 
-import synapse.experiments.swebench.gold_evidence as gold_evidence_module
+import synapse.experiments.applied_verification.gold_evidence as gold_evidence_module
 from synapse.change import ControlledChangeRequest
 from synapse.change.outcomes import APPLIED
 from synapse.change.runner import execute_controlled_change
-from synapse.experiments.swebench.gold_evidence import (
+from synapse.experiments.applied_verification.gold_evidence import (
     GOLD_EVIDENCE_APPLICATION_NOT_APPLIED,
     GOLD_EVIDENCE_LIFECYCLE_NOT_APPLIED,
     GOLD_EVIDENCE_MISSING,

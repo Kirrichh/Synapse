@@ -1,7 +1,7 @@
 """Stage 4 C1 GOLD runner tenant.
 
 This module consumes an already-obtained external worker result. It does not
-run workers, SWE-bench, providers, Docker, telemetry, paired measurement, or
+run workers, providers, Docker, telemetry, paired measurement, or
 FULL verification.
 """
 
@@ -25,14 +25,14 @@ from synapse.change.contract import TASK_CONTRACT_SCHEMA, validate_repo_relative
 from synapse.change.outcomes import APPLIED
 from synapse.change.runner import ControlledChangeResult
 from synapse.change.workspace import Worktree, cleanup_worktree, create_detached_worktree
-from synapse.experiments.swebench.contract import BaselineTask, OracleResult
-from synapse.experiments.swebench.gold_attempt_writer import (
+from synapse.experiments.applied_verification.contract import BaselineTask, OracleResult
+from synapse.experiments.applied_verification.gold_attempt_writer import (
     GOLD_ATTEMPT_WRITTEN,
     GOLD_EVIDENCE_REJECTED,
     GoldAttemptWriteResult,
     GoldAttemptWriter,
 )
-from synapse.experiments.swebench.gold_evidence import (
+from synapse.experiments.applied_verification.gold_evidence import (
     GoldEvidence,
     GoldEvidenceValidationResult,
     validate_gold_evidence,
@@ -113,7 +113,7 @@ class GoldRunnerCommandPolicy:
     full_suite_commands: tuple[tuple[str, ...], ...]
     commit_message: str
     required_scaffold_paths: tuple[str, ...]
-    task_class: str = "SWE_BENCH"
+    task_class: str = "CODE_CHANGE"
 
     def __post_init__(self) -> None:
         for field_name in ("task_id", "instance_id", "statement", "commit_message", "task_class"):

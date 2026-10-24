@@ -11,11 +11,11 @@ import sys
 
 import pytest
 
-import synapse.experiments.swebench.gold_attempt_writer as writer_module
+import synapse.experiments.applied_verification.gold_attempt_writer as writer_module
 from synapse.change import ControlledChangeRequest
 from synapse.change.outcomes import APPLIED
 from synapse.change.runner import execute_controlled_change
-from synapse.experiments.swebench.gold_attempt_writer import (
+from synapse.experiments.applied_verification.gold_attempt_writer import (
     GOLD_ATTEMPT_LOG_MALFORMED,
     GOLD_ATTEMPT_JSONL_WRITE_FAILED,
     GOLD_ATTEMPT_STATUS_INVALID,
@@ -27,7 +27,7 @@ from synapse.experiments.swebench.gold_attempt_writer import (
     GoldAttemptWriteResult,
     GoldAttemptWriter,
 )
-from synapse.experiments.swebench.gold_evidence import (
+from synapse.experiments.applied_verification.gold_evidence import (
     GOLD_EVIDENCE_MISSING,
     GOLD_EVIDENCE_REPORT_UNREADABLE,
     GoldEvidence,
@@ -639,7 +639,7 @@ def test_success_like_status_with_valid_evidence_writes_one_record(
     assert result.ok is True
     assert result.status == GOLD_ATTEMPT_WRITTEN
     assert len(records) == 1
-    assert records[0]["schema"] == "synapse.experiments.swebench.gold_attempt/v1"
+    assert records[0]["schema"] == "synapse.experiments.applied_verification.gold_attempt/v1"
     assert records[0]["arm"] == "GOLD"
     assert records[0]["status"] == "GOLD_APPLIED_WITH_EVIDENCE"
     assert records[0]["requested_status"] == "GOLD_APPLIED_WITH_EVIDENCE"

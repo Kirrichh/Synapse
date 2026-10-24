@@ -86,11 +86,11 @@ def write_gate_controller(
     grant = A.GrantEnvelope(
         scopes=("repo:x",),
         capabilities=("read",),
-        oracles=("swebench",),
+        oracles=("change-oracle",),
         policy_version=GATE_POLICY_VERSION,
     )
     requested = A.RequestedEnvelope(
-        scopes=("repo:x",), capabilities=("read",), oracles=("swebench",)
+        scopes=("repo:x",), capabilities=("read",), oracles=("change-oracle",)
     )
     controller = A.configure_gate_controller(
         declaration=declaration,

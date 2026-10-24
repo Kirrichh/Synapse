@@ -1,4 +1,4 @@
-"""Stage 3A baseline SWE-bench experiment runner.
+"""Stage 3A baseline experiment runner.
 
 The Baseline arm runs the same admitted agent as Gold through the universal
 agent execution port, without Synapse context, memory or local information.

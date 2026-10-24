@@ -9,23 +9,23 @@ import sys
 
 import pytest
 
-import synapse.experiments.swebench.gold_runner as gold_runner_module
+import synapse.experiments.applied_verification.gold_runner as gold_runner_module
 from synapse.change.outcomes import APPLIED
 from synapse.change.runner import ControlledChangeResult
-from synapse.experiments.swebench.baseline import run_baseline_task
-from synapse.experiments.swebench.contract import BaselineTask, ExperimentArm, OracleResult
-from synapse.experiments.swebench.gold_attempt_writer import (
+from synapse.experiments.applied_verification.baseline import run_baseline_task
+from synapse.experiments.applied_verification.contract import BaselineTask, ExperimentArm, OracleResult
+from synapse.experiments.applied_verification.gold_attempt_writer import (
     GOLD_ATTEMPT_WRITE_FAILED,
     GOLD_DUPLICATE_ATTEMPT_KEY,
     GOLD_EVIDENCE_REJECTED,
     GoldAttemptWriter,
 )
-from synapse.experiments.swebench.gold_evidence import (
+from synapse.experiments.applied_verification.gold_evidence import (
     GOLD_EVIDENCE_REPORT_UNREADABLE,
     GoldEvidenceValidationResult,
     validate_gold_evidence,
 )
-from synapse.experiments.swebench.gold_runner import (
+from synapse.experiments.applied_verification.gold_runner import (
     BASELINE_PREEXISTING_FAILURE_REASON,
     GOLD_APPLIED_WITH_EVIDENCE,
     GOLD_INFRA_ERROR,
@@ -728,9 +728,9 @@ def test_reproduction_after_failure_maps_to_no_candidate(tmp_path: Path) -> None
 #: would let a run claim more than an attempt established.
 REPO_ROOT = Path(__file__).resolve().parents[1]
 C1_MODULES = (
-    "synapse/experiments/swebench/gold_runner.py",
-    "synapse/experiments/swebench/gold_attempt_writer.py",
-    "synapse/experiments/swebench/gold_evidence.py",
+    "synapse/experiments/applied_verification/gold_runner.py",
+    "synapse/experiments/applied_verification/gold_attempt_writer.py",
+    "synapse/experiments/applied_verification/gold_evidence.py",
 )
 C1_PUBLIC_SIGNATURE = [
     "repo_root",
@@ -791,7 +791,7 @@ def test_the_c1_public_signature_is_what_stage_4_binds_to() -> None:
 
 
 def test_no_c1_module_imports_the_gold_package() -> None:
-    """The production dependency direction stays gold/* -> swebench/* only."""
+    """The production dependency direction stays gold/* -> applied_verification/* only."""
 
     import ast
 

@@ -2,7 +2,7 @@
 
 This module validates unsigned, in-toto-style bindings to a real
 controlled-change report and evidence ref. It does not write evidence, run
-workers, run SWE-bench, or construct experiment arms.
+workers, run oracles, or construct experiment arms.
 """
 
 from __future__ import annotations

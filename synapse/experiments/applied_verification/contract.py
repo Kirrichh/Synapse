@@ -1,4 +1,4 @@
-"""Public contracts for the Stage 3A SWE-bench baseline harness."""
+"""Public contracts for the Baseline arm and the change oracle."""
 
 from __future__ import annotations
 

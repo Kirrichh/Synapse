@@ -1,4 +1,4 @@
-"""Worktree patch extraction for Stage 3B SWE-bench oracle input."""
+"""Worktree patch extraction for the change oracle input."""
 
 from __future__ import annotations
 

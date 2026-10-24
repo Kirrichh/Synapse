@@ -68,7 +68,7 @@ Version 1.0. English translation of Appendix D.6.
 - **Boundary:** Not general project reading; readers receive no writer/oracle and viewing never applies changes.
 - **Basis:** Definition/call in the supplied map.
 
-## `synapse/experiments/swebench/gold_runner.py`
+## `synapse/experiments/applied_verification/gold_runner.py`
 
 - **Symbols:** run_gold_attempt.
 - **Role:** Existing controlled-change/C1 attempt implementation used by the C1 boundary.
@@ -76,7 +76,7 @@ Version 1.0. English translation of Appendix D.6.
 - **Boundary:** Internal canonical route, not a renderer direct-call button.
 - **Basis:** Inspected c1_boundary imports.
 
-## `synapse/experiments/swebench/gold_attempt_writer.py`
+## `synapse/experiments/applied_verification/gold_attempt_writer.py`
 
 - **Symbols:** GoldAttemptWriter.
 - **Role:** Retains exact C1 result supporting subsequent decisions.

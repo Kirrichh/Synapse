@@ -15,14 +15,13 @@ from synapse.experiments.gold.stage15.capture_store import CaptureStore
 from synapse.experiments.gold.stage15.resource_accounting import ResourceRecorder
 from synapse.experiments.gold.stage15.telemetry import reference
 from synapse.experiments.gold.stage15.worker_accounting import WorkerAccounting
-from synapse.experiments.swebench.baseline import run_baseline_task
-from synapse.experiments.swebench.contract import BaselineTask
-from synapse.experiments.swebench.paired_measurement import baseline_member_from_run
-from synapse.experiments.swebench.swebench_harness_oracle import (
-    SWEbenchHarnessOracleConfig, SWEbenchHarnessOracleRunner,
+from synapse.experiments.applied_verification.baseline import run_baseline_task
+from synapse.experiments.applied_verification.contract import BaselineTask
+from synapse.experiments.applied_verification.paired_measurement import baseline_member_from_run
+from synapse.experiments.applied_verification.change_oracle import (
+    ChangeOracleConfig, ChangeOracleRunner,
     build_oracle_config_fingerprint_payload, build_oracle_environment_fingerprint_payload,
     compute_oracle_config_fingerprint, compute_oracle_environment_fingerprint,
-    detect_swebench_version,
 )
 from synapse.agents.configuration import registry_from_configuration
 from synapse.agents.execution import AgentExecutionPort
@@ -31,18 +30,13 @@ from .protocol import canonical, digest, read_source, source, environment_identi
 
 
 def oracle_configuration(value):
-    value = dict(value)
-    for name in ("python_executable", "swebench_work_dir"):
-        value[name] = Path(value[name])
-    return SWEbenchHarnessOracleConfig(**value)
+    return ChangeOracleConfig(**value)
 
 
 def oracle_fingerprints(configuration):
-    version = detect_swebench_version()
-    return {"oracle_config": compute_oracle_config_fingerprint(
-        build_oracle_config_fingerprint_payload(configuration, swebench_version=version)),
+    return {"oracle_config": compute_oracle_config_fingerprint(build_oracle_config_fingerprint_payload(configuration)),
         "oracle_environment": compute_oracle_environment_fingerprint(
-            build_oracle_environment_fingerprint_payload(configuration, swebench_version=version))}
+            build_oracle_environment_fingerprint_payload(configuration))}
 
 
 def agent_axes(agents):
@@ -74,7 +68,7 @@ def execute_baseline(slot, definition):
     with recording_resources(recorder), measure_operation("runtime.execution") as operation:
         run = run_baseline_task(task, repo_root=definition["repo_root"], base_revision=definition["base_revision"],
             replicate_id=slot["replicate_id"], max_attempts=definition["max_attempts"], agent=agent,
-            oracle=SWEbenchHarnessOracleRunner(oracle), run_root=root / "runs")
+            oracle=ChangeOracleRunner(oracle), run_root=root / "runs")
         result = json.loads(canonical(run.to_dict()))
         result_ref = reference(result, "synapse.acceptance.stage16.baseline-result/v1")
         operation.bind_result(result_ref.to_dict())

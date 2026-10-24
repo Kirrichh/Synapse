@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from synapse.experiments.swebench.contract import (
+from synapse.experiments.applied_verification.contract import (
     ArtifactRef,
     AttemptVerdict,
     BaselineAttemptRecord,
@@ -15,7 +15,7 @@ from synapse.experiments.swebench.contract import (
     UsageConsistencyStatus,
     UsageSource,
 )
-from synapse.experiments.swebench.telemetry import TelemetryWriter, token_accounting_from_worker_usage
+from synapse.experiments.applied_verification.telemetry import TelemetryWriter, token_accounting_from_worker_usage
 from synapse.worker import ExternalCodingWorkerResult, ExternalWorkerStatus, ExternalWorkerTokenStatus, ExternalWorkerUsage, WorkerReport
 
 
@@ -156,6 +156,6 @@ def test_stage3a_telemetry_has_no_gold_dependency_in_a_fresh_interpreter():
     """NR-05: importing the existing writer cannot acquire Gold semantics."""
     import subprocess
     import sys
-    result = subprocess.run([sys.executable, "-c", "import sys; import synapse.experiments.swebench.telemetry; assert not any(n == 'synapse.experiments.gold' or n.startswith('synapse.experiments.gold.') for n in sys.modules)"],
+    result = subprocess.run([sys.executable, "-c", "import sys; import synapse.experiments.applied_verification.telemetry; assert not any(n == 'synapse.experiments.gold' or n.startswith('synapse.experiments.gold.') for n in sys.modules)"],
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr

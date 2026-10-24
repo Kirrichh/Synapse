@@ -111,8 +111,8 @@ This index covers 122 non-test references. The eight original acceptance entries
 | [synapse/experiments/gold/runner/state_machine.py](code-map/07-evidence.md#synapseexperimentsgoldrunnerstate_machinepy) | load_run_state. |
 | [synapse/experiments/gold/runner/vocabulary.py](code-map/07-evidence.md#synapseexperimentsgoldrunnervocabularypy) | GoldRunFailureCode; AttemptOutcome; closed outcomes/decisions. |
 | [synapse/experiments/gold/runner/c1_boundary.py](code-map/07-evidence.md#synapseexperimentsgoldrunnerc1_boundarypy) | C1AttemptBoundary; C1EvidenceContext.read; read_c1_verification_evidence. |
-| [synapse/experiments/swebench/gold_runner.py](code-map/07-evidence.md#synapseexperimentsswebenchgold_runnerpy) | run_gold_attempt. |
-| [synapse/experiments/swebench/gold_attempt_writer.py](code-map/07-evidence.md#synapseexperimentsswebenchgold_attempt_writerpy) | GoldAttemptWriter. |
+| [synapse/experiments/applied_verification/gold_runner.py](code-map/07-evidence.md#synapseexperimentsapplied_verificationgold_runnerpy) | run_gold_attempt. |
+| [synapse/experiments/applied_verification/gold_attempt_writer.py](code-map/07-evidence.md#synapseexperimentsapplied_verificationgold_attempt_writerpy) | GoldAttemptWriter. |
 | [synapse/experiments/gold/stage12/outcome.py](code-map/07-evidence.md#synapseexperimentsgoldstage12outcomepy) | StructuredOutcome; final-status matrix. |
 | [synapse/experiments/gold/stage12/verification.py](code-map/07-evidence.md#synapseexperimentsgoldstage12verificationpy) | Domain verification of C1/C2, plan, and binding. |
 | [synapse/experiments/gold/stage13/publication.py](code-map/07-evidence.md#synapseexperimentsgoldstage13publicationpy) | Independent publication authority. |

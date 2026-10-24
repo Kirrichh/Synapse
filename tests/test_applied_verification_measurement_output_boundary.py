@@ -6,13 +6,13 @@ import math
 
 import pytest
 
-from synapse.experiments.swebench.gold_evidence import (
+from synapse.experiments.applied_verification.gold_evidence import (
     EVIDENCE_REF_NAMESPACE,
     GoldEvidence,
     ValidatedGoldEvidence,
     _make_validated_gold_evidence,
 )
-from synapse.experiments.swebench.measurement_output import (
+from synapse.experiments.applied_verification.measurement_output import (
     AdmissionSourceKind,
     AdmissionStatus,
     CLAIM_VOCABULARY,
@@ -37,7 +37,7 @@ from synapse.experiments.swebench.measurement_output import (
     validate_canonical_telemetry_gateway_candidate,
     _make_evidence_admission_decision,
 )
-from synapse.experiments.swebench.paired_measurement import (
+from synapse.experiments.applied_verification.paired_measurement import (
     ALL_ATTEMPTS_RECORDED,
     CarryState,
     ExecutionOrder,

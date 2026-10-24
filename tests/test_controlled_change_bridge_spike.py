@@ -134,7 +134,7 @@ def _phase_statuses(report: dict[str, object]) -> dict[str, str]:
 
 def test_committed_patch_artifact_bridges_into_controlled_change_lifecycle(tmp_path, monkeypatch):
     # This test proves controlled-change bridge feasibility only. It does not
-    # implement Gold execution, paired pilots, SWE-bench validation, captured
+    # implement Gold execution, paired pilots, change-oracle validation, captured
     # mini-diff compatibility, or economic telemetry.
     repo = tmp_path / "repo"
     base, task_path = _build_bridge_fixture(repo, commit_patch=True)

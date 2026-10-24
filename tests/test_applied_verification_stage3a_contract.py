@@ -1,4 +1,4 @@
-"""Stage 3A SWE-bench contract tests."""
+"""Stage 3A Baseline contract tests."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from synapse.experiments.swebench import baseline as baseline_module
-from synapse.experiments.swebench import run_baseline_task
-from synapse.experiments.swebench.contract import (
+from synapse.experiments.applied_verification import baseline as baseline_module
+from synapse.experiments.applied_verification import run_baseline_task
+from synapse.experiments.applied_verification.contract import (
     AttemptVerdict,
     BaselineRunRecord,
     BaselineTask,

@@ -17,11 +17,11 @@ import re
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
-from synapse.experiments.swebench.gold_evidence import (
+from synapse.experiments.applied_verification.gold_evidence import (
     EVIDENCE_REF_NAMESPACE,
     ValidatedGoldEvidence,
 )
-from synapse.experiments.swebench.paired_measurement import (
+from synapse.experiments.applied_verification.paired_measurement import (
     CarryState,
     PairedMeasurementRecord,
     PairedMeasurementStatus,

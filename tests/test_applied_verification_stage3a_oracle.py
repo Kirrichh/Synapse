@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import sys
 
-from synapse.experiments.swebench.contract import BaselineTask
-from synapse.experiments.swebench.oracle import CommandOracleRunner
+from synapse.experiments.applied_verification.contract import BaselineTask
+from synapse.experiments.applied_verification.oracle import CommandOracleRunner
 
 
 def _task() -> BaselineTask:

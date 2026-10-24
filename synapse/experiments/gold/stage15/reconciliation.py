@@ -235,7 +235,7 @@ def reconcile_run_telemetry(*, run_root, cut: CaptureCut | None, through_attempt
     from ..runner.completed_delivery_codec import restore_completed_worker_delivery
     from ..stage10.worker_transport import WorkerDeliveryStatus
     from synapse.worker import ExternalWorkerUsage, ExternalWorkerTokenStatus
-    from synapse.experiments.swebench.telemetry import token_accounting_from_worker_usage, usage_source_from_worker_status
+    from synapse.experiments.applied_verification.telemetry import token_accounting_from_worker_usage, usage_source_from_worker_status
     from .telemetry import SourceReconciliationReport
 
     findings, compared, expected, observed, stage3a = [], [], [], [], []

@@ -8,7 +8,7 @@ import math
 
 import pytest
 
-from synapse.experiments.swebench.contract import (
+from synapse.experiments.applied_verification.contract import (
     ArtifactRef,
     AttemptVerdict,
     BaselineAttemptRecord,
@@ -21,14 +21,14 @@ from synapse.experiments.swebench.contract import (
     UsageConsistencyStatus,
     UsageSource,
 )
-from synapse.experiments.swebench.gold_attempt_writer import GoldAttemptWriteResult
-from synapse.experiments.swebench.gold_runner import (
+from synapse.experiments.applied_verification.gold_attempt_writer import GoldAttemptWriteResult
+from synapse.experiments.applied_verification.gold_runner import (
     GOLD_APPLIED_WITH_EVIDENCE,
     GOLD_INFRA_ERROR,
     GOLD_ORACLE_UNRESOLVED,
     GoldRunnerResult,
 )
-from synapse.experiments.swebench.paired_measurement import (
+from synapse.experiments.applied_verification.paired_measurement import (
     ALL_ATTEMPTS_RECORDED,
     SELECTED_SUCCESS_ONLY,
     CarryState,
@@ -1161,7 +1161,7 @@ def test_gold_member_adapter_uses_valid_observed_count_and_defaults_absent_count
 
 
 def test_no_forbidden_imports() -> None:
-    source = Path("synapse/experiments/swebench/paired_measurement.py").read_text(encoding="utf-8")
+    source = Path("synapse/experiments/applied_verification/paired_measurement.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     imported: list[str] = []
     for node in ast.walk(tree):
@@ -1176,9 +1176,9 @@ def test_no_forbidden_imports() -> None:
     assert "synapse.interpreter" not in imported
     assert "synapse.cvm" not in imported
     assert "runtime.CVM" not in imported
-    assert "synapse.experiments.swebench.baseline" not in imported
-    assert "synapse.experiments.swebench.telemetry" not in imported
-    assert "synapse.experiments.swebench.carry" not in imported
+    assert "synapse.experiments.applied_verification.baseline" not in imported
+    assert "synapse.experiments.applied_verification.telemetry" not in imported
+    assert "synapse.experiments.applied_verification.carry" not in imported
 
 
 def test_same_oracle_object_satisfies_baseline_and_gold_protocol_shapes(tmp_path: Path) -> None:

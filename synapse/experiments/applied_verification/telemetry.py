@@ -130,7 +130,7 @@ class TelemetryWriter:
         experiment_doc_status: str = "pre-Section 6.4 provider alignment",
     ) -> None:
         payload = {
-            "schema": "synapse.experiments.swebench.stage3a.manifest/v1",
+            "schema": "synapse.experiments.applied_verification.stage3a.manifest/v1",
             "run_id": run.run_id,
             "arm": run.arm.value,
             "provider": provider,

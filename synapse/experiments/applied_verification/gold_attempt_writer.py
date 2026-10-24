@@ -1,7 +1,7 @@
 """Write-boundary gate for GOLD attempt records.
 
 This module only writes GOLD attempt JSONL records. It does not execute GOLD,
-run oracles, call SWE-bench, or decide FULL verification.
+run oracles or decide FULL verification.
 """
 
 from __future__ import annotations
@@ -11,15 +11,15 @@ from pathlib import Path
 from typing import Any, Mapping
 import json
 
-from synapse.experiments.swebench.contract import ExperimentArm
-from synapse.experiments.swebench.gold_evidence import (
+from synapse.experiments.applied_verification.contract import ExperimentArm
+from synapse.experiments.applied_verification.gold_evidence import (
     GOLD_EVIDENCE_MISSING,
     GoldEvidence,
     validate_gold_evidence,
 )
 
 
-SCHEMA = "synapse.experiments.swebench.gold_attempt/v1"
+SCHEMA = "synapse.experiments.applied_verification.gold_attempt/v1"
 #: The arm every record of this writer names; only this writer may produce it.
 ARM = ExperimentArm.GOLD.value
 

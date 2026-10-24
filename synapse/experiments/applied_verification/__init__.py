@@ -1,4 +1,4 @@
-"""Stage 3A SWE-bench baseline experiment harness."""
+"""Applied verification: Baseline and Gold attempts judged by the independent change oracle."""
 
 from .baseline import run_baseline_task
 from .contract import (

@@ -137,7 +137,7 @@ required; unknown fields and duplicate JSON keys fail validation.
 | `target_records` | Complete Python, document or requirement binding records corresponding exactly to `target_bindings` |
 | `command_policy` | Full JSON projection of existing C1 `GoldRunnerCommandPolicy`, including both reproduction expectations and all command groups |
 | `agents` | `synapse.agent.configuration/v1`: operator-admitted agent profiles and preferences (see `UNIVERSAL_AGENT_EXECUTION.md`) |
-| `oracle` | Full JSON projection of existing `SWEbenchHarnessOracleConfig`, including its default fields |
+| `oracle` | Full JSON projection of `ChangeOracleConfig`: work directory, fail-to-pass and pass-to-pass checks, optional evaluator patch with its sha256, command timeout and summary bounds |
 | `actor_namespace` | Explicit bounded namespace for the independent runtime actors |
 | `observation` | Builder identity, base revision, task ref, policy/environment/tool inputs, source/verification refs and oracle observation |
 | `knowledge_path` | Seed export JSON; relative paths resolve against the operator input directory |
@@ -252,9 +252,10 @@ The six `test_project_gold_*_acceptance.py` scenarios run as separate GitHub
 Actions jobs. They cover canonical approval/run, terminal resume, continuation
 in a fresh process, changed frozen inputs, changed evidence and task identity
 in the compatibility observation. Their worker
-and SWE-bench subprocesses are deterministic external stand-ins; the Gold
-runtime, C1 controlled changes and C2 report parsing are real. These tests do
-not measure model quality, live SWE-bench performance or token savings.
+and the change oracle's checks are deterministic external stand-ins; the Gold
+runtime, C1 controlled changes, the change oracle and C2 report parsing are
+real. These tests do not measure model quality, benchmark performance or token
+savings.
 
 ### Project source experience input
 

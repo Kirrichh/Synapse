@@ -225,8 +225,8 @@ jobs:
           acceptance/stage4/stage16/test_project_model_contract.py
           acceptance/stage4/stage16/test_experiment_journal.py
           acceptance/stage4/stage16/test_comparison_contract.py
-          tests/test_swebench_paired_measurement_contract.py
-          tests/test_swebench_stage3a_telemetry.py
+          tests/test_applied_verification_paired_measurement_contract.py
+          tests/test_applied_verification_stage3a_telemetry.py
           tests/test_llm_gateway_stage1.py
           acceptance/agents/test_execution_retention_acceptance.py
 
@@ -1444,6 +1444,18 @@ jobs:
           tests/test_affective_memory.py
           tests/test_affective_vm.py
           tests/test_agentruntime_todict_drift_p0510.py
+          tests/test_applied_verification_change_oracle.py
+          tests/test_applied_verification_gold_attempt_writer.py
+          tests/test_applied_verification_gold_evidence.py
+          tests/test_applied_verification_gold_oracle_binding.py
+          tests/test_applied_verification_gold_production_tripwire.py
+          tests/test_applied_verification_gold_runner.py
+          tests/test_applied_verification_measurement_output_boundary.py
+          tests/test_applied_verification_stage3a_baseline.py
+          tests/test_applied_verification_stage3a_carry.py
+          tests/test_applied_verification_stage3a_contract.py
+          tests/test_applied_verification_stage3a_oracle.py
+          tests/test_applied_verification_stage3b_patch_extract.py
           tests/test_as2_adapter_derivation_p068.py
           tests/test_as2_adapter_projection_p067.py
           tests/test_as2_adapter_skeleton_p065.py
@@ -1523,19 +1535,6 @@ jobs:
           tests/test_state_overlay_core_p030.py
           tests/test_swarm_mobility.py
           tests/test_swarm_promises.py
-          tests/test_swebench_gold_attempt_writer.py
-          tests/test_swebench_gold_evidence.py
-          tests/test_swebench_gold_oracle_binding.py
-          tests/test_swebench_gold_production_tripwire.py
-          tests/test_swebench_gold_runner.py
-          tests/test_swebench_measurement_output_boundary.py
-          tests/test_swebench_stage3a_baseline.py
-          tests/test_swebench_stage3a_carry.py
-          tests/test_swebench_stage3a_contract.py
-          tests/test_swebench_stage3a_oracle.py
-          tests/test_swebench_stage3b_patch_extract.py
-          tests/test_swebench_stage3b_swebench_harness_oracle.py
-          tests/test_swebench_stage3b_swebench_reports.py
           tests/test_v1_4_1_replay_safe_integrate.py
           tests/test_v1_4_transactional_identity.py
           tests/test_worker_candidate_materializer.py

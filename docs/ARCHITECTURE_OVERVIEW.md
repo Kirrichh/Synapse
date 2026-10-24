@@ -249,7 +249,7 @@ promote itself to canonical evidence merely because it executed.
 to core APIs, emits structured diagnostics, and maps exit codes. It does not
 own the hashing or divergence algorithms.
 
-## 10. Controlled Change and SWE-bench Experiment Boundary
+## 10. Controlled Change and Applied Verification Boundary
 
 `synapse/change/` owns controlled task loading, committed trusted inputs,
 candidate application, scope checks, command execution, verified commits,
@@ -257,13 +257,17 @@ evidence references, reports, and cleanup. Controlled change requires a
 committed task and committed patch/input bridge. It is not a general sandbox
 or a claim that all commands are environmentally isolated.
 
-`synapse/experiments/swebench/` owns experiment contracts around baseline and
-Gold attempts:
+`synapse/experiments/applied_verification/` owns experiment contracts around
+baseline and Gold attempts and the independent change oracle that judges them:
 
 - the C1 Gold runner materializes an already-obtained worker result, creates a
   committed bridge, calls controlled change, validates `GoldEvidence`, invokes
   an oracle on a fresh detached verified commit, and writes the attempt;
-- the Gold SWE-bench oracle binding derives `model_patch` from the verified
+- the change oracle compares two fresh checkouts of the base revision: its
+  declared fail-to-pass checks must fail on the base and pass, with the
+  pass-to-pass checks, once the candidate patch is applied; a check that
+  passes without the change is an infrastructure error, not a verdict;
+- the Gold oracle binding derives `model_patch` from the verified
   single-parent commit pair, not from dirty worktree state;
 - paired measurement is success-only and blocks token/cost/performance claims;
 - measurement output and admission candidate modules are contract boundaries,
@@ -305,7 +309,7 @@ sign-off remain distinct gates.
 | `synapse/golden_replay.py` | Golden artifact recording and mock replay |
 | `synapse/debugger_core.py` | Forks, trace adapters, and divergence diagnostics |
 | `synapse/change/` | Controlled-change execution and applied evidence |
-| `synapse/experiments/swebench/` | Baseline/Gold experiment contracts and bounded evidence adapters |
+| `synapse/experiments/applied_verification/` | Baseline/Gold experiment contracts, the change oracle and bounded evidence adapters |
 | `synapse/persistence.py` | Runtime storage adapters |
 | `synapse/metrics.py` | Runtime metrics formatting and snapshots |
 | `synapse/cli.py` | Command transport and structured output |

@@ -7,8 +7,8 @@ import subprocess
 
 import pytest
 
-from synapse.experiments.swebench import patch_extract
-from synapse.experiments.swebench.patch_extract import (
+from synapse.experiments.applied_verification import patch_extract
+from synapse.experiments.applied_verification.patch_extract import (
     extract_model_patch_from_worktree,
     normalize_repo_relative_path,
 )

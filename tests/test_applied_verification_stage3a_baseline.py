@@ -9,9 +9,9 @@ import sys
 
 import pytest
 
-from synapse.experiments.swebench.baseline import run_baseline_task
-from synapse.experiments.swebench.contract import AttemptVerdict, BaselineTask, ExperimentArm
-from synapse.experiments.swebench.oracle import CommandOracleRunner
+from synapse.experiments.applied_verification.baseline import run_baseline_task
+from synapse.experiments.applied_verification.contract import AttemptVerdict, BaselineTask, ExperimentArm
+from synapse.experiments.applied_verification.oracle import CommandOracleRunner
 from synapse.worker import (
     ExternalCodingWorkerResult,
     ExternalWorkerStatus,
@@ -72,7 +72,7 @@ def test_proposed_patch_alone_does_not_resolve_and_second_attempt_uses_raw_carry
         Path(worktree, "allowed.py").write_text(f"value = '{value}'\n", encoding="utf-8")
         return _worker_result(ExternalWorkerStatus.PROPOSED_PATCH, diff_text=f"allowed.py -> {value}")
 
-    monkeypatch.setattr("synapse.experiments.swebench.baseline._agent_candidate", fake_worker)
+    monkeypatch.setattr("synapse.experiments.applied_verification.baseline._agent_candidate", fake_worker)
     oracle = CommandOracleRunner(
         (
             sys.executable,
@@ -113,7 +113,7 @@ def test_max_attempt_budget_k3_is_enforced_for_unresolved_candidates(tmp_path, m
         Path(worktree, "allowed.py").write_text("value = 'bad'\n", encoding="utf-8")
         return _worker_result(ExternalWorkerStatus.PROPOSED_PATCH)
 
-    monkeypatch.setattr("synapse.experiments.swebench.baseline._agent_candidate", fake_worker)
+    monkeypatch.setattr("synapse.experiments.applied_verification.baseline._agent_candidate", fake_worker)
     oracle = CommandOracleRunner((sys.executable, "-c", "print('still failing'); raise SystemExit(1)"))
 
     run = run_baseline_task(
@@ -147,7 +147,7 @@ def test_no_patch_error_and_timeout_do_not_call_oracle_or_become_success(tmp_pat
             oracle_calls += 1
             raise AssertionError("oracle should not run without proposed patch")
 
-    monkeypatch.setattr("synapse.experiments.swebench.baseline._agent_candidate", fake_worker)
+    monkeypatch.setattr("synapse.experiments.applied_verification.baseline._agent_candidate", fake_worker)
 
     run = run_baseline_task(
         BaselineTask("task", "instance", "statement", ("allowed.py",)),

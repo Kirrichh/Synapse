@@ -19,7 +19,7 @@ from synapse.experiments.gold.stage14.graph import LineageGraph
 from synapse.experiments.gold.stage15.run_observability import inspect_observability
 from acceptance.agents.coding_agents import use_model_agent
 from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V1, LOCAL_EDIT_PROPOSAL_V1
-from tests.test_swebench_gold_runner import OLD_SOURCE, NEW_SOURCE
+from tests.test_applied_verification_gold_runner import OLD_SOURCE, NEW_SOURCE
 
 
 def test_local_rejection_reopens_every_stage_and_preserves_the_producer(tmp_path, monkeypatch):

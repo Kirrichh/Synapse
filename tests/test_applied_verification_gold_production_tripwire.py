@@ -9,7 +9,7 @@ from typing import Iterable
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCAN_ROOTS = ("synapse", "personal_slice", "scripts", "examples")
 GOLD_WRITER_ALLOWLIST = (
-    Path("synapse/experiments/swebench/gold_attempt_writer.py"),
+    Path("synapse/experiments/applied_verification/gold_attempt_writer.py"),
 )
 FITNESS_MESSAGE = (
     "Production GOLD construction detected outside GoldAttemptWriter. "
@@ -241,7 +241,7 @@ def _render_failure(violations: list[GoldProductionViolation]) -> str:
 def test_gold_fitness_detector_catches_static_forms(tmp_path: Path) -> None:
     sample = tmp_path / "sample.py"
     sample.write_text(
-        "from synapse.experiments.swebench.contract import ExperimentArm as EA\n"
+        "from synapse.experiments.applied_verification.contract import ExperimentArm as EA\n"
         "\n"
         "def bad(contract):\n"
         "    ExperimentArm.GOLD\n"
@@ -287,16 +287,16 @@ def test_gold_fitness_detector_allows_enum_definition_and_dynamic_construction(t
 
 def test_gold_fitness_allowlist_accepts_only_gold_attempt_writer() -> None:
     source = (
-        "from synapse.experiments.swebench.contract import ExperimentArm as EA\n"
-        "from synapse.experiments.swebench.gold_evidence import GoldEvidence, validate_gold_evidence\n"
+        "from synapse.experiments.applied_verification.contract import ExperimentArm as EA\n"
+        "from synapse.experiments.applied_verification.gold_evidence import GoldEvidence, validate_gold_evidence\n"
         "\n"
         "def write(gold_evidence: GoldEvidence):\n"
         "    ExperimentArm.GOLD\n"
         "    return validate_gold_evidence(gold_evidence, repo_root='.')\n"
     )
 
-    assert _scan_source(Path("synapse/experiments/swebench/gold_attempt_writer.py"), source) == []
-    violations = _scan_source(Path("synapse/experiments/swebench/not_allowed.py"), source)
+    assert _scan_source(Path("synapse/experiments/applied_verification/gold_attempt_writer.py"), source) == []
+    violations = _scan_source(Path("synapse/experiments/applied_verification/not_allowed.py"), source)
     assert {violation.kind for violation in violations} >= {
         "aliased ExperimentArm import",
         "ExperimentArm.GOLD",
@@ -305,15 +305,15 @@ def test_gold_fitness_allowlist_accepts_only_gold_attempt_writer() -> None:
 
 def test_gold_fitness_requires_writer_to_call_validate_gold_evidence() -> None:
     source = (
-        "from synapse.experiments.swebench.contract import ExperimentArm\n"
-        "from synapse.experiments.swebench.gold_evidence import GoldEvidence, validate_gold_evidence\n"
+        "from synapse.experiments.applied_verification.contract import ExperimentArm\n"
+        "from synapse.experiments.applied_verification.gold_evidence import GoldEvidence, validate_gold_evidence\n"
         "\n"
         "def write(gold_evidence: GoldEvidence):\n"
         "    return ExperimentArm.GOLD.value\n"
     )
 
     violations = _scan_source(
-        Path("synapse/experiments/swebench/gold_attempt_writer.py"),
+        Path("synapse/experiments/applied_verification/gold_attempt_writer.py"),
         source,
         enforce_writer_contract=True,
     )
@@ -325,15 +325,15 @@ def test_gold_fitness_requires_writer_to_call_validate_gold_evidence() -> None:
 
 def test_gold_fitness_forbids_writer_validation_bypass_flags() -> None:
     source = (
-        "from synapse.experiments.swebench.contract import ExperimentArm\n"
-        "from synapse.experiments.swebench.gold_evidence import GoldEvidence, validate_gold_evidence\n"
+        "from synapse.experiments.applied_verification.contract import ExperimentArm\n"
+        "from synapse.experiments.applied_verification.gold_evidence import GoldEvidence, validate_gold_evidence\n"
         "\n"
         "def write(gold_evidence: GoldEvidence, skip_validation=False):\n"
         "    return validate_gold_evidence(gold_evidence, repo_root='.')\n"
     )
 
     violations = _scan_source(
-        Path("synapse/experiments/swebench/gold_attempt_writer.py"),
+        Path("synapse/experiments/applied_verification/gold_attempt_writer.py"),
         source,
         enforce_writer_contract=True,
     )
@@ -346,10 +346,10 @@ def test_gold_fitness_forbids_writer_validation_bypass_flags() -> None:
 def test_gold_fitness_detects_raw_arm_gold_writer_bypass() -> None:
     source = 'record = {"arm": "GOLD", "status": "GOLD_APPLIED_WITH_EVIDENCE"}\n'
 
-    violations = _scan_source(Path("synapse/experiments/swebench/raw_writer.py"), source)
+    violations = _scan_source(Path("synapse/experiments/applied_verification/raw_writer.py"), source)
 
     assert {violation.kind for violation in violations} == {'{"arm": "GOLD"}'}
-    assert _scan_source(Path("synapse/experiments/swebench/gold_attempt_writer.py"), source) == []
+    assert _scan_source(Path("synapse/experiments/applied_verification/gold_attempt_writer.py"), source) == []
 
 
 def test_gold_fitness_scan_roots_are_preserved() -> None:
@@ -358,7 +358,7 @@ def test_gold_fitness_scan_roots_are_preserved() -> None:
 
 def test_gold_fitness_v2_production_surface() -> None:
     assert GOLD_WRITER_ALLOWLIST == (
-        Path("synapse/experiments/swebench/gold_attempt_writer.py"),
+        Path("synapse/experiments/applied_verification/gold_attempt_writer.py"),
     )
     violations: list[GoldProductionViolation] = []
     for path in _iter_scanned_python_files():

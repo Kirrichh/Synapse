@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from synapse.experiments.swebench.carry import RawCarryEntry, RawTranscriptCarry
+from synapse.experiments.applied_verification.carry import RawCarryEntry, RawTranscriptCarry
 
 
 def test_failed_oracle_output_is_appended_and_rendered_raw():

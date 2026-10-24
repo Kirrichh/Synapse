@@ -46,7 +46,7 @@ from synapse.experiments.gold.stage10_composition import (
     Stage10ProductionComposition,
     create_stage10_production_composition,
 )
-from synapse.experiments.swebench.contract import BaselineTask, OracleResult
+from synapse.experiments.applied_verification.contract import BaselineTask, OracleResult
 
 import tests.gold_point_of_use_world as pou
 from acceptance.stage4.stage10._builders import hash_ref
@@ -54,7 +54,7 @@ from acceptance.stage4.stage11._retrieval_inputs import acceptance_retrieval_bin
 from acceptance.agents.coding_agents import ACCEPTANCE_PROVIDER, ProcessAgent, create_process_agent
 from synapse.experiments.gold import replay_composition as RC
 from tests.stage4_gold_replay_support import GAS
-from tests.test_swebench_gold_runner import (
+from tests.test_applied_verification_gold_runner import (
     NEW_SOURCE,
     build_candidate_repo,
     make_writer,

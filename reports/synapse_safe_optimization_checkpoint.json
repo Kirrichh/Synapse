@@ -1,0 +1,133 @@
+{
+  "record_kind": "development_checkpoint",
+  "workstream": "Synapse safe optimization",
+  "repository": "Kirrichh/Synapse",
+  "working_branch": "codex/synapse-safe-optimization",
+  "base_branch": "codex/ui-foundation-v1",
+  "base_commit": "1e226e52a3400d4fb0336420569d8bab43c8f783",
+  "main_at_review": "e5249908864ca9481f656092ecf08eb5f6bec567",
+  "purpose": "Preserve findings and establish the current repository base before implementation.",
+  "publication_policy": "The owner authorized this branch creation. Pushing new commits remains prohibited.",
+  "latest_commit_review": {
+    "commit": "1e226e52a3400d4fb0336420569d8bab43c8f783",
+    "date_utc": "2026-10-24T18:20:43Z",
+    "subject": "Repair the durable job install and the UI mutation seeds",
+    "changes": [
+      "Install the package with dependencies in the P2 durable CI job.",
+      "Copy agent retention fixtures into isolated UI mutation subjects.",
+      "Refresh five mutation anchors and stop retaining raw baseline diagnostics."
+    ],
+    "static_anchor_checks": [
+      {
+        "id": "RS-schema-refusal",
+        "target_occurrences": 1
+      },
+      {
+        "id": "RS-heartbeat-deadline",
+        "target_occurrences": 1
+      },
+      {
+        "id": "PY-outgoing-validation",
+        "target_occurrences": 1
+      },
+      {
+        "id": "ACCESS-membership",
+        "target_occurrences": 1
+      },
+      {
+        "id": "ACCESS-response-authorization",
+        "target_occurrences": 1
+      }
+    ],
+    "test_execution": "Suites and mutation campaign not run for this branch setup."
+  },
+  "cleanup_review": {
+    "commit": "bb042a814bc3a051b6938050a0d5ac584097e632",
+    "date_utc": "2026-10-24T16:27:51Z",
+    "subject": "Remove SWE-bench and the Astropy pilot; judge candidates with the change oracle",
+    "confirmed_changes": [
+      "Removed the Astropy pilot, its operator commands and preparation workflow.",
+      "Replaced the swebench runtime package with applied_verification.",
+      "Replaced the SWE-bench harness/report adapter with the before/after change oracle.",
+      "Updated production C1, acceptance tests and workflows."
+    ],
+    "remaining_reference": "Applied-verification telemetry retains a historical preregistration document path as metadata; it does not execute SWE-bench.",
+    "scope": "Static source and history review, not certification of the replacement oracle."
+  },
+  "historical_review": {
+    "base_commit": "e5249908864ca9481f656092ecf08eb5f6bec567",
+    "input_archive_sha256": "02207582e5043498ad4a1245eef1c24ed17db89e5170f6b0025cc34271206dba",
+    "cumulative_stage_1_3_patch_sha256": "c19ecf6543712eb83b584d385304b65bf7ed77ed63c4e1b02ebe7f2badedd009",
+    "patched_tree_content_sha256": "14c603fb1978b7baeafda9b32e2ecf1feeaed0dfede5dc152edfa4f74a571c8f",
+    "patch_status": "Original defective patch preserved separately; not applied to this work branch.",
+    "known_defects": [
+      "Publication read scope survives generator yield and leaks stale physical-read verdicts.",
+      "Prepared request reuse can mix an old request with fresh prepared members.",
+      "Native identity hashes the wheel wrapper instead of its inner loaded extension.",
+      "Historical adaptive/exact hints can suppress an available current EXACT_MEMORY route.",
+      "Native test assumes an installed kernel is selected despite the Unicode compatibility fallback."
+    ],
+    "separate_experiment": "Rejected separately: oracle implementation changes can reuse stale verification; patch writes can follow symlinks outside the repository. This experiment is not the production ADAPT patch.",
+    "test_evidence": {
+      "targeted_stage_3_python": {
+        "passed": 3336,
+        "skipped": 1,
+        "full_repository_suite": false
+      },
+      "native_targeted": {
+        "passed": 129
+      },
+      "native_parity": {
+        "accepted_values": 1222003,
+        "byte_mismatches": 0,
+        "matching_refusal_cases": 6164
+      },
+      "ordinary_canonical_cycle": "Passed on the old patched base: one provider call, fresh C1/oracle, no agent execution at reuse, identical same-version resume, restored source."
+    },
+    "ordinary_timing_seconds": {
+      "source_learn_first": 2.387,
+      "learn_start": 2.673,
+      "learn_approval": 35.78,
+      "source_learn_second": 4.335,
+      "reuse_start": 6.253,
+      "reuse_approval": 55.162,
+      "explicit_resume": 14.525,
+      "all_cli": 121.115,
+      "full_test": 129.686
+    },
+    "timing_scope": "One ordinary run, four library entries, native enabled, local test provider. External LLM latency excluded. Separate profiler timing is not ordinary latency.",
+    "profile_findings": {
+      "reuse_library_refreshes": 78,
+      "reuse_pair_loads": 266,
+      "reuse_unit_validations": 6959,
+      "reuse_ir_validations": 143571,
+      "pair_component_ir_validations": 190,
+      "canonical_decode_hit_rate_percent": 99.9642
+    },
+    "limits": "Known defects prevent acceptance despite passing tests. These results do not certify the new base or its replacement oracle."
+  },
+  "implementation_order": [
+    "Port the canonical diagnostic harness to the current change oracle and establish a fresh baseline.",
+    "Port relevant ADAPT and optimization changes with regression tests for the known defects; do not blindly apply the cumulative archive patch.",
+    "Keep publication reads fresh and derive request and members from the same checked read.",
+    "Fix native wheel identity while preserving Unicode fallback.",
+    "Separate current EXACT_MEMORY eligibility from historical adaptive ambiguity.",
+    "Make IR validation and emission one operation; reuse the checked core payload within one unit validation.",
+    "Replace the Python surrogate scan with an equivalent compiled regex while preserving refusal behavior.",
+    "Optimize repeated pure library and lineage reconstruction while retaining physical, lifecycle and authority checks.",
+    "Combine recovery verification only after proving consistency and lifetime of all physical evidence."
+  ],
+  "acceptance_requirements": [
+    "Preserve canonical bytes, content keys and context hashes.",
+    "Preserve forgery detection, mutable isolation, corruption/quarantine behavior and refusal ordering.",
+    "Test deletion/substitution between reads, suspended generators, same-size/same-mtime changes and lifecycle revocation.",
+    "Test current exact conflicts and exact eligibility with multiple historical revisions.",
+    "Use a real installed wheel to verify native identity and frozen-runtime drift.",
+    "Run canonical learn/approve/reuse/approve/resume with fresh C1/oracle and validate replay.",
+    "Same-version resume remains valid; source/runtime changes must change runtime identity.",
+    "Benchmark ordinary wall/CPU separately from profiling against the corrected baseline."
+  ],
+  "current_change_scope": "Development checkpoint only; executable product code unchanged from base_commit.",
+  "mutation_check": "Not applicable: documentation-only checkpoint; no executable behavior changed.",
+  "next_work": "Implementation and verification will continue on this working branch."
+}

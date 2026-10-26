@@ -680,6 +680,9 @@ def _load_final_result(store: RunRecordStore) -> GoldRunResult | None:
 def load_run_state(store: RunRecordStore) -> RunState:
     """Rebuild one resumable prefix from one immutable store view."""
 
+    # Repeated record reads share only this reconstruction's index. Mutable
+    # payloads are copied at the boundary; later operations physically reopen.
+    store = store.read_index()
     manifest = restore_manifest(store)
     maximum = manifest.config.max_attempts
     context_indexes = _attempt_indexes(store, kind=RecordKind.ATTEMPT_CONTEXT, maximum=maximum)

@@ -21,10 +21,13 @@ class WorkerDeliveryStatus(str, Enum):
     # Synapse itself interpreted the exact context from court-admitted memory;
     # no agent process received it.
     SYNAPSE_EXACT_MEMORY = "SYNAPSE_EXACT_MEMORY"
+    SYNAPSE_ADAPTIVE_MEMORY = "SYNAPSE_ADAPTIVE_MEMORY"
 
 
-# The only transport identity a Synapse-executed memory delivery may carry.
+# Transport identities for Synapse-executed memory deliveries, never processes.
 SYNAPSE_MEMORY_TRANSPORT = "synapse.exact-memory/v1"
+SYNAPSE_ADAPTIVE_MEMORY_TRANSPORT = "synapse.adaptive-memory/v1"
+SYNAPSE_MEMORY_TRANSPORTS = frozenset({SYNAPSE_MEMORY_TRANSPORT, SYNAPSE_ADAPTIVE_MEMORY_TRANSPORT})
 
 
 class WorkerCandidateStatus(str, Enum):

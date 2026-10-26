@@ -11,6 +11,10 @@ import base64
 from dataclasses import dataclass
 from enum import Enum
 import hashlib, json, math, re, unicodedata
+from collections import OrderedDict, namedtuple
+from pathlib import Path
+from threading import RLock
+from types import BuiltinFunctionType, ModuleType
 from typing import Any
 
 from synapse.ast import (
@@ -32,8 +36,6 @@ from synapse.canonical_values import (
     PROFILE_ID as _STABLE_PROFILE_ID,
     SAFE_INTEGER_MAX,
     SAFE_INTEGER_MIN,
-    CanonicalSerializationError,
-    canonical_bytes as _stable_canonical_bytes,
 )
 from synapse.version import LANGUAGE_VERSION
 
@@ -45,6 +47,16 @@ from .contracts import (
     record_id_from_dict,
     validate_record_id,
 )
+
+try:
+    import _stage4_native as _native
+except ModuleNotFoundError as exc:
+    if exc.name != "_stage4_native":
+        raise
+    _native = None
+if _native is not None and unicodedata.unidata_version != "15.0.0":
+    # The Rust NFC tables are Unicode 15.0.0; never mix normalization versions.
+    _native = None
 
 
 BEHAVIOR_CORE_SCHEMA_V1 = "synapse.stage4.gold.behavior-core/v1"
@@ -356,6 +368,102 @@ def _validate_data_only(value: object, *, path: str = "$", depth: int = 0,
     )
 
 
+def _canonicalize_data_only(value: object, *, path: str = "$", depth: int = 0,
+                            seen: dict[int, str] | None = None) -> object:
+    """Validate and project Stage 4 data in one deterministic traversal.
+
+    The public Stage 4 profile accepts only exact JSON data types.  Keeping
+    validation and NFC/key ordering in this projection avoids validating the
+    same tree and then recursively canonicalizing it a second time.
+    """
+    if depth > _MAX_CANONICAL_DEPTH:
+        raise _fail(CanonicalizationFailureCode.INVALID_CANONICAL_VALUE, "canonical payload is too deep")
+    if value is None or type(value) is bool:
+        return value
+    if type(value) is str:
+        return unicodedata.normalize("NFC", _text(value, path, nonempty=False))
+    if type(value) is int:
+        if not (SAFE_INTEGER_MIN <= value <= SAFE_INTEGER_MAX):
+            raise _fail(CanonicalizationFailureCode.INVALID_CANONICAL_VALUE, f"unsafe integer at {path}")
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise _fail(CanonicalizationFailureCode.INVALID_CANONICAL_VALUE, f"non-finite float at {path}")
+        return 0.0 if value == 0.0 else value
+    if type(value) not in (list, dict):
+        raise _fail(CanonicalizationFailureCode.INVALID_CANONICAL_VALUE,
+                    f"unsupported canonical type at {path}: {type(value).__name__}")
+    if seen is None:
+        seen = {}
+    identity = id(value)
+    if identity in seen:
+        raise _fail(CanonicalizationFailureCode.INVALID_CANONICAL_VALUE, f"cycle detected at {path}")
+    seen[identity] = path
+    try:
+        if type(value) is list:
+            return [_canonicalize_data_only(item, path=f"{path}[{index}]", depth=depth + 1, seen=seen)
+                    for index, item in enumerate(value)]
+        projected = {}
+        for key, item in value.items():
+            if type(key) is not str:
+                raise _fail(CanonicalizationFailureCode.INVALID_CANONICAL_VALUE, f"non-string key at {path}")
+            canonical_key = unicodedata.normalize("NFC", _text(key, f"{path}.<key>", nonempty=False))
+            if canonical_key in projected:
+                raise _fail(CanonicalizationFailureCode.INVALID_CANONICAL_VALUE,
+                            f"dict key collision after NFC normalization at {path}")
+            projected[canonical_key] = _canonicalize_data_only(
+                item, path=f"{path}.{canonical_key}", depth=depth + 1, seen=seen)
+        return {key: projected[key] for key in sorted(projected)}
+    finally:
+        seen.pop(identity, None)
+
+
+def _encode_stage4_data_only_python(value: object) -> bytes:
+    projected = _canonicalize_data_only(value)
+    try:
+        return json.dumps(projected, ensure_ascii=False, sort_keys=True,
+                          separators=(",", ":"), allow_nan=False).encode("utf-8")
+    except (ValueError, TypeError, UnicodeEncodeError) as exc:
+        raise _fail(CanonicalizationFailureCode.INVALID_CANONICAL_VALUE,
+                    "stable codec rejected payload") from exc
+
+
+def _encode_stage4_data_only(value: object) -> bytes:
+    if _native is None:
+        return _encode_stage4_data_only_python(value)
+    try:
+        return _native.encode(value)
+    except _native.NativeError as exc:
+        code, detail = exc.args
+        raise _fail(CanonicalizationFailureCode(code), detail) from None
+
+
+def native_runtime_identity() -> dict[str, str]:
+    """Identify the actual optional kernel for frozen-run resume checks."""
+    if _native is None:
+        return {"implementation": "python"}
+    # A wheel re-exports encode from its inner extension. The built-in callable
+    # retains that module as its owner even when the import names a package.
+    encode = _native.encode
+    extension = getattr(encode, "__self__", None)
+    spec = getattr(extension, "__spec__", None)
+    origin = getattr(spec, "origin", None)
+    filename = getattr(extension, "__file__", None)
+    if (type(encode) is not BuiltinFunctionType or type(extension) is not ModuleType
+            or type(origin) is not str or type(filename) is not str
+            or Path(origin).resolve() != Path(filename).resolve()
+            or getattr(extension, "encode", None) is not encode):
+        raise ValueError("native kernel does not identify a loaded extension")
+    binary = Path(origin).resolve()
+    identity = {
+        "implementation": "rust-pyo3",
+        "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+    }
+    if extension is not _native:
+        identity["wrapper_sha256"] = hashlib.sha256(Path(_native.__file__).read_bytes()).hexdigest()
+    return identity
+
+
 def canonicalize_stage4_payload(
     value: object,
     *,
@@ -366,14 +474,9 @@ def canonicalize_stage4_payload(
         raise _fail(CanonicalizationFailureCode.UNKNOWN_PROFILE, "canonical profile is unknown")
     if codec_id != STABLE_CANONICAL_CODEC_ID or type(codec_id) is not str:
         raise _fail(CanonicalizationFailureCode.UNKNOWN_CODEC, "canonical codec is unknown")
-    _validate_data_only(value)
-    try:
-        encoded = _stable_canonical_bytes(value)
-    except CanonicalSerializationError as exc:
-        raise _fail(CanonicalizationFailureCode.INVALID_CANONICAL_VALUE, "stable codec rejected payload") from exc
-    if encoded.profile != STABLE_CANONICAL_CODEC_ID or type(encoded.data) is not bytes:
-        raise _fail(CanonicalizationFailureCode.UNKNOWN_CODEC, "stable codec returned an incompatible result")
-    return encoded.data
+    if _STABLE_PROFILE_ID != STABLE_CANONICAL_CODEC_ID:
+        raise _fail(CanonicalizationFailureCode.UNKNOWN_CODEC, "repository canonical codec drifted")
+    return _encode_stage4_data_only(value)
 
 
 def _reject_json_constant(value: str) -> None:
@@ -389,6 +492,88 @@ def _object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+_FROZEN_LIST = object()
+_FROZEN_OBJECT = object()
+_CACHE_MISS = object()
+_DecodeCacheInfo = namedtuple("_DecodeCacheInfo", "hits misses maxsize currsize byte_length")
+
+
+def _freeze_decoded(value):
+    if type(value) is list:
+        return (_FROZEN_LIST, tuple(_freeze_decoded(item) for item in value))
+    if type(value) is dict:
+        return (_FROZEN_OBJECT, tuple((key, _freeze_decoded(item)) for key, item in value.items()))
+    return value
+
+
+def _thaw_decoded(value):
+    if type(value) is tuple and len(value) == 2:
+        tag, payload = value
+        if tag is _FROZEN_LIST:
+            return [_thaw_decoded(item) for item in payload]
+        if tag is _FROZEN_OBJECT:
+            return {key: _thaw_decoded(item) for key, item in payload}
+    return value
+
+
+class _ImmutableDecodedArtifactCache:
+    """Bounded pure decode reuse; cached values never escape as mutable objects.
+
+    Complete canonical bytes are the key, not a digest or file identity.  The
+    budget accounts for retained canonical bytes and entry count; no authority
+    verdict or physical-record validation is cached here.
+    """
+
+    def __init__(self, *, max_entries=512, max_bytes=32 * 1024 * 1024, max_item_bytes=1024 * 1024):
+        self.max_entries = max_entries
+        self.max_bytes = max_bytes
+        self.max_item_bytes = max_item_bytes
+        self._values = OrderedDict()
+        self._byte_length = 0
+        self._hits = 0
+        self._misses = 0
+        self._lock = RLock()
+
+    def get(self, raw):
+        with self._lock:
+            found = self._values.get(raw, _CACHE_MISS)
+            if found is _CACHE_MISS:
+                self._misses += 1
+                return _CACHE_MISS
+            self._values.move_to_end(raw)
+            self._hits += 1
+            return found
+
+    def put(self, raw, decoded):
+        if len(raw) > self.max_item_bytes:
+            return
+        frozen = _freeze_decoded(decoded)
+        with self._lock:
+            previous = self._values.pop(raw, None)
+            if previous is not None:
+                self._byte_length -= len(raw)
+            self._values[raw] = frozen
+            self._byte_length += len(raw)
+            while (len(self._values) > self.max_entries or self._byte_length > self.max_bytes):
+                old_raw, _ = self._values.popitem(last=False)
+                self._byte_length -= len(old_raw)
+
+    def clear(self):
+        with self._lock:
+            self._values.clear()
+            self._byte_length = 0
+            self._hits = 0
+            self._misses = 0
+
+    def info(self):
+        with self._lock:
+            return _DecodeCacheInfo(self._hits, self._misses, self.max_entries,
+                                    len(self._values), self._byte_length)
+
+
+_decoded_artifact_cache = _ImmutableDecodedArtifactCache()
+
+
 def decode_stage4_canonical_bytes(
     value: object,
     *,
@@ -401,6 +586,9 @@ def decode_stage4_canonical_bytes(
         raise _fail(CanonicalizationFailureCode.UNKNOWN_PROFILE, "canonical profile is unknown")
     if codec_id != STABLE_CANONICAL_CODEC_ID or type(codec_id) is not str:
         raise _fail(CanonicalizationFailureCode.UNKNOWN_CODEC, "canonical codec is unknown")
+    cached = _decoded_artifact_cache.get(value)
+    if cached is not _CACHE_MISS:
+        return _thaw_decoded(cached)
     try:
         text = value.decode("utf-8", errors="strict")
     except UnicodeDecodeError as exc:
@@ -415,9 +603,11 @@ def decode_stage4_canonical_bytes(
         raise
     except (json.JSONDecodeError, ValueError, TypeError) as exc:
         raise _fail(CanonicalizationFailureCode.NON_CANONICAL_BYTES, "canonical JSON is malformed") from exc
-    _validate_data_only(decoded)
-    if canonicalize_stage4_payload(decoded, profile_id=profile_id, codec_id=codec_id) != value:
+    # One traversal validates the decoded data and produces its canonical form.
+    encoded = _encode_stage4_data_only(decoded)
+    if encoded != value:
         raise _fail(CanonicalizationFailureCode.NON_CANONICAL_BYTES, "bytes are not exact canonical encoding")
+    _decoded_artifact_cache.put(value, decoded)
     return decoded
 
 

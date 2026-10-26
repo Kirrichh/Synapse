@@ -12,7 +12,7 @@ from ..stage12.verification_contract import require_verification_record, inspect
 from ..persistence import read_committed_snapshot_transaction
 from ..stage10.context_codec import decode_canonical
 from .publication import EVALUATOR, PublicationViolation, reference
-from .publication_store import PublicationResult
+from .publication_store import PublicationResult, read_prepared_publication_request
 from .reuse import MECHANISM_USE_SCHEMA_V1, OBSERVER, REUSE_GUARD_POLICY_V1
 
 
@@ -39,8 +39,7 @@ def _source_proof(publisher, mechanism_record, use):
     result = PublicationResult(publisher.root, mechanism_record["publication_transaction_id"])
     if result.reference.to_dict() != mechanism_record["publication_ref"]:
         raise PublicationViolation("promotion names a different source publication")
-    _, members = read_committed_snapshot_transaction(publisher.root / "prepared", transaction_id=result.transaction_id)
-    request = decode_canonical(members["request.json"])
+    request = read_prepared_publication_request(publisher.root, result.transaction_id)
     facts = inspect_verification_record(request["verification"])
     outcome = inspect_outcome(request["outcome"])
     if (facts["failure_codes"] or facts["c1"] is None or facts["c1"]["oracle_resolved"] is not False

@@ -1240,6 +1240,7 @@ class SynapseBehaviorUnit:
     core: BehaviorCore
     canonical_core: CanonicalBehaviorCore
     content_key: ContentKey
+    context_sha256: str
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> SynapseBehaviorUnit:
@@ -1266,6 +1267,7 @@ def _seal_unit(core: BehaviorCore) -> SynapseBehaviorUnit:
     object.__setattr__(unit, "core", core)
     object.__setattr__(unit, "canonical_core", canonical_core)
     object.__setattr__(unit, "content_key", canonical_core.content_key)
+    object.__setattr__(unit, "context_sha256", _compute_unit_context_sha256(core, canonical_core.content_key))
     object.__setattr__(unit, "_trusted_seal", _TRUSTED_SEAL)
     validate_behavior_unit(unit)
     return unit
@@ -1365,6 +1367,9 @@ def validate_behavior_unit(value: SynapseBehaviorUnit) -> None:
         raise _fail(BehaviorFailureCode.TRUSTED_OBJECT_FORGED, "unit core and canonical bundle mismatch")
     if type(value.content_key) is not ContentKey or value.content_key.value != expected.content_key.value:
         raise _fail(BehaviorFailureCode.TRUSTED_OBJECT_FORGED, "unit content key mismatch")
+    if (type(value.context_sha256) is not str
+            or value.context_sha256 != _compute_unit_context_sha256(value.core, value.content_key)):
+        raise _fail(BehaviorFailureCode.TRUSTED_OBJECT_FORGED, "unit context hash mismatch")
 
 
 def behavior_unit_from_dict(value: object) -> SynapseBehaviorUnit:
@@ -1377,12 +1382,11 @@ def behavior_unit_from_dict(value: object) -> SynapseBehaviorUnit:
     return unit
 
 
-def _unit_context_sha256(value: SynapseBehaviorUnit) -> str:
-    validate_behavior_unit(value)
+def _compute_unit_context_sha256(core: BehaviorCore, content_key: ContentKey) -> str:
     payload = {
-        "schema_version": value.schema_version.value,
-        "core": value.core.to_dict(),
-        "content_key": value.content_key.value,
+        "schema_version": SchemaVersion.BEHAVIOR_UNIT_V1.value,
+        "core": core.to_dict(),
+        "content_key": content_key.value,
     }
     encoded = canonicalize_stage4_payload(
         payload,
@@ -1390,6 +1394,14 @@ def _unit_context_sha256(value: SynapseBehaviorUnit) -> str:
         codec_id=STABLE_CANONICAL_CODEC_ID,
     )
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _unit_context_sha256(value: SynapseBehaviorUnit) -> str:
+    # Callers have already crossed validate_behavior_unit(). Reuse the value
+    # derived at sealing instead of rebuilding canonical core on every use.
+    if type(value) is not SynapseBehaviorUnit or getattr(value, "_trusted_seal", None) is not _TRUSTED_SEAL:
+        raise _fail(BehaviorFailureCode.TRUSTED_OBJECT_FORGED, "unit is not factory sealed")
+    return value.context_sha256
 
 
 @dataclass(frozen=True, init=False)
@@ -1425,12 +1437,16 @@ def create_behavior_blob(unit: SynapseBehaviorUnit) -> BehaviorBlob:
     object.__setattr__(blob, "payload_sha256", unit.canonical_core.payload_sha256)
     object.__setattr__(blob, "content_key", unit.content_key)
     object.__setattr__(blob, "_trusted_seal", _TRUSTED_SEAL)
-    validate_behavior_blob(blob, unit=unit)
+    _validate_behavior_blob_for_validated_unit(blob, unit=unit)
     return blob
 
 
 def validate_behavior_blob(value: BehaviorBlob, *, unit: SynapseBehaviorUnit) -> None:
     validate_behavior_unit(unit)
+    _validate_behavior_blob_for_validated_unit(value, unit=unit)
+
+
+def _validate_behavior_blob_for_validated_unit(value: BehaviorBlob, *, unit: SynapseBehaviorUnit) -> None:
     if type(value) is not BehaviorBlob:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "blob must be exact BehaviorBlob")
     if getattr(value, "_trusted_seal", None) is not _TRUSTED_SEAL:
@@ -1505,6 +1521,10 @@ def compile_behavior_unit(unit: SynapseBehaviorUnit) -> CompilerBinding:
 
 def validate_compiler_binding_for_unit(unit: SynapseBehaviorUnit, binding: CompilerBinding) -> None:
     validate_behavior_unit(unit)
+    _validate_compiler_binding_for_validated_unit(unit, binding)
+
+
+def _validate_compiler_binding_for_validated_unit(unit: SynapseBehaviorUnit, binding: CompilerBinding) -> None:
     if (
         unit.core.capability_requirements
         and type(unit.core.canonical_program) is not ArtifactProgram
@@ -1545,10 +1565,22 @@ def _manifest_identity_payload(
     binding_refs: tuple[HashBoundRef, ...],
 ) -> dict[str, object]:
     validate_behavior_unit(unit)
-    validate_behavior_blob(blob, unit=unit)
+    _validate_behavior_blob_for_validated_unit(blob, unit=unit)
+    if compiler_binding is not None:
+        _validate_compiler_binding_for_validated_unit(unit, compiler_binding)
+    return _project_manifest_identity_payload(
+        unit=unit, blob=blob, compiler_binding=compiler_binding, binding_refs=binding_refs)
+
+
+def _project_manifest_identity_payload(
+    *,
+    unit: SynapseBehaviorUnit,
+    blob: BehaviorBlob,
+    compiler_binding: CompilerBinding | None,
+    binding_refs: tuple[HashBoundRef, ...],
+) -> dict[str, object]:
     binding_descriptor: dict[str, object] | None = None
     if compiler_binding is not None:
-        validate_compiler_binding_for_unit(unit, compiler_binding)
         binding_descriptor = {
             "binding_id": compiler_binding.binding_id.to_dict(),
             "actual_program_hash": compiler_binding.actual_program_hash,
@@ -1586,7 +1618,7 @@ class BehaviorManifest:
     def to_dict(self, *, unit: SynapseBehaviorUnit, blob: BehaviorBlob) -> dict[str, object]:
         _validate_manifest(self, unit=unit, blob=blob)
         return {
-            **_manifest_identity_payload(
+            **_project_manifest_identity_payload(
                 unit=unit,
                 blob=blob,
                 compiler_binding=self.compiler_binding,
@@ -1667,7 +1699,7 @@ def create_behavior_manifest(
 
 def _validate_manifest(value: BehaviorManifest, *, unit: SynapseBehaviorUnit, blob: BehaviorBlob) -> None:
     validate_behavior_unit(unit)
-    validate_behavior_blob(blob, unit=unit)
+    _validate_behavior_blob_for_validated_unit(blob, unit=unit)
     if type(value) is not BehaviorManifest:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "manifest must be exact BehaviorManifest")
     if getattr(value, "_trusted_seal", None) is not _TRUSTED_SEAL:
@@ -1683,7 +1715,7 @@ def _validate_manifest(value: BehaviorManifest, *, unit: SynapseBehaviorUnit, bl
     if value.blob_schema_version != blob.schema_version or value.blob_payload_sha256 != blob.payload_sha256:
         raise _fail(BehaviorFailureCode.MANIFEST_MISMATCH, "manifest blob descriptor mismatch")
     if value.compiler_binding is not None:
-        validate_compiler_binding_for_unit(unit, value.compiler_binding)
+        _validate_compiler_binding_for_validated_unit(unit, value.compiler_binding)
     effective_binding_refs = _effective_manifest_binding_refs(unit, value.binding_refs)
     if value.binding_refs != effective_binding_refs:
         raise _fail(BehaviorFailureCode.MANIFEST_MISMATCH, "manifest binding refs are not canonical")
@@ -1691,7 +1723,7 @@ def _validate_manifest(value: BehaviorManifest, *, unit: SynapseBehaviorUnit, bl
         raise _fail(BehaviorFailureCode.MANIFEST_MISMATCH, "manifest source refs mismatch")
     if value.artifact_refs != _artifact_refs(unit.core.artifact_refs, "artifact_refs"):
         raise _fail(BehaviorFailureCode.MANIFEST_MISMATCH, "manifest artifact refs mismatch")
-    payload = _manifest_identity_payload(
+    payload = _project_manifest_identity_payload(
         unit=unit,
         blob=blob,
         compiler_binding=value.compiler_binding,

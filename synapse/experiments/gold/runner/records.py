@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import copy
 from pathlib import Path
 import hashlib
 import json
@@ -135,6 +136,32 @@ class StoredRunRecord:
     key: str
     payload: dict[str, object]
     sha256: str
+
+
+class _RunRecordReadIndex:
+    """One reconstruction's read-through index over immutable run records."""
+
+    def __init__(self, store):
+        self._store = store
+        self._records = {}
+
+    def read_index(self):
+        return self
+
+    @staticmethod
+    def _copy(record):
+        if record is None:
+            return None
+        return StoredRunRecord(record.kind, record.key, copy.deepcopy(record.payload), record.sha256)
+
+    def get(self, *, kind, key):
+        identity = (kind, key)
+        if identity not in self._records:
+            self._records[identity] = self._store.get(kind=kind, key=key)
+        return self._copy(self._records[identity])
+
+    def __getattr__(self, name):
+        return getattr(self._store, name)
 
 
 class RunRecordStore:
@@ -274,6 +301,10 @@ class RunRecordStore:
             if item_key == key:
                 matches.append(item)
         return tuple(matches)
+
+    def read_index(self):
+        """Return an isolated index whose lifetime is one state reconstruction."""
+        return _RunRecordReadIndex(self)
 
     def get(self, *, kind: str, key: str) -> StoredRunRecord | None:
         if kind not in RecordKind.ALL:

@@ -6,8 +6,8 @@
   "base_branch": "codex/ui-foundation-v1",
   "base_commit": "1e226e52a3400d4fb0336420569d8bab43c8f783",
   "main_at_review": "e5249908864ca9481f656092ecf08eb5f6bec567",
-  "purpose": "Preserve findings and establish the current repository base before implementation.",
-  "publication_policy": "The owner authorized this branch creation. Pushing new commits remains prohibited.",
+  "purpose": "Preserve review findings, the imported change scope, and targeted validation on the current repository base.",
+  "publication_policy": "The owner authorized pushing the working branch and opening a pull request. Merging remains reserved for the owner.",
   "latest_commit_review": {
     "commit": "1e226e52a3400d4fb0336420569d8bab43c8f783",
     "date_utc": "2026-10-24T18:20:43Z",
@@ -59,7 +59,7 @@
     "input_archive_sha256": "02207582e5043498ad4a1245eef1c24ed17db89e5170f6b0025cc34271206dba",
     "cumulative_stage_1_3_patch_sha256": "c19ecf6543712eb83b584d385304b65bf7ed77ed63c4e1b02ebe7f2badedd009",
     "patched_tree_content_sha256": "14c603fb1978b7baeafda9b32e2ecf1feeaed0dfede5dc152edfa4f74a571c8f",
-    "patch_status": "Original defective patch preserved separately; not applied to this work branch.",
+    "patch_status": "The original defective cumulative patch remains preserved separately. The working branch now imports stages 1-3 with the reproduced publication, history-routing, and native-identity defects corrected.",
     "known_defects": [
       "Publication read scope survives generator yield and leaks stale physical-read verdicts.",
       "Prepared request reuse can mix an old request with fresh prepared members.",
@@ -106,17 +106,6 @@
     },
     "limits": "Known defects prevent acceptance despite passing tests. These results do not certify the new base or its replacement oracle."
   },
-  "implementation_order": [
-    "Port the canonical diagnostic harness to the current change oracle and establish a fresh baseline.",
-    "Port relevant ADAPT and optimization changes with regression tests for the known defects; do not blindly apply the cumulative archive patch.",
-    "Keep publication reads fresh and derive request and members from the same checked read.",
-    "Fix native wheel identity while preserving Unicode fallback.",
-    "Separate current EXACT_MEMORY eligibility from historical adaptive ambiguity.",
-    "Make IR validation and emission one operation; reuse the checked core payload within one unit validation.",
-    "Replace the Python surrogate scan with an equivalent compiled regex while preserving refusal behavior.",
-    "Optimize repeated pure library and lineage reconstruction while retaining physical, lifecycle and authority checks.",
-    "Combine recovery verification only after proving consistency and lifetime of all physical evidence."
-  ],
   "acceptance_requirements": [
     "Preserve canonical bytes, content keys and context hashes.",
     "Preserve forgery detection, mutable isolation, corruption/quarantine behavior and refusal ordering.",
@@ -127,7 +116,143 @@
     "Same-version resume remains valid; source/runtime changes must change runtime identity.",
     "Benchmark ordinary wall/CPU separately from profiling against the corrected baseline."
   ],
-  "current_change_scope": "Development checkpoint only; executable product code unchanged from base_commit.",
-  "mutation_check": "Not applicable: documentation-only checkpoint; no executable behavior changed.",
-  "next_work": "Implementation and verification will continue on this working branch."
+  "current_change_scope": "Archive stages 1-3 plus the reproduced publication-read, ADAPT history-routing, native wheel identity and Unicode-fallback test corrections; focused acceptance and mutation coverage. The separate experiment and subsequent optimization proposals are excluded.",
+  "mutation_check": {
+    "method": "Targeted executable mutants in isolated copies; positive baselines and negative contract checks.",
+    "pure_validation": {
+      "killed": 6,
+      "survived": 0
+    },
+    "publication": {
+      "killed": 4,
+      "survived": 0
+    },
+    "history_routing": {
+      "killed": 6,
+      "survived": 0
+    },
+    "native_identity": {
+      "killed": 6,
+      "survived": 0
+    },
+    "initial_coverage_gap": "A blob-validation mutant initially survived; six public-consumer regression cases now reject it. No product behavior was changed to close this test gap.",
+    "coverage": [
+      {
+        "group": "pure_validation",
+        "behaviors": [
+          "Unit-context revalidation at public boundaries",
+          "Manifest validation of the supplied unit",
+          "Blob bytes and trusted-seal integrity in public consumers",
+          "Exact canonical byte equality",
+          "Content-bound decoded cache keys",
+          "Mutable isolation of decoded values"
+        ]
+      },
+      {
+        "group": "publication",
+        "behaviors": [
+          "Fresh independent root reads",
+          "Fresh prepared-request reads",
+          "Request and members from the same physical read",
+          "Source binding to the committed request"
+        ]
+      },
+      {
+        "group": "history_routing",
+        "behaviors": [
+          "Exact routing before historical ambiguity",
+          "Historical and current exact declarations remain distinct",
+          "Current exact conflicts refuse automation",
+          "Undeclared patch identities refuse automation",
+          "Conflicting adaptive history still falls back",
+          "Historical declarations retain valid reuse eligibility"
+        ]
+      },
+      {
+        "group": "native_identity",
+        "behaviors": [
+          "Hash the inner loaded binary in direct and wheel layouts",
+          "Bind the wheel wrapper identity",
+          "Include wrapper identity in the frozen runtime",
+          "Preserve Unicode compatibility fallback",
+          "Refuse unidentified native callables",
+          "Refuse inconsistent binary locations"
+        ]
+      }
+    ]
+  },
+  "next_work": "Review how to accelerate Synapse safely while preserving its behavior; detailed review notes belong in the pull-request conversation.",
+  "historical_implementation_plan": [
+    "Port the canonical diagnostic harness to the current change oracle and establish a fresh baseline.",
+    "Port relevant ADAPT and optimization changes with regression tests for the known defects; do not blindly apply the cumulative archive patch.",
+    "Keep publication reads fresh and derive request and members from the same checked read.",
+    "Fix native wheel identity while preserving Unicode fallback.",
+    "Separate current EXACT_MEMORY eligibility from historical adaptive ambiguity.",
+    "Make IR validation and emission one operation; reuse the checked core payload within one unit validation.",
+    "Replace the Python surrogate scan with an equivalent compiled regex while preserving refusal behavior.",
+    "Optimize repeated pure library and lineage reconstruction while retaining physical, lifecycle and authority checks.",
+    "Combine recovery verification only after proving consistency and lifetime of all physical evidence."
+  ],
+  "current_verification": {
+    "status": "Targeted contract, mutation, integration and canonical CLI verification passed on the final product source snapshot.",
+    "native_and_architecture": {
+      "passed": 243
+    },
+    "python313_fallback": {
+      "passed": 37,
+      "skipped": 4,
+      "skip_reason": "Physical native-only cases require the compatible Unicode runtime."
+    },
+    "native_frozen_cli_resume": {
+      "passed": 1
+    },
+    "history_contract_and_dispatch": {
+      "passed": 80
+    },
+    "publication_and_retired_source": {
+      "passed": 29
+    },
+    "full_repository_suite": false,
+    "new_controlled_performance_benchmark": false,
+    "selected_contract_library_architecture_replay": {
+      "passed": 772,
+      "files": 12,
+      "note": "The architecture suite initially rejected a dynamic-import dependency. The implementation was corrected without changing the guard or allowlist; all 202 architecture cases then passed. The reported total uses that final result."
+    },
+    "additional_blob_public_consumers": {
+      "passed": 6,
+      "note": "Added after the initial mutation survivor; all six fail when the shared blob validator is disabled."
+    },
+    "project_court_contract": {
+      "passed": 9
+    },
+    "counting_note": "Some groups overlap; these are per-suite observations, not an additive unique-test total.",
+    "canonical_cli": [
+      {
+        "file": "acceptance/stage4/stage16/test_adaptive_memory_cycle_acceptance.py",
+        "passed": 1,
+        "exit_code": 0,
+        "elapsed_seconds": 124.065
+      },
+      {
+        "file": "acceptance/stage4/stage16/test_exact_memory_cycle_acceptance.py",
+        "passed": 1,
+        "exit_code": 0,
+        "elapsed_seconds": 720.42
+      },
+      {
+        "file": "acceptance/stage4/stage12/test_canonical_outcome_acceptance.py",
+        "passed": 1,
+        "exit_code": 0,
+        "elapsed_seconds": 16.619
+      }
+    ],
+    "canonical_timing_scope": "Validation elapsed time only; not a controlled before/after performance comparison.",
+    "product_source_unchanged_during_canonical_verification": true,
+    "product_source_manifest": {
+      "files": 374,
+      "sha256": "fad11c07cfdded57c7c67b06da2f03a6c4ea0b1be3f27de71dc204fad17a7c0b",
+      "encoding": "UTF-8, sorted relative path + TAB + file SHA-256 + LF for each synapse Python source"
+    }
+  }
 }

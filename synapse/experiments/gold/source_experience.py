@@ -16,8 +16,9 @@ from .canonicalization import HashBoundRef
 from .contracts import RepositoryRevision, record_id_reference_from_dict
 from .persistence import PersistenceViolation, committed_transaction_exists, read_committed_snapshot_transaction
 from .source_operation_journal import read_source_operations
-from .stage13.publication import SOURCE_REQUEST_SCHEMAS
-from .stage13.publication_store import PublicationResult, retired_source_request
+from .stage13.publication import SOURCE_REQUEST_SCHEMAS, PublicationViolation, request_reference
+from .stage13.publication_store import (PublicationResult, retired_source_request,
+    read_prepared_publication_request)
 from .source_verification import (canonical, inspect_source_command, inspect_source_observations,
     inspect_source_verification, SOURCE_EXECUTION_RESULT_V1, inspect_source_execution_result)
 from .stage10.context_codec import decode_canonical, encode_base64url
@@ -36,8 +37,9 @@ def source_publications(project_root):
         if not committed_transaction_exists(root / "committed", transaction_id=directory.name):
             continue
         result = PublicationResult(root, directory.name).retained_payload()
-        _, prepared = read_committed_snapshot_transaction(root / "prepared", transaction_id=directory.name)
-        request = decode_canonical(prepared["request.json"])
+        request = read_prepared_publication_request(root, directory.name)
+        if result["request_ref"] != request_reference(request).to_dict():
+            raise PublicationViolation("source publication request changed after its verified result")
         if request["schema_version"] in SOURCE_REQUEST_SCHEMAS or retired_source_request(request):
             yield result, request, root / "prepared" / directory.name
 
@@ -210,11 +212,16 @@ def recall_source_experience(*, state_root: Path, query, entitlements, operation
     return value
 
 
-def export_source_knowledge(state_root: Path):
-    """Export pointers to physically committed evidence, never create admission."""
+def export_source_knowledge(state_root: Path, *, revision=None):
+    """Export pointers to physically committed evidence, never create admission.
+
+    A task-scoped export may exclude other revisions: their bindings cannot be
+    compatible with the current task and must not create a false cross-revision
+    conflict. The unfiltered ingestion export and the retained archive are unchanged.
+    """
     candidates, files = [], {}
     for result, request, prepared_path in source_publications(state_root):
-        if retired_source_request(request):
+        if retired_source_request(request) or revision is not None and request["domain"]["revision"] != revision:
             continue
         registration = result["registration"]
         proof = request["verification"]["payload"]

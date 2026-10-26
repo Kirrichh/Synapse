@@ -267,6 +267,27 @@ def test_s4_p2_acc_content_03_blob_substitution_and_collision_fail_closed(monkey
     assert exc.value.failure_code is canon.CanonicalizationFailureCode.DEGRADED_CONTENT
 
 
+@pytest.mark.parametrize("consumer", ("validate", "blob_transport", "manifest_transport"))
+@pytest.mark.parametrize("field,replacement,failure", (
+    ("canonical_core_bytes", b"{}", "BLOB_MISMATCH"),
+    ("_trusted_seal", None, "TRUSTED_OBJECT_FORGED"),
+))
+def test_blob_public_consumers_reject_mutated_or_forged_blob(consumer, field, replacement, failure):
+    unit = make_valid_unit()
+    blob = create_behavior_blob(unit)
+    manifest = create_behavior_manifest(unit, blob, compiler_binding=None)
+    object.__setattr__(blob, field, replacement)
+
+    consume = {
+        "validate": lambda: validate_behavior_blob(blob, unit=unit),
+        "blob_transport": lambda: blob.to_dict(unit=unit),
+        "manifest_transport": lambda: manifest.to_dict(unit=unit, blob=blob),
+    }[consumer]
+    with pytest.raises(BehaviorViolation) as exc:
+        consume()
+    assert _failure(exc) == failure
+
+
 def test_s4_p2_acc_content_04_incompatible_and_forged_records_cannot_be_consumed() -> None:
     unit = make_valid_unit()
     incompatible = make_valid_unit().canonical_core
@@ -291,6 +312,25 @@ def test_s4_p2_acc_content_04_incompatible_and_forged_records_cannot_be_consumed
     object.__setattr__(redacted.absence_detail.redaction_authority, "value", " bad actor ")
     with pytest.raises(ValueError):
         validate_behavior_unit(nested)
+
+
+def test_s4_p2_acc_content_05_cached_unit_context_cannot_replace_full_validation() -> None:
+    unit = make_valid_unit()
+    blob = create_behavior_blob(unit)
+    manifest = create_behavior_manifest(unit, blob, compiler_binding=None)
+
+    object.__setattr__(unit, "context_sha256", "0" * 64)
+    with pytest.raises(BehaviorViolation) as exc:
+        validate_behavior_unit(unit)
+    assert _failure(exc) == "TRUSTED_OBJECT_FORGED"
+    with pytest.raises(BehaviorViolation):
+        manifest.to_dict(unit=unit, blob=blob)
+
+    fresh = make_valid_unit()
+    object.__setattr__(fresh, "content_key", None)
+    with pytest.raises(BehaviorViolation) as exc:
+        validate_behavior_unit(fresh)
+    assert _failure(exc) == "TRUSTED_OBJECT_FORGED"
 
 
 def test_s4_p2_acc_core_03_manifest_has_no_lifecycle_or_authority_state() -> None:

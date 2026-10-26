@@ -7,6 +7,8 @@ and later outcomes enter the next job. Recovery repeats pure maintenance only;
 neither owner jobs nor memory labels can execute a repository command, admit
 knowledge or close a verification gap.
 """
+from dataclasses import replace
+import hashlib
 from pathlib import Path
 
 from .project_court import outcome_judgement, read_court, task_subjects
@@ -75,6 +77,68 @@ def _historical_history(request, store, profile, selection):
     return episodes, learning
 
 
+def _adaptive_patches(request, store, court, task, selection):
+    """Read admitted old-revision patch bytes as information, never exact authority.
+
+    The pinned court has already established both the positive assertion and the
+    absence of refutations. This reader only reopens the exact content-bound
+    artifact named by that assertion. REFUTED, SLOW_ONLY, pending and unrelated
+    subjects are absent, as are all patches when their selection is excluded.
+    """
+    if selection not in _AUTOMATIC_SELECTIONS:
+        return []
+    subjects = {canonical(value["subject"]): value for value in court["subjects"].values()
+                if value["state"] == "ADMITTED"
+                and value["subject"]["repository_revision"] != task.repository_revision_sha256}
+    if not subjects:
+        return []
+    from .persistence import read_committed_snapshot_transaction
+    from .stage10.context_codec import decode_canonical
+    from .stage13.run_publication import REQUEST_SCHEMA_V4
+    root = Path(request["source_snapshot"]["project_state_root"]) / "publications" / "prepared"
+    patches = {}
+    for item in court["judged"][-MAX_PRIOR_EPISODES:]:
+        for assertion in item["learning"]["assertions"]:
+            claim = assertion["claim"]
+            subject = {"task_contract_ref": claim["task_contract_ref"],
+                       "repository_revision": claim["repository_revision"],
+                       "patch_sha256": claim["patch_sha256"]}
+            admitted = subjects.get(canonical(subject))
+            origin = hashlib.sha256(canonical(assertion["origin"])).hexdigest()
+            if admitted is None or assertion["status"] != "CONFIRMED" or origin not in admitted["support"]:
+                continue
+            digest = claim["patch_sha256"]
+            if digest in patches:
+                continue
+            transaction_id = assertion["origin"]["transaction_id"]
+            _, members = read_committed_snapshot_transaction(root, transaction_id=transaction_id)
+            publication = decode_canonical(members["request.json"])
+            domain = publication["domain"]
+            if (publication["schema_version"] != REQUEST_SCHEMA_V4
+                    or domain["base_revision"] != claim["repository_revision"]
+                    or domain["task_contract_ref"] != claim["task_contract_ref"]
+                    or domain["patch_sha256"] != digest):
+                raise ValueError("adaptive memory publication differs from its admitted subject")
+            outcome = store.read(item["outcome"])
+            if outcome["kind"] != "OUTCOME_RECORDED":
+                raise ValueError("adaptive memory outcome is not a completed owner transition")
+            historical_run, _, _ = reopen_completed_run(outcome["payload"], request["project_identity"])
+            historical_task = GoverningTaskContract.from_dict(historical_run["declaration"]["task_contract"])
+            if replace(historical_task, repository_revision_sha256=task.repository_revision_sha256) != task:
+                continue  # Another logical task receives no automatic proposal hint.
+            artifacts = [item for item in publication["unit"]["core"]["artifact_refs"]
+                         if item["schema_id"] == "synapse.stage4.gold.c1-patch-bytes/v1"
+                         and item["sha256"] == digest]
+            if len(artifacts) != 1:
+                raise ValueError("adaptive memory lacks one exact retained patch artifact")
+            raw = members[digest]
+            if len(raw) != artifacts[0]["byte_length"] or hashlib.sha256(raw).hexdigest() != digest:
+                raise ValueError("adaptive memory patch bytes differ from their content binding")
+            patches[digest] = {"repository_revision": claim["repository_revision"],
+                               "patch_sha256": digest, "diff_text": raw.decode("utf-8")}
+    return [patches[digest] for digest in sorted(patches)]
+
+
 def _court_history(request, store, task, selection):
     """V3/V4 jobs see the judged history and subject states of their pinned decision."""
     if "court" not in request:
@@ -100,6 +164,9 @@ def _court_history(request, store, task, selection):
                # Only the court admits automation; selection only narrows the candidate universe.
                "automatic_patches": [item["patch_sha256"] for item in subjects if item["state"] == "ADMITTED"]
                                     if selection in _AUTOMATIC_SELECTIONS else []}
+    adaptive = _adaptive_patches(request, store, court, task, selection)
+    if adaptive:
+        section["adaptive_patches"] = adaptive
     return {"court": court, "shown": shown, "omitted": len(court["judged"]) - len(shown),
             "episodes": episodes, "learning": learning, "section": section}
 

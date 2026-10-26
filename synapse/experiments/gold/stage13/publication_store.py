@@ -213,6 +213,13 @@ def _verify_write_set(request, decision, result, undo, index, *, project_root):
             "index": reference(entry.to_dict(), entry.schema_version).to_dict()}
 
 
+def read_prepared_publication_request(root: Path, transaction_id: str):
+    """Read the current prepared transaction; decoded bytes grant no freshness."""
+    _, prepared = read_committed_snapshot_transaction(
+        root / "prepared", transaction_id=transaction_id)
+    return decode_canonical(prepared["request.json"])
+
+
 @dataclass(frozen=True)
 class PublicationResult:
     root: Path
@@ -233,6 +240,11 @@ class PublicationResult:
 
     def _read_payload(self, *, retain_retired_source):
         with publication_read_scope() as traversal:
+            if not traversal["active"]:
+                # A caller's ambient scope cannot retain a prior public read's
+                # authority verdict. Recursive predecessors share this read only.
+                traversal["verified"].clear()
+                traversal["byte_length"] = 0
             identity = (str(self.root), self.transaction_id)
             key = (*identity, retain_retired_source)
             if identity in traversal["active"]:

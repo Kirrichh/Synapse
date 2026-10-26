@@ -345,7 +345,7 @@ def observe_local_context_influence(*, receipt, invocation, worker_result):
     reported = validate_local_edit_result(reported, task_sha256=invocation.payload_sha256,
                                          information_sha256=information.sha256)
     actual = (propose_verified_memory(task=task, information=information, profile=reported["profile"])
-              if reported.get("planning_route") == "EXACT_MEMORY" else
+              if reported.get("planning_route") in {"EXACT_MEMORY", "ADAPT_MEMORY"} else
               propose_local_edits(task=task, information=information, proposal=reported["proposal"], profile=reported["profile"]))
     if actual is None:
         raise _fail(InfluenceFailureCode.EVIDENCE_MISMATCH, "automatic proposal lacks its retained memory basis")

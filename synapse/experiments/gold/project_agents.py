@@ -110,6 +110,9 @@ def _adaptive_patches(request, store, court, task, selection):
             origin = hashlib.sha256(canonical(assertion["origin"])).hexdigest()
             if admitted is None or assertion["status"] != "CONFIRMED" or origin not in admitted["support"]:
                 continue
+            historical_task_ref = replace(task, repository_revision_sha256=claim["repository_revision"]).reference.to_dict()
+            if historical_task_ref != claim["task_contract_ref"]:
+                continue
             digest = claim["patch_sha256"]
             if digest in patches:
                 continue

@@ -188,13 +188,16 @@ def test_concurrent_task_streams_append_to_one_court_chain(tmp_path):
 
 
 def test_adaptive_history_skips_incompatible_paths_before_opening_artifacts(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from acceptance.stage4.stage10._builders import plan_world
     from synapse.experiments.gold import project_agents
     from synapse.experiments.gold.source_verification import canonical
     import hashlib
 
-    task = SimpleNamespace(repository_revision_sha256='3' * 40,
-                           effects=(SimpleNamespace(subject_path='src/current.py'),))
-    claim = {'task_contract_ref': TASK, 'repository_revision': REVISION, 'patch_sha256': PATCH}
+    task = plan_world(subject_path='src/current.py', allowed_scope=('src',),
+                      repository_revision_sha256='3' * 40)[3].task_contract
+    claim = {'task_contract_ref': replace(task, repository_revision_sha256=REVISION).reference.to_dict(),
+             'repository_revision': REVISION, 'patch_sha256': PATCH}
     origin = {'transaction_id': 'missing'}
     subject = dict(claim)
     court = {'subjects': {'s': {'state': 'ADMITTED', 'subject': subject,

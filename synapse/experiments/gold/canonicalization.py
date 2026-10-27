@@ -10,7 +10,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 from enum import Enum
-import hashlib, json, math, re, unicodedata
+import hashlib, json, math, re, sys, unicodedata
 from collections import OrderedDict, namedtuple
 from pathlib import Path
 from threading import RLock
@@ -36,6 +36,8 @@ from synapse.canonical_values import (
     PROFILE_ID as _STABLE_PROFILE_ID,
     SAFE_INTEGER_MAX,
     SAFE_INTEGER_MIN,
+    CanonicalSerializationError,
+    canonical_bytes as _stable_canonical_bytes,
 )
 from synapse.version import LANGUAGE_VERSION
 
@@ -419,13 +421,25 @@ def _canonicalize_data_only(value: object, *, path: str = "$", depth: int = 0,
 
 
 def _encode_stage4_data_only_python(value: object) -> bytes:
-    projected = _canonicalize_data_only(value)
     try:
+        projected = _canonicalize_data_only(value)
         return json.dumps(projected, ensure_ascii=False, sort_keys=True,
                           separators=(",", ":"), allow_nan=False).encode("utf-8")
-    except (ValueError, TypeError, UnicodeEncodeError) as exc:
+    except (ValueError, TypeError, RecursionError):
+        return _encode_stage4_legacy_failure(value)
+
+
+def _encode_stage4_legacy_failure(value: object) -> bytes:
+    """Reproduce the public validation order and failures on the slow path."""
+    _validate_data_only(value)
+    try:
+        encoded = _stable_canonical_bytes(value)
+    except CanonicalSerializationError as exc:
         raise _fail(CanonicalizationFailureCode.INVALID_CANONICAL_VALUE,
                     "stable codec rejected payload") from exc
+    if encoded.profile != STABLE_CANONICAL_CODEC_ID or type(encoded.data) is not bytes:
+        raise _fail(CanonicalizationFailureCode.UNKNOWN_CODEC, "stable codec returned an incompatible result")
+    return encoded.data
 
 
 def _encode_stage4_data_only(value: object) -> bytes:
@@ -433,9 +447,8 @@ def _encode_stage4_data_only(value: object) -> bytes:
         return _encode_stage4_data_only_python(value)
     try:
         return _native.encode(value)
-    except _native.NativeError as exc:
-        code, detail = exc.args
-        raise _fail(CanonicalizationFailureCode(code), detail) from None
+    except _native.NativeError:
+        return _encode_stage4_legacy_failure(value)
 
 
 def native_runtime_identity() -> dict[str, str]:
@@ -495,7 +508,7 @@ def _object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 _FROZEN_LIST = object()
 _FROZEN_OBJECT = object()
 _CACHE_MISS = object()
-_DecodeCacheInfo = namedtuple("_DecodeCacheInfo", "hits misses maxsize currsize byte_length")
+_DecodeCacheInfo = namedtuple("_DecodeCacheInfo", "hits misses maxsize currsize byte_length retained_bytes evictions")
 
 
 def _freeze_decoded(value):
@@ -516,20 +529,34 @@ def _thaw_decoded(value):
     return value
 
 
+def _retained_size(value):
+    # Count each occurrence, including shared scalars, conservatively. The
+    # frozen graph is acyclic; this traversal needs no retained identity set.
+    size = sys.getsizeof(value)
+    if type(value) is tuple:
+        size += sum(_retained_size(item) for item in value)
+    return size
+
+
 class _ImmutableDecodedArtifactCache:
     """Bounded pure decode reuse; cached values never escape as mutable objects.
 
     Complete canonical bytes are the key, not a digest or file identity.  The
-    budget accounts for retained canonical bytes and entry count; no authority
-    verdict or physical-record validation is cached here.
+    Separate budgets cover raw bytes, estimated frozen graphs, and entry count.
+    Estimates include keys and a fixed per-entry allowance for mapping overhead;
+    they are not a bound on process RSS or temporary thaw allocations.
     """
 
-    def __init__(self, *, max_entries=512, max_bytes=32 * 1024 * 1024, max_item_bytes=1024 * 1024):
+    def __init__(self, *, max_entries=512, max_bytes=32 * 1024 * 1024, max_item_bytes=1024 * 1024,
+                 max_retained_bytes=64 * 1024 * 1024):
         self.max_entries = max_entries
         self.max_bytes = max_bytes
         self.max_item_bytes = max_item_bytes
+        self.max_retained_bytes = max_retained_bytes
         self._values = OrderedDict()
         self._byte_length = 0
+        self._retained_bytes = 0
+        self._evictions = 0
         self._hits = 0
         self._misses = 0
         self._lock = RLock()
@@ -542,33 +569,43 @@ class _ImmutableDecodedArtifactCache:
                 return _CACHE_MISS
             self._values.move_to_end(raw)
             self._hits += 1
-            return found
+            return found[0]
 
     def put(self, raw, decoded):
         if len(raw) > self.max_item_bytes:
             return
         frozen = _freeze_decoded(decoded)
+        retained = sys.getsizeof(raw) + _retained_size(frozen) + 128
         with self._lock:
             previous = self._values.pop(raw, None)
             if previous is not None:
                 self._byte_length -= len(raw)
-            self._values[raw] = frozen
+                self._retained_bytes -= previous[1]
+            if retained > self.max_retained_bytes:
+                return
+            self._values[raw] = (frozen, retained)
             self._byte_length += len(raw)
-            while (len(self._values) > self.max_entries or self._byte_length > self.max_bytes):
-                old_raw, _ = self._values.popitem(last=False)
+            self._retained_bytes += retained
+            while (len(self._values) > self.max_entries or self._byte_length > self.max_bytes
+                   or self._retained_bytes > self.max_retained_bytes):
+                old_raw, (_, old_retained) = self._values.popitem(last=False)
                 self._byte_length -= len(old_raw)
+                self._retained_bytes -= old_retained
+                self._evictions += 1
 
     def clear(self):
         with self._lock:
             self._values.clear()
             self._byte_length = 0
+            self._retained_bytes = 0
+            self._evictions = 0
             self._hits = 0
             self._misses = 0
 
     def info(self):
         with self._lock:
             return _DecodeCacheInfo(self._hits, self._misses, self.max_entries,
-                                    len(self._values), self._byte_length)
+                                    len(self._values), self._byte_length, self._retained_bytes, self._evictions)
 
 
 _decoded_artifact_cache = _ImmutableDecodedArtifactCache()

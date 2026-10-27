@@ -7,12 +7,11 @@ the ordinary publication, admission, replay, freshness and C1 owners.
 """
 from pathlib import Path
 
-from .persistence import read_committed_snapshot_transaction
 from .runner.records import RecordKind
 from .source_verification import canonical, source_ref
 from .stage10.context_codec import decode_canonical
 from .stage10.task_contract import GoverningTaskContract
-from .stage13.publication import REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4, reference
+from .stage13.publication import REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4, reference, request_reference
 from .stage13.publication_store import PublicationResult, read_prepared_publication_request, PUBLICATION_RESULT_V3
 from .stage13.rejected_patch_profile import (
     VERIFIED_PATCH_GUARD_V1, REJECTED_PATCH_GUARD_V3,
@@ -45,8 +44,9 @@ def consolidate_episode(*, frozen, state, records, outcome_ref):
         result = publication.payload()  # Existing reader reopens the physical proof and lineage.
         if reference(result, PUBLICATION_RESULT_V3).to_dict() != record.payload["result_ref"]:
             raise ValueError("learning publication differs from its run attachment")
-        _, members = read_committed_snapshot_transaction(root / "prepared", transaction_id=publication.transaction_id)
         request = read_prepared_publication_request(root, publication.transaction_id)
+        if request_reference(request).to_dict() != result["request_ref"]:
+            raise ValueError("learning publication request differs from its committed result")
         domain, identity = request["domain"], request["identity"]
         if (request["schema_version"] not in {REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4}
                 or identity["manifest_sha256"] != state.manifest.manifest_sha256

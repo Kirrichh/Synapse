@@ -1,0 +1,127 @@
+{
+  "method": "Each mutation was applied in an isolated source copy; the named test failed, and the source was restored.",
+  "manual_mutants": [
+    {
+      "id": "line-boundary",
+      "source": "synapse/worker/local_edits.py",
+      "original": "(?<![^\\n])(?=",
+      "mutant": "(?=",
+      "detecting_test": "acceptance/stage4/stage10/test_adaptive_line_boundaries.py",
+      "result": "killed"
+    },
+    {
+      "id": "counterfactual-route",
+      "source": "synapse/experiments/gold/stage10/influence.py",
+      "original": "if actual.get(\"planning_route\") in {\"EXACT_MEMORY\", \"ADAPT_MEMORY\"} else",
+      "mutant": "if False else",
+      "detecting_test": "acceptance/stage4/stage10/test_adaptive_memory_dispatch.py::test_influence_ignores_irrelevant_rejected_hypothesis",
+      "result": "killed"
+    },
+    {
+      "id": "history-path-filter",
+      "source": "synapse/experiments/gold/project_agents.py",
+      "original": "if item[\"observation\"][\"requirement\"][\"paths\"] != paths:",
+      "mutant": "if False:",
+      "detecting_test": "acceptance/stage4/stage16/test_project_court_contract.py::test_adaptive_history_skips_incompatible_paths_before_opening_artifacts",
+      "result": "killed"
+    },
+    {
+      "id": "publication-request-binding",
+      "source": "synapse/experiments/gold/project_learning.py",
+      "original": "if request_reference(request).to_dict() != result[\"request_ref\"]:",
+      "mutant": "if False:",
+      "detecting_test": "acceptance/stage4/stage16/test_episode_learning_contract.py::test_consolidation_rejects_replaced_request_after_result_read",
+      "result": "killed"
+    },
+    {
+      "id": "historical-feedback-provenance",
+      "source": "synapse/experiments/gold/source_delivery.py",
+      "original": "items.append(_information_item({\"historical_patch_observation\": {\n            \"repository_revision\": revision, \"patch_sha256\": digest, \"oracle_resolved\": True}},\n            role=\"HISTORICAL_EXECUTION_OBSERVATION\"))",
+      "mutant": "items.append(_information_item({\"evaluated_patch_sha256\": digest, \"oracle_resolved\": True}, role=\"EXECUTION_OBSERVATION\"))",
+      "detecting_test": "acceptance/stage4/stage10/test_memory_history_routing_contract.py::test_historical_success_is_not_current_execution_feedback",
+      "result": "killed"
+    },
+    {
+      "id": "cache-structural-budget",
+      "source": "synapse/experiments/gold/canonicalization.py",
+      "original": "or self._retained_bytes > self.max_retained_bytes):",
+      "mutant": "or False):",
+      "detecting_test": "tests/test_stage4_decode_cache_budget.py::test_structural_budget_evicts_and_rejects_large_graphs",
+      "result": "killed"
+    },
+    {
+      "id": "cache-mutation-isolation",
+      "source": "synapse/experiments/gold/canonicalization.py",
+      "original": "return [_thaw_decoded(item) for item in payload]",
+      "mutant": "return []",
+      "detecting_test": "tests/test_stage4_decode_cache_budget.py::test_repeated_fill_evict_and_copy_isolation",
+      "result": "killed"
+    },
+    {
+      "id": "canonical-failure-fallback",
+      "source": "synapse/experiments/gold/canonicalization.py",
+      "original": "return _encode_stage4_legacy_failure(value)",
+      "mutant": "raise",
+      "detecting_test": "tests/test_stage4_canonical_differential.py::test_python_against_old_public_contract",
+      "result": "killed"
+    },
+    {
+      "id": "unit-context-check",
+      "source": "synapse/experiments/gold/behavior.py",
+      "original": "value.context_sha256 != _compute_unit_context_sha256(value.core, value.content_key, core_payload=core_payload)",
+      "mutant": "False",
+      "detecting_test": "tests/test_stage4_gold_behavior.py::test_s4_p2_acc_content_05_cached_unit_context_cannot_replace_full_validation",
+      "result": "killed"
+    },
+    {
+      "id": "current-exact-admission",
+      "source": "synapse/worker/local_edits.py",
+      "original": "profile=LOCAL_EDIT_PROFILE_V4, admitted=current_admitted)",
+      "mutant": "profile=LOCAL_EDIT_PROFILE_V4, admitted=None)",
+      "detecting_test": "acceptance/stage4/stage10/test_memory_history_routing_contract.py::test_current_exact_candidate_is_not_ambiguous_with_applicable_history",
+      "result": "killed"
+    },
+    {
+      "id": "conflicting-current-feedback",
+      "source": "synapse/worker/local_edits.py",
+      "original": "or candidate[\"prior_outcome\"] is not None or candidate[\"feedback\"] != \"NO_CONFLICT\"",
+      "mutant": "or candidate[\"prior_outcome\"] is not None",
+      "detecting_test": "acceptance/stage4/stage10/test_adaptive_memory_proposal_contract.py::test_conflicting_current_feedback_never_admits_adapted_candidate",
+      "result": "killed"
+    },
+    {
+      "id": "historical-revision-binding",
+      "source": "synapse/worker/local_edits.py",
+      "original": "if (revision, digest) in historical}",
+      "mutant": "if any(d == digest for _, d in historical)}",
+      "detecting_test": "acceptance/stage4/stage10/test_memory_history_routing_contract.py::test_historical_observation_must_match_the_declared_revision",
+      "result": "killed"
+    },
+    {
+      "id": "unused-prepared-read",
+      "source": "synapse/experiments/gold/project_learning.py",
+      "original": "        request = read_prepared_publication_request(root, publication.transaction_id)",
+      "mutant": "        read_committed_snapshot_transaction(root / \"prepared\", transaction_id=publication.transaction_id)\n        request = read_prepared_publication_request(root, publication.transaction_id)",
+      "detecting_test": "acceptance/stage4/stage16/test_episode_learning_contract.py::test_consolidation_does_not_open_an_unused_prepared_snapshot",
+      "result": "killed"
+    },
+    {
+      "id": "untrusted-reference-observation",
+      "source": "synapse/worker/local_edits.py",
+      "original": "item[\"role\"] == \"HISTORICAL_EXECUTION_OBSERVATION\"\n                and set(value)",
+      "mutant": "True\n                and set(value)",
+      "detecting_test": "acceptance/stage4/stage10/test_memory_history_routing_contract.py::test_ordinary_reference_cannot_claim_historical_oracle_evidence",
+      "result": "killed"
+    }
+  ],
+  "ub_mode_mutator": {
+    "source": "synapse/worker/local_edits.py",
+    "lines": [
+      351
+    ],
+    "test": "acceptance/stage4/stage10/test_adaptive_line_boundaries.py",
+    "executed": 2,
+    "killed": 2,
+    "scope_note": "Other discovered sites were not run; this is not a full mutation score."
+  }
+}

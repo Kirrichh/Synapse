@@ -1,0 +1,332 @@
+{
+  "repeats": 6,
+  "python_version": "3.12.14",
+  "unicode_version": "15.0.0",
+  "backend": "python",
+  "provider_network": "not invoked",
+  "results": {
+    "cold_base": {
+      "runs": [
+        {
+          "wall_seconds": 0.386764335999942,
+          "cpu_seconds": 0.38673091600000004,
+          "max_rss_kib": 35104,
+          "cache": null,
+          "process_wall_seconds": 0.7725526240001273,
+          "process_cpu_seconds": 0.771833
+        },
+        {
+          "wall_seconds": 0.354566586999681,
+          "cpu_seconds": 0.35455103699999996,
+          "max_rss_kib": 35108,
+          "cache": null,
+          "process_wall_seconds": 0.7366546009998274,
+          "process_cpu_seconds": 0.7360529999999998
+        },
+        {
+          "wall_seconds": 0.37133654199988086,
+          "cpu_seconds": 0.37131507,
+          "max_rss_kib": 35112,
+          "cache": null,
+          "process_wall_seconds": 0.7522529320003741,
+          "process_cpu_seconds": 0.7515270000000001
+        },
+        {
+          "wall_seconds": 0.4107979529999284,
+          "cpu_seconds": 0.40955824399999996,
+          "max_rss_kib": 35108,
+          "cache": null,
+          "process_wall_seconds": 0.8863766899994516,
+          "process_cpu_seconds": 0.8845530000000008
+        },
+        {
+          "wall_seconds": 0.34792128800017963,
+          "cpu_seconds": 0.347906971,
+          "max_rss_kib": 35104,
+          "cache": null,
+          "process_wall_seconds": 0.6942514439997467,
+          "process_cpu_seconds": 0.693701
+        },
+        {
+          "wall_seconds": 0.35714253399964946,
+          "cpu_seconds": 0.35710797099999997,
+          "max_rss_kib": 35108,
+          "cache": null,
+          "process_wall_seconds": 0.6867485419998047,
+          "process_cpu_seconds": 0.6862040000000001
+        }
+      ],
+      "median_wall_seconds": 0.36423953799976516,
+      "median_cpu_seconds": 0.3642115205
+    },
+    "cold_candidate": {
+      "runs": [
+        {
+          "wall_seconds": 0.40248659099961515,
+          "cpu_seconds": 0.402471141,
+          "max_rss_kib": 40184,
+          "cache": {
+            "hits": 0,
+            "misses": 180,
+            "maxsize": 512,
+            "currsize": 180,
+            "byte_length": 1856590,
+            "retained_bytes": 26886130,
+            "evictions": 0
+          },
+          "process_wall_seconds": 0.596402329000739,
+          "process_cpu_seconds": 0.5957590000000001
+        },
+        {
+          "wall_seconds": 0.43630497100002685,
+          "cpu_seconds": 0.43629216300000007,
+          "max_rss_kib": 40312,
+          "cache": {
+            "hits": 0,
+            "misses": 180,
+            "maxsize": 512,
+            "currsize": 180,
+            "byte_length": 1856590,
+            "retained_bytes": 26886130,
+            "evictions": 0
+          },
+          "process_wall_seconds": 0.6532581120000032,
+          "process_cpu_seconds": 0.6527459999999997
+        },
+        {
+          "wall_seconds": 0.3922967680000511,
+          "cpu_seconds": 0.39225204700000005,
+          "max_rss_kib": 40184,
+          "cache": {
+            "hits": 0,
+            "misses": 180,
+            "maxsize": 512,
+            "currsize": 180,
+            "byte_length": 1856590,
+            "retained_bytes": 26886130,
+            "evictions": 0
+          },
+          "process_wall_seconds": 0.6025844539999525,
+          "process_cpu_seconds": 0.602055
+        },
+        {
+          "wall_seconds": 0.41209296800025186,
+          "cpu_seconds": 0.41205284499999995,
+          "max_rss_kib": 40312,
+          "cache": {
+            "hits": 0,
+            "misses": 180,
+            "maxsize": 512,
+            "currsize": 180,
+            "byte_length": 1856590,
+            "retained_bytes": 26886130,
+            "evictions": 0
+          },
+          "process_wall_seconds": 0.6328907229999459,
+          "process_cpu_seconds": 0.6323390000000004
+        },
+        {
+          "wall_seconds": 0.3765724989998489,
+          "cpu_seconds": 0.376557143,
+          "max_rss_kib": 40184,
+          "cache": {
+            "hits": 0,
+            "misses": 180,
+            "maxsize": 512,
+            "currsize": 180,
+            "byte_length": 1856590,
+            "retained_bytes": 26886130,
+            "evictions": 0
+          },
+          "process_wall_seconds": 0.5884497710003416,
+          "process_cpu_seconds": 0.5879230000000002
+        },
+        {
+          "wall_seconds": 0.3682893330005754,
+          "cpu_seconds": 0.368275876,
+          "max_rss_kib": 40316,
+          "cache": {
+            "hits": 0,
+            "misses": 180,
+            "maxsize": 512,
+            "currsize": 180,
+            "byte_length": 1856590,
+            "retained_bytes": 26886130,
+            "evictions": 0
+          },
+          "process_wall_seconds": 0.5483775929997137,
+          "process_cpu_seconds": 0.5478780000000001
+        }
+      ],
+      "median_wall_seconds": 0.3973916794998331,
+      "median_cpu_seconds": 0.39736159400000004
+    },
+    "warm_base": {
+      "runs": [
+        {
+          "wall_seconds": 0.35364278799988824,
+          "cpu_seconds": 0.35363678200000004,
+          "max_rss_kib": 35108,
+          "cache": null,
+          "process_wall_seconds": 0.6872622030005004,
+          "process_cpu_seconds": 0.6866470000000008
+        },
+        {
+          "wall_seconds": 0.3648629070003153,
+          "cpu_seconds": 0.364840575,
+          "max_rss_kib": 35364,
+          "cache": null,
+          "process_wall_seconds": 0.7027282669996566,
+          "process_cpu_seconds": 0.7020010000000003
+        },
+        {
+          "wall_seconds": 0.3653598030005014,
+          "cpu_seconds": 0.36534258999999997,
+          "max_rss_kib": 35104,
+          "cache": null,
+          "process_wall_seconds": 0.7391353840002921,
+          "process_cpu_seconds": 0.7385629999999994
+        },
+        {
+          "wall_seconds": 0.39915321899934497,
+          "cpu_seconds": 0.39912771599999997,
+          "max_rss_kib": 35104,
+          "cache": null,
+          "process_wall_seconds": 0.7779862859997593,
+          "process_cpu_seconds": 0.7773560000000002
+        },
+        {
+          "wall_seconds": 0.37458360600066953,
+          "cpu_seconds": 0.373637682,
+          "max_rss_kib": 35112,
+          "cache": null,
+          "process_wall_seconds": 0.7669287100006841,
+          "process_cpu_seconds": 0.7654669999999989
+        },
+        {
+          "wall_seconds": 0.3858738890003224,
+          "cpu_seconds": 0.38585062000000003,
+          "max_rss_kib": 35108,
+          "cache": null,
+          "process_wall_seconds": 0.806946304000121,
+          "process_cpu_seconds": 0.8064459999999993
+        }
+      ],
+      "median_wall_seconds": 0.3699717045005855,
+      "median_cpu_seconds": 0.369490136
+    },
+    "warm_candidate": {
+      "runs": [
+        {
+          "wall_seconds": 0.02043909299936786,
+          "cpu_seconds": 0.020440601000000003,
+          "max_rss_kib": 21368,
+          "cache": {
+            "hits": 179,
+            "misses": 1,
+            "maxsize": 512,
+            "currsize": 1,
+            "byte_length": 10303,
+            "retained_bytes": 149218,
+            "evictions": 0
+          },
+          "process_wall_seconds": 0.1766459170003145,
+          "process_cpu_seconds": 0.1760799999999994
+        },
+        {
+          "wall_seconds": 0.02105275400026585,
+          "cpu_seconds": 0.021044707000000024,
+          "max_rss_kib": 21372,
+          "cache": {
+            "hits": 179,
+            "misses": 1,
+            "maxsize": 512,
+            "currsize": 1,
+            "byte_length": 10303,
+            "retained_bytes": 149218,
+            "evictions": 0
+          },
+          "process_wall_seconds": 0.17999514900020586,
+          "process_cpu_seconds": 0.17838300000000046
+        },
+        {
+          "wall_seconds": 0.02325494599972444,
+          "cpu_seconds": 0.023257206000000002,
+          "max_rss_kib": 21240,
+          "cache": {
+            "hits": 179,
+            "misses": 1,
+            "maxsize": 512,
+            "currsize": 1,
+            "byte_length": 10303,
+            "retained_bytes": 149218,
+            "evictions": 0
+          },
+          "process_wall_seconds": 0.1883871759991962,
+          "process_cpu_seconds": 0.18782499999999985
+        },
+        {
+          "wall_seconds": 0.022310325000034936,
+          "cpu_seconds": 0.022312844999999998,
+          "max_rss_kib": 21368,
+          "cache": {
+            "hits": 179,
+            "misses": 1,
+            "maxsize": 512,
+            "currsize": 1,
+            "byte_length": 10303,
+            "retained_bytes": 149218,
+            "evictions": 0
+          },
+          "process_wall_seconds": 0.20694585799992637,
+          "process_cpu_seconds": 0.20627699999999854
+        },
+        {
+          "wall_seconds": 0.02386172800015629,
+          "cpu_seconds": 0.02386244200000001,
+          "max_rss_kib": 21240,
+          "cache": {
+            "hits": 179,
+            "misses": 1,
+            "maxsize": 512,
+            "currsize": 1,
+            "byte_length": 10303,
+            "retained_bytes": 149218,
+            "evictions": 0
+          },
+          "process_wall_seconds": 0.2123300110006312,
+          "process_cpu_seconds": 0.21179599999999893
+        },
+        {
+          "wall_seconds": 0.024168158999600564,
+          "cpu_seconds": 0.02417230099999998,
+          "max_rss_kib": 21368,
+          "cache": {
+            "hits": 179,
+            "misses": 1,
+            "maxsize": 512,
+            "currsize": 1,
+            "byte_length": 10303,
+            "retained_bytes": 149218,
+            "evictions": 0
+          },
+          "process_wall_seconds": 0.21527206500013563,
+          "process_cpu_seconds": 0.21469900000000064
+        }
+      ],
+      "median_wall_seconds": 0.02278263549987969,
+      "median_cpu_seconds": 0.0227850255
+    }
+  },
+  "baseline_commit": "1e226e52a3400d4fb0336420569d8bab43c8f783",
+  "candidate": "Uncommitted PR 112 working tree, after the fixes.",
+  "method": "Each run starts a new process. Cold uses 180 distinct canonical payloads; warm repeats one payload 180 times. Loop timings exclude process startup. RSS is per-process maximum. Native encoding is disabled in both versions.",
+  "memory_sample": {
+    "raw_bytes": 74870,
+    "estimated_retained_bytes": 980255,
+    "rss_before_bytes": 23748608,
+    "rss_after_bytes": 26288128,
+    "tracemalloc_thaw_peak_delta_bytes": 336952,
+    "note": "One sample, not a process memory bound; RSS and traced allocation measure different things."
+  }
+}

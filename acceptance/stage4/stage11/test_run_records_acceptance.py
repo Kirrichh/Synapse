@@ -124,3 +124,16 @@ def test_read_only_historical_store_does_not_initialize_observation_namespaces(t
     assert tuple(sorted(str(p) for p in tmp_path.rglob("*"))) == before
     with pytest.raises(TypeError):
         reader.put(kind=RecordKind.ATTEMPT_RESULT, key="2", canonical_payload=PAYLOAD, ticket=None)
+
+
+def test_record_creation_and_deletion_are_visible_between_reads(tmp_path):
+    store, fence = configured_store(tmp_path)
+    assert store.get(kind=RecordKind.ATTEMPT_RESULT, key='1') is None
+    put(store, fence, key='1', payload=PAYLOAD)
+    first = store.get(kind=RecordKind.ATTEMPT_RESULT, key='1')
+    assert first.payload == PAYLOAD
+    first.payload['payload']['schema_version'] = 'changed'
+    assert store.get(kind=RecordKind.ATTEMPT_RESULT, key='1').payload == PAYLOAD
+    record_path, = (store.record_root / RecordKind.ATTEMPT_RESULT).glob('1.*.json')
+    record_path.unlink()
+    assert store.get(kind=RecordKind.ATTEMPT_RESULT, key='1') is None

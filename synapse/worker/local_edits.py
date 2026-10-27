@@ -347,9 +347,10 @@ def _adaptive_retained_patch_edits(raw, sources):
                 or position < len(lines) and lines[position].startswith("@@ ")):
             raise WorkerInputViolation("adaptive memory requires one bounded replacement hunk")
         old, new = "".join(old_lines), "".join(new_lines)
-        start = before.find(old)
-        if start < 0 or before.find(old, start + 1) >= 0:
+        matches = [match.start() for match in re.finditer(r"(?<![^\n])(?=" + re.escape(old) + ")", before)]
+        if len(matches) != 1:
             raise WorkerInputViolation("adaptive memory old block is absent or ambiguous")
+        start = matches[0]
         after = before[:start] + new + before[start + len(old):]
         if after == before or not after.endswith("\n") or len(after.encode("utf-8")) > MAX_SOURCE_BYTES:
             raise WorkerInputViolation("adaptive memory has no supported bounded change")
@@ -359,9 +360,8 @@ def _adaptive_retained_patch_edits(raw, sources):
     return {"edits": edits}
 
 
-def _propose_adaptive_retained_patches(*, task, information):
+def _propose_adaptive_retained_patches(*, task, information, historical):
     """Form current candidates from positive old patches without inherited success."""
-    outcomes = _execution_feedback(information)
     sources = _source_inventory(information, task.to_dict()["repository_revision"])
     retained = {}
     for item in information.to_dict()["items"]:
@@ -370,7 +370,7 @@ def _propose_adaptive_retained_patches(*, task, information):
         encoded = item["content_base64url"]
         raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
         digest = _digest(raw)
-        if outcomes.get(digest) == {True}:
+        if digest in historical:
             retained[digest] = raw
     if len(retained) > MAX_RETAINED_PATCHES:
         raise WorkerInputViolation("retained patches exceed the local interpretation budget")
@@ -387,7 +387,7 @@ def _propose_adaptive_retained_patches(*, task, information):
                 proposal={"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": [alternative]}, profile=LOCAL_EDIT_PROFILE_V2)
             candidate = checked["candidates"][0]
             if (candidate["applicability"] != "APPLICABLE" or candidate["patch_sha256"] == digest
-                    or candidate["prior_outcome"] is not None):
+                    or candidate["prior_outcome"] is not None or candidate["feedback"] != "NO_CONFLICT"):
                 raise WorkerInputViolation("adaptive patch is not a distinct unverified current candidate")
         except (WorkerInputViolation, ValueError, UnicodeError, IndexError):
             excluded.append({"patch_sha256": digest, "reason": "PATCH_NOT_APPLICABLE"})
@@ -403,7 +403,7 @@ def _propose_adaptive_retained_patches(*, task, information):
                    "omitted_public": [], "omitted_compositions": []}}
 
 
-def _propose_with_retained_patches(*, task, information, proposal, profile):
+def _propose_with_retained_patches(*, task, information, proposal, profile, admitted=None):
     """Bounded local methods, checked partial compositions, then public options.
 
     V4's caller must deliver a negative patch reference only after independent
@@ -422,7 +422,7 @@ def _propose_with_retained_patches(*, task, information, proposal, profile):
         encoded = item["content_base64url"]
         raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
         digest = _digest(raw)
-        if outcomes.get(digest) == {True} or partials and outcomes.get(digest) == {False}:
+        if (admitted is None or digest in admitted) and (outcomes.get(digest) == {True} or partials and outcomes.get(digest) == {False}):
             retained[digest] = raw
     if len(retained) > MAX_RETAINED_PATCHES:
         raise WorkerInputViolation("retained patches exceed the local interpretation budget")
@@ -515,6 +515,7 @@ def _validate_retained_patch_result(value, *, task_sha256, information_sha256, a
             if (set(origin) != {"kind", "patch_sha256"} or public_indices
                     or type(digest) is not str or re.fullmatch(r"[0-9a-f]{64}", digest) is None
                     or digest == candidate["patch_sha256"] or candidate["prior_outcome"] is not None
+                    or candidate["feedback"] != "NO_CONFLICT"
                     or candidate["applicability"] != "APPLICABLE"):
                 raise WorkerInputViolation("adaptive method inherited success or lost its original patch binding")
             adaptive_memory.append(digest)
@@ -687,17 +688,31 @@ def propose_verified_memory(*, task: WorkerTaskInput, information: LocalInformat
     if profile not in _ROUTED_PROFILES:
         raise WorkerInputViolation("memory proposal needs a routed protocol profile")
     requirement = task.to_dict()
-    exact_hints, adaptive_hints = [], []
+    exact_hints, adaptive_hints, historical = [], [], set()
     current_revision = requirement["repository_revision"]
     for item in information.to_dict()["items"]:
-        if item["role"] != "REFERENCE" or item["media_type"] != "application/json":
+        if (item["role"] not in {"REFERENCE", "HISTORICAL_EXECUTION_OBSERVATION"}
+                or item["media_type"] != "application/json"):
             continue
         try:
             encoded = item["content_base64url"]
             value = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
         except (ValueError, UnicodeError, RecursionError):
             continue
-        if type(value) is not dict or "procedural_memory" not in value:
+        if type(value) is not dict:
+            continue
+        observation = value.get("historical_patch_observation")
+        if (item["role"] == "HISTORICAL_EXECUTION_OBSERVATION"
+                and set(value) == {"historical_patch_observation"} and type(observation) is dict
+                and set(observation) == {"repository_revision", "patch_sha256", "oracle_resolved"}
+                and type(observation["repository_revision"]) is str
+                and re.fullmatch(r"[0-9a-f]{40,64}", observation["repository_revision"])
+                and observation["repository_revision"] != current_revision
+                and type(observation["patch_sha256"]) is str
+                and re.fullmatch(r"[0-9a-f]{64}", observation["patch_sha256"])
+                and observation["oracle_resolved"] is True):
+            historical.add((observation["repository_revision"], observation["patch_sha256"]))
+        if item["role"] != "REFERENCE" or "procedural_memory" not in value:
             continue
         memory = value["procedural_memory"]
         revision = value.get("repository_revision")
@@ -717,42 +732,50 @@ def propose_verified_memory(*, task: WorkerTaskInput, information: LocalInformat
         if memory["profile"] == "adaptive-verified-patch-memory/v1":
             if revision == current_revision:
                 return None
-            adaptive_hints.append(memory["patches"])
+            adaptive_hints.append((revision, memory["patches"]))
         elif revision == current_revision:
             exact_hints.append(memory["patches"])
         else:
-            adaptive_hints.append(memory["patches"])
+            adaptive_hints.append((revision, memory["patches"]))
     if (not exact_hints and not adaptive_hints
             or exact_hints and any(hint != exact_hints[0] for hint in exact_hints)):
         return None
-    admitted_hints = sorted({digest for hints in exact_hints + adaptive_hints for digest in hints})
     targets = {item["subject_path"] for item in requirement["effects"]
                if item["kind"] == "PATH_MODIFIED" and item["disposition"] == "EXPECTED"}
     if not targets or any(item["kind"] != "PATH_MODIFIED" for item in requirement["effects"]):
         return None
 
-    def unique_complete(result, origin_kind):
+    def unique_complete(result, origin_kind, admitted):
         if (len(result["candidates"]) != 1 or result["selected_index"] != 0
                 or result["candidate_origins"][0]["kind"] != origin_kind
-                or result["candidate_origins"][0]["patch_sha256"] not in admitted_hints
+                or result["candidate_origins"][0]["patch_sha256"] not in admitted
                 or set(result["touched_files"]) != targets
                 or any(item["reason"] == "CANDIDATE_LIMIT" for item in result["search"]["excluded_memory"])):
             return None
         return result
 
-    exact = propose_local_edits(task=task, information=information,
-        proposal={"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": []}, profile=profile)
-    result = unique_complete(exact, "LOCAL_MEMORY")
+    # A historical hint can still name a byte-identical patch when current
+    # execution feedback independently verifies it. Explicit current hints
+    # take priority and are not made ambiguous by historical candidates.
+    current_admitted = (set(exact_hints[0]) if exact_hints else
+                        {digest for _, hints in adaptive_hints for digest in hints})
+    exact = _propose_with_retained_patches(task=task, information=information,
+        proposal={"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": []},
+        profile=LOCAL_EDIT_PROFILE_V4, admitted=current_admitted)
+    exact = {**exact, "schema_version": _ROUTED_RESULTS[profile], "profile": profile}
+    result = unique_complete(exact, "LOCAL_MEMORY", current_admitted)
     if result is not None:
         return {**result, "planning_route": "EXACT_MEMORY"}
     # Historical patch-set disagreement blocks adaptation, not an exact patch
     # that still binds to the current source and has unique positive evidence.
-    if not adaptive_hints or any(hint != adaptive_hints[0] for hint in adaptive_hints):
+    if not adaptive_hints or any(hint != adaptive_hints[0][1] for _, hint in adaptive_hints):
         return None
-    adaptive = _propose_adaptive_retained_patches(task=task, information=information)
+    historical_admitted = {digest for revision, hints in adaptive_hints for digest in hints
+                           if (revision, digest) in historical}
+    adaptive = _propose_adaptive_retained_patches(task=task, information=information, historical=historical_admitted)
     adaptive["schema_version"] = _ROUTED_RESULTS[profile]
     adaptive["profile"] = profile
-    result = unique_complete(adaptive, "LOCAL_ADAPTIVE_MEMORY")
+    result = unique_complete(adaptive, "LOCAL_ADAPTIVE_MEMORY", historical_admitted)
     return None if result is None else {**result, "planning_route": "ADAPT_MEMORY"}
 
 

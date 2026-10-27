@@ -1267,7 +1267,7 @@ def _seal_unit(core: BehaviorCore) -> SynapseBehaviorUnit:
     object.__setattr__(unit, "core", core)
     object.__setattr__(unit, "canonical_core", canonical_core)
     object.__setattr__(unit, "content_key", canonical_core.content_key)
-    object.__setattr__(unit, "context_sha256", _compute_unit_context_sha256(core, canonical_core.content_key))
+    object.__setattr__(unit, "context_sha256", _compute_unit_context_sha256(core, canonical_core.content_key, core_payload=payload))
     object.__setattr__(unit, "_trusted_seal", _TRUSTED_SEAL)
     validate_behavior_unit(unit)
     return unit
@@ -1358,7 +1358,8 @@ def validate_behavior_unit(value: SynapseBehaviorUnit) -> None:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "unit schema is unknown")
     _validate_behavior_core(value.core)
     validate_canonical_behavior_core(value.canonical_core)
-    expected = _make_canonical_behavior_core(_behavior_core_payload(value.core))
+    core_payload = _behavior_core_payload(value.core)
+    expected = _make_canonical_behavior_core(core_payload)
     if (
         value.canonical_core.canonical_bytes != expected.canonical_bytes
         or value.canonical_core.payload_sha256 != expected.payload_sha256
@@ -1368,7 +1369,7 @@ def validate_behavior_unit(value: SynapseBehaviorUnit) -> None:
     if type(value.content_key) is not ContentKey or value.content_key.value != expected.content_key.value:
         raise _fail(BehaviorFailureCode.TRUSTED_OBJECT_FORGED, "unit content key mismatch")
     if (type(value.context_sha256) is not str
-            or value.context_sha256 != _compute_unit_context_sha256(value.core, value.content_key)):
+            or value.context_sha256 != _compute_unit_context_sha256(value.core, value.content_key, core_payload=core_payload)):
         raise _fail(BehaviorFailureCode.TRUSTED_OBJECT_FORGED, "unit context hash mismatch")
 
 
@@ -1382,10 +1383,10 @@ def behavior_unit_from_dict(value: object) -> SynapseBehaviorUnit:
     return unit
 
 
-def _compute_unit_context_sha256(core: BehaviorCore, content_key: ContentKey) -> str:
+def _compute_unit_context_sha256(core: BehaviorCore, content_key: ContentKey, *, core_payload=None) -> str:
     payload = {
         "schema_version": SchemaVersion.BEHAVIOR_UNIT_V1.value,
-        "core": core.to_dict(),
+        "core": core.to_dict() if core_payload is None else core_payload,
         "content_key": content_key.value,
     }
     encoded = canonicalize_stage4_payload(

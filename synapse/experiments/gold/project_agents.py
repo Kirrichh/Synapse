@@ -97,7 +97,10 @@ def _adaptive_patches(request, store, court, task, selection):
     from .stage13.run_publication import REQUEST_SCHEMA_V4
     root = Path(request["source_snapshot"]["project_state_root"]) / "publications" / "prepared"
     patches = {}
+    paths = sorted({effect.subject_path for effect in task.effects if effect.subject_path is not None})
     for item in court["judged"][-MAX_PRIOR_EPISODES:]:
+        if item["observation"]["requirement"]["paths"] != paths:
+            continue
         for assertion in item["learning"]["assertions"]:
             claim = assertion["claim"]
             subject = {"task_contract_ref": claim["task_contract_ref"],

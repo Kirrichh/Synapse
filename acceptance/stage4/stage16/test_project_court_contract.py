@@ -185,3 +185,26 @@ def test_concurrent_task_streams_append_to_one_court_chain(tmp_path):
     assert len(view["pending"]) == 4
     # Every decision extends its predecessor; none is a second version of the state.
     assert len({str(item["payload"]["predecessor"]) for item in decisions}) == len(decisions) <= 4
+
+
+def test_adaptive_history_skips_incompatible_paths_before_opening_artifacts(tmp_path, monkeypatch):
+    from synapse.experiments.gold import project_agents
+    from synapse.experiments.gold.source_verification import canonical
+    import hashlib
+
+    task = SimpleNamespace(repository_revision_sha256='3' * 40,
+                           effects=(SimpleNamespace(subject_path='src/current.py'),))
+    claim = {'task_contract_ref': TASK, 'repository_revision': REVISION, 'patch_sha256': PATCH}
+    origin = {'transaction_id': 'missing'}
+    subject = dict(claim)
+    court = {'subjects': {'s': {'state': 'ADMITTED', 'subject': subject,
+             'support': [hashlib.sha256(canonical(origin)).hexdigest()]}},
+             'judged': [{'learning': {'assertions': [{'claim': claim, 'status': 'CONFIRMED', 'origin': origin}]},
+                         'observation': {'requirement': {'paths': ['src/unrelated.py']}}}]}
+    monkeypatch.setattr(project_agents, 'reopen_completed_run', lambda *a, **k: pytest.fail('unrelated history was reopened'))
+    request = {'source_snapshot': {'project_state_root': str(tmp_path)}}
+    assert project_agents._adaptive_patches(request, None, court, task, 'ALL') == []
+    from synapse.experiments.gold.persistence import PersistenceViolation
+    court['judged'][0]['observation']['requirement']['paths'] = ['src/current.py']
+    with pytest.raises(PersistenceViolation):
+        project_agents._adaptive_patches(request, None, court, task, 'ALL')

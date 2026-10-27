@@ -7,8 +7,10 @@ import pytest
 from acceptance.stage4.stage10.test_exact_memory_proposal_contract import remembered
 from acceptance.stage4.stage10.test_local_edit_contract import feedback, information, task
 from synapse.canonical_values import canonical_json_bytes
+from synapse.experiments.gold.source_delivery import _adaptive_memory_items
 from synapse.worker.input_contract import LocalInformationInput, WorkerTaskInput
-from synapse.worker.local_edits import propose_verified_memory, validate_local_edit_result
+from synapse.worker.local_edits import propose_local_edits, propose_verified_memory, validate_local_edit_result
+from acceptance.stage4.stage10.test_local_edit_contract import proposal
 
 
 OLD_SOURCE = "def add(a, b):\n    return a - b\n"
@@ -16,10 +18,10 @@ NEW_REVISION = "b" * 40
 
 
 def adaptive_inputs(source="# outside\n" + OLD_SOURCE, *, replacements=("a + b",), current_revision=NEW_REVISION):
-    old_information, patches = remembered(*replacements, source=OLD_SOURCE)
-    # Keep the old feedback, retained patches and old-revision memory hints, but
-    # deliver only current-revision source bytes as the applicable inventory.
-    memory_items = old_information.to_dict()["items"][1:]
+    _, patches = remembered(*replacements, source=OLD_SOURCE)
+    memory_items = _adaptive_memory_items({"court": {"adaptive_patches": [
+        {"repository_revision": "a" * 40, "patch_sha256": hashlib.sha256(patch.encode()).hexdigest(),
+         "diff_text": patch} for patch in patches]}})
     current = information(source=source, revision=current_revision, extra=memory_items)
     return task(revision=current_revision), current, patches
 
@@ -42,6 +44,26 @@ def test_outside_revision_change_reanchors_without_inheriting_old_success():
     assert result["execution"] == "NO_REPOSITORY_EFFECTS"
     assert validate_local_edit_result(result, task_sha256=result["task_sha256"],
                                       information_sha256=private.sha256) == result
+
+
+@pytest.mark.parametrize("source, expected", [
+    ("max = 1\n", None),
+    ("max = 1\nx = 1\n", "max = 1\nx = 2\n"),
+    ("x = 1\nx = 1\n", None),
+])
+def test_adaptive_candidate_matches_complete_lines(source, expected):
+    old = propose_local_edits(task=task(), information=information(source="x = 1\n"),
+        proposal=proposal(("x = 1", "x = 2")))["diff_text"]
+    history = _adaptive_memory_items({"court": {"adaptive_patches": [{
+        "repository_revision": "a" * 40, "patch_sha256": hashlib.sha256(old.encode()).hexdigest(),
+        "diff_text": old}]}})
+    current = information(source=source, revision=NEW_REVISION, extra=history)
+    result = propose_verified_memory(task=task(revision=NEW_REVISION), information=current)
+    if expected is None:
+        assert result is None
+    else:
+        assert result["planning_route"] == "ADAPT_MEMORY"
+        assert result["effective_proposal"]["alternatives"][0]["edits"][0]["new"] == expected
 
 
 def test_metamorphic_outside_prefix_and_statement_changes_preserve_the_physical_fix():
@@ -103,6 +125,7 @@ def test_current_source_scope_and_revision_bindings_remain_mandatory():
     lambda value: value["candidate_origins"][0].update(kind="LOCAL_MEMORY"),
     lambda value: value["candidate_origins"][0].update(patch_sha256=value["candidates"][0]["patch_sha256"]),
     lambda value: value["candidates"][0].update(prior_outcome=True),
+    lambda value: value["candidates"][0].update(feedback="CONFLICTING"),
     lambda value: value.update(selected_index=None),
 ])
 def test_transport_cannot_forge_adaptive_provenance_or_success(change):
@@ -113,3 +136,11 @@ def test_transport_cannot_forge_adaptive_provenance_or_success(change):
     with pytest.raises(ValueError):
         validate_local_edit_result(changed, task_sha256=result["task_sha256"],
                                    information_sha256=private.sha256)
+
+
+def test_conflicting_current_feedback_never_admits_adapted_candidate():
+    public, private, _ = adaptive_inputs()
+    result = propose_verified_memory(task=public, information=private)
+    rows = private.to_dict()['items'] + [feedback(result['diff_text'], True), feedback(result['diff_text'], False)]
+    conflicting = LocalInformationInput(canonical_json_bytes({**private.to_dict(), 'items': rows}))
+    assert propose_verified_memory(task=public, information=conflicting) is None

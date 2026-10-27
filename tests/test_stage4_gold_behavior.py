@@ -643,3 +643,18 @@ def test_s4_p2_followup_payload_01_aggregate_inline_values_require_hash_bound_re
         )
     )
     validate_behavior_unit(_unit_from_core(referenced))
+
+
+def test_unit_validation_projects_core_once(monkeypatch):
+    from synapse.experiments.gold import behavior
+    unit = make_valid_unit()
+    calls = []
+    original = behavior._behavior_core_payload
+
+    def counted(value):
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(behavior, '_behavior_core_payload', counted)
+    behavior.validate_behavior_unit(unit)
+    assert calls == [unit.core]

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import pytest
 
 from acceptance.agents.coding_agents import use_model_agent
 from acceptance.stage4.stage15.test_provider_capture_acceptance import provider_endpoint
@@ -21,12 +22,15 @@ from synapse.experiments.gold.stage15.run_observability import inspect_observabi
 from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V5, LOCAL_EDIT_PROPOSAL_V1
 
 
-def _advance_after_learning(case, declaration, knowledge_path):
+def _advance_after_learning(case, declaration, knowledge_path, *, same_source=False):
     """Change only text outside the learned function after learning completed."""
     target = case.repo / "src/calc.py"
-    advanced = b"# Later revision: the learned function is byte-identical.\n" + target.read_bytes()
-    target.write_bytes(advanced)
-    subprocess.run(["git", "add", "src/calc.py"], cwd=case.repo, check=True, capture_output=True)
+    advanced = target.read_bytes() if same_source else b"# Later revision: the learned function is byte-identical.\n" + target.read_bytes()
+    if same_source:
+        (case.repo / 'unrelated.txt').write_text('another revision\n')
+    else:
+        target.write_bytes(advanced)
+    subprocess.run(["git", "add", "unrelated.txt" if same_source else "src/calc.py"], cwd=case.repo, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-qm", "advance outside learned function"],
                    cwd=case.repo, check=True, capture_output=True)
     revision = RepositoryRevision.git_commit(subprocess.check_output(
@@ -70,13 +74,13 @@ def _publish_current_source(case, source_input, revision):
     return declaration
 
 
-def _run(current):
+def _run(current, *, expected="FULL"):
     code, pending = current.start()
     assert code == 3, pending
     code, result = current.approve(pending)
     assert code == 0, result
     assert result["project_memory"]["status"] == "RECORDED", result
-    assert result["outcome_status"] == "FULL", result
+    assert result["outcome_status"] == expected, result
     return result
 
 
@@ -89,7 +93,8 @@ def _verified_patch(frozen, records, attempt):
     return digest
 
 
-def test_changed_revision_reuse_through_canonical_cli(tmp_path, monkeypatch):
+@pytest.mark.parametrize('same_source', [False, True])
+def test_changed_revision_reuse_through_canonical_cli(tmp_path, monkeypatch, same_source):
     case, _ = consumer_case(tmp_path, automatic_targets=True, verification_commands=True)
     source_input = tmp_path / "learn.json"
     case = replace(case, cli_timeout_seconds=3600)
@@ -122,29 +127,32 @@ def test_changed_revision_reuse_through_canonical_cli(tmp_path, monkeypatch):
         learned_diff = learn_completed.worker_result.diagnostics["local_edit_result"]["diff_text"]
         assert (case.repo / "src/calc.py").read_bytes() == original
 
-        changed_declaration, revision, advanced = _advance_after_learning(case, declaration, selected)
+        changed_declaration, revision, advanced = _advance_after_learning(case, declaration, selected, same_source=same_source)
         _publish_current_source(case, source_input, revision)
         oracle_input = tmp_path / "harness/oracle_input.json"
-        oracle_input.write_text(json.dumps({**json.loads(oracle_input.read_text()),
-                                            "base_revision": revision.git_sha}))
+        oracle_data = {**json.loads(oracle_input.read_text()), "base_revision": revision.git_sha}
+        if same_source:
+            oracle_data['command'] = [sys.executable, '-B', '-c', 'raise SystemExit(1)']
+        oracle_input.write_text(json.dumps(oracle_data))
         chosen = use_model_agent({**changed_declaration, "config": dict(changed_declaration["config"])},
                                  tmp_path / "reuse-agent", endpoint=endpoint, protocol=LOCAL_EDIT_PROFILE_V5)
         reuse_case = replace(case, run_root=tmp_path / "reuse-run", input_path=tmp_path / "reuse-input.json")
         reuse_case.input_path.write_text(json.dumps({**chosen, "run_id": "changed-revision-reuse",
                                                      "knowledge_path": str(selected)}))
-        reuse_result = _run(reuse_case)
+        reuse_result = _run(reuse_case, expected='VERIFIED_REUSABLE_PARTIAL' if same_source else 'FULL')
         frozen, records, attempt, completed = completed_attempt(reuse_case)
         progress = load_attempt_progress(records, manifest=frozen.manifest, context=attempt.context)
         c1_completed = progress.get(AttemptProgressPhase.C1_COMPLETED) is not None
         assert c1_completed
         local = completed.worker_result.diagnostics["local_edit_result"]
         assert local["diff_text"] and tuple(local["touched_files"]) == ("src/calc.py",)
-        assert local["planning_route"] == "ADAPT_MEMORY"
+        assert local["planning_route"] == ("MODEL" if same_source else "ADAPT_MEMORY")
         assert local["status"] == "UNVERIFIED_PATCH_PROPOSAL"
-        assert completed.delivery_receipt.delivery_status.value == "SYNAPSE_ADAPTIVE_MEMORY"
-        assert completed.delivery_receipt.transport_name == "synapse.adaptive-memory/v1"
-        assert len(requests) == 1
-        assert not (reuse_case.run_root / "stage10/agent-executions").exists()
+        if not same_source:
+            assert completed.delivery_receipt.delivery_status.value == "SYNAPSE_ADAPTIVE_MEMORY"
+            assert completed.delivery_receipt.transport_name == "synapse.adaptive-memory/v1"
+            assert not (reuse_case.run_root / "stage10/agent-executions").exists()
+        assert len(requests) == (2 if same_source else 1)
         assert (case.repo / "src/calc.py").read_bytes() == advanced
         for name, current, result in (("learn", learn_case, learn_result), ("reuse", reuse_case, reuse_result)):
             observation = inspect_observability(run_root=current.run_root,
@@ -153,14 +161,15 @@ def test_changed_revision_reuse_through_canonical_cli(tmp_path, monkeypatch):
             assert observation["artifact_report"]["status"] == "COMPLETE"
         observed_path = tmp_path / "harness/oracle_observations.jsonl"
         observed = [json.loads(line) for line in observed_path.read_text().splitlines()]
-        assert len(observed) == 2 and all(row["after_returncode"] == 0 for row in observed)
+        assert len(observed) == 2 and observed[0]["after_returncode"] == 0
+        assert (observed[1]["after_returncode"] != 0) is same_source
         assert all(row["before_returncode"] != 0 for row in observed)
         assert observed[0]["base_revision"] != observed[1]["base_revision"]
-        assert learned_diff != local["diff_text"]
-        assert learned_patch != _verified_patch(frozen, records, attempt)
+        assert (learned_diff == local["diff_text"]) is same_source
+        assert (learned_patch == _verified_patch(frozen, records, attempt)) is same_source
         frozen_bytes = frozen.canonical_bytes
         code, resumed = reuse_case.cli("project", "resume", "--run-dir", reuse_case.run_root)
-        assert code == 0 and resumed == reuse_result and len(requests) == 1
+        assert code == 0 and resumed == reuse_result and len(requests) == (2 if same_source else 1)
         assert (reuse_case.run_root / "experiment.json").read_bytes() == frozen_bytes
         repository_clean = subprocess.run(["git", "status", "--porcelain"], cwd=case.repo,
             check=True, capture_output=True, text=True).stdout == ""

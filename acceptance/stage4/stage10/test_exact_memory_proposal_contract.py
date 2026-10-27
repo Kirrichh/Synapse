@@ -89,8 +89,7 @@ def test_model_route_remains_available_when_memory_is_missing():
 
 @pytest.mark.parametrize("revision, expected_route", [
     ({"kind": "GIT_COMMIT", "git_sha": "a" * 40}, "EXACT_MEMORY"),
-    # A hint from another valid revision grants no authority, but neither does
-    # it forbid exact reuse when the current source bytes still match exactly.
+    # Current execution evidence can validate a byte-identical historical hint.
     ({"kind": "GIT_COMMIT", "git_sha": "b" * 40}, "EXACT_MEMORY"),
     ({"kind": "UNVERIFIED", "git_sha": "a" * 40}, None),
     ({"kind": "GIT_COMMIT", "git_sha": "a" * 40, "trusted": True}, None),

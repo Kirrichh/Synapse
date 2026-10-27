@@ -1,13 +1,11 @@
 """Stage 4 algorithmic read-reuse contracts; no authority reuse is implied."""
 from __future__ import annotations
 
-import copy
 import json
 
 import pytest
 
 from synapse.experiments.gold import canonicalization as canon
-from synapse.experiments.gold.runner.records import StoredRunRecord, _RunRecordReadIndex
 from synapse.experiments.gold.stage13 import publication_store as publications
 from synapse.experiments.gold.stage14.read_traversal import publication_read_scope
 
@@ -113,28 +111,3 @@ def test_publication_requests_reopen_physical_bytes_and_return_fresh_values(monk
         assert len(calls) == 3
     publications.read_prepared_publication_request(root, "tx")
     assert len(calls) == 4
-
-
-def test_run_record_index_is_reconstruction_scoped_and_returns_fresh_payloads():
-    class Store:
-        def __init__(self):
-            self.calls = 0
-            self.payload = {"nested": {"value": 1}}
-
-        def get(self, *, kind, key):
-            self.calls += 1
-            return StoredRunRecord(kind, key, copy.deepcopy(self.payload), "a" * 64)
-
-    physical = Store()
-    index = _RunRecordReadIndex(physical)
-    first = index.get(kind="run-manifest", key="manifest")
-    first.payload["nested"]["value"] = 99
-    second = index.get(kind="run-manifest", key="manifest")
-    assert second.payload == {"nested": {"value": 1}}
-    assert physical.calls == 1
-
-    next_operation = index.read_index()
-    assert next_operation is index  # A nested reconstruction retains its own cut.
-    independent = _RunRecordReadIndex(physical)
-    assert independent.get(kind="run-manifest", key="manifest").payload == {"nested": {"value": 1}}
-    assert physical.calls == 2

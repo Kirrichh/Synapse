@@ -25,8 +25,9 @@ def _adaptive_memory_items(frame):
     for patch in patches:
         digest, revision = patch["patch_sha256"], patch["repository_revision"]
         by_revision.setdefault(revision, []).append(digest)
-        items.append(_information_item({"evaluated_patch_sha256": digest, "oracle_resolved": True},
-                                       role="EXECUTION_OBSERVATION"))
+        items.append(_information_item({"historical_patch_observation": {
+            "repository_revision": revision, "patch_sha256": digest, "oracle_resolved": True}},
+            role="HISTORICAL_EXECUTION_OBSERVATION"))
         items.append(_patch_information(patch["diff_text"]))
     for revision in sorted(by_revision):
         items.append(_information_item({"repository_revision": revision,

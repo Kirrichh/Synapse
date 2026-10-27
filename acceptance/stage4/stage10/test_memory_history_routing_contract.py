@@ -38,7 +38,9 @@ def _historical_items(history, profile):
         return _adaptive_memory_items({"court": {"adaptive_patches": history}})
     items = []
     for entry in history:
-        items.extend((feedback(entry["diff_text"], True),
+        items.extend(({"role": "HISTORICAL_EXECUTION_OBSERVATION", "media_type": "application/json", "content_base64url": encoded(
+            canonical_json_bytes({"historical_patch_observation": {"repository_revision": entry["repository_revision"],
+                "patch_sha256": entry["patch_sha256"], "oracle_resolved": True}}))},
             {"role": "REFERENCE", "media_type": "text/plain",
              "content_base64url": encoded(entry["diff_text"].encode())},
             _hint(entry["repository_revision"], [entry["patch_sha256"]], profile=profile)))
@@ -128,8 +130,93 @@ def test_history_cannot_admit_an_undeclared_current_patch():
                                    information=_current_information(items)) is None
 
 
+def test_historical_success_is_not_current_execution_feedback():
+    _, history = _history_case()
+    historical = _historical_items(history[:1], "adaptive-verified-patch-memory/v1")
+    private = information(source=SOURCE, revision=REVISIONS[-1], extra=historical)
+    assert propose_verified_memory(task=task(revision=REVISIONS[-1]), information=private) is None
+    assert all(item["role"] != "EXECUTION_OBSERVATION" for item in historical)
+    rejected = information(source=SOURCE, revision=REVISIONS[-1],
+                           extra=historical + [feedback(history[0]["diff_text"], False)])
+    assert propose_verified_memory(task=task(revision=REVISIONS[-1]), information=rejected) is None
+
+
+def test_historical_declaration_without_success_evidence_does_not_adapt():
+    patches, _ = _history_case()
+    digest = hashlib.sha256(patches[0].encode()).hexdigest()
+    items = [{"role": "REFERENCE", "media_type": "text/plain",
+              "content_base64url": encoded(patches[0].encode())}, _hint(REVISIONS[0], [digest])]
+    private = information(source=SOURCES[-1], revision=REVISIONS[-1], extra=items)
+    assert propose_verified_memory(task=task(revision=REVISIONS[-1]), information=private) is None
+
+
+def test_historical_observation_must_match_the_declared_revision():
+    _, history = _history_case()
+    items = _historical_items(history[:1], "adaptive-verified-patch-memory/v1")
+    from copy import deepcopy
+    import base64
+    import json
+    items = deepcopy(items)
+    observation = items[0]
+    raw = observation['content_base64url']
+    body = json.loads(base64.urlsafe_b64decode(raw + '=' * (-len(raw) % 4)))
+    body['historical_patch_observation']['repository_revision'] = REVISIONS[1]
+    observation['content_base64url'] = encoded(canonical_json_bytes(body))
+    private = information(source=SOURCES[-1], revision=REVISIONS[-1], extra=items)
+    assert propose_verified_memory(task=task(revision=REVISIONS[-1]), information=private) is None
+
+
+def test_current_exact_candidate_is_not_ambiguous_with_applicable_history():
+    historical_patch = propose_local_edits(task=task(revision=REVISIONS[0]),
+        information=information(source=SOURCE, revision=REVISIONS[0]),
+        proposal=proposal(("a - b", "a + b")))["diff_text"]
+    current_patch = propose_local_edits(task=task(revision=REVISIONS[-1]),
+        information=information(source=SOURCE, revision=REVISIONS[-1]),
+        proposal=proposal(("a - b", "b + a")))["diff_text"]
+    history = [{"repository_revision": REVISIONS[0], "diff_text": historical_patch,
+                "patch_sha256": hashlib.sha256(historical_patch.encode()).hexdigest()}]
+    current = _current_items(current_patch)
+    public = task(revision=REVISIONS[-1])
+    alone = propose_verified_memory(task=public,
+        information=information(source=SOURCE, revision=REVISIONS[-1], extra=current))
+    combined = propose_verified_memory(task=public, information=information(source=SOURCE,
+        revision=REVISIONS[-1], extra=current + _historical_items(history, "adaptive-verified-patch-memory/v1")))
+    assert alone["planning_route"] == "EXACT_MEMORY"
+    assert combined is not None
+    assert combined["planning_route"] == "EXACT_MEMORY"
+    assert combined["diff_text"] == current_patch
+
+    # A current execution observation for the other patch does not make that
+    # historical declaration a current exact candidate.
+    observed = information(source=SOURCE, revision=REVISIONS[-1], extra=current
+        + _historical_items(history, "adaptive-verified-patch-memory/v1") + [feedback(historical_patch, True)])
+    assert propose_verified_memory(task=public, information=observed)["diff_text"] == current_patch
+
+
+def test_two_current_exact_candidates_are_still_ambiguous():
+    public = task(revision=REVISIONS[-1])
+    private = information(source=SOURCE, revision=REVISIONS[-1])
+    patches = [propose_local_edits(task=public, information=private,
+        proposal=proposal(("a - b", replacement)))["diff_text"] for replacement in ("a + b", "b + a")]
+    digests = [hashlib.sha256(patch.encode()).hexdigest() for patch in patches]
+    items = [item for patch in patches for item in [feedback(patch, True),
+        {"role": "REFERENCE", "media_type": "text/plain", "content_base64url": encoded(patch.encode())}]]
+    items.append(_hint(REVISIONS[-1], digests))
+    assert propose_verified_memory(task=public,
+        information=information(source=SOURCE, revision=REVISIONS[-1], extra=items)) is None
+
+
 def test_malformed_historical_claim_still_refuses_an_available_exact_candidate():
     patches, _ = _history_case()
     items = _current_items(patches[-1]) + [_hint(REVISIONS[0], ["d" * 64], generalization="ESTABLISHED")]
     assert propose_verified_memory(task=task(revision=REVISIONS[-1]),
                                    information=_current_information(items)) is None
+
+
+def test_ordinary_reference_cannot_claim_historical_oracle_evidence():
+    from copy import deepcopy
+    _, history = _history_case()
+    items = deepcopy(_historical_items(history[:1], 'adaptive-verified-patch-memory/v1'))
+    items[0]['role'] = 'REFERENCE'
+    private = information(source=SOURCES[-1], revision=REVISIONS[-1], extra=items)
+    assert propose_verified_memory(task=task(revision=REVISIONS[-1]), information=private) is None

@@ -31,6 +31,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  stage4-native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install . pytest 'maturin>=1.5,<2.0'
+      - run: maturin build --release --locked --manifest-path native/stage4_canonical/Cargo.toml --interpreter python --out /tmp/stage4-native-wheel
+      - run: python -m pip install /tmp/stage4-native-wheel/*.whl
+      - run: python -m pytest -q -p no:cacheprovider tests/test_stage4_canonical_differential.py tests/test_stage4_gold_native.py acceptance/stage4/stage11/test_native_runtime_resume_acceptance.py
+        env:
+          SYNAPSE_REQUIRE_STAGE4_NATIVE: '1'
+
   select:
     runs-on: ubuntu-latest
     outputs:

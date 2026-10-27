@@ -62,7 +62,7 @@ def _information(items):
         "schema_version": "synapse.worker.local-information-input/v1", "items": items}))
 
 
-def _memory_information(current_task, *, source=CURRENT_SOURCE):
+def _memory_information(current_task, *, source=CURRENT_SOURCE, extra=()):
     path = current_task["effects"][0]["subject_path"]
     old_task = replace_task_revision(current_task, OLD_REVISION)
     old_information = _information([_source_item(old_task, OLD_SOURCE)])
@@ -86,18 +86,18 @@ def _memory_information(current_task, *, source=CURRENT_SOURCE):
             "diff_text": old_patch,
         }]}}),
     ]
-    return _information([_source_item(current_task, source), *memory_items])
+    return _information([_source_item(current_task, source), *memory_items, *extra])
 
 
 def replace_task_revision(task, revision):
     return {**task, "repository_revision": revision}
 
 
-def _dispatch(stage10_delivery_world, *, source=CURRENT_SOURCE):
+def _dispatch(stage10_delivery_world, *, source=CURRENT_SOURCE, extra=()):
     world = stage10_delivery_world
     previous = world.context
     current_task = WorkerTaskInput(previous.delivery_envelope.prompt_text.encode()).to_dict()
-    information = _memory_information(current_task, source=source)
+    information = _memory_information(current_task, source=source, extra=extra)
     snapshot = hash_ref(RefKind.SOURCE_EVIDENCE, "adaptive-memory-source",
                         schema="synapse.stage4.gold.source-experience-snapshot/v1")
     experience = {"snapshot_ref": snapshot.to_dict(), "projection_profile": SOURCE_DELIVERY_PROFILE_V2,
@@ -160,3 +160,17 @@ def test_real_dispatch_falls_back_to_agent_when_adapt_target_is_stale(stage10_de
     with pytest.raises(TransportCalled):
         adapter.dispatch(**arguments)
     assert spy.calls == 1
+
+
+def test_influence_ignores_irrelevant_rejected_hypothesis(stage10_delivery_world):
+    extra = [{"role": "REJECTED_HYPOTHESIS", "media_type": "text/plain",
+              "content_base64url": encoded(b"unrelated hypothesis")}]
+    adapter, spy, arguments = _dispatch(stage10_delivery_world, extra=extra)
+    dispatched = adapter.dispatch(**arguments)
+    observation = observe_local_context_influence(receipt=dispatched.delivery_receipt,
+        invocation=dispatched.invocation, worker_result=dispatched.worker_result)
+    comparisons = {item["removed_role"]: item for item in observation.payload(dispatched.delivery_receipt)["comparisons"]}
+    assert not comparisons["REJECTED_HYPOTHESIS"]["selection_changed"]
+    assert comparisons["REFERENCE"]["selection_changed"]
+    assert comparisons["HISTORICAL_EXECUTION_OBSERVATION"]["selection_changed"]
+    assert spy.calls == 0

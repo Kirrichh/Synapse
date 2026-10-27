@@ -29,25 +29,6 @@ def decode(raw):
         codec_id=canon.STABLE_CANONICAL_CODEC_ID)
 
 
-def test_stage4_encode_and_decode_each_project_data_once(monkeypatch):
-    monkeypatch.setattr(canon, "_native", None)
-    value = {"z": [1, {"e\u0301": True}], "a": -0.0}
-    calls = []
-    original = canon._canonicalize_data_only
-
-    def counted(item, **kwargs):
-        if not kwargs.get("seen"):
-            calls.append(item)
-        return original(item, **kwargs)
-
-    monkeypatch.setattr(canon, "_canonicalize_data_only", counted)
-    monkeypatch.setattr(canon, "_validate_data_only", lambda *a, **k: (_ for _ in ()).throw(
-        AssertionError("separate validation traversal must not run")))
-    raw = canonical(value)
-    assert decode(raw) == {"a": 0.0, "z": [1, {"é": True}]}
-    assert len(calls) == 2
-
-
 def test_decoded_artifact_cache_is_content_bound_bounded_and_mutation_isolated(monkeypatch):
     value = {"nested": {"items": [1, 2, 3]}, "text": "\u043f\u0430\u043c\u044f\u0442\u044c"}
     raw = canonical(value)

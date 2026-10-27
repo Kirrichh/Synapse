@@ -2,10 +2,10 @@
 import json
 import math
 import os
+from pathlib import Path
 
 import pytest
 
-from synapse import canonical_values as stable
 from synapse.experiments.gold import canonicalization as c
 
 
@@ -13,39 +13,18 @@ PROFILE = c.STAGE4_CANONICAL_PROFILE_V1
 CODEC = c.STABLE_CANONICAL_CODEC_ID
 
 
-def baseline_encode(value):
-    c._validate_data_only(value)
-    try:
-        result = stable.canonical_bytes(value)
-    except stable.CanonicalSerializationError as exc:
-        raise c._fail(c.CanonicalizationFailureCode.INVALID_CANONICAL_VALUE, "stable codec rejected payload") from exc
-    if result.profile != CODEC or type(result.data) is not bytes:
-        raise c._fail(c.CanonicalizationFailureCode.UNKNOWN_CODEC, "stable codec returned an incompatible result")
-    return result.data
-
-
-def baseline_decode(value):
-    try:
-        text = value.decode('utf-8', errors='strict')
-    except UnicodeDecodeError as exc:
-        raise c._fail(c.CanonicalizationFailureCode.INVALID_UTF8, 'canonical bytes are not UTF-8') from exc
-    try:
-        decoded = json.loads(text, object_pairs_hook=c._object_without_duplicates, parse_constant=c._reject_json_constant)
-    except c.CanonicalizationViolation:
-        raise
-    except (json.JSONDecodeError, ValueError, TypeError) as exc:
-        raise c._fail(c.CanonicalizationFailureCode.NON_CANONICAL_BYTES, 'canonical JSON is malformed') from exc
-    c._validate_data_only(decoded)
-    if baseline_encode(decoded) != value:
-        raise c._fail(c.CanonicalizationFailureCode.NON_CANONICAL_BYTES, 'bytes are not exact canonical encoding')
-    return decoded
+VECTORS = json.loads((Path(__file__).parent / 'data/stage4_baseline_1e226e52.json').read_text())
 
 
 def observed(call, value):
     try:
-        return ('ok', call(value))
+        result = call(value)
+        return {'kind': 'ok', 'value': result.hex() if isinstance(result, bytes) else result}
     except Exception as exc:
-        return ('error', type(exc), getattr(exc, 'failure_code', None), getattr(exc, 'detail', None), str(exc), exc.args)
+        code = getattr(exc, 'failure_code', None)
+        return {'kind': 'error', 'class': type(exc).__module__ + '.' + type(exc).__qualname__,
+                'failure_code': getattr(code, 'value', None), 'detail': getattr(exc, 'detail', None),
+                'str': str(exc), 'args': list(exc.args)}
 
 
 def samples():
@@ -70,15 +49,15 @@ def samples():
 
 def test_python_against_old_public_contract(monkeypatch):
     monkeypatch.setattr(c, '_native', None)
-    for value in samples():
-        assert observed(baseline_encode, value) == observed(
+    for index, value in enumerate(samples()):
+        assert VECTORS["encode"][index] == observed(
             lambda v: c.canonicalize_stage4_payload(v, profile_id=PROFILE, codec_id=CODEC), value)
 
 
-@pytest.mark.parametrize('raw', [b'{"a":1,"a":2}', b'\xff', b'{ "a": 1 }', b'NaN', b'Infinity', b'1e999',
-                                  b'"\\ud800"', b'{"e\\u0301":1,"\\u00e9":2}', b'-0.0', b'null'])
+@pytest.mark.parametrize('index,raw', list(enumerate([b'{"a":1,"a":2}', b'\xff', b'{ "a": 1 }', b'NaN', b'Infinity', b'1e999',
+                                  b'"\\ud800"', b'{"e\\u0301":1,"\\u00e9":2}', b'-0.0', b'null'])))
 @pytest.mark.parametrize('backend', ['python', 'native'])
-def test_decode_against_old_public_contract(raw, backend, monkeypatch):
+def test_decode_against_old_public_contract(index, raw, backend, monkeypatch):
     if backend == 'native' and c._native is None:
         if os.environ.get('SYNAPSE_REQUIRE_STAGE4_NATIVE') == '1':
             pytest.fail('Stage 4 native backend was required but not loaded')
@@ -86,7 +65,7 @@ def test_decode_against_old_public_contract(raw, backend, monkeypatch):
     if backend == 'python':
         monkeypatch.setattr(c, '_native', None)
     c._decoded_artifact_cache.clear()
-    assert observed(baseline_decode, raw) == observed(
+    assert VECTORS["decode"][index] == observed(
         lambda v: c.decode_stage4_canonical_bytes(v, profile_id=PROFILE, codec_id=CODEC), raw)
 
 
@@ -95,6 +74,6 @@ def test_loaded_native_against_old_public_contract():
         if os.environ.get('SYNAPSE_REQUIRE_STAGE4_NATIVE') == '1':
             pytest.fail('Stage 4 native backend was required but not loaded')
         pytest.skip('Stage 4 native backend is unavailable or Unicode-incompatible')
-    for value in samples():
-        assert observed(baseline_encode, value) == observed(
+    for index, value in enumerate(samples()):
+        assert VECTORS["encode"][index] == observed(
             lambda v: c.canonicalize_stage4_payload(v, profile_id=PROFILE, codec_id=CODEC), value)

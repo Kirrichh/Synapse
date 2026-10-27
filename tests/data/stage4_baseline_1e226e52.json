@@ -1,0 +1,281 @@
+{
+  "baseline_commit": "1e226e52a3400d4fb0336420569d8bab43c8f783",
+  "encode": [
+    {
+      "kind": "ok",
+      "value": "6e756c6c"
+    },
+    {
+      "kind": "ok",
+      "value": "7b2261223a5b22c3a9222c302e302c393030373139393235343734303939315d7d"
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "INVALID_CANONICAL_VALUE",
+      "detail": "stable codec rejected payload",
+      "str": "INVALID_CANONICAL_VALUE: stable codec rejected payload",
+      "args": [
+        "INVALID_CANONICAL_VALUE: stable codec rejected payload"
+      ]
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "INVALID_UTF8",
+      "detail": "$.bad contains a lone surrogate",
+      "str": "INVALID_UTF8: $.bad contains a lone surrogate",
+      "args": [
+        "INVALID_UTF8: $.bad contains a lone surrogate"
+      ]
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "INVALID_UTF8",
+      "detail": "$.e\u0301.bad contains a lone surrogate",
+      "str": "INVALID_UTF8: $.e\u0301.bad contains a lone surrogate",
+      "args": [
+        "INVALID_UTF8: $.e\u0301.bad contains a lone surrogate"
+      ]
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "INVALID_CANONICAL_VALUE",
+      "detail": "unsafe integer at $.bad",
+      "str": "INVALID_CANONICAL_VALUE: unsafe integer at $.bad",
+      "args": [
+        "INVALID_CANONICAL_VALUE: unsafe integer at $.bad"
+      ]
+    },
+    {
+      "kind": "error",
+      "class": "builtins.TypeError",
+      "failure_code": null,
+      "detail": null,
+      "str": "detail must be a non-empty safe string up to 256 characters",
+      "args": [
+        "detail must be a non-empty safe string up to 256 characters"
+      ]
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "INVALID_CANONICAL_VALUE",
+      "detail": "canonical payload is too deep",
+      "str": "INVALID_CANONICAL_VALUE: canonical payload is too deep",
+      "args": [
+        "INVALID_CANONICAL_VALUE: canonical payload is too deep"
+      ]
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "INVALID_CANONICAL_VALUE",
+      "detail": "canonical payload is too deep",
+      "str": "INVALID_CANONICAL_VALUE: canonical payload is too deep",
+      "args": [
+        "INVALID_CANONICAL_VALUE: canonical payload is too deep"
+      ]
+    },
+    {
+      "kind": "ok",
+      "value": "5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b6e756c6c5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d"
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "INVALID_CANONICAL_VALUE",
+      "detail": "canonical payload is too deep",
+      "str": "INVALID_CANONICAL_VALUE: canonical payload is too deep",
+      "args": [
+        "INVALID_CANONICAL_VALUE: canonical payload is too deep"
+      ]
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "INVALID_CANONICAL_VALUE",
+      "detail": "canonical payload is too deep",
+      "str": "INVALID_CANONICAL_VALUE: canonical payload is too deep",
+      "args": [
+        "INVALID_CANONICAL_VALUE: canonical payload is too deep"
+      ]
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "INVALID_CANONICAL_VALUE",
+      "detail": "non-finite float at $",
+      "str": "INVALID_CANONICAL_VALUE: non-finite float at $",
+      "args": [
+        "INVALID_CANONICAL_VALUE: non-finite float at $"
+      ]
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "INVALID_CANONICAL_VALUE",
+      "detail": "non-finite float at $",
+      "str": "INVALID_CANONICAL_VALUE: non-finite float at $",
+      "args": [
+        "INVALID_CANONICAL_VALUE: non-finite float at $"
+      ]
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "INVALID_CANONICAL_VALUE",
+      "detail": "non-finite float at $",
+      "str": "INVALID_CANONICAL_VALUE: non-finite float at $",
+      "args": [
+        "INVALID_CANONICAL_VALUE: non-finite float at $"
+      ]
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "INVALID_CANONICAL_VALUE",
+      "detail": "unsafe integer at $",
+      "str": "INVALID_CANONICAL_VALUE: unsafe integer at $",
+      "args": [
+        "INVALID_CANONICAL_VALUE: unsafe integer at $"
+      ]
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "INVALID_CANONICAL_VALUE",
+      "detail": "unsafe integer at $",
+      "str": "INVALID_CANONICAL_VALUE: unsafe integer at $",
+      "args": [
+        "INVALID_CANONICAL_VALUE: unsafe integer at $"
+      ]
+    },
+    {
+      "kind": "ok",
+      "value": "2d39303037313939323534373430393931"
+    },
+    {
+      "kind": "ok",
+      "value": "31652b333030"
+    },
+    {
+      "kind": "ok",
+      "value": "302e30"
+    },
+    {
+      "kind": "error",
+      "class": "builtins.TypeError",
+      "failure_code": null,
+      "detail": null,
+      "str": "detail must be a non-empty safe string up to 256 characters",
+      "args": [
+        "detail must be a non-empty safe string up to 256 characters"
+      ]
+    }
+  ],
+  "decode": [
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "NON_CANONICAL_BYTES",
+      "detail": "duplicate JSON object key",
+      "str": "NON_CANONICAL_BYTES: duplicate JSON object key",
+      "args": [
+        "NON_CANONICAL_BYTES: duplicate JSON object key"
+      ]
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "INVALID_UTF8",
+      "detail": "canonical bytes are not UTF-8",
+      "str": "INVALID_UTF8: canonical bytes are not UTF-8",
+      "args": [
+        "INVALID_UTF8: canonical bytes are not UTF-8"
+      ]
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "NON_CANONICAL_BYTES",
+      "detail": "bytes are not exact canonical encoding",
+      "str": "NON_CANONICAL_BYTES: bytes are not exact canonical encoding",
+      "args": [
+        "NON_CANONICAL_BYTES: bytes are not exact canonical encoding"
+      ]
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "INVALID_CANONICAL_VALUE",
+      "detail": "JSON constant NaN is forbidden",
+      "str": "INVALID_CANONICAL_VALUE: JSON constant NaN is forbidden",
+      "args": [
+        "INVALID_CANONICAL_VALUE: JSON constant NaN is forbidden"
+      ]
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "INVALID_CANONICAL_VALUE",
+      "detail": "JSON constant Infinity is forbidden",
+      "str": "INVALID_CANONICAL_VALUE: JSON constant Infinity is forbidden",
+      "args": [
+        "INVALID_CANONICAL_VALUE: JSON constant Infinity is forbidden"
+      ]
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "INVALID_CANONICAL_VALUE",
+      "detail": "non-finite float at $",
+      "str": "INVALID_CANONICAL_VALUE: non-finite float at $",
+      "args": [
+        "INVALID_CANONICAL_VALUE: non-finite float at $"
+      ]
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "INVALID_UTF8",
+      "detail": "$ contains a lone surrogate",
+      "str": "INVALID_UTF8: $ contains a lone surrogate",
+      "args": [
+        "INVALID_UTF8: $ contains a lone surrogate"
+      ]
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "INVALID_CANONICAL_VALUE",
+      "detail": "stable codec rejected payload",
+      "str": "INVALID_CANONICAL_VALUE: stable codec rejected payload",
+      "args": [
+        "INVALID_CANONICAL_VALUE: stable codec rejected payload"
+      ]
+    },
+    {
+      "kind": "error",
+      "class": "synapse.experiments.gold.canonicalization.CanonicalizationViolation",
+      "failure_code": "NON_CANONICAL_BYTES",
+      "detail": "bytes are not exact canonical encoding",
+      "str": "NON_CANONICAL_BYTES: bytes are not exact canonical encoding",
+      "args": [
+        "NON_CANONICAL_BYTES: bytes are not exact canonical encoding"
+      ]
+    },
+    {
+      "kind": "ok",
+      "value": null
+    }
+  ],
+  "provenance": {
+    "interpreter": "CPython 3.12",
+    "stage4_source_sha256": "a8123771e00e1f2e6c83f34420aab1d4bcd68a81b9facc40f2ff2008abb55a7b",
+    "stable_source_sha256": "067927ff6457820aa0b658a50c797c280703b6b43e285e9ac2e31f2ba4cb783a",
+    "method": "Recorded from the unmodified public API at the named commit; no candidate helpers are used."
+  }
+}

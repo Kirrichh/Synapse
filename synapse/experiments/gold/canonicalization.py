@@ -370,67 +370,8 @@ def _validate_data_only(value: object, *, path: str = "$", depth: int = 0,
     )
 
 
-def _canonicalize_data_only(value: object, *, path: str = "$", depth: int = 0,
-                            seen: dict[int, str] | None = None) -> object:
-    """Validate and project Stage 4 data in one deterministic traversal.
-
-    The public Stage 4 profile accepts only exact JSON data types.  Keeping
-    validation and NFC/key ordering in this projection avoids validating the
-    same tree and then recursively canonicalizing it a second time.
-    """
-    if depth > _MAX_CANONICAL_DEPTH:
-        raise _fail(CanonicalizationFailureCode.INVALID_CANONICAL_VALUE, "canonical payload is too deep")
-    if value is None or type(value) is bool:
-        return value
-    if type(value) is str:
-        return unicodedata.normalize("NFC", _text(value, path, nonempty=False))
-    if type(value) is int:
-        if not (SAFE_INTEGER_MIN <= value <= SAFE_INTEGER_MAX):
-            raise _fail(CanonicalizationFailureCode.INVALID_CANONICAL_VALUE, f"unsafe integer at {path}")
-        return value
-    if type(value) is float:
-        if not math.isfinite(value):
-            raise _fail(CanonicalizationFailureCode.INVALID_CANONICAL_VALUE, f"non-finite float at {path}")
-        return 0.0 if value == 0.0 else value
-    if type(value) not in (list, dict):
-        raise _fail(CanonicalizationFailureCode.INVALID_CANONICAL_VALUE,
-                    f"unsupported canonical type at {path}: {type(value).__name__}")
-    if seen is None:
-        seen = {}
-    identity = id(value)
-    if identity in seen:
-        raise _fail(CanonicalizationFailureCode.INVALID_CANONICAL_VALUE, f"cycle detected at {path}")
-    seen[identity] = path
-    try:
-        if type(value) is list:
-            return [_canonicalize_data_only(item, path=f"{path}[{index}]", depth=depth + 1, seen=seen)
-                    for index, item in enumerate(value)]
-        projected = {}
-        for key, item in value.items():
-            if type(key) is not str:
-                raise _fail(CanonicalizationFailureCode.INVALID_CANONICAL_VALUE, f"non-string key at {path}")
-            canonical_key = unicodedata.normalize("NFC", _text(key, f"{path}.<key>", nonempty=False))
-            if canonical_key in projected:
-                raise _fail(CanonicalizationFailureCode.INVALID_CANONICAL_VALUE,
-                            f"dict key collision after NFC normalization at {path}")
-            projected[canonical_key] = _canonicalize_data_only(
-                item, path=f"{path}.{canonical_key}", depth=depth + 1, seen=seen)
-        return {key: projected[key] for key in sorted(projected)}
-    finally:
-        seen.pop(identity, None)
-
-
 def _encode_stage4_data_only_python(value: object) -> bytes:
-    try:
-        projected = _canonicalize_data_only(value)
-        return json.dumps(projected, ensure_ascii=False, sort_keys=True,
-                          separators=(",", ":"), allow_nan=False).encode("utf-8")
-    except (ValueError, TypeError, RecursionError):
-        return _encode_stage4_legacy_failure(value)
-
-
-def _encode_stage4_legacy_failure(value: object) -> bytes:
-    """Reproduce the public validation order and failures on the slow path."""
+    """Validate the Stage 4 profile before the stable codec owns serialization."""
     _validate_data_only(value)
     try:
         encoded = _stable_canonical_bytes(value)
@@ -448,7 +389,7 @@ def _encode_stage4_data_only(value: object) -> bytes:
     try:
         return _native.encode(value)
     except _native.NativeError:
-        return _encode_stage4_legacy_failure(value)
+        return _encode_stage4_data_only_python(value)
 
 
 def native_runtime_identity() -> dict[str, str]:

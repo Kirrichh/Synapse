@@ -67,6 +67,12 @@ def test_exact_cli_new_oracle_and_resume(tmp_path, monkeypatch):
                     stream.write(json.dumps({'kind': 'behavior', 'scenario': 'initial', 'status': result['outcome_status'],
                         'route': local['planning_route'], 'patch_sha256': hashlib.sha256(local['diff_text'].encode()).hexdigest(),
                         'provider_calls': len(requests), 'oracle_resolved': True}) + '\n')
+                if os.environ.get('PR112_BENCH_INITIAL_ONLY') == '1':
+                    assert len(requests) == 1
+                    rows = [json.loads(line) for line in (tmp_path / 'harness/oracle_observations.jsonl').read_bytes().splitlines()]
+                    assert len(rows) == 1 and rows[0]['before_returncode'] != 0 and rows[0]['after_returncode'] == 0
+                    assert subprocess.run(['git', 'status', '--porcelain'], cwd=case.repo, check=True, capture_output=True, text=True).stdout == ''
+                    return
             if name == 'automatic':
                 assert local['planning_route'] == 'EXACT_MEMORY'
                 assert attempt.result.structured_outcome['payload']['verification']['payload']['c1']['oracle_resolved'] is True

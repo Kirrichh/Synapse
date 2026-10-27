@@ -97,6 +97,7 @@ def _adaptive_patches(request, store, court, task, selection):
     from .stage13.run_publication import REQUEST_SCHEMA_V4
     root = Path(request["source_snapshot"]["project_state_root"]) / "publications" / "prepared"
     patches = {}
+    task_references = {}
     paths = sorted({effect.subject_path for effect in task.effects if effect.subject_path is not None})
     for item in court["judged"][-MAX_PRIOR_EPISODES:]:
         if item["observation"]["requirement"]["paths"] != paths:
@@ -110,7 +111,10 @@ def _adaptive_patches(request, store, court, task, selection):
             origin = hashlib.sha256(canonical(assertion["origin"])).hexdigest()
             if admitted is None or assertion["status"] != "CONFIRMED" or origin not in admitted["support"]:
                 continue
-            historical_task_ref = replace(task, repository_revision_sha256=claim["repository_revision"]).reference.to_dict()
+            revision = claim["repository_revision"]
+            if revision not in task_references:
+                task_references[revision] = replace(task, repository_revision_sha256=revision).reference.to_dict()
+            historical_task_ref = task_references[revision]
             if historical_task_ref != claim["task_contract_ref"]:
                 continue
             digest = claim["patch_sha256"]

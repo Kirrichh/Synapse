@@ -581,7 +581,7 @@ def decode_stage4_canonical_bytes(
         raise
     except (json.JSONDecodeError, ValueError, TypeError) as exc:
         raise _fail(CanonicalizationFailureCode.NON_CANONICAL_BYTES, "canonical JSON is malformed") from exc
-    # One traversal validates the decoded data and produces its canonical form.
+    # Validate the decoded data and compare its canonical encoding with the input.
     encoded = _encode_stage4_data_only(decoded)
     if encoded != value:
         raise _fail(CanonicalizationFailureCode.NON_CANONICAL_BYTES, "bytes are not exact canonical encoding")

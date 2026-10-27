@@ -1,12 +1,12 @@
 """Stage 4 optimized codecs must retain the pre-optimization public contract."""
 import json
-import math
 import os
 from pathlib import Path
 
 import pytest
 
 from synapse.experiments.gold import canonicalization as c
+from acceptance.stage4.canonical_baseline_cases import DECODE_SAMPLES, fingerprint, samples
 
 
 PROFILE = c.STAGE4_CANONICAL_PROFILE_V1
@@ -27,35 +27,13 @@ def observed(call, value):
                 'str': str(exc), 'args': list(exc.args)}
 
 
-def samples():
-    cycle_list = []
-    cycle_list.append(cycle_list)
-    cycle_dict = {}
-    cycle_dict['self'] = cycle_dict
-    deep = None
-    for _ in range(130):
-        deep = [deep]
-    within = None
-    for _ in range(128):
-        within = [within]
-    over = [within]
-    return [None, {'a': ['e\u0301', -0.0, 2**53 - 1]}, {'é': 1, 'e\u0301': 2},
-            {'é': 1, 'e\u0301': 2, 'bad': '\ud800'}, {'e\u0301': {'bad': '\ud800'}},
-            {'é': 1, 'e\u0301': 2, 'bad': 2**60},
-            {'e\u0301' * 130: {'bad': '\ud800'}}, cycle_list, cycle_dict, within, over, deep,
-            math.nan, math.inf, -math.inf, 2**53, -(2**53), -(2**53 - 1), 1e300, -0.0,
-            type('x' * 300, (), {})()]
-
 
 def test_python_against_old_public_contract(monkeypatch):
     monkeypatch.setattr(c, '_native', None)
-    for index, value in enumerate(samples()):
-        assert VECTORS["encode"][index] == observed(
-            lambda v: c.canonicalize_stage4_payload(v, profile_id=PROFILE, codec_id=CODEC), value)
+    assert_encode_samples_match_vectors(samples())
 
 
-@pytest.mark.parametrize('index,raw', list(enumerate([b'{"a":1,"a":2}', b'\xff', b'{ "a": 1 }', b'NaN', b'Infinity', b'1e999',
-                                  b'"\\ud800"', b'{"e\\u0301":1,"\\u00e9":2}', b'-0.0', b'null'])))
+@pytest.mark.parametrize('index,raw', list(enumerate(DECODE_SAMPLES)))
 @pytest.mark.parametrize('backend', ['python', 'native'])
 def test_decode_against_old_public_contract(index, raw, backend, monkeypatch):
     if backend == 'native' and c._native is None:
@@ -65,8 +43,7 @@ def test_decode_against_old_public_contract(index, raw, backend, monkeypatch):
     if backend == 'python':
         monkeypatch.setattr(c, '_native', None)
     c._decoded_artifact_cache.clear()
-    assert VECTORS["decode"][index] == observed(
-        lambda v: c.decode_stage4_canonical_bytes(v, profile_id=PROFILE, codec_id=CODEC), raw)
+    assert_decode_sample_matches_vector(index, raw)
 
 
 def test_loaded_native_against_old_public_contract():
@@ -74,6 +51,45 @@ def test_loaded_native_against_old_public_contract():
         if os.environ.get('SYNAPSE_REQUIRE_STAGE4_NATIVE') == '1':
             pytest.fail('Stage 4 native backend was required but not loaded')
         pytest.skip('Stage 4 native backend is unavailable or Unicode-incompatible')
-    for index, value in enumerate(samples()):
-        assert VECTORS["encode"][index] == observed(
+    assert_encode_samples_match_vectors(samples())
+
+
+def assert_encode_samples_match_vectors(values):
+    assert len(values) == len(VECTORS['encode']) == len(VECTORS['encode_inputs'])
+    for value, expected, input_hash in zip(values, VECTORS['encode'], VECTORS['encode_inputs']):
+        assert fingerprint(value) == input_hash
+        assert expected == observed(
             lambda v: c.canonicalize_stage4_payload(v, profile_id=PROFILE, codec_id=CODEC), value)
+
+
+def assert_decode_sample_matches_vector(index, raw):
+    assert fingerprint(raw) == VECTORS["decode_inputs"][index]
+    assert VECTORS["decode"][index] == observed(
+        lambda v: c.decode_stage4_canonical_bytes(v, profile_id=PROFILE, codec_id=CODEC), raw)
+
+
+def test_baseline_vectors_are_bound_to_their_inputs(monkeypatch):
+    monkeypatch.setattr(c, '_native', None)
+    values = samples()
+    assert VECTORS['encode'][7] == VECTORS['encode'][8]
+    assert_encode_samples_match_vectors(values)
+    swapped = values.copy()
+    swapped[7], swapped[8] = swapped[8], swapped[7]
+    with pytest.raises(AssertionError):
+        assert_encode_samples_match_vectors(swapped)
+    replaced = values.copy()
+    replaced[7] = values[8]
+    with pytest.raises(AssertionError):
+        assert_encode_samples_match_vectors(replaced)
+
+
+def test_decode_vectors_reject_reordered_inputs_with_identical_refusals(monkeypatch):
+    monkeypatch.setattr(c, '_native', None)
+    assert len(DECODE_SAMPLES) == len(VECTORS['decode']) == len(VECTORS['decode_inputs'])
+    assert VECTORS['decode'][2] == VECTORS['decode'][8]
+    reordered = DECODE_SAMPLES.copy()
+    reordered[2], reordered[8] = reordered[8], reordered[2]
+    with pytest.raises(AssertionError):
+        assert_decode_sample_matches_vector(2, reordered[2])
+    with pytest.raises(AssertionError):
+        assert_decode_sample_matches_vector(8, reordered[8])

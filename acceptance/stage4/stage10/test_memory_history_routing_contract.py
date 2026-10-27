@@ -181,6 +181,7 @@ def test_current_exact_candidate_is_not_ambiguous_with_applicable_history():
         information=information(source=SOURCE, revision=REVISIONS[-1], extra=current))
     combined = propose_verified_memory(task=public, information=information(source=SOURCE,
         revision=REVISIONS[-1], extra=current + _historical_items(history, "adaptive-verified-patch-memory/v1")))
+    assert alone is not None
     assert alone["planning_route"] == "EXACT_MEMORY"
     assert combined is not None
     assert combined["planning_route"] == "EXACT_MEMORY"
@@ -190,7 +191,9 @@ def test_current_exact_candidate_is_not_ambiguous_with_applicable_history():
     # historical declaration a current exact candidate.
     observed = information(source=SOURCE, revision=REVISIONS[-1], extra=current
         + _historical_items(history, "adaptive-verified-patch-memory/v1") + [feedback(historical_patch, True)])
-    assert propose_verified_memory(task=public, information=observed)["diff_text"] == current_patch
+    observed_proposal = propose_verified_memory(task=public, information=observed)
+    assert observed_proposal is not None
+    assert observed_proposal["diff_text"] == current_patch
 
 
 def test_two_current_exact_candidates_are_still_ambiguous():

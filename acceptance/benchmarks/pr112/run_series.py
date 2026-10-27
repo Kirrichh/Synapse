@@ -29,6 +29,12 @@ def summary(rows):
                   'min': min(item[key] for item in rows), 'max': max(item[key] for item in rows)} for key in metrics}
 
 
+def require_no_bytecode(roots):
+    for source in roots.values():
+        if any(source.rglob('*.pyc')):
+            raise RuntimeError('source tree contains bytecode: ' + str(source))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base', type=Path, required=True)
@@ -45,6 +51,7 @@ def main():
     if args.pairs < 1:
         parser.error('pairs must be positive')
     roots = {'base': args.base.resolve(), 'candidate': args.candidate.resolve()}
+    require_no_bytecode(roots)
     def inventory(executable, source, addon=None):
         script = 'import json,platform,unicodedata,importlib.metadata; from synapse.experiments.gold import canonicalization as c; print(json.dumps({\"python\":platform.python_version(),\"unicode\":unicodedata.unidata_version,\"distributions\":sorted((d.metadata[\"Name\"],d.version) for d in importlib.metadata.distributions()),\"native\":c.native_runtime_identity() if hasattr(c,\"native_runtime_identity\") else {\"implementation\":\"python\"}}))'
         env = {**os.environ, 'PYTHONPATH': os.pathsep.join([str(source)] + ([str(addon)] if addon else [])), 'PYTHONDONTWRITEBYTECODE': '1'}
@@ -65,6 +72,7 @@ def main():
                     'driver_unicode': unicodedata.unidata_version,
                     'network': 'deterministic local HTTP provider; no external provider',
                     'filesystem_cache': 'uncontrolled; not described as cold',
+                    'source_bytecode': 'no .pyc files in either source tree; Python -B prevents writes',
                     'processes': 'each CLI call is a new process; first and repeated resume are separate calls',
                     'cpu': 'wait4 user plus system time for the CLI and children it waited for',
                     'rss': 'wait4 maximum RSS of an individual process in the waited tree, not simultaneous aggregate',
@@ -89,7 +97,7 @@ def main():
                     continue
                 source = roots['base'] if member == 'base' else roots['candidate']
                 executable = args.python
-                pythonpath = os.pathsep.join([str(source)] + ([str(args.native_addon.resolve())] if member == 'candidate_native' else []))
+                pythonpath = os.pathsep.join([str(HERE), str(source)] + ([str(args.native_addon.resolve())] if member == 'candidate_native' else []))
                 with tempfile.TemporaryDirectory(prefix='synapse-benchmark-') as temporary:
                     root = Path(temporary)
                     trace = root / 'trace.jsonl'
@@ -97,7 +105,7 @@ def main():
                            'PYTEST_DISABLE_PLUGIN_AUTOLOAD': '1', 'PR112_BENCH_TRACE': str(trace),
                            'GIT_AUTHOR_DATE': '2020-01-01T00:00:00+00:00',
                            'GIT_COMMITTER_DATE': '2020-01-01T00:00:00+00:00'}
-                    test = subprocess.run([str(executable), '-B', '-m', 'pytest', '-q', '-p', 'no:cacheprovider',
+                    test = subprocess.run([str(executable), '-B', '-m', 'pytest', '-q', '-p', 'no:cacheprovider', '-p', 'benchmark_plugin',
                         '--basetemp', str(root / 'pytest'), str(HERE / 'cli_case.py')],
                         cwd=source, env=env, capture_output=True, text=True, timeout=7200)
                     if test.returncode:

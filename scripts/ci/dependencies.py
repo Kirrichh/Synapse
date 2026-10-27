@@ -86,6 +86,8 @@ def add_runtime_edges(graph: dict[str, set[str]], files: set[str]) -> None:
     for consumer in OWNERSHIP_READERS & graph.keys():
         graph[consumer].update(unknown_governance)
     for path in graph:
+        if path == 'synapse/experiments/gold/canonicalization.py':
+            graph[path].update(name for name in files if name.startswith('native/stage4_canonical/'))
         if path.startswith('synapse/machine/'):
             graph[path].update(name for name in files if name.startswith('synapse/machine/') and not name.endswith('.py'))
         if path == 'acceptance/ui_bridge/machine_peer.py':

@@ -1,5 +1,6 @@
 {
-  "method": "Each mutation was applied in an isolated source copy; the named test failed, and the source was restored.",
+  "tested_commit": "e0188add452d6478dc4c65814ba0947229769812",
+  "method": "Each mutant was applied to a clean archive of the named commit after its named baseline test passed. The observed failures were assertions, an explicit pytest.fail, or the expected irrelevant-history PersistenceViolation; collection and import failures were rejected.",
   "manual_mutants": [
     {
       "id": "line-boundary",
@@ -7,7 +8,9 @@
       "original": "(?<![^\\n])(?=",
       "mutant": "(?=",
       "detecting_test": "acceptance/stage4/stage10/test_adaptive_line_boundaries.py",
-      "result": "killed"
+      "result": "killed",
+      "baseline_summary": "9 passed in 0.02s",
+      "mutant_summary": "2 failed, 7 passed in 0.04s"
     },
     {
       "id": "counterfactual-route",
@@ -15,7 +18,9 @@
       "original": "if actual.get(\"planning_route\") in {\"EXACT_MEMORY\", \"ADAPT_MEMORY\"} else",
       "mutant": "if False else",
       "detecting_test": "acceptance/stage4/stage10/test_adaptive_memory_dispatch.py::test_influence_ignores_irrelevant_rejected_hypothesis",
-      "result": "killed"
+      "result": "killed",
+      "baseline_summary": "1 passed in 2.58s",
+      "mutant_summary": "1 failed in 2.58s"
     },
     {
       "id": "history-path-filter",
@@ -23,7 +28,9 @@
       "original": "if item[\"observation\"][\"requirement\"][\"paths\"] != paths:",
       "mutant": "if False:",
       "detecting_test": "acceptance/stage4/stage16/test_project_court_contract.py::test_adaptive_history_skips_incompatible_paths_before_opening_artifacts",
-      "result": "killed"
+      "result": "killed",
+      "baseline_summary": "1 passed in 1.26s",
+      "mutant_summary": "1 failed in 1.30s"
     },
     {
       "id": "publication-request-binding",
@@ -31,7 +38,9 @@
       "original": "if request_reference(request).to_dict() != result[\"request_ref\"]:",
       "mutant": "if False:",
       "detecting_test": "acceptance/stage4/stage16/test_episode_learning_contract.py::test_consolidation_rejects_replaced_request_after_result_read",
-      "result": "killed"
+      "result": "killed",
+      "baseline_summary": "1 passed in 1.02s",
+      "mutant_summary": "1 failed in 1.20s"
     },
     {
       "id": "historical-feedback-provenance",
@@ -39,31 +48,30 @@
       "original": "items.append(_information_item({\"historical_patch_observation\": {\n            \"repository_revision\": revision, \"patch_sha256\": digest, \"oracle_resolved\": True}},\n            role=\"HISTORICAL_EXECUTION_OBSERVATION\"))",
       "mutant": "items.append(_information_item({\"evaluated_patch_sha256\": digest, \"oracle_resolved\": True}, role=\"EXECUTION_OBSERVATION\"))",
       "detecting_test": "acceptance/stage4/stage10/test_memory_history_routing_contract.py::test_historical_success_is_not_current_execution_feedback",
-      "result": "killed"
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.05s",
+      "mutant_summary": "1 failed in 0.06s"
     },
     {
       "id": "cache-structural-budget",
       "source": "synapse/experiments/gold/canonicalization.py",
       "original": "or self._retained_bytes > self.max_retained_bytes):",
       "mutant": "or False):",
-      "detecting_test": "tests/test_stage4_decode_cache_budget.py::test_structural_budget_evicts_and_rejects_large_graphs",
-      "result": "killed"
+      "detecting_test": "tests/test_stage4_decode_cache_budget.py::test_structural_budget_evicts_old_entries",
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.27s",
+      "mutant_summary": "1 failed in 0.31s"
     },
     {
-      "id": "cache-mutation-isolation",
+      "id": "cache-thaw-list-content",
       "source": "synapse/experiments/gold/canonicalization.py",
       "original": "return [_thaw_decoded(item) for item in payload]",
       "mutant": "return []",
       "detecting_test": "tests/test_stage4_decode_cache_budget.py::test_repeated_fill_evict_and_copy_isolation",
-      "result": "killed"
-    },
-    {
-      "id": "canonical-failure-fallback",
-      "source": "synapse/experiments/gold/canonicalization.py",
-      "original": "return _encode_stage4_legacy_failure(value)",
-      "mutant": "raise",
-      "detecting_test": "tests/test_stage4_canonical_differential.py::test_python_against_old_public_contract",
-      "result": "killed"
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.30s",
+      "mutant_summary": "1 failed in 0.33s",
+      "note": "The empty-list mutation is caught by the decoded-content assertion; it does not independently prove mutation isolation."
     },
     {
       "id": "unit-context-check",
@@ -71,7 +79,9 @@
       "original": "value.context_sha256 != _compute_unit_context_sha256(value.core, value.content_key, core_payload=core_payload)",
       "mutant": "False",
       "detecting_test": "tests/test_stage4_gold_behavior.py::test_s4_p2_acc_content_05_cached_unit_context_cannot_replace_full_validation",
-      "result": "killed"
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.34s",
+      "mutant_summary": "1 failed in 0.34s"
     },
     {
       "id": "current-exact-admission",
@@ -79,7 +89,9 @@
       "original": "profile=LOCAL_EDIT_PROFILE_V4, admitted=current_admitted)",
       "mutant": "profile=LOCAL_EDIT_PROFILE_V4, admitted=None)",
       "detecting_test": "acceptance/stage4/stage10/test_memory_history_routing_contract.py::test_current_exact_candidate_is_not_ambiguous_with_applicable_history",
-      "result": "killed"
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.06s",
+      "mutant_summary": "1 failed in 0.06s"
     },
     {
       "id": "conflicting-current-feedback",
@@ -87,7 +99,9 @@
       "original": "or candidate[\"prior_outcome\"] is not None or candidate[\"feedback\"] != \"NO_CONFLICT\"",
       "mutant": "or candidate[\"prior_outcome\"] is not None",
       "detecting_test": "acceptance/stage4/stage10/test_adaptive_memory_proposal_contract.py::test_conflicting_current_feedback_never_admits_adapted_candidate",
-      "result": "killed"
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.05s",
+      "mutant_summary": "1 failed in 0.06s"
     },
     {
       "id": "historical-revision-binding",
@@ -95,7 +109,9 @@
       "original": "if (revision, digest) in historical}",
       "mutant": "if any(d == digest for _, d in historical)}",
       "detecting_test": "acceptance/stage4/stage10/test_memory_history_routing_contract.py::test_historical_observation_must_match_the_declared_revision",
-      "result": "killed"
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.05s",
+      "mutant_summary": "1 failed in 0.06s"
     },
     {
       "id": "unused-prepared-read",
@@ -103,7 +119,9 @@
       "original": "        request = read_prepared_publication_request(root, publication.transaction_id)",
       "mutant": "        read_committed_snapshot_transaction(root / \"prepared\", transaction_id=publication.transaction_id)\n        request = read_prepared_publication_request(root, publication.transaction_id)",
       "detecting_test": "acceptance/stage4/stage16/test_episode_learning_contract.py::test_consolidation_does_not_open_an_unused_prepared_snapshot",
-      "result": "killed"
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.97s",
+      "mutant_summary": "1 failed in 1.05s"
     },
     {
       "id": "untrusted-reference-observation",
@@ -111,17 +129,78 @@
       "original": "item[\"role\"] == \"HISTORICAL_EXECUTION_OBSERVATION\"\n                and set(value)",
       "mutant": "True\n                and set(value)",
       "detecting_test": "acceptance/stage4/stage10/test_memory_history_routing_contract.py::test_ordinary_reference_cannot_claim_historical_oracle_evidence",
-      "result": "killed"
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.04s",
+      "mutant_summary": "1 failed in 0.06s"
+    },
+    {
+      "id": "native-selection-edge",
+      "source": "scripts/ci/dependencies.py",
+      "original": "        if path == 'synapse/experiments/gold/canonicalization.py':\n            graph[path].update(name for name in files if name.startswith('native/stage4_canonical/'))\n",
+      "mutant": "",
+      "detecting_test": "acceptance/ci/test_verification_gate.py::test_codec_changes_select_and_require_native[native/stage4_canonical/src/lib.rs]",
+      "result": "killed",
+      "baseline_summary": "1 passed in 5.63s",
+      "mutant_summary": "1 failed in 5.71s"
+    },
+    {
+      "id": "historical-reference-memo",
+      "source": "synapse/experiments/gold/project_agents.py",
+      "original": "if revision not in task_references:",
+      "mutant": "if True:",
+      "detecting_test": "acceptance/stage4/stage16/test_adaptive_task_identity_contract.py::test_historical_task_reference_is_derived_once_per_revision",
+      "result": "killed",
+      "baseline_summary": "1 passed in 1.05s",
+      "mutant_summary": "1 failed in 1.02s"
+    },
+    {
+      "id": "encode-input-binding",
+      "source": "tests/test_stage4_canonical_differential.py",
+      "original": "        assert fingerprint(value) == input_hash\n",
+      "mutant": "        pass\n",
+      "detecting_test": "tests/test_stage4_canonical_differential.py::test_baseline_vectors_are_bound_to_their_inputs",
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.40s",
+      "mutant_summary": "1 failed in 0.34s"
+    },
+    {
+      "id": "decode-input-binding",
+      "source": "tests/test_stage4_canonical_differential.py",
+      "original": "    assert fingerprint(raw) == VECTORS[\"decode_inputs\"][index]\n",
+      "mutant": "    pass\n",
+      "detecting_test": "tests/test_stage4_canonical_differential.py::test_decode_vectors_reject_reordered_inputs_with_identical_refusals",
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.30s",
+      "mutant_summary": "1 failed in 0.42s"
+    },
+    {
+      "id": "bytecode-preflight",
+      "source": "acceptance/benchmarks/pr112/run_series.py",
+      "original": "    require_no_bytecode(roots)\n",
+      "mutant": "",
+      "detecting_test": "acceptance/ci/test_benchmark_isolation.py::test_benchmark_rejects_unequal_source_bytecode_before_running",
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.06s",
+      "mutant_summary": "1 failed in 0.08s"
+    },
+    {
+      "id": "explicit-benchmark-instrumentation",
+      "source": "acceptance/benchmarks/pr112/benchmark_plugin.py",
+      "original": "    monkeypatch.setattr(subprocess, 'run', measured)\n",
+      "mutant": "",
+      "detecting_test": "acceptance/ci/test_benchmark_isolation.py::test_instrumentation_is_active_only_when_explicitly_requested",
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.76s",
+      "mutant_summary": "1 failed in 0.86s"
     }
   ],
-  "ub_mode_mutator": {
-    "source": "synapse/worker/local_edits.py",
-    "lines": [
-      351
-    ],
-    "test": "acceptance/stage4/stage10/test_adaptive_line_boundaries.py",
-    "executed": 2,
-    "killed": 2,
-    "scope_note": "Other discovered sites were not run; this is not a full mutation score."
-  }
+  "excluded_mutants": [
+    {
+      "id": "canonical-failure-fallback",
+      "source": "synapse/experiments/gold/canonicalization.py",
+      "reason": "The _encode_stage4_legacy_failure function and call were removed; the historical mutation no longer applies and was not run or counted."
+    }
+  ],
+  "scope_note": "The final change updates only evidence files after this tested commit. This is a targeted campaign, not a full mutation score.",
+  "tested_tree": "30cd3de34486f284bfc6b8b2f46354e78ab7175c"
 }

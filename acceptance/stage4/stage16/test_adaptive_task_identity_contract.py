@@ -75,3 +75,24 @@ def test_same_task_other_revision_retains_the_verified_patch(tmp_path, monkeypat
     store = type('Store', (), {'read': lambda self, receipt: {'kind': 'OUTCOME_RECORDED', 'payload': {}}})()
     assert project_agents._adaptive_patches(request, store, court, task, 'ALL') == [
         {'repository_revision': REVISION, 'patch_sha256': digest, 'diff_text': raw.decode()}]
+
+
+def test_historical_task_reference_is_derived_once_per_revision(tmp_path, monkeypatch):
+    task = plan_world()[3].task_contract
+    request, court = case(tmp_path, replace(task, repository_revision_sha256=REVISION, task_id='other'))
+    second = replace(task, repository_revision_sha256='d' * 40, task_id='other')
+    _, other = case(tmp_path, second, digest='e' * 64)
+    court['judged'][0]['learning']['assertions'] *= 3
+    court['judged'].append(other['judged'][0])
+    court['subjects']['other'] = other['subjects']['s']
+    original = project_agents.replace
+    revisions = []
+
+    def tracked(value, **changes):
+        revisions.append(changes['repository_revision_sha256'])
+        return original(value, **changes)
+
+    monkeypatch.setattr(project_agents, 'replace', tracked)
+    monkeypatch.setattr(project_agents, 'reopen_completed_run', lambda *a, **kw: pytest.fail('unrelated run reopened'))
+    assert project_agents._adaptive_patches(request, None, court, task, 'ALL') == []
+    assert revisions == [REVISION, 'd' * 40]

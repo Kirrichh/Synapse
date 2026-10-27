@@ -48,6 +48,7 @@ def test_repeated_fill_evict_and_copy_isolation():
         cache.put(raw, {'items': [iteration, {'value': 'x'}]})
         frozen = cache.get(raw)
         value = c._thaw_decoded(frozen)
+        assert value['items'] == [iteration, {'value': 'x'}]
         value['items'][1]['value'] = 'altered'
         assert c._thaw_decoded(cache.get(raw))['items'][1]['value'] == 'x'
         assert cache.info().retained_bytes <= 3000

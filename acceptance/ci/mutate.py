@@ -28,9 +28,14 @@ def main():
             root = Path(temporary)
             for directory in ('scripts/ci', 'acceptance/ci'):
                 shutil.copytree(ROOT / directory, root / directory, ignore=shutil.ignore_patterns('__pycache__'))
+            workflow = root / '.github/workflows/stage4-gold.yml'
+            workflow.parent.mkdir(parents=True)
+            shutil.copy2(ROOT / '.github/workflows/stage4-gold.yml', workflow)
             # The manifest case executes the existing architecture check unchanged.
             (root / 'tests').mkdir()
             shutil.copy2(ROOT / 'tests/test_stage4_gold_canonical_entrypoint.py', root / 'tests')
+            if execute(root) != 'PASS':
+                raise SystemExit('Mutation workspace baseline failed: ' + seed['id'])
             path = root / seed['target']
             source = path.read_text()
             if source.count(seed['before']) != 1:

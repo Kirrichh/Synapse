@@ -39,3 +39,31 @@ def test_declared_check_must_finish_successfully(status):
     assert run(json.dumps(PLAN), results).returncode != 0
     results['related'] = {'result': 'success'}
     assert run(json.dumps(PLAN), results).returncode == 0
+
+
+def test_selected_native_result_is_available_to_and_required_by_final_gate():
+    import yaml
+    from select_tests import matrices
+
+    workflow = yaml.safe_load((GATE.parents[2] / '.github/workflows/stage4-gold.yml').read_text())
+    groups, _ = matrices(workflow, {'tests/test_stage4_gold_native.py'}, set())
+    assert groups['stage4-native']['enabled']
+    needs = workflow['jobs']['gold-slow']['needs']
+    plan = {**PLAN, 'groups': {'stage4-native': groups['stage4-native'],
+                                'unrelated': {'enabled': False}}}
+    results = {name: {'result': 'success'} for name in needs}
+    results['unrelated'] = {'result': 'skipped'}
+    assert run(json.dumps(plan), results).returncode == 0
+    for status in ('failure', 'cancelled', 'skipped', None):
+        changed = dict(results)
+        if status is None:
+            changed.pop('stage4-native', None)
+        else:
+            changed['stage4-native'] = {'result': status}
+        assert run(json.dumps(plan), changed).returncode != 0
+
+
+def test_unselected_native_is_not_required_by_gate():
+    plan = {**PLAN, 'groups': {'stage4-native': {'enabled': False}}}
+    assert run(json.dumps(plan), {'select': {'result': 'success'},
+                                  'stage4-native': {'result': 'skipped'}}).returncode == 0

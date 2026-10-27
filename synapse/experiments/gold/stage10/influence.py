@@ -380,8 +380,7 @@ def observe_local_context_influence(*, receipt, invocation, worker_result):
         comparisons.append({"removed_role": role,
             "removed_item_sha256": [hashlib.sha256(encode_canonical(item)).hexdigest() for item in items if item["role"] == role],
             "retained_information_sha256": restricted.sha256, "selection": changed,
-            "selection_changed": (changed != original or alternative is not None
-                                  and alternative.get("planning_route") != actual.get("planning_route"))})
+            "selection_changed": changed != original})
     # Proposal/edit strings are literal UTF-8, including non-NFC source text.
     raw_result = json.dumps(actual, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     payload = {"schema_version": LOCAL_INFLUENCE_OBSERVATION_V1,

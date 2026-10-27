@@ -4,7 +4,7 @@ from dataclasses import replace
 import pytest
 
 from acceptance.stage4.stage10._builders import hash_ref, plan_world
-from acceptance.stage4.stage10.test_local_edit_contract import encoded
+from acceptance.stage4.stage10.test_local_edit_contract import encoded, feedback
 from synapse.canonical_values import canonical_json_bytes
 from synapse.experiments.gold import point_of_use as P
 from synapse.experiments.gold.canonicalization import RefKind
@@ -25,7 +25,7 @@ from synapse.worker.input_contract import LocalInformationInput, WorkerTaskInput
 from synapse.worker.local_edits import (
     LOCAL_EDIT_PROFILE_V5,
     LOCAL_EDIT_PROPOSAL_V1,
-    propose_local_edits,
+    propose_local_edits, propose_verified_memory,
 )
 
 
@@ -62,7 +62,7 @@ def _information(items):
         "schema_version": "synapse.worker.local-information-input/v1", "items": items}))
 
 
-def _memory_information(current_task, *, source=CURRENT_SOURCE, extra=()):
+def _memory_information(current_task, *, source=CURRENT_SOURCE, extra=(), exact=False):
     path = current_task["effects"][0]["subject_path"]
     old_task = replace_task_revision(current_task, OLD_REVISION)
     old_information = _information([_source_item(old_task, OLD_SOURCE)])
@@ -71,6 +71,13 @@ def _memory_information(current_task, *, source=CURRENT_SOURCE, extra=()):
         proposal={"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": [{"edits": [{
             "path": path, "old": "value = old", "new": "value = new"}]}]},
     )["diff_text"]
+    current_patch = propose_local_edits(
+        task=WorkerTaskInput(canonical_json_bytes(current_task)),
+        information=_information([_source_item(current_task, source)]),
+        proposal={"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": [{"edits": [{
+            "path": path, "old": "value = old", "new": "value = new"}]}]},
+    )["diff_text"] if exact else None
+    digest = __import__('hashlib').sha256(current_patch.encode()).hexdigest() if exact else None
     memory_items = [
         {"role": "REFERENCE", "media_type": "application/json",
          "content_base64url": encoded(canonical_json_bytes({
@@ -78,7 +85,7 @@ def _memory_information(current_task, *, source=CURRENT_SOURCE, extra=()):
              "procedural_memory": {
                  "profile": "exact-verified-patch-memory/v1",
                  "generalization": "NOT_ESTABLISHED",
-                 "patches": [],
+                 "patches": [digest] if exact else [],
              }}))},
         *_adaptive_memory_items({"court": {"adaptive_patches": [{
             "repository_revision": OLD_REVISION,
@@ -86,6 +93,9 @@ def _memory_information(current_task, *, source=CURRENT_SOURCE, extra=()):
             "diff_text": old_patch,
         }]}}),
     ]
+    if exact:
+        memory_items.extend([feedback(current_patch, True), {"role": "REFERENCE", "media_type": "text/plain",
+                            "content_base64url": encoded(current_patch.encode())}])
     return _information([_source_item(current_task, source), *memory_items, *extra])
 
 
@@ -93,11 +103,11 @@ def replace_task_revision(task, revision):
     return {**task, "repository_revision": revision}
 
 
-def _dispatch(stage10_delivery_world, *, source=CURRENT_SOURCE, extra=()):
+def _dispatch(stage10_delivery_world, *, source=CURRENT_SOURCE, extra=(), exact=False):
     world = stage10_delivery_world
     previous = world.context
     current_task = WorkerTaskInput(previous.delivery_envelope.prompt_text.encode()).to_dict()
-    information = _memory_information(current_task, source=source, extra=extra)
+    information = _memory_information(current_task, source=source, extra=extra, exact=exact)
     snapshot = hash_ref(RefKind.SOURCE_EVIDENCE, "adaptive-memory-source",
                         schema="synapse.stage4.gold.source-experience-snapshot/v1")
     experience = {"snapshot_ref": snapshot.to_dict(), "projection_profile": SOURCE_DELIVERY_PROFILE_V2,
@@ -173,4 +183,25 @@ def test_influence_ignores_irrelevant_rejected_hypothesis(stage10_delivery_world
     assert not comparisons["REJECTED_HYPOTHESIS"]["selection_changed"]
     assert comparisons["REFERENCE"]["selection_changed"]
     assert comparisons["HISTORICAL_EXECUTION_OBSERVATION"]["selection_changed"]
+    assert spy.calls == 0
+
+
+def test_route_change_without_selection_change_is_not_influence(stage10_delivery_world):
+    adapter, spy, arguments = _dispatch(stage10_delivery_world, exact=True)
+    dispatched = adapter.dispatch(**arguments)
+    local = dispatched.worker_result.diagnostics['local_edit_result']
+    assert local['planning_route'] == 'EXACT_MEMORY'
+    invocation = dispatched.invocation
+    information = LocalInformationInput(invocation.information_text.encode())
+    restricted = _information([item for item in information.to_dict()['items']
+                               if item['role'] != 'EXECUTION_OBSERVATION'])
+    alternative = propose_verified_memory(task=WorkerTaskInput(invocation.payload_text.encode()),
+                                          information=restricted, profile=LOCAL_EDIT_PROFILE_V5)
+    assert alternative['planning_route'] == 'ADAPT_MEMORY'
+    assert (alternative['status'], alternative['diff_text']) == (local['status'], local['diff_text'])
+    observation = observe_local_context_influence(receipt=dispatched.delivery_receipt,
+        invocation=invocation, worker_result=dispatched.worker_result)
+    comparisons = {item['removed_role']: item for item in observation.payload(dispatched.delivery_receipt)['comparisons']}
+    assert not comparisons['EXECUTION_OBSERVATION']['selection_changed']
+    assert comparisons['REFERENCE']['selection_changed']
     assert spy.calls == 0

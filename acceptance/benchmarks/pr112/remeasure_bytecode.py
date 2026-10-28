@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unicodedata
 
-from run_series import digest_tree, require_no_bytecode
+from run_series import digest_tree, require_no_bytecode, verify_measured_sources
 
 HERE = Path(__file__).resolve().parent
 
@@ -30,6 +30,7 @@ def main():
         parser.error('pairs must be positive')
     roots = {'base': args.base.resolve(), 'candidate': args.candidate.resolve()}
     require_no_bytecode(roots)
+    identities, harness_hash, sources_unchanged = verify_measured_sources(roots, args.base_sha, args.candidate_sha)
     artifact = args.artifact.resolve()
     artifact_digest = digest_tree(artifact)
     inventory_script = ('import importlib.metadata,json,platform,unicodedata; '
@@ -52,7 +53,8 @@ def main():
                'filesystem_cache': 'uncontrolled; not called cold',
                'cpu': 'wait4 user plus system for the CLI and children it waited for',
                'rss': 'wait4 maximum of an individual process, not aggregate process-tree peak',
-               'artifact_sha256': artifact_digest, 'runs': []}
+               'artifact_sha256': artifact_digest, 'source_identities': identities,
+               'harness_sha256': harness_hash, 'runs': []}
     expected_replay = None
     expected_behavior = None
     for pair in range(args.pairs):
@@ -91,6 +93,7 @@ def main():
                     expected_replay = value
                 elif value != expected_replay:
                     raise RuntimeError(f'{name} pair {pair+1}: replay differs')
+                sources_unchanged()
                 replay_row = json.loads(metric.read_text())
                 replay_row.update(kind='cli', scenario='replay-mock')
                 events.append(replay_row)

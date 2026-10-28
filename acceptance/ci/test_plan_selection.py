@@ -109,16 +109,21 @@ def test_report_and_benchmark_changes_select_their_protective_cases(tmp_path):
                                    'selector_campaign': {'snapshot_files': {snapshot_only: 'hash'}}})
                         if name == report else '')
     workflow = {'jobs': {}}
-    for changed in (report, source, case, snapshot_only):
+    plan = build_plan(tmp_path, files, {report}, workflow)
+    assert evidence in plan['additional']
+    assert 'additional-tests' in required_jobs(plan)
+    for result in ({}, {'result': 'failure'}, {'result': 'cancelled'}, {'result': 'skipped'}):
+        statuses = {'select': {'result': 'success'}, 'additional-tests': result}
+        assert not check(statuses, required_jobs(plan))
+    assert check({'select': {'result': 'success'}, 'additional-tests': {'result': 'success'}}, required_jobs(plan))
+    # The record is read from its pinned commit; later work on what it
+    # describes must neither invalidate it nor be gated by it.
+    for changed in (source, case, snapshot_only):
         plan = build_plan(tmp_path, files, {changed}, workflow)
-        assert evidence in plan['additional']
-        assert 'additional-tests' in required_jobs(plan)
-        for result in ({}, {'result': 'failure'}, {'result': 'cancelled'}, {'result': 'skipped'}):
-            statuses = {'select': {'result': 'success'}, 'additional-tests': result}
-            assert not check(statuses, required_jobs(plan))
-        assert check({'select': {'result': 'success'}, 'additional-tests': {'result': 'success'}}, required_jobs(plan))
-    plan = build_plan(tmp_path, files, {harness}, workflow)
-    assert {isolation, behavior}.issubset(plan['additional'])
+        assert evidence not in plan['tests']
+    for changed in (harness, 'pytest.ini'):
+        plan = build_plan(tmp_path, files | {'pytest.ini'}, {changed}, workflow)
+        assert {isolation, behavior}.issubset(plan['additional'])
     plan = build_plan(tmp_path, files, {'docs/unrelated.md'}, workflow)
     assert not {evidence, isolation, behavior}.intersection(plan['tests'])
 

@@ -39,9 +39,17 @@ def execute(root, *, include_details=False, cases=CAMPAIGN_CASES):
     return ('INVALID', output) if include_details else 'INVALID'
 
 
+def report(output):
+    """Show the captured pytest result so a CI log names what failed."""
+    tail = output.strip().splitlines()[-60:]
+    print('\n'.join('  ' + line for line in tail) or '  (no pytest output; the run timed out)', flush=True)
+
+
 def main():
-    if execute(ROOT) != 'PASS':
-        raise SystemExit('Unmutated selection acceptance failed.')
+    status, output = execute(ROOT, include_details=True)
+    if status != 'PASS':
+        report(output)
+        raise SystemExit('Unmutated selection acceptance failed: ' + status)
     results = []
     with tempfile.TemporaryDirectory(prefix='synapse-ci-mutation-') as temporary:
         root = Path(temporary)
@@ -53,8 +61,10 @@ def main():
         # The manifest case executes the existing architecture check unchanged.
         (root / 'tests').mkdir()
         shutil.copy2(ROOT / 'tests/test_stage4_gold_canonical_entrypoint.py', root / 'tests')
-        if execute(root) != 'PASS':
-            raise SystemExit('Mutation workspace baseline failed.')
+        status, output = execute(root, include_details=True)
+        if status != 'PASS':
+            report(output)
+            raise SystemExit('Mutation workspace baseline failed: ' + status)
         for seed in json.loads((ROOT / 'acceptance/ci/mutations.json').read_text()):
             path = root / seed['target']
             source = path.read_text()
@@ -76,6 +86,8 @@ def main():
                 for line in output.splitlines():
                     if line.startswith('FAILED ') or line.startswith('E   '):
                         print('  ' + line, flush=True)
+            elif status != 'SURVIVED':
+                report(output)
             results.append(status)
 
     return 0 if all(result == 'KILLED' for result in results) else 1

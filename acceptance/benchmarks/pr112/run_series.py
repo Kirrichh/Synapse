@@ -27,6 +27,38 @@ def digest_tree(root):
     return digest.hexdigest()
 
 
+def harness_digest(root):
+    """Hash the harness sources; caches the interpreter writes while importing it are not inputs."""
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob('*')):
+        relative = path.relative_to(root)
+        if '__pycache__' in relative.parts:
+            continue
+        if path.is_symlink():
+            raise ValueError('harness contains a symlink: ' + str(path))
+        if path.is_file():
+            digest.update(str(relative).encode() + b'\0' + hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
+
+
+def verify_measured_sources(roots, base_sha, candidate_sha):
+    """Bind both source trees to their commits and this harness to the candidate before measuring."""
+    repository = Path.cwd().resolve()
+    commits = {'base': base_sha, 'candidate': candidate_sha}
+    identities = {name: verify_source_tree(roots[name], repository, commits[name]) for name in ('base', 'candidate')}
+    harness = harness_digest(HERE)
+    if harness != harness_digest(roots['candidate'] / 'acceptance/benchmarks/pr112'):
+        raise RuntimeError('benchmark harness differs from candidate commit')
+
+    def unchanged():
+        for name in ('base', 'candidate'):
+            if verify_source_tree(roots[name], repository, commits[name]) != identities[name]:
+                raise RuntimeError('source changed during measurement')
+        if harness_digest(HERE) != harness:
+            raise RuntimeError('benchmark harness changed during measurement')
+    return identities, harness, unchanged
+
+
 def summary(rows):
     metrics = ('wall_seconds', 'cpu_seconds', 'max_rss_kib')
     return {key: {'median': statistics.median(item[key] for item in rows),
@@ -56,14 +88,7 @@ def main():
         parser.error('pairs must be positive')
     roots = {'base': args.base.resolve(), 'candidate': args.candidate.resolve()}
     require_no_bytecode(roots)
-    repository = Path.cwd().resolve()
-    identities = {name: verify_source_tree(root, repository, commit)
-                  for name, root, commit in [('base', roots['base'], args.base_sha),
-                                             ('candidate', roots['candidate'], args.candidate_sha)]}
-    harness_hash = digest_tree(HERE)
-    candidate_harness = roots['candidate'] / 'acceptance/benchmarks/pr112'
-    if harness_hash != digest_tree(candidate_harness):
-        raise RuntimeError('benchmark harness differs from candidate commit')
+    identities, harness_hash, sources_unchanged = verify_measured_sources(roots, args.base_sha, args.candidate_sha)
     addon_hash = digest_tree(args.native_addon.resolve())
     def inventory(executable, source, addon=None):
         script = 'import json,platform,unicodedata,importlib.metadata; from synapse.experiments.gold import canonicalization as c; print(json.dumps({\"python\":platform.python_version(),\"unicode\":unicodedata.unidata_version,\"distributions\":sorted((d.metadata[\"Name\"],d.version) for d in importlib.metadata.distributions()),\"native\":c.native_runtime_identity() if hasattr(c,\"native_runtime_identity\") else {\"implementation\":\"python\"}}))'
@@ -88,11 +113,8 @@ def main():
     python_hash = hashlib.sha256(args.python.resolve().read_bytes()).hexdigest()
 
     def verify_inputs_unchanged():
-        for tree_name, tree in roots.items():
-            commit = args.base_sha if tree_name == 'base' else args.candidate_sha
-            if verify_source_tree(tree, repository, commit) != identities[tree_name]:
-                raise RuntimeError('source changed during measurement')
-        if (digest_tree(HERE) != harness_hash or digest_tree(args.native_addon.resolve()) != addon_hash
+        sources_unchanged()
+        if (digest_tree(args.native_addon.resolve()) != addon_hash
                 or digest_tree(artifact) != artifact_hash
                 or hashlib.sha256(args.python.resolve().read_bytes()).hexdigest() != python_hash):
             raise RuntimeError('harness, artifact, interpreter, or native addon changed during measurement')

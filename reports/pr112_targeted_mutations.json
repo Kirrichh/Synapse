@@ -1,5 +1,7 @@
 {
-  "provenance": "sha256-file-snapshot",
+  "provenance": "git-commit-snapshot",
+  "tested_commit": "faa6790e71da4f59dabb0b40df252e8aa16c5160",
+  "tested_commit_note": "Every snapshot_files digest, in both campaigns, equals the blob in tested_commit. The integrity check reads that commit, not the working tree, so later changes to the guarded sources neither invalidate nor silently extend this record.",
   "snapshot_files": {
     ".github/workflows/stage4-gold.yml": "be6c1e2a6d5d93791c2521c365037e3e2e485265fb692a3ec6705ae50646dc9e",
     "acceptance/benchmarks/pr112/benchmark_plugin.py": "4aeea1711ec9b33d134974ffeec2400c25ad801c11eda9d7c471bfcebffc831f",

@@ -27,8 +27,8 @@ def repository():
     ('acceptance/benchmarks/pr112/benchmark_plugin.py', {'acceptance/verification/test_benchmark_isolation.py',
                                                         'acceptance/verification/test_benchmark_plugin_behavior.py',
                                                         'acceptance/verification/test_benchmark_provenance.py'}),
-    ('synapse/worker/local_edits.py', {'acceptance/verification/test_mutation_evidence_integrity.py'}),
-    ('acceptance/stage4/stage10/test_adaptive_line_boundaries.py', {'acceptance/verification/test_mutation_evidence_integrity.py'}),
+    ('pytest.ini', {'acceptance/verification/test_benchmark_isolation.py',
+                    'acceptance/verification/test_benchmark_plugin_behavior.py'}),
 ])
 def test_real_plan_selects_required_protectors_and_gate_rejects_missing_results(repository, changed, required):
     files, workflow = repository
@@ -65,6 +65,18 @@ def test_real_native_plan_retains_required_native_cases_without_unrelated_fallba
         assert case in commands
     assert 'maturin build' in commands and 'pip install /tmp/stage4-native-wheel/' in commands
     assert any(step.get('env', {}).get('SYNAPSE_REQUIRE_STAGE4_NATIVE') == '1' for step in job['steps'])
+
+
+@pytest.mark.parametrize('changed', [
+    'synapse/worker/local_edits.py',
+    'synapse/experiments/gold/canonicalization.py',
+    'acceptance/stage4/stage10/test_adaptive_line_boundaries.py',
+    '.github/workflows/stage4-gold.yml',
+])
+def test_later_work_on_recorded_sources_is_not_gated_by_the_mutation_record(repository, changed):
+    files, workflow = repository
+    plan = build_plan(ROOT, files, {changed}, workflow)
+    assert 'acceptance/verification/test_mutation_evidence_integrity.py' not in plan['tests']
 
 
 def test_real_unrelated_documentation_does_not_select_protectors(repository):

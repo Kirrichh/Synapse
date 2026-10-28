@@ -1,30 +1,53 @@
-"""Mutation evidence must reference current code and existing acceptance cases."""
+"""Mutation evidence must describe the published snapshot it was measured on.
+
+The report is a historical record. Its files are read from the recorded commit,
+never from the working tree, so later work on the guarded sources does not
+invalidate the record, and a changed record cannot borrow today's sources.
+"""
 import ast
 import hashlib
 import json
 from pathlib import Path
+import re
+import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def committed_reader(root, commit):
+    assert re.fullmatch(r'[0-9a-f]{40}', commit), 'tested_commit must be a full immutable SHA-1'
+    available = subprocess.run(['git', 'cat-file', '-e', commit + '^{commit}'], cwd=root, capture_output=True)
+    assert available.returncode == 0, f'tested commit {commit} is unavailable; fetch the full history first'
+
+    def read(name):
+        path = Path(name)
+        assert not path.is_absolute() and '..' not in path.parts, name
+        entry = subprocess.check_output(['git', 'ls-tree', commit, '--', name], cwd=root, text=True).split()
+        assert entry and entry[1] == 'blob' and entry[0] in ('100644', '100755'), name
+        return subprocess.check_output(['git', 'cat-file', 'blob', entry[2]], cwd=root)
+    return read
+
+
 def test_report_references_executable_mutants_and_existing_tests():
     report = json.loads((ROOT / 'reports/pr112_targeted_mutations.json').read_text())
-    assert_snapshot_matches(ROOT, report)
+    assert report['provenance'] == 'git-commit-snapshot'
+    read = committed_reader(ROOT, report['tested_commit'])
+    assert_snapshot_matches(read, report)
     assert_transforms_match(report)
     assert_selector_campaign(report)
     campaign = report['selector_campaign']
-    assert_snapshot_matches(ROOT, campaign)
-    catalog = json.loads((ROOT / 'acceptance/ci/mutations.json').read_text())
+    assert_snapshot_matches(read, campaign)
+    catalog = json.loads(read('acceptance/ci/mutations.json'))
     assert [seed['id'] for seed in catalog] == [item['id'] for item in campaign['mutations']]
     assert 'acceptance/ci/mutations.json' in campaign['snapshot_files']
     for seed in catalog:
         assert seed['target'] in campaign['snapshot_files']
-        source = (ROOT / seed['target']).read_text()
+        source = read(seed['target']).decode('utf-8')
         assert source.count(seed['before']) == 1 and seed['before'] != seed['after']
         ast.parse(source.replace(seed['before'], seed['after'], 1))
     for mutant in report['manual_mutants']:
-        source = (ROOT / mutant['source']).read_text()
+        source = read(mutant['source']).decode('utf-8')
         assert mutant['source'] in report['snapshot_files']
         assert mutant['detecting_test'].split('::')[0] in report['snapshot_files']
         assert mutant['original'] != mutant['mutant']
@@ -38,40 +61,61 @@ def test_report_references_executable_mutants_and_existing_tests():
             raise AssertionError('unsupported mutation source')
         assert source.count(mutant['original']) == 1, mutant['id']
         path, _, name = mutant['detecting_test'].partition('::')
-        test = ROOT / path
-        assert test.is_file(), mutant['id']
         if name:
-            tree = ast.parse(test.read_text())
+            tree = ast.parse(read(path).decode('utf-8'))
             functions = {node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
             assert name.split('[', 1)[0] in functions, mutant['id']
     assert any(item['id'] == 'canonical-failure-fallback' and item['reason']
                for item in report['excluded_mutants'])
-    assert report['provenance'] == 'sha256-file-snapshot'
     assert report['snapshot_files']
     assert all(mutant['result'] == 'killed' for mutant in report['manual_mutants'])
 
 
-def assert_snapshot_matches(root, report):
+def assert_snapshot_matches(read, report):
     for name, digest in report['snapshot_files'].items():
-        path = Path(name)
-        assert not path.is_absolute() and '..' not in path.parts
-        target = root / path
-        assert target.is_file() and not target.is_symlink()
-        assert hashlib.sha256(target.read_bytes()).hexdigest() == digest, name
+        assert hashlib.sha256(read(name)).hexdigest() == digest, name
 
 
-def test_source_changes_outside_the_mutation_span_invalidate_evidence(tmp_path):
-    source = tmp_path / 'module.py'
-    source.write_text('VALUE = 1\nOTHER = 2\n')
-    report = {'manual_mutants': [{'source': 'module.py', 'original': 'VALUE = 1'}],
-              'snapshot_files': {'module.py': hashlib.sha256(source.read_bytes()).hexdigest()}}
-    assert_snapshot_matches(tmp_path, report)
-    source.write_text('VALUE = 1\nOTHER = 3\n')
+def commit_file(repository, name, content):
+    (repository / name).write_text(content)
+    subprocess.run(['git', 'add', name], cwd=repository, check=True)
+    subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-qm', name],
+                   cwd=repository, check=True)
+    return subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repository, text=True).strip()
+
+
+def test_evidence_is_read_from_its_commit_not_from_later_work(tmp_path):
+    subprocess.run(['git', 'init', '-q'], cwd=tmp_path, check=True)
+    tested = commit_file(tmp_path, 'module.py', 'VALUE = 1\nOTHER = 2\n')
+    report = {'snapshot_files': {'module.py': hashlib.sha256(b'VALUE = 1\nOTHER = 2\n').hexdigest()}}
+    commit_file(tmp_path, 'module.py', 'VALUE = 1\nOTHER = 3\n')
+    (tmp_path / 'module.py').write_text('uncommitted later edit\n')
+    assert_snapshot_matches(committed_reader(tmp_path, tested), report)
+
+
+def test_record_that_differs_from_its_commit_is_rejected(tmp_path):
+    subprocess.run(['git', 'init', '-q'], cwd=tmp_path, check=True)
+    tested = commit_file(tmp_path, 'module.py', 'VALUE = 1\nOTHER = 2\n')
+    later = commit_file(tmp_path, 'module.py', 'VALUE = 1\nOTHER = 3\n')
+    report = {'snapshot_files': {'module.py': hashlib.sha256(b'VALUE = 1\nOTHER = 3\n').hexdigest()}}
     try:
-        assert_snapshot_matches(tmp_path, report)
+        assert_snapshot_matches(committed_reader(tmp_path, tested), report)
     except AssertionError:
+        assert_snapshot_matches(committed_reader(tmp_path, later), report)
         return
-    raise AssertionError('changed source still accepted as the tested snapshot')
+    raise AssertionError('a record of other sources was accepted as the tested snapshot')
+
+
+def test_unavailable_or_abbreviated_commit_is_refused(tmp_path):
+    subprocess.run(['git', 'init', '-q'], cwd=tmp_path, check=True)
+    tested = commit_file(tmp_path, 'module.py', 'VALUE = 1\n')
+    for commit in (tested[:12], '0' * 40):
+        try:
+            committed_reader(tmp_path, commit)
+        except AssertionError:
+            continue
+        raise AssertionError('an unverifiable commit was accepted: ' + commit)
+
 
 
 def transform_digest(mutants):

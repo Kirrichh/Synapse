@@ -96,7 +96,8 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-          fetch-depth: ${{ matrix.file == 'acceptance/stage4/test_canonical_baseline_integrity.py' && '0' || '1' }}
+          # These files verify records against pinned commits that a shallow head lacks.
+          fetch-depth: ${{ contains(fromJSON('["acceptance/stage4/test_canonical_baseline_integrity.py","acceptance/verification/test_mutation_evidence_integrity.py"]'), matrix.file) && '0' || '1' }}
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.file == 'acceptance/stage4/test_canonical_baseline_integrity.py' && '3.12' || '3.11' }}

@@ -1,6 +1,7 @@
 """Benchmark instrumentation must not enter ordinary pytest collection."""
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -45,7 +46,9 @@ def test_benchmark_rejects_unequal_source_bytecode_before_running(tmp_path):
     base.mkdir()
     (candidate / '__pycache__').mkdir(parents=True)
     (candidate / '__pycache__' / 'example.cpython-312.pyc').write_bytes(b'bytecode')
-    runner = root / 'acceptance/benchmarks/pr112/run_series.py'
+    harness = tmp_path / 'harness'
+    shutil.copytree(root / 'acceptance/benchmarks/pr112', harness, ignore=shutil.ignore_patterns('__pycache__'))
+    runner = harness / 'run_series.py'
     command = [sys.executable, '-B', str(runner), '--base', str(base), '--candidate', str(candidate),
                '--python', '/bin/false', '--native-addon', str(tmp_path), '--replay-artifact', str(tmp_path),
                '--output', str(tmp_path / 'result.json'), '--base-sha', 'base', '--candidate-sha', 'candidate']

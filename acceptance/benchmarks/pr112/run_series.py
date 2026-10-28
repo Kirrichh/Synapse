@@ -12,9 +12,16 @@ import sys
 import tempfile
 import unicodedata
 
-from source_snapshot import verify_source_tree
-
 HERE = Path(__file__).resolve().parent
+# -B only stops writing bytecode; an existing cache is still executed in place
+# of its source. The provenance checker is a local module, so refuse caches
+# before the first local import. Each entrypoint repeats this inline.
+if __name__ == '__main__':
+    sys.dont_write_bytecode = True
+    if sys.pycache_prefix is not None or any(HERE.rglob('*.pyc')):
+        raise SystemExit('benchmark harness must run from sources without bytecode or a pycache prefix: ' + str(HERE))
+
+from source_snapshot import verify_source_tree  # noqa: E402
 
 
 def digest_tree(root):
@@ -28,12 +35,12 @@ def digest_tree(root):
 
 
 def harness_digest(root):
-    """Hash the harness sources; caches the interpreter writes while importing it are not inputs."""
+    """Hash the harness sources; bytecode beside them could execute instead, so it is refused."""
     digest = hashlib.sha256()
     for path in sorted(root.rglob('*')):
         relative = path.relative_to(root)
-        if '__pycache__' in relative.parts:
-            continue
+        if '__pycache__' in relative.parts or path.suffix == '.pyc':
+            raise ValueError('benchmark harness contains bytecode: ' + str(path))
         if path.is_symlink():
             raise ValueError('harness contains a symlink: ' + str(path))
         if path.is_file():

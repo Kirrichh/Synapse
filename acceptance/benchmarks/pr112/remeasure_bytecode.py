@@ -10,9 +10,14 @@ import sys
 import tempfile
 import unicodedata
 
-from run_series import digest_tree, require_no_bytecode, verify_measured_sources
-
 HERE = Path(__file__).resolve().parent
+# Same guard as run_series.py: refuse executable caches before any local import.
+if __name__ == '__main__':
+    sys.dont_write_bytecode = True
+    if sys.pycache_prefix is not None or any(HERE.rglob('*.pyc')):
+        raise SystemExit('benchmark harness must run from sources without bytecode or a pycache prefix: ' + str(HERE))
+
+from run_series import digest_tree, require_no_bytecode, verify_measured_sources  # noqa: E402
 
 
 def main():

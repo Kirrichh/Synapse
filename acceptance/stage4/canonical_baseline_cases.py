@@ -4,6 +4,9 @@ import json
 import math
 
 
+UNSUPPORTED_SAMPLE_TYPE = type('x' * 300, (), {})
+
+
 def samples():
     cycle_list = []
     cycle_list.append(cycle_list)
@@ -21,7 +24,7 @@ def samples():
             {'é': 1, 'e\u0301': 2, 'bad': 2**60},
             {'e\u0301' * 130: {'bad': '\ud800'}}, cycle_list, cycle_dict, within, over, deep,
             math.nan, math.inf, -math.inf, 2**53, -(2**53), -(2**53 - 1), 1e300, -0.0,
-            type('x' * 300, (), {})()]
+            UNSUPPORTED_SAMPLE_TYPE()]
 
 
 
@@ -56,9 +59,10 @@ def fingerprint(value):
             return ['list', number, [describe(child) for child in item]]
         if kind is dict:
             return ['dict', number, [[describe(key), describe(child)] for key, child in item.items()]]
-        attributes = vars(item) if hasattr(item, '__dict__') else None
-        return ['object', number, kind.__module__, kind.__qualname__,
-                describe(attributes) if attributes is not None else None]
+        # The baseline deliberately includes one unsupported object type.
+        if kind is UNSUPPORTED_SAMPLE_TYPE and vars(item) == {}:
+            return ['object', number, kind.__module__, kind.__qualname__, describe(vars(item))]
+        raise TypeError('unsupported baseline fingerprint type: ' + kind.__qualname__)
 
     description = json.dumps(describe(value), ensure_ascii=True, separators=(',', ':'))
     return hashlib.sha256(description.encode('ascii')).hexdigest()

@@ -63,14 +63,32 @@ def test_selected_native_result_is_available_to_and_required_by_final_gate():
         assert run(json.dumps(plan), changed).returncode != 0
 
 
-def test_unrelated_change_does_not_require_native():
+@pytest.fixture
+def codec_workspace(tmp_path):
     import yaml
+
+    files = {
+        'synapse/experiments/gold/canonicalization.py': '',
+        'tests/test_stage4_gold_native.py': 'from synapse.experiments.gold import canonicalization\n',
+        'native/stage4_canonical/src/lib.rs': '',
+        'native/stage4_canonical/Cargo.toml': '',
+        'native/stage4_canonical/Cargo.lock': '',
+        'native/stage4_canonical/pyproject.toml': '',
+        'docs/unrelated-selection-test.md': '',
+    }
+    for name, content in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    workflow = yaml.safe_load((GATE.parents[2] / '.github/workflows/stage4-gold.yml').read_text())
+    return tmp_path, set(files), workflow
+
+
+def test_unrelated_change_does_not_require_native(codec_workspace):
     from select_tests import build_plan
 
-    root = GATE.parents[2]
-    files = set(subprocess.check_output(['git', 'ls-files'], cwd=root, text=True).splitlines())
-    workflow = yaml.safe_load((root / '.github/workflows/stage4-gold.yml').read_text())
-    plan = build_plan(root, files, {'docs/DETERMINISM_CONTRACT.md'}, workflow)
+    root, files, workflow = codec_workspace
+    plan = build_plan(root, files, {'docs/unrelated-selection-test.md'}, workflow)
     assert not plan['groups']['stage4-native']['enabled']
     results = {name: {'result': 'success'} for name in workflow['jobs']['gold-slow']['needs']}
     results['stage4-native'] = {'result': 'skipped'}
@@ -85,17 +103,43 @@ def test_unrelated_change_does_not_require_native():
     'synapse/experiments/gold/canonicalization.py',
     'tests/test_stage4_gold_native.py',
 ])
-def test_codec_changes_select_and_require_native(tmp_path, changed):
-    import subprocess
-    import yaml
+def test_codec_changes_select_and_require_native(codec_workspace, changed):
     from select_tests import build_plan
 
-    root = GATE.parents[2]
-    files = set(subprocess.check_output(['git', 'ls-files'], cwd=root, text=True).splitlines())
-    workflow = yaml.safe_load((root / '.github/workflows/stage4-gold.yml').read_text())
+    root, files, workflow = codec_workspace
     plan = build_plan(root, files, {changed}, workflow)
     assert plan['groups']['stage4-native']['enabled']
     results = {name: {'result': 'success'} for name in workflow['jobs']['gold-slow']['needs']}
     assert run(json.dumps(plan), results).returncode == 0
     results['stage4-native'] = {'result': 'failure'}
     assert run(json.dumps(plan), results).returncode != 0
+
+
+def test_native_workflow_runs_only_when_the_gate_requires_it():
+    import yaml
+
+    workflow = yaml.safe_load((GATE.parents[2] / '.github/workflows/stage4-gold.yml').read_text())
+    native = workflow['jobs']['stage4-native']
+    assert native['needs'] == 'select'
+    assert native['if'] == "fromJSON(needs.select.outputs.plan).groups['stage4-native'].enabled"
+    assert 'stage4-native' in workflow['jobs']['gold-slow']['needs']
+
+
+def test_every_selected_job_must_have_a_successful_result():
+    plan = {'groups': {'stage4-native': {'enabled': True}, 'other': {'enabled': True},
+                       'unselected': {'enabled': False}},
+            'durable': True, 'version': True, 'tooling': True, 'additional': ['tests/test_selected.py'],
+            'ui': {'python': True}}
+    names = {'select', 'stage4-native', 'other', 'durable', 'version', 'selection-acceptance',
+             'additional-tests', 'ui'}
+    results = {name: {'result': 'success'} for name in names}
+    results['unselected'] = {'result': 'skipped'}
+    assert run(json.dumps(plan), results).returncode == 0
+    for name in names:
+        for state in ('failure', 'cancelled', 'skipped', None):
+            changed = dict(results)
+            if state is None:
+                del changed[name]
+            else:
+                changed[name] = {'result': state}
+            assert run(json.dumps(plan), changed).returncode != 0, (name, state)

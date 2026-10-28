@@ -3,7 +3,6 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-import subprocess
 import sys
 
 BASE_COMMIT = '1e226e52a3400d4fb0336420569d8bab43c8f783'
@@ -14,6 +13,7 @@ SOURCE_HASHES = {
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from acceptance.stage4.canonical_baseline_cases import DECODE_SAMPLES, fingerprint, samples
+from acceptance.benchmarks.pr112.source_snapshot import verify_source_tree
 
 
 def observed(call, value):
@@ -36,28 +36,31 @@ def main():
     if sys.version_info[:2] != (3, 12):
         parser.error('the recorded baseline requires CPython 3.12')
     base = args.base_tree.resolve()
-    entries = subprocess.check_output(['git', 'ls-tree', '-rz', '--full-tree', BASE_COMMIT, '--', 'synapse'], cwd=ROOT)
-    for entry in entries.split(b'\0'):
-        if not entry:
-            continue
-        metadata, name = entry.split(b'\t', 1)
-        mode, kind, object_id = metadata.split()
-        if kind != b'blob' or mode == b'120000':
-            parser.error('unexpected baseline tree entry')
-        path = name.decode('utf-8')
-        content = (base / path).read_bytes()
-        actual = hashlib.sha1(b'blob ' + str(len(content)).encode() + b'\0' + content).hexdigest().encode()
-        if actual != object_id:
-            parser.error('baseline tree differs from pinned commit: ' + path)
-    if any(base.rglob('*.pyc')):
-        parser.error('baseline archive contains bytecode not present in the pinned tree')
+    try:
+        verify_source_tree(base, ROOT, BASE_COMMIT)
+    except ValueError as exc:
+        parser.error(str(exc))
     for path, expected in SOURCE_HASHES.items():
         if hashlib.sha256((base / path).read_bytes()).hexdigest() != expected:
             parser.error('baseline source hash differs: ' + path)
     sys.path.insert(0, str(base))
     from synapse.experiments.gold import canonicalization as api
-    if not Path(api.__file__).resolve().is_relative_to(base):
-        parser.error('baseline API did not load from the supplied tree')
+    for name, module in tuple(sys.modules.items()):
+        if name != 'synapse' and not name.startswith('synapse.'):
+            continue
+        filename = getattr(module, '__file__', None)
+        if filename is None:
+            parser.error('baseline module has no verified source: ' + name)
+        source = Path(filename).resolve()
+        module_path = Path(*name.split('.'))
+        allowed = {base / module_path.with_suffix('.py'), base / module_path / '__init__.py'}
+        if source not in allowed:
+            parser.error('baseline module loaded from an unexpected source: ' + name)
+        if getattr(getattr(module, '__spec__', None), 'origin', None) != filename:
+            parser.error('baseline module origin differs from its source: ' + name)
+        content = source.read_bytes()
+        if source.relative_to(base).as_posix() in SOURCE_HASHES and hashlib.sha256(content).hexdigest() != SOURCE_HASHES[source.relative_to(base).as_posix()]:
+            parser.error('loaded baseline source changed: ' + name)
     options = {'profile_id': api.STAGE4_CANONICAL_PROFILE_V1, 'codec_id': api.STABLE_CANONICAL_CODEC_ID}
     values = samples()
     result = {'baseline_commit': BASE_COMMIT,

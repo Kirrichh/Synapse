@@ -1,0 +1,37 @@
+# PR 112 verification and evidence follow-up
+
+This record covers the follow-up to published commit `91b2abd9402428b45835837950f866213d608fba`. It is not a full-suite or merge-readiness claim. The final end-to-end performance series and its published code SHA are recorded separately after the code and CI checks complete.
+
+## Reproductions and changes
+
+1. The original ordinary selector acceptance completed on this machine in 43.68 s under the 45 s limit; a timeout was not reproduced here. The repeated full-repository graph construction was observable and left little margin. The runner's own synthetic workspace reproduced 11 failed and 43 passed; `execute` incorrectly returned `KILLED` for that invalid baseline. Selector campaign cases now use small self-contained fixtures and one checked synthetic baseline. Real repository and benchmark/evidence integration checks run separately. The 90 s per-invocation timeout is approximately 16 times the observed 5.60 s ordinary baseline, not a substitute for removing repeated graph work. Timeout, collection, import, setup and missing-file errors are invalid evidence, and unmutated baselines must pass.
+2. On the original head, changes to the mutation report or benchmark plugin selected no protective cases. Selection now follows the report's named sources and tests and explicitly binds benchmark harnesses to their behavioral guards. These guards run through the selected `additional-tests` job, which the final gate requires. The real-repository tests exercise missing, failed, cancelled and skipped results; a generic gate test checks every selected job.
+3. On the original head, adding a shadowing `canonicalization/__init__.py` let the generator write an incorrect `None` encoding. Distinct tuple, set, scalar-subclass and slotted-object inputs also shared fingerprints. The generator now verifies the complete extracted Git tree, file types and module origins, and rechecks the pinned source hashes. Unneeded fingerprint types are refused; the specific arbitrary-object negative corpus sample is retained and reaches its baseline refusal. Clean generation preserves every existing result and refusal. The historical base is fetched with full history only for the relevant archive test, so the ordinary shallow checkout does not silently substitute source.
+4. The former isolation checks passed with an automatically registered benchmark plugin. New tests observe actual CLI subprocess and local HTTP behavior from both the root and `acceptance/`, with ordinary discovery and explicit `-p`. Root and parent `conftest.py`, pytest configuration, and a registered import were individually mutated; each produced two expected behavioral failures.
+5. The remote API returned 422 for the historical `e0188add452d6478dc4c65814ba0947229769812` object. Old measurements retain that historical label and are explicitly unverified; no new commit SHA is assigned to them. New mutation evidence uses verified SHA-256 file and transformation snapshots, records failed cases and semantic failure evidence, and excludes two obsolete mutants. The final snapshot contains 29 targeted kills and 27 separately recorded selector kills. Benchmark tooling verifies full Git trees, the measurement harness, artifact, interpreter and native addon, records their identities and rechecks inputs after each execution. The controlled replay series did not detect a regression; the cause of the earlier result is not conclusively established.
+6. The original actual Rust-only plan selected 413 Python test files. Wheel installation occurs only in the native job; those fallback runs do not substitute for native coverage. Native changes now select the direct encoder, differential/base parity, binary/wrapper identity and frozen-resume tests. The native job runs only when selected and is mandatory for the gate. Python codec, baseline-vector and corpus changes also select it. The old broad edge mutant is excluded because that implementation no longer exists.
+
+## Local commands and outcomes
+
+```sh
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /tmp/pr112-review-venv/bin/python -B -m pytest -q -p no:cacheprovider acceptance/ci --tb=short
+# 58 passed in 5.60 s
+
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /tmp/pr112-review-venv/bin/python -B -m pytest -q -p no:cacheprovider acceptance/ci/test_selector_campaign.py --tb=short
+# 3 passed in 3.19 s; includes the runner's actual synthetic file set and invalid-result tests
+
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /tmp/pr112-review-venv/bin/python -B acceptance/ci/mutate.py
+# 27 KILLED, zero survived/invalid/timeouts; 89.048 s wall while the targeted evidence campaign ran.
+# The runner prints the specific failing assertions and test cases for each mutant.
+
+SYNAPSE_REQUIRE_STAGE4_NATIVE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /tmp/pr112-native-venv/bin/python -B -m pytest -q -p no:cacheprovider acceptance/verification/test_benchmark_isolation.py acceptance/verification/test_benchmark_plugin_behavior.py acceptance/verification/test_benchmark_provenance.py acceptance/verification/test_mutation_evidence_integrity.py acceptance/verification/test_repository_selection.py acceptance/stage4/test_canonical_baseline_integrity.py tests/test_stage4_canonical_differential.py tests/test_stage4_native_direct.py tests/test_stage4_gold_native.py acceptance/stage4/stage11/test_native_runtime_resume_acceptance.py tests/test_stage4_gold_architecture.py tests/test_stage4_gold_dependency_direction.py --tb=short
+# 685 passed in 71.93 s; 0 skipped. A real wheel was installed and its native backend was loaded.
+```
+
+After the selector campaign snapshot was added, `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /tmp/pr112-review-venv/bin/python -B -m pytest -q -p no:cacheprovider acceptance/ci acceptance/verification/test_mutation_evidence_integrity.py acceptance/verification/test_repository_selection.py --tb=short` completed with 68 passed in 42.58 s.
+
+The first extended run found one false positive in the unrelated-document selection test: 1 failed, 738 passed in 73.62 s. Its ownership edge was corrected and the final targeted run above passed. The earlier Python-only differential check had 11 native skips before the wheel-backed run; those skips are not presented as native evidence. An initial attempt to use `/usr/bin/time` failed because that executable was absent; the campaign was subsequently timed with Bash `time`. Reproduction tests and deliberate mutants failed as expected before the corresponding corrections; they are not ordinary verification failures.
+
+The `ub-mode` quality tools were run in a disposable tree. `crapper --no-coverage` reported complexity only, not CRAP scores; the affected selector still includes functions above complexity 10. `dryer --threshold 0.8` found no candidate duplicate in the inspected selector files. `mutator --scan` listed sites; the executed targeted and selector campaigns are the mutation evidence. No full mutation or CRAP gate is claimed.
+
+The existing baseline's bare `TypeError` on very long diagnostic paths and long type names remains unchanged, as described in `reports/pr112_review_followup.md`. `ADAPT_MEMORY` remains a functionality decision for the project owner.

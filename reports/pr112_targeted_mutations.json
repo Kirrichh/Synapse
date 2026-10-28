@@ -1,6 +1,40 @@
 {
-  "tested_commit": "e0188add452d6478dc4c65814ba0947229769812",
-  "method": "Each mutant was applied to a clean archive of the named commit after its named baseline test passed. The observed failures were assertions, an explicit pytest.fail, or the expected irrelevant-history PersistenceViolation; collection and import failures were rejected.",
+  "provenance": "sha256-file-snapshot",
+  "snapshot_files": {
+    ".github/workflows/stage4-gold.yml": "be6c1e2a6d5d93791c2521c365037e3e2e485265fb692a3ec6705ae50646dc9e",
+    "acceptance/benchmarks/pr112/benchmark_plugin.py": "4aeea1711ec9b33d134974ffeec2400c25ad801c11eda9d7c471bfcebffc831f",
+    "acceptance/benchmarks/pr112/run_series.py": "f557d8871b5f054e08a297fee7bd52a53b25c0b7363684a52b6beefcdf90fe49",
+    "acceptance/benchmarks/pr112/source_snapshot.py": "e9868a3741dab0f77d4d3f65ceefb1a016ca20555e233ecac4a7c06808bd634a",
+    "acceptance/ci/test_plan_selection.py": "91cab5618d94bc5e7df05c3467986caaaca8f409a9a1405a978228d0a076f010",
+    "acceptance/ci/test_verification_gate.py": "795de92c48ec77b80aff934e9e860751858a2015bba6534cadd1c51177e792f5",
+    "acceptance/stage4/canonical_baseline_cases.py": "9feb7f70a1c5643157222628529959959b77aaac55ffb1a65f10ac119edd30a2",
+    "acceptance/stage4/generate_canonical_baseline_vectors.py": "6a310f1be8e6ff9cb2b87f6dda7d126639899e649aa5f10732c71c07c242d1b9",
+    "acceptance/stage4/stage10/test_adaptive_line_boundaries.py": "bb92101994eb91466df353c45a3d327f353a89082cc14b71cb4f08d3733c214b",
+    "acceptance/stage4/stage10/test_adaptive_memory_dispatch.py": "bed01f59b5bb7f457faf624c9f548ec6e6c6f6799ded99680505fc9a6f207fc9",
+    "acceptance/stage4/stage10/test_adaptive_memory_proposal_contract.py": "4c8f82fca03a4d7d56ab8c85028e0de49ce111754f38ab457df3cb9385774ba6",
+    "acceptance/stage4/stage10/test_memory_history_routing_contract.py": "5fa233c5c90dd2dcdcc6bcda9545de79cd98397d3e07f6b24aea9d657c1c49b1",
+    "acceptance/stage4/stage16/test_adaptive_task_identity_contract.py": "312afb71948799c1628c783b090ba53baa264159e27f18cbab3c9d2e8983e5f3",
+    "acceptance/stage4/stage16/test_episode_learning_contract.py": "aa328aa3add191d71c4ecebb3aaa324ebcfcde65a1ac67b1483870f294f95aab",
+    "acceptance/stage4/stage16/test_project_court_contract.py": "1b9e221809843ee20be3f3dfc0fd9d9bdcb635acbea04c10e03a024b98c79071",
+    "acceptance/stage4/test_canonical_baseline_integrity.py": "55e76866fcfa607a27ee0bb62757cdeaa88790493d0a8df7c17b9e6d0ed9daac",
+    "acceptance/verification/test_benchmark_isolation.py": "d0878231fea1359ab1747f72dd7d29e8339db4df6b54bb68a0bf02d262dce7cb",
+    "acceptance/verification/test_benchmark_provenance.py": "0756696e0f9f761830e570be1ab27aa9c8d19ca6037783e821c6348e796e5a0f",
+    "acceptance/verification/test_mutation_evidence_integrity.py": "7b4e960bfc4ece77eaaa9806d4164c0ce1c841d35788f700384f80821e33f544",
+    "scripts/ci/dependencies.py": "5b7e87ceba60b356499e6fae592462b115aa03370e5c7a638e96d96cb17da6a1",
+    "scripts/ci/select_tests.py": "252eb4d187185736071f42a9f428bde485d1b7ae660e9b489a37f1bd2040f472",
+    "synapse/experiments/gold/behavior.py": "de1ab19ec3182bf530b1175bc0dfc869c85504f430afb6187256a62fd0a3fde2",
+    "synapse/experiments/gold/canonicalization.py": "5a09afe2df075c769b686b44548c2bf1bfa8435a54379d324a8b1ada271c5d95",
+    "synapse/experiments/gold/project_agents.py": "971ca8b26620a9c402d4958bd4fa5774919438f7069417749b933a2c8d224d28",
+    "synapse/experiments/gold/project_learning.py": "46120f798529829884de048d7134f58a6587247bcb2d0618f468aaef525774ce",
+    "synapse/experiments/gold/source_delivery.py": "82fec898cd5c638ec1dd0f7f72d6c2ff440f41b03f2ae28b7b265690c17819ac",
+    "synapse/experiments/gold/stage10/influence.py": "bbc577dc663439decd86b16a75cffcae17dc9ba6775c1991258a0a5a97abd85b",
+    "synapse/worker/local_edits.py": "0d45dac6564bc41e130f2e699dbf30bc93e6fe2db804d23be80dadc3bf89a2f2",
+    "tests/test_stage4_canonical_differential.py": "1d41d6a5977f9988ad344c7f1ae65e6bea0bf9ea45a38b001805b625a49c0b67",
+    "tests/test_stage4_decode_cache_budget.py": "32dcbcf9bd41bc1d6ffb92602595b64fb33e7058bbc8db541ebcf1d4bb6d1729",
+    "tests/test_stage4_gold_behavior.py": "151e14b7294dfdd4cbfe036940e5b373ee7da98db75e91c8940d6421902af6bc"
+  },
+  "transform_sha256": "cfa653ee7c6b2c2c19cc07e0dc7dec83a4a4b31ce91831cf1a977a46b24511be",
+  "method": "Each named case passed in an isolated source snapshot before the exact mutation. Semantic failures were inspected; collection and import failures were not counted.",
   "manual_mutants": [
     {
       "id": "line-boundary",
@@ -10,7 +44,14 @@
       "detecting_test": "acceptance/stage4/stage10/test_adaptive_line_boundaries.py",
       "result": "killed",
       "baseline_summary": "9 passed in 0.02s",
-      "mutant_summary": "2 failed, 7 passed in 0.04s"
+      "mutant_summary": "2 failed, 7 passed in 0.05s",
+      "failed_cases": [
+        "FAILED acceptance/stage4/stage10/test_adaptive_line_boundaries.py::test_embedded_substring_is_not_an_anchor",
+        "FAILED acceptance/stage4/stage10/test_adaptive_line_boundaries.py::test_one_line_anchor_and_one_embedded_substring"
+      ],
+      "failure_evidence": [
+        "E   Failed: DID NOT RAISE WorkerInputViolation"
+      ]
     },
     {
       "id": "counterfactual-route",
@@ -19,8 +60,14 @@
       "mutant": "if False else",
       "detecting_test": "acceptance/stage4/stage10/test_adaptive_memory_dispatch.py::test_influence_ignores_irrelevant_rejected_hypothesis",
       "result": "killed",
-      "baseline_summary": "1 passed in 2.58s",
-      "mutant_summary": "1 failed in 2.58s"
+      "baseline_summary": "1 passed in 2.65s",
+      "mutant_summary": "1 failed in 2.71s",
+      "failed_cases": [
+        "FAILED acceptance/stage4/stage10/test_adaptive_memory_dispatch.py::test_influence_ignores_irrelevant_rejected_hypothesis"
+      ],
+      "failure_evidence": [
+        "E   assert not True"
+      ]
     },
     {
       "id": "history-path-filter",
@@ -29,8 +76,14 @@
       "mutant": "if False:",
       "detecting_test": "acceptance/stage4/stage16/test_project_court_contract.py::test_adaptive_history_skips_incompatible_paths_before_opening_artifacts",
       "result": "killed",
-      "baseline_summary": "1 passed in 1.26s",
-      "mutant_summary": "1 failed in 1.30s"
+      "baseline_summary": "1 passed in 1.21s",
+      "mutant_summary": "1 failed in 1.27s",
+      "failed_cases": [
+        "FAILED acceptance/stage4/stage16/test_project_court_contract.py::test_adaptive_history_skips_incompatible_paths_before_opening_artifacts"
+      ],
+      "failure_evidence": [
+        "E   synapse.experiments.gold.persistence.PersistenceViolation: FILESYSTEM_IO_FAILED: filesystem stat failed"
+      ]
     },
     {
       "id": "publication-request-binding",
@@ -39,8 +92,14 @@
       "mutant": "if False:",
       "detecting_test": "acceptance/stage4/stage16/test_episode_learning_contract.py::test_consolidation_rejects_replaced_request_after_result_read",
       "result": "killed",
-      "baseline_summary": "1 passed in 1.02s",
-      "mutant_summary": "1 failed in 1.20s"
+      "baseline_summary": "1 passed in 1.04s",
+      "mutant_summary": "1 failed in 1.02s",
+      "failed_cases": [
+        "FAILED acceptance/stage4/stage16/test_episode_learning_contract.py::test_consolidation_rejects_replaced_request_after_result_read"
+      ],
+      "failure_evidence": [
+        "E   AssertionError: Regex pattern did not match."
+      ]
     },
     {
       "id": "historical-feedback-provenance",
@@ -50,7 +109,13 @@
       "detecting_test": "acceptance/stage4/stage10/test_memory_history_routing_contract.py::test_historical_success_is_not_current_execution_feedback",
       "result": "killed",
       "baseline_summary": "1 passed in 0.05s",
-      "mutant_summary": "1 failed in 0.06s"
+      "mutant_summary": "1 failed in 0.07s",
+      "failed_cases": [
+        "FAILED acceptance/stage4/stage10/test_memory_history_routing_contract.py::test_historical_success_is_not_current_execution_feedback"
+      ],
+      "failure_evidence": [
+        "E   assert {'schema_version': 'synapse.worker.local-edit-result/v5', 'profile': 'mini-2.4.6-local-edit-proposals/v5', 'task_sha25...bec9de965996d97fd83504', 'information_sha256': '2dafc8db28650144aebff10c4ceacd1e6327d6aec272b76cbee14b7d3226f688', ...} is None"
+      ]
     },
     {
       "id": "cache-structural-budget",
@@ -59,8 +124,14 @@
       "mutant": "or False):",
       "detecting_test": "tests/test_stage4_decode_cache_budget.py::test_structural_budget_evicts_old_entries",
       "result": "killed",
-      "baseline_summary": "1 passed in 0.27s",
-      "mutant_summary": "1 failed in 0.31s"
+      "baseline_summary": "1 passed in 0.35s",
+      "mutant_summary": "1 failed in 0.34s",
+      "failed_cases": [
+        "FAILED tests/test_stage4_decode_cache_budget.py::test_structural_budget_evicts_old_entries"
+      ],
+      "failure_evidence": [
+        "E   AssertionError: assert (<object object at <address>>, ('a', 'a', 'a', 'a', 'a', 'a', ...)) is <object object at <address>>"
+      ]
     },
     {
       "id": "cache-thaw-list-content",
@@ -69,9 +140,15 @@
       "mutant": "return []",
       "detecting_test": "tests/test_stage4_decode_cache_budget.py::test_repeated_fill_evict_and_copy_isolation",
       "result": "killed",
-      "baseline_summary": "1 passed in 0.30s",
-      "mutant_summary": "1 failed in 0.33s",
-      "note": "The empty-list mutation is caught by the decoded-content assertion; it does not independently prove mutation isolation."
+      "baseline_summary": "1 passed in 0.35s",
+      "mutant_summary": "1 failed in 0.38s",
+      "failed_cases": [
+        "FAILED tests/test_stage4_decode_cache_budget.py::test_repeated_fill_evict_and_copy_isolation"
+      ],
+      "failure_evidence": [
+        "E   AssertionError: assert [] == [0, {'value': 'x'}]"
+      ],
+      "note": "This detects changed decoded contents; it does not independently prove mutation isolation."
     },
     {
       "id": "unit-context-check",
@@ -80,8 +157,14 @@
       "mutant": "False",
       "detecting_test": "tests/test_stage4_gold_behavior.py::test_s4_p2_acc_content_05_cached_unit_context_cannot_replace_full_validation",
       "result": "killed",
-      "baseline_summary": "1 passed in 0.34s",
-      "mutant_summary": "1 failed in 0.34s"
+      "baseline_summary": "1 passed in 0.44s",
+      "mutant_summary": "1 failed in 0.48s",
+      "failed_cases": [
+        "FAILED tests/test_stage4_gold_behavior.py::test_s4_p2_acc_content_05_cached_unit_context_cannot_replace_full_validation"
+      ],
+      "failure_evidence": [
+        "E   Failed: DID NOT RAISE BehaviorViolation"
+      ]
     },
     {
       "id": "current-exact-admission",
@@ -91,7 +174,13 @@
       "detecting_test": "acceptance/stage4/stage10/test_memory_history_routing_contract.py::test_current_exact_candidate_is_not_ambiguous_with_applicable_history",
       "result": "killed",
       "baseline_summary": "1 passed in 0.06s",
-      "mutant_summary": "1 failed in 0.06s"
+      "mutant_summary": "1 failed in 0.10s",
+      "failed_cases": [
+        "FAILED acceptance/stage4/stage10/test_memory_history_routing_contract.py::test_current_exact_candidate_is_not_ambiguous_with_applicable_history"
+      ],
+      "failure_evidence": [
+        "E   assert None is not None"
+      ]
     },
     {
       "id": "conflicting-current-feedback",
@@ -100,8 +189,14 @@
       "mutant": "or candidate[\"prior_outcome\"] is not None",
       "detecting_test": "acceptance/stage4/stage10/test_adaptive_memory_proposal_contract.py::test_conflicting_current_feedback_never_admits_adapted_candidate",
       "result": "killed",
-      "baseline_summary": "1 passed in 0.05s",
-      "mutant_summary": "1 failed in 0.06s"
+      "baseline_summary": "1 passed in 0.07s",
+      "mutant_summary": "1 failed in 0.08s",
+      "failed_cases": [
+        "FAILED acceptance/stage4/stage10/test_adaptive_memory_proposal_contract.py::test_conflicting_current_feedback_never_admits_adapted_candidate"
+      ],
+      "failure_evidence": [
+        "E   assert {'schema_version': 'synapse.worker.local-edit-result/v5', 'profile': 'mini-2.4.6-local-edit-proposals/v5', 'task_sha25...659e7b4d56f325a3134943', 'information_sha256': '752c07054da2faa30311e76aed481edbf5391bb11369cffbae8bbd62b618ace8', ...} is None"
+      ]
     },
     {
       "id": "historical-revision-binding",
@@ -110,8 +205,14 @@
       "mutant": "if any(d == digest for _, d in historical)}",
       "detecting_test": "acceptance/stage4/stage10/test_memory_history_routing_contract.py::test_historical_observation_must_match_the_declared_revision",
       "result": "killed",
-      "baseline_summary": "1 passed in 0.05s",
-      "mutant_summary": "1 failed in 0.06s"
+      "baseline_summary": "1 passed in 0.06s",
+      "mutant_summary": "1 failed in 0.06s",
+      "failed_cases": [
+        "FAILED acceptance/stage4/stage10/test_memory_history_routing_contract.py::test_historical_observation_must_match_the_declared_revision"
+      ],
+      "failure_evidence": [
+        "E   assert {'schema_version': 'synapse.worker.local-edit-result/v5', 'profile': 'mini-2.4.6-local-edit-proposals/v5', 'task_sha25...bec9de965996d97fd83504', 'information_sha256': 'f17591908bde120eb74e14b2b82c7f83b9e32cea65837b871d11da8022c5e247', ...} is None"
+      ]
     },
     {
       "id": "unused-prepared-read",
@@ -120,8 +221,14 @@
       "mutant": "        read_committed_snapshot_transaction(root / \"prepared\", transaction_id=publication.transaction_id)\n        request = read_prepared_publication_request(root, publication.transaction_id)",
       "detecting_test": "acceptance/stage4/stage16/test_episode_learning_contract.py::test_consolidation_does_not_open_an_unused_prepared_snapshot",
       "result": "killed",
-      "baseline_summary": "1 passed in 0.97s",
-      "mutant_summary": "1 failed in 1.05s"
+      "baseline_summary": "1 passed in 1.01s",
+      "mutant_summary": "1 failed in 1.14s",
+      "failed_cases": [
+        "FAILED acceptance/stage4/stage16/test_episode_learning_contract.py::test_consolidation_does_not_open_an_unused_prepared_snapshot"
+      ],
+      "failure_evidence": [
+        "E   Failed: unused snapshot read"
+      ]
     },
     {
       "id": "untrusted-reference-observation",
@@ -131,17 +238,13 @@
       "detecting_test": "acceptance/stage4/stage10/test_memory_history_routing_contract.py::test_ordinary_reference_cannot_claim_historical_oracle_evidence",
       "result": "killed",
       "baseline_summary": "1 passed in 0.04s",
-      "mutant_summary": "1 failed in 0.06s"
-    },
-    {
-      "id": "native-selection-edge",
-      "source": "scripts/ci/dependencies.py",
-      "original": "        if path == 'synapse/experiments/gold/canonicalization.py':\n            graph[path].update(name for name in files if name.startswith('native/stage4_canonical/'))\n",
-      "mutant": "",
-      "detecting_test": "acceptance/ci/test_verification_gate.py::test_codec_changes_select_and_require_native[native/stage4_canonical/src/lib.rs]",
-      "result": "killed",
-      "baseline_summary": "1 passed in 5.63s",
-      "mutant_summary": "1 failed in 5.71s"
+      "mutant_summary": "1 failed in 0.09s",
+      "failed_cases": [
+        "FAILED acceptance/stage4/stage10/test_memory_history_routing_contract.py::test_ordinary_reference_cannot_claim_historical_oracle_evidence"
+      ],
+      "failure_evidence": [
+        "E   assert {'schema_version': 'synapse.worker.local-edit-result/v5', 'profile': 'mini-2.4.6-local-edit-proposals/v5', 'task_sha25...bec9de965996d97fd83504', 'information_sha256': '0e35d7460b3d985ebae69f064c8c4bf2eca6cee5737b385fd0b0ab9288aba3b6', ...} is None"
+      ]
     },
     {
       "id": "historical-reference-memo",
@@ -150,8 +253,14 @@
       "mutant": "if True:",
       "detecting_test": "acceptance/stage4/stage16/test_adaptive_task_identity_contract.py::test_historical_task_reference_is_derived_once_per_revision",
       "result": "killed",
-      "baseline_summary": "1 passed in 1.05s",
-      "mutant_summary": "1 failed in 1.02s"
+      "baseline_summary": "1 passed in 1.37s",
+      "mutant_summary": "1 failed in 1.57s",
+      "failed_cases": [
+        "FAILED acceptance/stage4/stage16/test_adaptive_task_identity_contract.py::test_historical_task_reference_is_derived_once_per_revision"
+      ],
+      "failure_evidence": [
+        "E   AssertionError: assert ['bbbbbbbbbbb...dddddddddddd'] == ['bbbbbbbbbbb...dddddddddddd']"
+      ]
     },
     {
       "id": "encode-input-binding",
@@ -160,8 +269,14 @@
       "mutant": "        pass\n",
       "detecting_test": "tests/test_stage4_canonical_differential.py::test_baseline_vectors_are_bound_to_their_inputs",
       "result": "killed",
-      "baseline_summary": "1 passed in 0.40s",
-      "mutant_summary": "1 failed in 0.34s"
+      "baseline_summary": "1 passed in 0.47s",
+      "mutant_summary": "1 failed in 0.39s",
+      "failed_cases": [
+        "FAILED tests/test_stage4_canonical_differential.py::test_baseline_vectors_are_bound_to_their_inputs"
+      ],
+      "failure_evidence": [
+        "E   Failed: DID NOT RAISE AssertionError"
+      ]
     },
     {
       "id": "decode-input-binding",
@@ -170,37 +285,580 @@
       "mutant": "    pass\n",
       "detecting_test": "tests/test_stage4_canonical_differential.py::test_decode_vectors_reject_reordered_inputs_with_identical_refusals",
       "result": "killed",
-      "baseline_summary": "1 passed in 0.30s",
-      "mutant_summary": "1 failed in 0.42s"
+      "baseline_summary": "1 passed in 0.39s",
+      "mutant_summary": "1 failed in 0.42s",
+      "failed_cases": [
+        "FAILED tests/test_stage4_canonical_differential.py::test_decode_vectors_reject_reordered_inputs_with_identical_refusals"
+      ],
+      "failure_evidence": [
+        "E   Failed: DID NOT RAISE AssertionError"
+      ]
     },
     {
       "id": "bytecode-preflight",
       "source": "acceptance/benchmarks/pr112/run_series.py",
       "original": "    require_no_bytecode(roots)\n",
       "mutant": "",
-      "detecting_test": "acceptance/ci/test_benchmark_isolation.py::test_benchmark_rejects_unequal_source_bytecode_before_running",
+      "detecting_test": "acceptance/verification/test_benchmark_isolation.py::test_benchmark_rejects_unequal_source_bytecode_before_running",
       "result": "killed",
-      "baseline_summary": "1 passed in 0.06s",
-      "mutant_summary": "1 failed in 0.08s"
+      "baseline_summary": "1 passed in 0.07s",
+      "mutant_summary": "1 failed in 0.08s",
+      "failed_cases": [
+        "FAILED acceptance/verification/test_benchmark_isolation.py::test_benchmark_rejects_unequal_source_bytecode_before_running"
+      ],
+      "failure_evidence": [
+        "E   assert 'source tree contains bytecode' in 'Traceback (most recent call last):\\n  File \"<temporary-path> li...lueError(\\'source commit must be a full immutable SHA-1\\')\\nValueError: source commit must be a full immutable SHA-1\\n'"
+      ]
     },
     {
       "id": "explicit-benchmark-instrumentation",
       "source": "acceptance/benchmarks/pr112/benchmark_plugin.py",
       "original": "    monkeypatch.setattr(subprocess, 'run', measured)\n",
       "mutant": "",
-      "detecting_test": "acceptance/ci/test_benchmark_isolation.py::test_instrumentation_is_active_only_when_explicitly_requested",
+      "detecting_test": "acceptance/verification/test_benchmark_isolation.py::test_instrumentation_is_active_only_when_explicitly_requested",
       "result": "killed",
-      "baseline_summary": "1 passed in 0.76s",
-      "mutant_summary": "1 failed in 0.86s"
+      "baseline_summary": "1 passed in 0.47s",
+      "mutant_summary": "1 failed in 0.46s",
+      "failed_cases": [
+        "FAILED acceptance/verification/test_benchmark_isolation.py::test_instrumentation_is_active_only_when_explicitly_requested"
+      ],
+      "failure_evidence": [
+        "E   AssertionError: F                                                                        [100%]",
+        "E     >       assert subprocess.run.__name__ == os.environ[\"EXPECTED_RUN\"]"
+      ]
+    },
+    {
+      "id": "native-direct-selection",
+      "source": "scripts/ci/dependencies.py",
+      "original": "            graph[path].update(name for name in files if name.startswith('native/stage4_canonical/'))\n",
+      "mutant": "            pass\n",
+      "detecting_test": "acceptance/ci/test_plan_selection.py::test_native_kernel_does_not_select_unrelated_python_fallback_consumers",
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.04s",
+      "mutant_summary": "1 failed in 0.06s",
+      "failed_cases": [
+        "FAILED acceptance/ci/test_plan_selection.py::test_native_kernel_does_not_select_unrelated_python_fallback_consumers"
+      ],
+      "failure_evidence": [
+        "E   assert False"
+      ]
+    },
+    {
+      "id": "native-workflow-selection",
+      "source": ".github/workflows/stage4-gold.yml",
+      "original": "    if: fromJSON(needs.select.outputs.plan).groups['stage4-native'].enabled\n",
+      "mutant": "    if: always()\n",
+      "detecting_test": "acceptance/ci/test_verification_gate.py::test_native_workflow_runs_only_when_the_gate_requires_it",
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.10s",
+      "mutant_summary": "1 failed in 0.10s",
+      "failed_cases": [
+        "FAILED acceptance/ci/test_verification_gate.py::test_native_workflow_runs_only_when_the_gate_requires_it"
+      ],
+      "failure_evidence": [
+        "E   assert 'always()' == \"fromJSON(nee...ive'].enabled\""
+      ]
+    },
+    {
+      "id": "evidence-selection",
+      "source": "scripts/ci/select_tests.py",
+      "original": "        graph[evidence_test].add(evidence_path)\n",
+      "mutant": "        pass\n",
+      "detecting_test": "acceptance/ci/test_plan_selection.py::test_report_and_benchmark_changes_select_their_protective_cases",
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.05s",
+      "mutant_summary": "1 failed in 0.04s",
+      "failed_cases": [
+        "FAILED acceptance/ci/test_plan_selection.py::test_report_and_benchmark_changes_select_their_protective_cases"
+      ],
+      "failure_evidence": [
+        "E   AssertionError: assert 'acceptance/verification/test_mutation_evidence_integrity.py' in []"
+      ]
+    },
+    {
+      "id": "benchmark-guard-selection",
+      "source": "scripts/ci/dependencies.py",
+      "original": "            graph[path].update(name for name in files if name.startswith('acceptance/benchmarks/pr112/'))\n",
+      "mutant": "            pass\n",
+      "detecting_test": "acceptance/ci/test_plan_selection.py::test_report_and_benchmark_changes_select_their_protective_cases",
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.06s",
+      "mutant_summary": "1 failed in 0.07s",
+      "failed_cases": [
+        "FAILED acceptance/ci/test_plan_selection.py::test_report_and_benchmark_changes_select_their_protective_cases"
+      ],
+      "failure_evidence": [
+        "E   AssertionError: assert False"
+      ]
+    },
+    {
+      "id": "baseline-tree-verification",
+      "source": "acceptance/stage4/generate_canonical_baseline_vectors.py",
+      "original": "        verify_source_tree(base, ROOT, BASE_COMMIT)\n",
+      "mutant": "        pass\n",
+      "detecting_test": "acceptance/stage4/test_canonical_baseline_integrity.py::test_modified_import_tree_is_refused_before_output[package]",
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.55s",
+      "mutant_summary": "1 failed in 0.78s",
+      "failed_cases": [
+        "FAILED acceptance/stage4/test_canonical_baseline_integrity.py::test_modified_import_tree_is_refused_before_output[package]"
+      ],
+      "failure_evidence": [
+        "E   AssertionError: assert 0 != 0"
+      ]
+    },
+    {
+      "id": "fingerprint-unsupported-values",
+      "source": "acceptance/stage4/canonical_baseline_cases.py",
+      "original": "        raise TypeError('unsupported baseline fingerprint type: ' + kind.__qualname__)\n",
+      "mutant": "        return ['unsupported', number]\n",
+      "detecting_test": "acceptance/stage4/test_canonical_baseline_integrity.py::test_unsupported_values_cannot_share_an_input_fingerprint",
+      "result": "killed",
+      "baseline_summary": "8 passed in 0.02s",
+      "mutant_summary": "8 failed in 0.05s",
+      "failed_cases": [
+        "FAILED acceptance/stage4/test_canonical_baseline_integrity.py::test_unsupported_values_cannot_share_an_input_fingerprint[value0]",
+        "FAILED acceptance/stage4/test_canonical_baseline_integrity.py::test_unsupported_values_cannot_share_an_input_fingerprint[value1]",
+        "FAILED acceptance/stage4/test_canonical_baseline_integrity.py::test_unsupported_values_cannot_share_an_input_fingerprint[value2]",
+        "FAILED acceptance/stage4/test_canonical_baseline_integrity.py::test_unsupported_values_cannot_share_an_input_fingerprint[value3]",
+        "FAILED acceptance/stage4/test_canonical_baseline_integrity.py::test_unsupported_values_cannot_share_an_input_fingerprint[1]",
+        "FAILED acceptance/stage4/test_canonical_baseline_integrity.py::test_unsupported_values_cannot_share_an_input_fingerprint[2]",
+        "FAILED acceptance/stage4/test_canonical_baseline_integrity.py::test_unsupported_values_cannot_share_an_input_fingerprint[value6]",
+        "FAILED acceptance/stage4/test_canonical_baseline_integrity.py::test_unsupported_values_cannot_share_an_input_fingerprint[value7]"
+      ],
+      "failure_evidence": [
+        "E   Failed: DID NOT RAISE TypeError",
+        "E   Failed: DID NOT RAISE TypeError"
+      ]
+    },
+    {
+      "id": "source-snapshot-content",
+      "source": "acceptance/benchmarks/pr112/source_snapshot.py",
+      "original": "            if actual != object_id:\n",
+      "mutant": "            if False:\n",
+      "detecting_test": "acceptance/verification/test_benchmark_provenance.py::test_snapshot_rechecks_modified_source_after_initial_verification",
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.53s",
+      "mutant_summary": "1 failed in 0.66s",
+      "failed_cases": [
+        "FAILED acceptance/verification/test_benchmark_provenance.py::test_snapshot_rechecks_modified_source_after_initial_verification"
+      ],
+      "failure_evidence": [
+        "E   Failed: DID NOT RAISE ValueError"
+      ]
+    },
+    {
+      "id": "selector-snapshot-dependency",
+      "source": "scripts/ci/select_tests.py",
+      "original": "                graph[evidence_test].update(name for name in snapshot if isinstance(name, str))\n",
+      "mutant": "                pass\n",
+      "detecting_test": "acceptance/ci/test_plan_selection.py::test_report_and_benchmark_changes_select_their_protective_cases",
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.05s",
+      "mutant_summary": "1 failed in 0.05s",
+      "failed_cases": [
+        "FAILED acceptance/ci/test_plan_selection.py::test_report_and_benchmark_changes_select_their_protective_cases"
+      ],
+      "failure_evidence": [
+        "E   AssertionError: assert 'acceptance/verification/test_mutation_evidence_integrity.py' in []"
+      ]
+    },
+    {
+      "id": "selector-kill-evidence",
+      "source": "acceptance/verification/test_mutation_evidence_integrity.py",
+      "original": "        assert mutation['failed_cases'] and mutation['failure_evidence']\n",
+      "mutant": "        pass\n",
+      "detecting_test": "acceptance/verification/test_mutation_evidence_integrity.py::test_selector_campaign_cannot_claim_a_kill_without_a_failed_case",
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.02s",
+      "mutant_summary": "1 failed in 0.04s",
+      "failed_cases": [
+        "FAILED acceptance/verification/test_mutation_evidence_integrity.py::test_selector_campaign_cannot_claim_a_kill_without_a_failed_case"
+      ],
+      "failure_evidence": [
+        "E   AssertionError: selector kill had no demonstrated failure"
+      ]
+    },
+    {
+      "id": "mutation-description-snapshot",
+      "source": "acceptance/verification/test_mutation_evidence_integrity.py",
+      "original": "    assert report['transform_sha256'] == transform_digest(report['manual_mutants'])\n",
+      "mutant": "    pass\n",
+      "detecting_test": "acceptance/verification/test_mutation_evidence_integrity.py::test_changed_mutation_description_is_not_the_recorded_experiment",
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.02s",
+      "mutant_summary": "1 failed in 0.03s",
+      "failed_cases": [
+        "FAILED acceptance/verification/test_mutation_evidence_integrity.py::test_changed_mutation_description_is_not_the_recorded_experiment"
+      ],
+      "failure_evidence": [
+        "E   AssertionError: changed mutation description was accepted"
+      ]
+    },
+    {
+      "id": "mutation-evidence-snapshot",
+      "source": "acceptance/verification/test_mutation_evidence_integrity.py",
+      "original": "        assert hashlib.sha256(target.read_bytes()).hexdigest() == digest, name\n",
+      "mutant": "        pass\n",
+      "detecting_test": "acceptance/verification/test_mutation_evidence_integrity.py::test_source_changes_outside_the_mutation_span_invalidate_evidence",
+      "result": "killed",
+      "baseline_summary": "1 passed in 0.03s",
+      "mutant_summary": "1 failed in 0.03s",
+      "failed_cases": [
+        "FAILED acceptance/verification/test_mutation_evidence_integrity.py::test_source_changes_outside_the_mutation_span_invalidate_evidence"
+      ],
+      "failure_evidence": [
+        "E   AssertionError: changed source still accepted as the tested snapshot"
+      ]
     }
   ],
   "excluded_mutants": [
     {
       "id": "canonical-failure-fallback",
       "source": "synapse/experiments/gold/canonicalization.py",
-      "reason": "The _encode_stage4_legacy_failure function and call were removed; the historical mutation no longer applies and was not run or counted."
+      "reason": "The _encode_stage4_legacy_failure function and call were removed; this historical mutation was not run or counted."
+    },
+    {
+      "id": "native-selection-edge",
+      "source": "scripts/ci/dependencies.py",
+      "reason": "The old broad codec edge was replaced by direct native-test ownership; the historical mutation was not run or counted."
     }
   ],
-  "scope_note": "The final change updates only evidence files after this tested commit. This is a targeted campaign, not a full mutation score.",
-  "tested_tree": "30cd3de34486f284bfc6b8b2f46354e78ab7175c"
+  "historical_unpublished_commit": "e0188add452d6478dc4c65814ba0947229769812",
+  "historical_note": "The earlier commit is not available from the remote; this new campaign is bound to the file snapshot above, not retroactively to that commit.",
+  "scope_note": "Targeted mutation campaign, not a complete mutation score.",
+  "selector_campaign": {
+    "method": "Unmutated repository and synthetic baselines passed; each mutation was applied to the synthetic workspace and detected by a collected assertion failure. Timeout, import, collection, setup and missing-environment errors are not kills.",
+    "elapsed_wall_seconds": 89.048,
+    "elapsed_note": "The targeted evidence campaign ran concurrently.",
+    "snapshot_files": {
+      ".github/workflows/stage4-gold.yml": "be6c1e2a6d5d93791c2521c365037e3e2e485265fb692a3ec6705ae50646dc9e",
+      "acceptance/ci/conftest.py": "2f0142476f8fecef36d088ce0a2c393f57ee842a31988ac2d23f131553705fbb",
+      "acceptance/ci/mutate.py": "bcd876712198db9eb09f63e68830995c1df34a28168ff1f01e01527de42bac62",
+      "acceptance/ci/mutations.json": "58d1060ecdc20c198fc06c633ee52c3624ba0f750e1c6f8f6c91b84d3d642838",
+      "acceptance/ci/test_dependency_selection.py": "24667525a0994d4fb6ddcb5d671d55f45c76a2dbd1c8b67fdfd10525a1c58dc5",
+      "acceptance/ci/test_execution_selection.py": "2e628b4a5c7aec9dc51db049f1544062b9e30fd96a4707d766a3f94dc8309440",
+      "acceptance/ci/test_ownership_selection.py": "6717a944f143501d2cc848129faed9b36f27ba0851e311995ec8d7d3e011503a",
+      "acceptance/ci/test_plan_selection.py": "91cab5618d94bc5e7df05c3467986caaaca8f409a9a1405a978228d0a076f010",
+      "acceptance/ci/test_verification_gate.py": "795de92c48ec77b80aff934e9e860751858a2015bba6534cadd1c51177e792f5",
+      "scripts/ci/changes.py": "abb613c5281d26f6e935a317d0dab5956a04ea068cf38bbdc8062909433daadc",
+      "scripts/ci/check_results.py": "005fa9314adc401686ae80e55ed650b24f92d8bedc512cdcbb3450b31d08f638",
+      "scripts/ci/dependencies.py": "5b7e87ceba60b356499e6fae592462b115aa03370e5c7a638e96d96cb17da6a1",
+      "scripts/ci/pytest_selected.py": "5c050ecc8493d1d3191a12c282d029b8d4eb39e4cc5dce50e22e8a32ba341ed5",
+      "scripts/ci/select_tests.py": "252eb4d187185736071f42a9f428bde485d1b7ae660e9b489a37f1bd2040f472",
+      "scripts/ci/ui_mutations.py": "0a8eb210b757076041a8e58f89f3b7f8b25e7d08c5f6ef87ebbdd145040762bc",
+      "tests/test_stage4_gold_canonical_entrypoint.py": "1c21f6e05fe5edb1d353fa2badc70dfe34ce24bd849c6c08ba10aa7e7015eadf"
+    },
+    "mutations": [
+      {
+        "id": "CI-transitive-consumers",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_dependency_selection.py::test_transitive_relative_imports_and_cycles_select_existing_consumers",
+          "FAILED acceptance/ci/test_dependency_selection.py::test_package_initialization_and_parent_fixtures_are_dependencies",
+          "FAILED acceptance/ci/test_dependency_selection.py::test_subprocess_snippets_and_local_helpers_reach_cli_behavior",
+          "FAILED acceptance/ci/test_dependency_selection.py::test_deleted_owner_remains_a_dependency_of_a_surviving_import",
+          "FAILED acceptance/ci/test_dependency_selection.py::test_machine_data_and_canonical_peer_are_not_invisible_to_import_analysis",
+          "FAILED acceptance/ci/test_dependency_selection.py::test_machine_only_change_does_not_schedule_other_cli_commands",
+          "FAILED acceptance/ci/test_ownership_selection.py::test_manifest_rejection_is_executed_by_the_selected_architecture_group",
+          "FAILED acceptance/ci/test_ownership_selection.py::test_unknown_or_removed_governance_data_retains_related_ownership_checks",
+          "FAILED acceptance/ci/test_plan_selection.py::test_report_and_benchmark_changes_select_their_protective_cases",
+          "FAILED acceptance/ci/test_plan_selection.py::test_native_kernel_does_not_select_unrelated_python_fallback_consumers",
+          "FAILED acceptance/ci/test_plan_selection.py::test_baseline_vectors_and_input_corpus_select_native_parity",
+          "FAILED acceptance/ci/test_verification_gate.py::test_codec_changes_select_and_require_native[native/stage4_canonical/src/lib.rs]",
+          "FAILED acceptance/ci/test_verification_gate.py::test_codec_changes_select_and_require_native[native/stage4_canonical/Cargo.toml]",
+          "FAILED acceptance/ci/test_verification_gate.py::test_codec_changes_select_and_require_native[native/stage4_canonical/Cargo.lock]",
+          "FAILED acceptance/ci/test_verification_gate.py::test_codec_changes_select_and_require_native[native/stage4_canonical/pyproject.toml]",
+          "FAILED acceptance/ci/test_verification_gate.py::test_codec_changes_select_and_require_native[synapse/experiments/gold/canonicalization.py]"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert 'tests/test_related.py' in {'synapse/adapter.py', 'synapse/owner.py'}",
+          "E   AssertionError: assert 'acceptance/feature/test_behavior.py' in {'synapse/owner.py'}",
+          "E   AssertionError: assert 'acceptance/test_process.py' in {'synapse/cli.py'}"
+        ]
+      },
+      {
+        "id": "CI-parent-fixtures",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_dependency_selection.py::test_package_initialization_and_parent_fixtures_are_dependencies"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert 'acceptance/feature/test_behavior.py' in {'acceptance/feature/conftest.py'}"
+        ]
+      },
+      {
+        "id": "CI-package-initialization",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_dependency_selection.py::test_package_initialization_and_parent_fixtures_are_dependencies"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert 'acceptance/feature/test_behavior.py' in {'synapse/__init__.py', 'synapse/owner.py'}"
+        ]
+      },
+      {
+        "id": "CI-subprocess-import",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_dependency_selection.py::test_subprocess_snippets_and_local_helpers_reach_cli_behavior"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert 'acceptance/test_process.py' in {'synapse/cli.py'}"
+        ]
+      },
+      {
+        "id": "CI-machine-data",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_dependency_selection.py::test_machine_data_and_canonical_peer_are_not_invisible_to_import_analysis"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert 'acceptance/ui_bridge/test_session.py' in {'synapse/machine/release_profile.json'}"
+        ]
+      },
+      {
+        "id": "CI-exact-matrix",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_plan_selection.py::test_existing_matrix_schedules_only_the_affected_file"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert [{'file': 'ac...st_write.py'}] == [{'file': 'ac...st_write.py'}]"
+        ]
+      },
+      {
+        "id": "CI-new-acceptance",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_plan_selection.py::test_new_acceptance_is_scheduled_without_editing_an_existing_catalog",
+          "FAILED acceptance/ci/test_plan_selection.py::test_mutations_follow_existing_acceptance_without_duplicate_ui_execution",
+          "FAILED acceptance/ci/test_plan_selection.py::test_report_and_benchmark_changes_select_their_protective_cases"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert [] == ['acceptance/.../test_new.py']",
+          "E   AssertionError: assert [] == ['tests/test_entry.py']",
+          "E   AssertionError: assert 'acceptance/verification/test_mutation_evidence_integrity.py' in []"
+        ]
+      },
+      {
+        "id": "CI-shared-ui-contract",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_plan_selection.py::test_shared_control_profile_keeps_both_ui_consumers"
+        ],
+        "failure_evidence": [
+          "E   assert (True and False)"
+        ]
+      },
+      {
+        "id": "CI-required-evidence",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_execution_selection.py::test_selected_jobs_cannot_be_green_when_evidence_is_missing[skipped]",
+          "FAILED acceptance/ci/test_execution_selection.py::test_mutation_only_ui_selection_is_required_by_the_final_gate",
+          "FAILED acceptance/ci/test_plan_selection.py::test_report_and_benchmark_changes_select_their_protective_cases",
+          "FAILED acceptance/ci/test_verification_gate.py::test_unsuccessful_selector_is_reported_before_attempting_to_read_its_empty_output[skipped]",
+          "FAILED acceptance/ci/test_verification_gate.py::test_declared_check_must_finish_successfully[skipped]",
+          "FAILED acceptance/ci/test_verification_gate.py::test_selected_native_result_is_available_to_and_required_by_final_gate",
+          "FAILED acceptance/ci/test_verification_gate.py::test_every_selected_job_must_have_a_successful_result"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert not True",
+          "E   AssertionError: assert (0 == 1)",
+          "E   AssertionError: assert not True"
+        ]
+      },
+      {
+        "id": "CI-branch-cumulative",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_execution_selection.py::test_feature_push_uses_complete_branch_comparison"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert ('previous', 'current', False) == ('refs/remote...urrent', True)"
+        ]
+      },
+      {
+        "id": "CI-rename-boundaries",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_execution_selection.py::test_git_comparison_keeps_both_rename_boundaries_and_prior_branch_changes"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert {'consumer.py', 'notes.md'} == {'consumer.py...', 'owner.py'}"
+        ]
+      },
+      {
+        "id": "CI-execution-filter",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_execution_selection.py::test_fixed_invocation_keeps_options_and_only_selected_cases"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert ['-q', '--tb=.../test_new.py'] == ['-q', '--tb=.../test_new.py']"
+        ]
+      },
+      {
+        "id": "CI-failure-propagation",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_execution_selection.py::test_runner_executes_only_selected_behavior_and_propagates_failure"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert (0 == 1)"
+        ]
+      },
+      {
+        "id": "CI-mutation-selection",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_plan_selection.py::test_python_mutations_follow_selected_behavior_cases"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert ['selected', 'unrelated'] == ['selected']"
+        ]
+      },
+      {
+        "id": "CI-shared-environment",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_plan_selection.py::test_dependency_environment_change_reaches_all_python_consumers_except_manual_providers"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert [] == ['acceptance/.../test_old.py']"
+        ]
+      },
+      {
+        "id": "CI-manual-provider",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_plan_selection.py::test_dependency_environment_change_reaches_all_python_consumers_except_manual_providers"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert ['acceptance/.../test_old.py'] == ['acceptance/.../test_old.py']"
+        ]
+      },
+      {
+        "id": "CI-native-mutation-owner",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_plan_selection.py::test_native_mutations_follow_affected_owners_and_shared_contracts"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert ['transport', 'bundle'] == ['transport']"
+        ]
+      },
+      {
+        "id": "CI-lazy-command-boundary",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_dependency_selection.py::test_machine_only_change_does_not_schedule_other_cli_commands"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert 'tests/test_debugger.py' not in {'acceptance/ui_bridge/machine_peer.py', 'acceptance/ui_bridge/test_machine.py', 'synapse/cli.py', 'synapse/machine/entry.py', 'tests/test_debugger.py'}"
+        ]
+      },
+      {
+        "id": "CI-manifest-canonical-reader",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_ownership_selection.py::test_manifest_rejection_is_executed_by_the_selected_architecture_group",
+          "FAILED acceptance/ci/test_ownership_selection.py::test_unknown_or_removed_governance_data_retains_related_ownership_checks"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert {'tests/test_...rship_dag.py'} == {'tests/test_...rship_dag.py'}",
+          "E   AssertionError: assert {'tests/test_...rship_dag.py'} == {'tests/test_...rship_dag.py'}"
+        ]
+      },
+      {
+        "id": "CI-manifest-dag-reader",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_ownership_selection.py::test_manifest_rejection_is_executed_by_the_selected_architecture_group",
+          "FAILED acceptance/ci/test_ownership_selection.py::test_unknown_or_removed_governance_data_retains_related_ownership_checks"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert {'tests/test_...direction.py'} == {'tests/test_...rship_dag.py'}",
+          "E   AssertionError: assert {'tests/test_...direction.py'} == {'tests/test_...rship_dag.py'}"
+        ]
+      },
+      {
+        "id": "CI-unknown-governance",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_ownership_selection.py::test_unknown_or_removed_governance_data_retains_related_ownership_checks"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert set() == {'tests/test_...rship_dag.py'}"
+        ]
+      },
+      {
+        "id": "CI-deleted-data",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_ownership_selection.py::test_unknown_or_removed_governance_data_retains_related_ownership_checks"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert set() == {'tests/test_...rship_dag.py'}"
+        ]
+      },
+      {
+        "id": "CI-renderer-recovery-owner",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_plan_selection.py::test_recovery_acceptance_selects_renderer_and_its_browser_mutations"
+        ],
+        "failure_evidence": [
+          "E   assert (False)"
+        ]
+      },
+      {
+        "id": "CI-legacy-mutation-selection",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_plan_selection.py::test_mutations_follow_existing_acceptance_without_duplicate_ui_execution"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert [] == ['entry']"
+        ]
+      },
+      {
+        "id": "CI-legacy-mutation-job",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_plan_selection.py::test_mutations_follow_existing_acceptance_without_duplicate_ui_execution"
+        ],
+        "failure_evidence": [
+          "E   assert False"
+        ]
+      },
+      {
+        "id": "CI-mutation-only-gate",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_execution_selection.py::test_mutation_only_ui_selection_is_required_by_the_final_gate"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert (0 == 1)"
+        ]
+      },
+      {
+        "id": "CI-missing-plan-refusal",
+        "result": "KILLED",
+        "failed_cases": [
+          "FAILED acceptance/ci/test_verification_gate.py::test_missing_or_invalid_plan_cannot_turn_missing_checks_into_success[]",
+          "FAILED acceptance/ci/test_verification_gate.py::test_missing_or_invalid_plan_cannot_turn_missing_checks_into_success[ ]",
+          "FAILED acceptance/ci/test_verification_gate.py::test_missing_or_invalid_plan_cannot_turn_missing_checks_into_success[{]",
+          "FAILED acceptance/ci/test_verification_gate.py::test_missing_or_invalid_plan_cannot_turn_missing_checks_into_success[null]",
+          "FAILED acceptance/ci/test_verification_gate.py::test_missing_or_invalid_plan_cannot_turn_missing_checks_into_success[[]]"
+        ],
+        "failure_evidence": [
+          "E   AssertionError: assert 0 != 0",
+          "E   AssertionError: assert 0 != 0",
+          "E   AssertionError: assert 0 != 0"
+        ]
+      }
+    ]
+  }
 }

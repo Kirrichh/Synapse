@@ -86,8 +86,23 @@ def add_runtime_edges(graph: dict[str, set[str]], files: set[str]) -> None:
     for consumer in OWNERSHIP_READERS & graph.keys():
         graph[consumer].update(unknown_governance)
     for path in graph:
-        if path == 'synapse/experiments/gold/canonicalization.py':
+        if path in {
+            'tests/test_stage4_native_direct.py',
+            'tests/test_stage4_canonical_differential.py',
+            'tests/test_stage4_gold_native.py',
+            'acceptance/stage4/stage11/test_native_runtime_resume_acceptance.py',
+        }:
             graph[path].update(name for name in files if name.startswith('native/stage4_canonical/'))
+        if path == 'tests/test_stage4_canonical_differential.py':
+            graph[path].add('tests/data/stage4_baseline_1e226e52.json')
+        if path.startswith('acceptance/verification/') and PurePosixPath(path).name == 'test_repository_selection.py':
+            graph[path].update(name for name in files if name.startswith(('scripts/ci/', 'acceptance/benchmarks/pr112/',
+                                                                          'native/stage4_canonical/')))
+            graph[path].update({'.github/workflows/stage4-gold.yml', 'reports/pr112_targeted_mutations.json'})
+        if path in {'acceptance/verification/test_benchmark_isolation.py',
+                    'acceptance/verification/test_benchmark_plugin_behavior.py',
+                    'acceptance/verification/test_benchmark_provenance.py'}:
+            graph[path].update(name for name in files if name.startswith('acceptance/benchmarks/pr112/'))
         if path.startswith('synapse/machine/'):
             graph[path].update(name for name in files if name.startswith('synapse/machine/') and not name.endswith('.py'))
         if path == 'acceptance/ui_bridge/machine_peer.py':

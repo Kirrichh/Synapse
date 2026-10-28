@@ -1,6 +1,6 @@
 # PR 112 CLI performance evidence
 
-The original product candidate was `44dc07ea0d9f762ca96ffd0c90ba8925cfcc2ca8`; the base was `1e226e52a3400d4fb0336420569d8bab43c8f783`. The bytecode-controlled follow-up used candidate `e0188add452d6478dc4c65814ba0947229769812`. The final single review commit updates only evidence after that measured candidate.
+The original product candidate was `44dc07ea0d9f762ca96ffd0c90ba8925cfcc2ca8`; the base was `1e226e52a3400d4fb0336420569d8bab43c8f783`. The bytecode-controlled follow-up recorded candidate `e0188add452d6478dc4c65814ba0947229769812`, which is not available in the remote repository. Its measured source snapshot cannot be independently verified from the saved data; do not treat that SHA as a public provenance binding.
 
 ## Corrected bytecode-controlled comparison
 
@@ -14,7 +14,7 @@ Five alternating AB/BA pairs used the same CPython 3.12.14 environment and Pytho
 | source-publication | 4.5733 (4.4303–4.8560) | 2.1608 (2.1065–2.2771) | -2.4125s / -52.8% | 4.5710 → 2.1613 | 57964 → 58060 |
 | source-recall | 2.0724 (1.8928–2.2826) | 1.5169 (1.3921–1.5630) | -0.5555s / -26.8% | 2.0701 → 1.5162 | 57824 → 58008 |
 
-The prior reported `replay --mock` slowdown of 19.9% and +5.5 MiB RSS was a measurement artifact of uncontrolled bytecode state and is withdrawn. With both trees source-only, the replay median difference was +0.6% and ranges overlap; the RSS median differed by 16 KiB. The old series did not record actual bytecode state, so its precise cause cannot be reconstructed from its saved data. In a separate five-pair diagnostic on identical base source and inputs, source-only versus precompiled replay measured 0.4457 versus 0.2644 s and 42,352 versus 36,780 KiB RSS, reproducing the same kind of distortion. This diagnostic does not prove which state each old run actually had.
+The prior reported `replay --mock` slowdown of 19.9% and +5.5 MiB RSS is withdrawn. In the controlled series no regression was detected; the cause of the earlier result is not conclusively established. With both trees source-only, the replay median difference was +0.6% and ranges overlap; the RSS median differed by 16 KiB. The old series did not record actual bytecode state, so its precise cause cannot be reconstructed from its saved data. In a separate five-pair diagnostic on identical base source and inputs, source-only versus precompiled replay measured 0.4457 versus 0.2644 s and 42,352 versus 36,780 KiB RSS, reproducing the same kind of distortion. This diagnostic does not prove which state each old run actually had.
 
 The checked long scenario used the normal initial `project run` and approval with a real deterministic local provider and fresh C1/oracle verification. All ten samples agreed on publication/recall, patch, `MODEL` route, `FULL` status and provider/oracle counts, with a clean restored repository. Replay outcomes matched and had zero drift. The same external benchmark plugin was explicitly loaded for each run. Full input and raw data are in `bytecode_controlled_results.json`; the same-source bytecode diagnostic is in `replay_bytecode_diagnostic.json`.
 

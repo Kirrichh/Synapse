@@ -32,6 +32,8 @@ concurrency:
 
 jobs:
   stage4-native:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['stage4-native'].enabled
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -94,10 +96,11 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+          fetch-depth: ${{ matrix.file == 'acceptance/stage4/test_canonical_baseline_integrity.py' && '0' || '1' }}
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - run: python -m pip install -e '.[dev]'
+          python-version: ${{ matrix.file == 'acceptance/stage4/test_canonical_baseline_integrity.py' && '3.12' || '3.11' }}
+      - run: python -m pip install -e '.[dev]' PyYAML==6.0.3
       - name: Run one affected acceptance file not yet in an existing group
         env:
           ACCEPTANCE_FILE: ${{ matrix.file }}

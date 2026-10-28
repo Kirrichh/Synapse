@@ -79,6 +79,23 @@ def build_plan(root, files, changed, workflow, *, environment_changed=False):
             sources[path] = ''  # Keep edges to deleted owners resolvable.
     graph = python_graph(sources, files | changed)
     add_runtime_edges(graph, files | changed)
+    evidence_test = 'acceptance/verification/test_mutation_evidence_integrity.py'
+    evidence_path = 'reports/pr112_targeted_mutations.json'
+    if evidence_test in graph:
+        graph[evidence_test].add(evidence_path)
+        if (root / evidence_path).is_file():
+            try:
+                evidence = json.loads((root / evidence_path).read_text())
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                evidence = {}
+            snapshots = (evidence.get('snapshot_files', {}),
+                         evidence.get('selector_campaign', {}).get('snapshot_files', {}))
+            for snapshot in snapshots:
+                graph[evidence_test].update(name for name in snapshot if isinstance(name, str))
+            for seed in evidence.get('manual_mutants', []):
+                for dependency in (seed.get('source'), seed.get('detecting_test', '').split('::')[0]):
+                    if isinstance(dependency, str):
+                        graph[evidence_test].add(dependency)
     mutation_catalog = root / 'acceptance/stage4/stage16/mutations.json'
     stage_mutants = json.loads(mutation_catalog.read_text())['cases'] if mutation_catalog.exists() else []
     reached = affected(graph, changed)

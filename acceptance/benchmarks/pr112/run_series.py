@@ -12,12 +12,16 @@ import sys
 import tempfile
 import unicodedata
 
+from source_snapshot import verify_source_tree
+
 HERE = Path(__file__).resolve().parent
 
 
 def digest_tree(root):
     digest = hashlib.sha256()
     for path in sorted(root.rglob('*')):
+        if path.is_symlink():
+            raise ValueError('snapshot contains a symlink: ' + str(path))
         if path.is_file():
             digest.update(str(path.relative_to(root)).encode() + b'\0' + hashlib.sha256(path.read_bytes()).digest())
     return digest.hexdigest()
@@ -52,6 +56,15 @@ def main():
         parser.error('pairs must be positive')
     roots = {'base': args.base.resolve(), 'candidate': args.candidate.resolve()}
     require_no_bytecode(roots)
+    repository = Path.cwd().resolve()
+    identities = {name: verify_source_tree(root, repository, commit)
+                  for name, root, commit in [('base', roots['base'], args.base_sha),
+                                             ('candidate', roots['candidate'], args.candidate_sha)]}
+    harness_hash = digest_tree(HERE)
+    candidate_harness = roots['candidate'] / 'acceptance/benchmarks/pr112'
+    if harness_hash != digest_tree(candidate_harness):
+        raise RuntimeError('benchmark harness differs from candidate commit')
+    addon_hash = digest_tree(args.native_addon.resolve())
     def inventory(executable, source, addon=None):
         script = 'import json,platform,unicodedata,importlib.metadata; from synapse.experiments.gold import canonicalization as c; print(json.dumps({\"python\":platform.python_version(),\"unicode\":unicodedata.unidata_version,\"distributions\":sorted((d.metadata[\"Name\"],d.version) for d in importlib.metadata.distributions()),\"native\":c.native_runtime_identity() if hasattr(c,\"native_runtime_identity\") else {\"implementation\":\"python\"}}))'
         env = {**os.environ, 'PYTHONPATH': os.pathsep.join([str(source)] + ([str(addon)] if addon else [])), 'PYTHONDONTWRITEBYTECODE': '1'}
@@ -65,8 +78,29 @@ def main():
         raise RuntimeError('native comparison did not load the extension')
     artifact = args.replay_artifact.resolve()
     artifact_hash = digest_tree(artifact)
+    if artifact_hash != digest_tree(roots['candidate'] / 'reports/pr112_benchmark/replay'):
+        raise RuntimeError('replay artifact differs from candidate commit')
+    native_files = [path for path in args.native_addon.resolve().rglob('*') if path.is_file()]
+    native_hashes = {hashlib.sha256(path.read_bytes()).hexdigest() for path in native_files}
+    native_identity = inventories['candidate_native']['native']
+    if native_identity['binary_sha256'] not in native_hashes or native_identity.get('wrapper_sha256') not in native_hashes:
+        raise RuntimeError('loaded native binary or wrapper differs from the supplied addon')
+    python_hash = hashlib.sha256(args.python.resolve().read_bytes()).hexdigest()
+
+    def verify_inputs_unchanged():
+        for tree_name, tree in roots.items():
+            commit = args.base_sha if tree_name == 'base' else args.candidate_sha
+            if verify_source_tree(tree, repository, commit) != identities[tree_name]:
+                raise RuntimeError('source changed during measurement')
+        if (digest_tree(HERE) != harness_hash or digest_tree(args.native_addon.resolve()) != addon_hash
+                or digest_tree(artifact) != artifact_hash
+                or hashlib.sha256(args.python.resolve().read_bytes()).hexdigest() != python_hash):
+            raise RuntimeError('harness, artifact, interpreter, or native addon changed during measurement')
+
     results = {'schema': 'synapse.pr112.cli-benchmark/v1', 'pairs': args.pairs,
                'base_sha': args.base_sha, 'candidate_sha': args.candidate_sha, 'inventories': inventories,
+               'source_identities': identities, 'harness_sha256': harness_hash,
+               'native_addon_sha256': addon_hash, 'artifact_sha256': artifact_hash, 'python_binary_sha256': python_hash,
                'environment': {'platform': platform.system() + ' ' + platform.release(),
                     'machine': platform.machine(), 'driver_python': platform.python_version(),
                     'driver_unicode': unicodedata.unidata_version,
@@ -82,7 +116,7 @@ def main():
     expected_replay = None
     if args.resume and args.output.exists():
         previous = json.loads(args.output.read_text())
-        for key in ('base_sha', 'candidate_sha', 'pairs', 'inventories', 'environment'):
+        for key in ('base_sha', 'candidate_sha', 'pairs', 'inventories', 'environment', 'source_identities', 'harness_sha256', 'native_addon_sha256', 'artifact_sha256', 'python_binary_sha256'):
             if previous[key] != results[key]:
                 raise RuntimeError('resume metadata differs: ' + key)
         results = previous
@@ -110,6 +144,7 @@ def main():
                         cwd=source, env=env, capture_output=True, text=True, timeout=7200)
                     if test.returncode:
                         raise RuntimeError(f'{series} {member} pair {pair + 1}: acceptance scenario failed: {test.stdout[-3000:]} {test.stderr[-1000:]}')
+                    verify_inputs_unchanged()
                     events = [json.loads(line) for line in trace.read_text().splitlines()]
                     behavior = [item for item in events if item['kind'] == 'behavior']
                     if len(behavior) != 3:
@@ -126,6 +161,7 @@ def main():
                         raise RuntimeError(f'{series} {member}: replay failed')
                     replay_value = json.loads(replay.stdout)
                     replay_value.pop('artifact_dir', None)
+                    verify_inputs_unchanged()
                     if replay_value.get('drift') != 0 or digest_tree(artifact) != artifact_hash:
                         raise RuntimeError('replay changed its artifact or failed determinism')
                     if expected_replay is None:

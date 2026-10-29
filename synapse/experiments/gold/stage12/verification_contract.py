@@ -31,8 +31,7 @@ class VerificationRecord:
         raise TypeError("VerificationRecord is produced by verify_attempt")
 
     def payload(self) -> dict[str, object]:
-        require_verification_record(self)
-        return decode_canonical(self._bytes)
+        return _require_verification_payload(self)
 
     @property
     def reference(self) -> HashBoundRef:
@@ -42,17 +41,28 @@ class VerificationRecord:
                             len(self._bytes), "application/json")
 
     def to_dict(self) -> dict[str, object]:
-        value = {"verification_ref": self.reference.to_dict(), "payload": self.payload()}
+        payload = _require_verification_payload(self)
+        digest = hashlib.sha256(self._bytes).hexdigest()
+        reference = HashBoundRef(RefKind.ARTIFACT, digest, VERIFICATION_SCHEMA_V5,
+                                 digest, len(self._bytes), "application/json")
+        value = {"verification_ref": reference.to_dict(), "payload": payload}
         inspect_verification_record(value)
         return value
 
 
-def require_verification_record(value: object) -> VerificationRecord:
+def _require_verification_payload(value: object) -> dict[str, object]:
     if type(value) is not VerificationRecord or getattr(value, "_seal", None) is not _SEAL:
         raise GoldRunViolation(GoldRunFailureCode.TYPE_MISMATCH, "verification must be evaluator-sealed")
-    if (type(value._bytes) is not bytes or hashlib.sha256(value._bytes).hexdigest() != value._digest
-            or decode_canonical(value._bytes).get("schema_version") != VERIFICATION_SCHEMA_V5):
+    if (type(value._bytes) is not bytes or hashlib.sha256(value._bytes).hexdigest() != value._digest):
         raise GoldRunViolation(GoldRunFailureCode.IDENTITY_MISMATCH, "verification record is malformed")
+    payload = decode_canonical(value._bytes)
+    if payload.get("schema_version") != VERIFICATION_SCHEMA_V5:
+        raise GoldRunViolation(GoldRunFailureCode.IDENTITY_MISMATCH, "verification record is malformed")
+    return payload
+
+
+def require_verification_record(value: object) -> VerificationRecord:
+    _require_verification_payload(value)
     return value
 
 

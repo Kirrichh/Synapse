@@ -154,6 +154,10 @@ def _exact_list(value: object, name: str) -> list[Any]:
 def _text(value: object, name: str, pattern: re.Pattern[str] | None = None) -> str:
     if type(value) is not str or not value:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, f"{name} must be non-empty exact string")
+    if value.isascii():
+        if pattern is not None and pattern.fullmatch(value) is None:
+            raise _fail(BehaviorFailureCode.TYPE_MISMATCH, f"{name} has invalid syntax")
+        return value
     if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
         raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, f"{name} contains lone surrogate")
     try:
@@ -181,6 +185,10 @@ def _versioned(value: object, name: str) -> str:
 def _inline_string(value: object, path: str) -> str:
     if type(value) is not str:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, f"{path} must be exact string data")
+    if value.isascii():
+        if len(value) > 4096:
+            raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, "large inline string must be a hash-bound ref")
+        return value
     if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
         raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, f"{path} contains lone surrogate")
     try:
@@ -1086,6 +1094,7 @@ class BehaviorCore:
         raise TypeError("BehaviorCore is created only by create_behavior_unit or strict transport")
 
     def to_dict(self) -> dict[str, object]:
+        _validate_behavior_core(self)
         return _behavior_core_payload(self)
 
     @classmethod
@@ -1125,7 +1134,6 @@ def _make_behavior_core(
 
 
 def _behavior_core_payload(value: BehaviorCore) -> dict[str, object]:
-    _validate_behavior_core(value)
     return {
         "schema_version": value.schema_version,
         "behavior_kind": value.behavior_kind.value,
@@ -1247,10 +1255,10 @@ class SynapseBehaviorUnit:
         raise TypeError("SynapseBehaviorUnit is created only by create_behavior_unit or strict transport")
 
     def to_dict(self) -> dict[str, object]:
-        validate_behavior_unit(self)
+        core_payload = _validate_behavior_unit_payload(self)
         return {
             "schema_version": self.schema_version.value,
-            "core": self.core.to_dict(),
+            "core": core_payload,
             "content_key": self.content_key.to_dict(),
         }
 
@@ -1260,6 +1268,7 @@ class SynapseBehaviorUnit:
 
 
 def _seal_unit(core: BehaviorCore) -> SynapseBehaviorUnit:
+    _validate_behavior_core(core)
     payload = _behavior_core_payload(core)
     canonical_core = _make_canonical_behavior_core(payload)
     unit = object.__new__(SynapseBehaviorUnit)
@@ -1349,7 +1358,7 @@ def behavior_evidence_subject(proof: bytes, content_ref: HashBoundRef) -> HashBo
         profile_id=STAGE4_CANONICAL_PROFILE_V1, codec_id=STABLE_CANONICAL_CODEC_ID))
 
 
-def validate_behavior_unit(value: SynapseBehaviorUnit) -> None:
+def _validate_behavior_unit_payload(value: SynapseBehaviorUnit) -> dict[str, object]:
     if type(value) is not SynapseBehaviorUnit:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "unit must be exact SynapseBehaviorUnit")
     if getattr(value, "_trusted_seal", None) is not _TRUSTED_SEAL:
@@ -1371,6 +1380,11 @@ def validate_behavior_unit(value: SynapseBehaviorUnit) -> None:
     if (type(value.context_sha256) is not str
             or value.context_sha256 != _compute_unit_context_sha256(value.core, value.content_key, core_payload=core_payload)):
         raise _fail(BehaviorFailureCode.TRUSTED_OBJECT_FORGED, "unit context hash mismatch")
+    return core_payload
+
+
+def validate_behavior_unit(value: SynapseBehaviorUnit) -> None:
+    _validate_behavior_unit_payload(value)
 
 
 def behavior_unit_from_dict(value: object) -> SynapseBehaviorUnit:

@@ -179,6 +179,8 @@ def _exact_list(value: object, name: str) -> list[Any]:
 def _text(value: object, name: str, *, nonempty: bool = True) -> str:
     if type(value) is not str or (nonempty and not value):
         raise _fail(CanonicalizationFailureCode.TYPE_MISMATCH, f"{name} must be an exact string")
+    if value.isascii():
+        return value
     if _SURROGATE_RE.search(value) is not None:
         raise _fail(CanonicalizationFailureCode.INVALID_UTF8, f"{name} contains a lone surrogate")
     try:

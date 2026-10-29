@@ -45,4 +45,4 @@ The existing baseline's bare `TypeError` on very long diagnostic paths and long 
 
 Checks on the working tree: `acceptance/ci` 58 passed in 10.47 s; the changed `acceptance/verification` files 26 passed; full `acceptance/ci/mutate.py` 27 KILLED, exit 0. These are targeted checks, not the full suite.
 
-The controlled speed series for `run-reuse`, `approve-reuse`, first and repeated resume and candidate Python versus native (stage 8) has not been run. Until it is, the reuse, resume and native figures in `pr112_benchmark/README.md` come only from the earlier series whose bytecode state was not recorded.
+The controlled speed series (stage 8) is complete for `56585964513a0b07af111d5a53e4023a1a72ed33`: five AB/BA pairs for base versus candidate Python and for candidate Python versus native, all scenarios including `run-reuse`, `approve-reuse` and both resumes, with matching behavior in every run. Results and method are in the first section of `pr112_benchmark/README.md`; raw data in `pr112_benchmark/controlled_series_56585964.json`. The commit adding them changes only reports.

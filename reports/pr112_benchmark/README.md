@@ -2,6 +2,42 @@
 
 The original product candidate was `44dc07ea0d9f762ca96ffd0c90ba8925cfcc2ca8`; the base was `1e226e52a3400d4fb0336420569d8bab43c8f783`. The bytecode-controlled follow-up recorded candidate `e0188add452d6478dc4c65814ba0947229769812`, which is not available in the remote repository. Its measured source snapshot cannot be independently verified from the saved data; do not treat that SHA as a public provenance binding.
 
+## Final controlled series: `56585964513a0b07af111d5a53e4023a1a72ed33`
+
+This is the complete pinned series for the published candidate `56585964513a0b07af111d5a53e4023a1a72ed33` against base `1e226e52a3400d4fb0336420569d8bab43c8f783`; raw data are in `controlled_series_56585964.json`. Both source trees were verified against those commits (Git trees `2d08fc94…` and `2d12baa0…`) before execution and after every run, the harness matched the candidate and contained no bytecode, and the native series loaded the built wheel (binary `3b19d077…`, wrapper `2cb636cc…`). Linux 6.18.44-fc-v185 x86_64, CPython 3.12.3, Unicode 15.0.0, one environment and one host for all 20 runs; the series was resumed across background time limits on that host. Five alternating AB/BA pairs per comparison; each CLI call is a new process; the filesystem cache was uncontrolled and is not called cold. Wall and CPU are seconds (median, wall range in brackets); memory is the `wait4` maximum RSS of one process in MiB, not an aggregate process-tree peak.
+
+Every run matched: publication and recall outcomes, initial `MODEL` and reuse `EXACT_MEMORY` routes, `FULL` status, patch `c88993a7…`, one provider request, two fresh resolved oracle observations, no reuse agent execution, a restored repository, both resumes, and a zero-drift replay.
+
+Base Python versus candidate Python:
+
+| Scenario | Base wall | Candidate wall | Change | CPU | RSS MiB |
+|---|---:|---:|---:|---:|---:|
+| source-publication | 9.00 [8.46–9.79] | 4.22 [3.92–4.30] | -53.1% | 8.8 → 4.1 | 63.2 → 63.5 |
+| source-recall | 3.60 [3.47–4.09] | 2.80 [2.64–2.94] | -22.1% | 3.6 → 2.8 | 63.2 → 63.5 |
+| run-initial | 7.77 [7.42–8.02] | 4.87 [4.67–5.31] | -37.3% | 7.7 → 4.8 | 70.2 → 70.6 |
+| approve-initial | 221.13 [218.11–222.58] | 93.22 [90.83–94.65] | -57.8% | 218.9 → 91.8 | 75.0 → 79.7 |
+| run-reuse | 28.08 [27.11–28.76] | 14.15 [14.01–14.46] | -49.6% | 27.8 → 14.0 | 70.9 → 75.2 |
+| approve-reuse | 818.27 [799.21–836.73] | 314.22 [311.80–321.06] | -61.6% | 811.9 → 311.2 | 76.7 → 85.0 |
+| resume-first | 100.87 [97.53–102.96] | 58.84 [57.23–61.39] | -41.7% | 100.0 → 58.3 | 73.9 → 83.6 |
+| resume-repeat | 101.86 [97.68–102.69] | 59.05 [57.26–60.27] | -42.0% | 100.9 → 58.5 | 73.9 → 83.7 |
+| replay-mock | 0.76 [0.66–0.82] | 0.80 [0.68–0.82] | +4.4% | 0.8 → 0.8 | 48.5 → 48.5 |
+
+Candidate Python versus candidate native:
+
+| Scenario | Python wall | Native wall | Change | CPU | RSS MiB |
+|---|---:|---:|---:|---:|---:|
+| source-publication | 4.24 [4.17–4.52] | 3.34 [3.07–3.65] | -21.3% | 4.1 → 3.2 | 63.4 → 64.0 |
+| source-recall | 2.66 [2.63–3.01] | 2.45 [2.35–2.54] | -7.8% | 2.6 → 2.4 | 63.5 → 63.9 |
+| run-initial | 5.03 [4.94–5.09] | 4.26 [4.07–4.48] | -15.2% | 4.9 → 4.2 | 71.2 → 71.7 |
+| approve-initial | 92.81 [91.90–94.46] | 55.30 [53.99–56.43] | -40.4% | 91.3 → 54.4 | 79.8 → 80.0 |
+| run-reuse | 14.00 [13.71–14.56] | 9.28 [9.12–9.63] | -33.7% | 13.8 → 9.1 | 75.4 → 75.7 |
+| approve-reuse | 318.46 [309.90–326.15] | 182.56 [178.73–185.41] | -42.7% | 314.5 → 180.0 | 85.1 → 85.6 |
+| resume-first | 59.31 [58.74–60.74] | 33.62 [33.11–35.45] | -43.3% | 58.8 → 33.4 | 83.6 → 84.0 |
+| resume-repeat | 59.12 [58.36–59.63] | 34.25 [33.84–35.04] | -42.1% | 58.6 → 33.9 | 83.5 → 83.9 |
+| replay-mock | 0.76 [0.71–0.83] | 0.75 [0.73–0.85] | -1.3% | 0.8 → 0.7 | 48.5 → 48.4 |
+
+In every scenario except `replay-mock` the five base and five candidate wall times do not overlap, in both comparisons. `replay-mock` ranges overlap in both, so no change is established there. The Python candidate holds up to about 10 MiB more per process in the longest scenarios; the native backend adds under 1 MiB. Five samples give medians and ranges, not a reliable p95. A partial earlier series of seven runs on another host was discarded rather than merged, because the runner refuses to mix environments.
+
 ## Corrected bytecode-controlled comparison
 
 Five alternating AB/BA pairs used the same CPython 3.12.14 environment and Python backend. Both immutable source archives contained no `.pyc`; `-B` and `PYTHONDONTWRITEBYTECODE=1` prevented new bytecode. The filesystem cache was uncontrolled. A service environment reconnect occurred during the series; the process continued and recorded completed outcomes, but this is a limit on the interpretation. Wall and CPU are seconds; RSS is KiB, measured as described below.

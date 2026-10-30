@@ -1,0 +1,401 @@
+{
+ "provenance": "git-commit-snapshot",
+ "tested_commit": "fe615fda30affd11e2d3e5b992a5478781f074e3",
+ "snapshot_files": {
+  "acceptance/stage4/stage12/test_outcome_contract.py": "e1fd17bc4fb69fa90090f3d81415b3416de029b901615374910370fbe1159269",
+  "acceptance/verification/pr112_followup_mutants.json": "5518647720b214f1083dc18bbce86ca275c93961798c0f11bee917c02d34b24d",
+  "synapse/canonical_values.py": "7e86ea38aa25890a2baff68fdea266e9b1984425bf089061f19a9395cad77e78",
+  "synapse/experiments/gold/behavior.py": "8b6013647c2e4894dfffa142e4ca866d6cf6f37b3537b3b8cde766c6cfa9e196",
+  "synapse/experiments/gold/canonicalization.py": "38a87a9ac6f49019c7fdfdad4a8cb714dc49a6635ea30788d3232e52ecfd0d8b",
+  "synapse/experiments/gold/runner/controller_recovery.py": "25662a66523a20f79d88b3da861359f432ad7bd9c8c087bc6f722af82a14793b",
+  "synapse/experiments/gold/stage12/verification_contract.py": "2f089e0a0583deff5b6c0f94bbe50f9524829404ad10f89a635b4e89bb99b9db",
+  "tests/test_stable_canonical_values_p044.py": "034738108c551435ec061a187333f203377bc5db95ec46a49543900a2f66df41",
+  "tests/test_stage4_gold_behavior.py": "15ab8177ea2f050b8bcbf40be508d09d030b089752f60fc97b7b31c04b7a3e7b",
+  "tests/test_stage4_gold_canonicalization.py": "dbd03dcc3ed60a341574eac8bf2d32c5132cfad2d14245bb1225f1ed95f20081"
+ },
+ "transform_sha256": "1b99ea51a23d09cd15b9ee99ff275679cf5d4476c899db085e133692f70a91bd",
+ "method": "Each detecting test file passed on a fresh export of tested_commit; each mutant replaced one exact occurrence and its file was run again. Killed means failed cases, not an interrupted or uncollected run.",
+ "manual_mutants": [
+  {
+   "id": "scalar-size-ignores-surrogates",
+   "source": "synapse/canonical_values.py",
+   "original": "    if _SURROGATE_RE.search(text) is not None:\n        return None\n    return len(text.encode(\"utf-8\"))",
+   "mutant": "    return len(text.encode(\"utf-8\", \"surrogatepass\"))",
+   "detecting_test": "tests/test_stable_canonical_values_p044.py::test_scalar_text_size_is_the_strict_utf8_length_or_refuses_a_surrogate",
+   "result": "killed",
+   "baseline_summary": "44 passed",
+   "mutant_summary": "12 failed, 32 passed",
+   "failed_cases": [
+    "FAILED tests/test_stable_canonical_values_p044.py::test_lone_surrogate_rejected[bad\\ud800]",
+    "FAILED tests/test_stable_canonical_values_p044.py::test_lone_surrogate_rejected[\\udbff]",
+    "FAILED tests/test_stable_canonical_values_p044.py::test_lone_surrogate_rejected[\\udc00]",
+    "FAILED tests/test_stable_canonical_values_p044.py::test_lone_surrogate_rejected[\\udfff]",
+    "FAILED tests/test_stable_canonical_values_p044.py::test_lone_surrogate_rejected[\\ud800\\udc00]",
+    "FAILED tests/test_stable_canonical_values_p044.py::test_lone_surrogate_rejected[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\udfff]",
+    "FAILED tests/test_stable_canonical_values_p044.py::test_scalar_text_size_is_the_strict_utf8_length_or_refuses_a_surrogate[bad\\ud800]",
+    "FAILED tests/test_stable_canonical_values_p044.py::test_scalar_text_size_is_the_strict_utf8_length_or_refuses_a_surrogate[\\udbff]",
+    "FAILED tests/test_stable_canonical_values_p044.py::test_scalar_text_size_is_the_strict_utf8_length_or_refuses_a_surrogate[\\udc00]",
+    "FAILED tests/test_stable_canonical_values_p044.py::test_scalar_text_size_is_the_strict_utf8_length_or_refuses_a_surrogate[\\udfff]",
+    "FAILED tests/test_stable_canonical_values_p044.py::test_scalar_text_size_is_the_strict_utf8_length_or_refuses_a_surrogate[\\ud800\\udc00]",
+    "FAILED tests/test_stable_canonical_values_p044.py::test_scalar_text_size_is_the_strict_utf8_length_or_refuses_a_surrogate[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\udfff]"
+   ],
+   "failure_evidence": [
+    "E   UnicodeEncodeError: 'utf-8' codec can't encode character '\\ud800' in position 4: surrogates not allowed",
+    "E   UnicodeEncodeError: 'utf-8' codec can't encode character '\\udbff' in position 1: surrogates not allowed",
+    "E   UnicodeEncodeError: 'utf-8' codec can't encode character '\\udc00' in position 1: surrogates not allowed"
+   ]
+  },
+  {
+   "id": "scalar-size-counts-characters",
+   "source": "synapse/canonical_values.py",
+   "original": "    return len(text.encode(\"utf-8\"))",
+   "mutant": "    return len(text)",
+   "detecting_test": "tests/test_stable_canonical_values_p044.py::test_scalar_text_size_is_the_strict_utf8_length_or_refuses_a_surrogate",
+   "result": "killed",
+   "baseline_summary": "44 passed",
+   "mutant_summary": "6 failed, 38 passed",
+   "failed_cases": [
+    "FAILED tests/test_stable_canonical_values_p044.py::test_scalar_text_size_is_the_strict_utf8_length_or_refuses_a_surrogate[\\x80]",
+    "FAILED tests/test_stable_canonical_values_p044.py::test_scalar_text_size_is_the_strict_utf8_length_or_refuses_a_surrogate[\\xe9]",
+    "FAILED tests/test_stable_canonical_values_p044.py::test_scalar_text_size_is_the_strict_utf8_length_or_refuses_a_surrogate[e\\u0301]",
+    "FAILED tests/test_stable_canonical_values_p044.py::test_scalar_text_size_is_the_strict_utf8_length_or_refuses_a_surrogate[\\ud7ff\\ue000]",
+    "FAILED tests/test_stable_canonical_values_p044.py::test_scalar_text_size_is_the_strict_utf8_length_or_refuses_a_surrogate[\\U00010000\\U0010ffff]",
+    "FAILED tests/test_stable_canonical_values_p044.py::test_scalar_text_size_is_the_strict_utf8_length_or_refuses_a_surrogate[\\u043f\\u0430\\u043c\\u044f\\u0442\\u044c \\U0001f600]"
+   ],
+   "failure_evidence": [
+    "E   AssertionError: assert 1 == 2",
+    "E    +  where 1 = scalar_text_utf8_size('\\x80')",
+    "E    +  where 1 = scalar_text_utf8_size('é')"
+   ]
+  },
+  {
+   "id": "canonical-text-skips-nfc",
+   "source": "synapse/canonical_values.py",
+   "original": "        return unicodedata.normalize(\"NFC\", text)\n    # Keep the existing",
+   "mutant": "        return text\n    # Keep the existing",
+   "detecting_test": "tests/test_stable_canonical_values_p044.py::test_unicode_values_and_keys_are_nfc_normalized",
+   "result": "killed",
+   "baseline_summary": "44 passed",
+   "mutant_summary": "4 failed, 40 passed",
+   "failed_cases": [
+    "FAILED tests/test_stable_canonical_values_p044.py::test_unicode_values_and_keys_are_nfc_normalized",
+    "FAILED tests/test_stable_canonical_values_p044.py::test_dict_key_collision_after_nfc_normalization_rejected",
+    "FAILED tests/test_stable_canonical_values_p044.py::test_canonical_hash_has_known_cross_platform_fixture",
+    "FAILED tests/test_stable_canonical_values_p044.py::test_unicode_edge_cases_preserve_valid_scalars_and_normalize_combining_marks"
+   ],
+   "failure_evidence": [
+    "E   AssertionError: assert 'e\\u0301' == '\\xe9'",
+    "E",
+    "E     - é"
+   ]
+  },
+  {
+   "id": "canonical-text-drops-subclass-path",
+   "source": "synapse/canonical_values.py",
+   "original": "    if type(text) is str:\n        # ASCII is scalar text",
+   "mutant": "    if isinstance(text, str):\n        # ASCII is scalar text",
+   "detecting_test": "tests/test_stable_canonical_values_p044.py::test_string_subclass_validation_preserves_iteration_and_utf8_checks",
+   "result": "killed",
+   "baseline_summary": "44 passed",
+   "mutant_summary": "1 failed, 43 passed",
+   "failed_cases": [
+    "FAILED tests/test_stable_canonical_values_p044.py::test_string_subclass_validation_preserves_iteration_and_utf8_checks"
+   ],
+   "failure_evidence": [
+    "E   Failed: DID NOT RAISE CanonicalSerializationError"
+   ]
+  },
+  {
+   "id": "gold-text-skips-surrogates",
+   "source": "synapse/experiments/gold/canonicalization.py",
+   "original": "    if scalar_text_utf8_size(value) is None:\n        raise _fail(CanonicalizationFailureCode.INVALID_UTF8",
+   "mutant": "    if False:\n        raise _fail(CanonicalizationFailureCode.INVALID_UTF8",
+   "detecting_test": "tests/test_stage4_gold_canonicalization.py",
+   "result": "killed",
+   "baseline_summary": "15 passed",
+   "mutant_summary": "7 failed, 8 passed",
+   "failed_cases": [
+    "FAILED tests/test_stage4_gold_canonicalization.py::test_s4_p2_acc_canon_02_strict_utf8_json_round_trip_and_base64url",
+    "FAILED tests/test_stage4_gold_canonicalization.py::test_surrogate_values_and_keys_keep_typed_utf8_refusal[\\ud800]",
+    "FAILED tests/test_stage4_gold_canonicalization.py::test_surrogate_values_and_keys_keep_typed_utf8_refusal[\\udbff]",
+    "FAILED tests/test_stage4_gold_canonicalization.py::test_surrogate_values_and_keys_keep_typed_utf8_refusal[\\udc00]",
+    "FAILED tests/test_stage4_gold_canonicalization.py::test_surrogate_values_and_keys_keep_typed_utf8_refusal[\\udfff]",
+    "FAILED tests/test_stage4_gold_canonicalization.py::test_surrogate_values_and_keys_keep_typed_utf8_refusal[\\ud800\\udc00]",
+    "FAILED tests/test_stage4_gold_canonicalization.py::test_surrogate_values_and_keys_keep_typed_utf8_refusal[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\udfff]"
+   ],
+   "failure_evidence": [
+    "E   AssertionError: assert <CanonicalizationFailureCode.INVALID_CANONICAL_VALUE: 'INVALID_CANONICAL_VALUE'> is <CanonicalizationFailureCode.INVALID_UTF8: 'INVALID_UTF8'>",
+    "E    +  where <CanonicalizationFailureCode.INVALID_CANONICAL_VALUE: 'INVALID_CANONICAL_VALUE'> = CanonicalizationViolation('INVALID_CANONICAL_VALUE: stable codec rejected payload').failure_code",
+    "E    +    where CanonicalizationViolation('INVALID_CANONICAL_VALUE: stable codec rejected payload') = <ExceptionInfo CanonicalizationViolation('INVALID_CANONICAL_VALUE: stable codec rejected payload') tblen=5>.value"
+   ]
+  },
+  {
+   "id": "behavior-text-skips-surrogates",
+   "source": "synapse/experiments/gold/behavior.py",
+   "original": "    if scalar_text_utf8_size(value) is None:\n        raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, f\"{name}",
+   "mutant": "    if False:\n        raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, f\"{name}",
+   "detecting_test": "tests/test_stage4_gold_behavior.py::test_contract_names_refuse_surrogates_before_syntax",
+   "result": "killed",
+   "baseline_summary": "55 passed",
+   "mutant_summary": "2 failed, 53 passed",
+   "failed_cases": [
+    "FAILED tests/test_stage4_gold_behavior.py::test_contract_names_refuse_surrogates_before_syntax[bad\\ud800]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_contract_names_refuse_surrogates_before_syntax[\\xe9\\udfff]"
+   ],
+   "failure_evidence": [
+    "E   AssertionError: assert <BehaviorFailureCode.TYPE_MISMATCH: 'TYPE_MISMATCH'> is <BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN: 'RAW_PAYLOAD_FORBIDDEN'>",
+    "E    +  where <BehaviorFailureCode.TYPE_MISMATCH: 'TYPE_MISMATCH'> = BehaviorViolation('TYPE_MISMATCH: field.name has invalid syntax').failure_code",
+    "E    +    where BehaviorViolation('TYPE_MISMATCH: field.name has invalid syntax') = <ExceptionInfo BehaviorViolation('TYPE_MISMATCH: field.name has invalid syntax') tblen=5>.value"
+   ]
+  },
+  {
+   "id": "inline-skips-surrogates",
+   "source": "synapse/experiments/gold/behavior.py",
+   "original": "    if size is None:\n        raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, f\"{path}",
+   "mutant": "    if False:\n        raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, f\"{path}",
+   "detecting_test": "tests/test_stage4_gold_behavior.py::test_inline_text_limits_count_utf8_bytes_and_refuse_surrogates",
+   "result": "killed",
+   "baseline_summary": "55 passed",
+   "mutant_summary": "2 failed, 53 passed",
+   "failed_cases": [
+    "FAILED tests/test_stage4_gold_behavior.py::test_s4_p2_followup_absence_02_empty_string_is_a_distinct_typed_value",
+    "FAILED tests/test_stage4_gold_behavior.py::test_inline_text_limits_count_utf8_bytes_and_refuse_surrogates"
+   ],
+   "failure_evidence": [
+    "E   TypeError: '>' not supported between instances of 'NoneType' and 'int'"
+   ]
+  },
+  {
+   "id": "inline-limit-counts-characters",
+   "source": "synapse/experiments/gold/behavior.py",
+   "original": "    if size > 4096:",
+   "mutant": "    if len(value) > 4096:",
+   "detecting_test": "tests/test_stage4_gold_behavior.py::test_inline_text_limits_count_utf8_bytes_and_refuse_surrogates",
+   "result": "killed",
+   "baseline_summary": "55 passed",
+   "mutant_summary": "1 failed, 54 passed",
+   "failed_cases": [
+    "FAILED tests/test_stage4_gold_behavior.py::test_inline_text_limits_count_utf8_bytes_and_refuse_surrogates"
+   ],
+   "failure_evidence": [
+    "E   Failed: DID NOT RAISE BehaviorViolation"
+   ]
+  },
+  {
+   "id": "projection-before-bundle-check",
+   "source": "synapse/experiments/gold/behavior.py",
+   "original": "    projections = _validate_behavior_core(value.core)\n    validate_canonical_behavior_core(value.canonical_core)\n    core_payload = _behavior_core_payload(value.core, projections)\n",
+   "mutant": "    core_payload = _behavior_core_payload(value.core, _validate_behavior_core(value.core))\n    validate_canonical_behavior_core(value.canonical_core)\n",
+   "detecting_test": "tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected",
+   "result": "killed",
+   "baseline_summary": "55 passed",
+   "mutant_summary": "26 failed, 29 passed",
+   "failed_cases": [
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[validate_behavior_unit-_trusted_seal-TRUSTED_OBJECT_FORGED]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[validate_behavior_unit-canonical_bytes-TYPE_MISMATCH]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[validate_behavior_unit-program_form-PROGRAM_MISMATCH]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[validate_behavior_unit-inline_program_ir_bytes-PROGRAM_MISMATCH]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[validate_behavior_unit-program_artifact_ref-TYPE_MISMATCH]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[validate_behavior_unit-payload_sha256-PAYLOAD_HASH_MISMATCH]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[validate_behavior_unit-content_key-TYPE_MISMATCH]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[validate_behavior_unit-profile_id-UNKNOWN_PROFILE]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[validate_behavior_unit-codec_id-UNKNOWN_CODEC]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[validate_behavior_unit-core_schema_id-UNKNOWN_SCHEMA]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[validate_behavior_unit-ir_schema_id-UNKNOWN_SCHEMA]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[validate_behavior_unit-language_version-UNKNOWN_LANGUAGE]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[validate_behavior_unit-compiler_adapter_profile-UNKNOWN_COMPILER]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-_trusted_seal-TRUSTED_OBJECT_FORGED]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-canonical_bytes-TYPE_MISMATCH]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-program_form-PROGRAM_MISMATCH]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-inline_program_ir_bytes-PROGRAM_MISMATCH]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-program_artifact_ref-TYPE_MISMATCH]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-payload_sha256-PAYLOAD_HASH_MISMATCH]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-content_key-TYPE_MISMATCH]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-profile_id-UNKNOWN_PROFILE]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-codec_id-UNKNOWN_CODEC]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-core_schema_id-UNKNOWN_SCHEMA]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-ir_schema_id-UNKNOWN_SCHEMA]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-language_version-UNKNOWN_LANGUAGE]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-compiler_adapter_profile-UNKNOWN_COMPILER]"
+   ],
+   "failure_evidence": [
+    "E   AttributeError: 'dict' object has no attribute 'to_dict'"
+   ]
+  },
+  {
+   "id": "unit-dict-projects-core-again",
+   "source": "synapse/experiments/gold/behavior.py",
+   "original": "            \"core\": core_payload,",
+   "mutant": "            \"core\": self.core.to_dict(),",
+   "detecting_test": "tests/test_stage4_gold_behavior.py::test_unit_validation_projects_core_once",
+   "result": "killed",
+   "baseline_summary": "55 passed",
+   "mutant_summary": "1 failed, 54 passed",
+   "failed_cases": [
+    "FAILED tests/test_stage4_gold_behavior.py::test_unit_validation_projects_core_once[to_dict]"
+   ],
+   "failure_evidence": [
+    "E   AssertionError: assert ['InlineProgr...tputContract'] == ['InlineProgr...tputContract']",
+    "E",
+    "E     At index 1 diff: 'InlineProgram' != 'InputContract'"
+   ]
+  },
+  {
+   "id": "unit-dict-skips-unit-validation",
+   "source": "synapse/experiments/gold/behavior.py",
+   "original": "        core_payload = _validate_behavior_unit_payload(self)",
+   "mutant": "        core_payload = _behavior_core_payload(self.core, _validate_behavior_core(self.core))",
+   "detecting_test": "tests/test_stage4_gold_behavior.py::test_unit_dict_refuses_a_forged_unit_on_every_call",
+   "result": "killed",
+   "baseline_summary": "55 passed",
+   "mutant_summary": "14 failed, 41 passed",
+   "failed_cases": [
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-_trusted_seal-TRUSTED_OBJECT_FORGED]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-canonical_bytes-TYPE_MISMATCH]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-program_form-PROGRAM_MISMATCH]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-inline_program_ir_bytes-PROGRAM_MISMATCH]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-program_artifact_ref-TYPE_MISMATCH]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-payload_sha256-PAYLOAD_HASH_MISMATCH]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-content_key-TYPE_MISMATCH]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-profile_id-UNKNOWN_PROFILE]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-codec_id-UNKNOWN_CODEC]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-core_schema_id-UNKNOWN_SCHEMA]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-ir_schema_id-UNKNOWN_SCHEMA]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-language_version-UNKNOWN_LANGUAGE]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected[to_dict-compiler_adapter_profile-UNKNOWN_COMPILER]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_unit_dict_refuses_a_forged_unit_on_every_call"
+   ],
+   "failure_evidence": [
+    "E   AttributeError: 'dict' object has no attribute 'to_dict'",
+    "E   Failed: DID NOT RAISE BehaviorViolation"
+   ]
+  },
+  {
+   "id": "payload-projects-program-again",
+   "source": "synapse/experiments/gold/behavior.py",
+   "original": "        \"canonical_program\": program,",
+   "mutant": "        \"canonical_program\": value.canonical_program.to_dict(),",
+   "detecting_test": "tests/test_stage4_gold_behavior.py::test_unit_validation_projects_core_once",
+   "result": "killed",
+   "baseline_summary": "55 passed",
+   "mutant_summary": "3 failed, 52 passed",
+   "failed_cases": [
+    "FAILED tests/test_stage4_gold_behavior.py::test_unit_validation_projects_core_once[validate_behavior_unit]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_unit_validation_projects_core_once[to_dict]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_unit_validation_projects_core_once[<lambda>]"
+   ],
+   "failure_evidence": [
+    "E   AssertionError: assert ['InlineProgr...tputContract'] == ['InlineProgr...tputContract']",
+    "E",
+    "E     At index 1 diff: 'InlineProgram' != 'InputContract'"
+   ]
+  },
+  {
+   "id": "payload-projects-input-again",
+   "source": "synapse/experiments/gold/behavior.py",
+   "original": "        \"input_contract\": input_contract,",
+   "mutant": "        \"input_contract\": value.input_contract.to_dict(),",
+   "detecting_test": "tests/test_stage4_gold_behavior.py::test_unit_validation_projects_core_once",
+   "result": "killed",
+   "baseline_summary": "55 passed",
+   "mutant_summary": "3 failed, 52 passed",
+   "failed_cases": [
+    "FAILED tests/test_stage4_gold_behavior.py::test_unit_validation_projects_core_once[validate_behavior_unit]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_unit_validation_projects_core_once[to_dict]",
+    "FAILED tests/test_stage4_gold_behavior.py::test_unit_validation_projects_core_once[<lambda>]"
+   ],
+   "failure_evidence": [
+    "E   AssertionError: assert ['InlineProgr...tputContract'] == ['InlineProgr...tputContract']",
+    "E",
+    "E     At index 2 diff: 'InputContract' != 'OutputContract'"
+   ]
+  },
+  {
+   "id": "guard-refusal-reuses-first-read",
+   "source": "synapse/experiments/gold/runner/controller_recovery.py",
+   "original": "        if verification.payload()[\"failure_codes\"]:\n            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, \"guard refusal lacks independently verified mechanism evidence\")\n        promote_verified_use(publisher=self._publisher, session=session, manifest=self._manifest, context=context,\n                             verification=verification, mechanism_record=decode_canonical(raw))\n        structured = self._verified_outcome(session=session, context=context)\n        if structured.status is not FinalStatus.UNRESOLVED:\n            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, \"guard refusal has an inconsistent independently verified outcome\")\n        result = GoldAttemptResult.create(run_id=self._manifest.run_id, gold_run_id=self._manifest.gold_run_id,\n            attempt_index=context.attempt_index, attempt_id=context.attempt_id, outcome=AttemptOutcome.REUSE_GUARD_REFUSED,\n            structured_outcome=structured.to_dict(), c1_status=None, oracle_invoked=False, oracle_resolved=None,\n            worker_result_ref=HashBoundRef.from_dict(verification.payload()[\"worker_result_ref\"]),",
+   "mutant": "        facts = verification.payload()\n        if facts[\"failure_codes\"]:\n            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, \"guard refusal lacks independently verified mechanism evidence\")\n        promote_verified_use(publisher=self._publisher, session=session, manifest=self._manifest, context=context,\n                             verification=verification, mechanism_record=decode_canonical(raw))\n        structured = self._verified_outcome(session=session, context=context)\n        if structured.status is not FinalStatus.UNRESOLVED:\n            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, \"guard refusal has an inconsistent independently verified outcome\")\n        result = GoldAttemptResult.create(run_id=self._manifest.run_id, gold_run_id=self._manifest.gold_run_id,\n            attempt_index=context.attempt_index, attempt_id=context.attempt_id, outcome=AttemptOutcome.REUSE_GUARD_REFUSED,\n            structured_outcome=structured.to_dict(), c1_status=None, oracle_invoked=False, oracle_resolved=None,\n            worker_result_ref=HashBoundRef.from_dict(facts[\"worker_result_ref\"]),",
+   "detecting_test": "acceptance/stage4/stage12/test_outcome_contract.py::test_a_guard_refusal_reads_its_record_again_before_persisting",
+   "result": "killed",
+   "baseline_summary": "14 passed",
+   "mutant_summary": "1 failed, 13 passed",
+   "failed_cases": [
+    "FAILED acceptance/stage4/stage12/test_outcome_contract.py::test_a_guard_refusal_reads_its_record_again_before_persisting[True]"
+   ],
+   "failure_evidence": [
+    "E   Failed: DID NOT RAISE GoldRunViolation"
+   ]
+  },
+  {
+   "id": "record-dict-checks-once",
+   "source": "synapse/experiments/gold/stage12/verification_contract.py",
+   "original": "        value = {\"verification_ref\": self.reference.to_dict(), \"payload\": self.payload()}",
+   "mutant": "        payload = decode_canonical(require_verification_record(self)._bytes)\n        digest = hashlib.sha256(self._bytes).hexdigest()\n        reference = HashBoundRef(RefKind.ARTIFACT, digest, VERIFICATION_SCHEMA_V5, digest, len(self._bytes), \"application/json\")\n        value = {\"verification_ref\": reference.to_dict(), \"payload\": payload}",
+   "detecting_test": "acceptance/stage4/stage12/test_outcome_contract.py::test_a_planted_digest_is_refused_where_the_record_is_checked_again",
+   "result": "killed",
+   "baseline_summary": "14 passed",
+   "mutant_summary": "2 failed, 12 passed",
+   "failed_cases": [
+    "FAILED acceptance/stage4/stage12/test_outcome_contract.py::test_a_planted_digest_is_refused_where_the_record_is_checked_again[answers-first-to_dict1]",
+    "FAILED acceptance/stage4/stage12/test_outcome_contract.py::test_a_planted_digest_is_refused_where_the_record_is_checked_again[unseals-to_dict2]"
+   ],
+   "failure_evidence": [
+    "E   ValueError: verification payload has an unknown shape"
+   ]
+  },
+  {
+   "id": "record-requires-exact-digest-type",
+   "source": "synapse/experiments/gold/stage12/verification_contract.py",
+   "original": "    if (type(value._bytes) is not bytes or hashlib.sha256(value._bytes).hexdigest() != value._digest",
+   "mutant": "    if (type(value._bytes) is not bytes or type(value._digest) is not str or hashlib.sha256(value._bytes).hexdigest() != value._digest",
+   "detecting_test": "acceptance/stage4/stage12/test_outcome_contract.py::test_a_planted_digest_is_refused_where_the_record_is_checked_again",
+   "result": "killed",
+   "baseline_summary": "14 passed",
+   "mutant_summary": "3 failed, 11 passed",
+   "failed_cases": [
+    "FAILED acceptance/stage4/stage12/test_outcome_contract.py::test_a_planted_digest_is_refused_where_the_record_is_checked_again[plain-to_dict0]",
+    "FAILED acceptance/stage4/stage12/test_outcome_contract.py::test_a_planted_digest_is_refused_where_the_record_is_checked_again[answers-first-to_dict1]",
+    "FAILED acceptance/stage4/stage12/test_outcome_contract.py::test_a_planted_digest_is_refused_where_the_record_is_checked_again[unseals-to_dict2]"
+   ],
+   "failure_evidence": [
+    "E   synapse.experiments.gold.runner.vocabulary.GoldRunViolation: IDENTITY_MISMATCH: verification record is malformed"
+   ]
+  },
+  {
+   "id": "record-payload-cached",
+   "source": "synapse/experiments/gold/stage12/verification_contract.py",
+   "original": "    def payload(self) -> dict[str, object]:\n        require_verification_record(self)\n        return decode_canonical(self._bytes)",
+   "mutant": "    def payload(self) -> dict[str, object]:\n        cached = self.__dict__.get(\"_cached\")\n        if cached is None:\n            require_verification_record(self)\n            cached = decode_canonical(self._bytes)\n            object.__setattr__(self, \"_cached\", cached)\n        return dict(cached)",
+   "detecting_test": "acceptance/stage4/stage12/test_outcome_contract.py::test_a_record_changed_after_its_seal_is_refused_on_every_call",
+   "result": "killed",
+   "baseline_summary": "14 passed",
+   "mutant_summary": "2 failed, 12 passed",
+   "failed_cases": [
+    "FAILED acceptance/stage4/stage12/test_outcome_contract.py::test_a_record_changed_after_its_seal_is_refused_on_every_call",
+    "FAILED acceptance/stage4/stage12/test_outcome_contract.py::test_a_guard_refusal_reads_its_record_again_before_persisting[True]"
+   ],
+   "failure_evidence": [
+    "E   Failed: DID NOT RAISE GoldRunViolation"
+   ]
+  },
+  {
+   "id": "record-reference-skips-check",
+   "source": "synapse/experiments/gold/stage12/verification_contract.py",
+   "original": "    def reference(self) -> HashBoundRef:\n        require_verification_record(self)\n",
+   "mutant": "    def reference(self) -> HashBoundRef:\n",
+   "detecting_test": "acceptance/stage4/stage12/test_outcome_contract.py::test_a_record_changed_after_its_seal_is_refused_on_every_call",
+   "result": "killed",
+   "baseline_summary": "14 passed",
+   "mutant_summary": "3 failed, 11 passed",
+   "failed_cases": [
+    "FAILED acceptance/stage4/stage12/test_outcome_contract.py::test_a_planted_digest_is_refused_where_the_record_is_checked_again[answers-first-to_dict1]",
+    "FAILED acceptance/stage4/stage12/test_outcome_contract.py::test_a_planted_digest_is_refused_where_the_record_is_checked_again[unseals-to_dict2]",
+    "FAILED acceptance/stage4/stage12/test_outcome_contract.py::test_a_record_changed_after_its_seal_is_refused_on_every_call"
+   ],
+   "failure_evidence": [
+    "E   ValueError: verification payload has an unknown shape",
+    "E   Failed: DID NOT RAISE GoldRunViolation"
+   ]
+  }
+ ]
+}

@@ -1,0 +1,10 @@
+{"kind": "decode_cache", "unique_raw": 37, "hits": 1466, "misses": 37, "maxsize": 512, "currsize": 37, "byte_length": 140807, "retained_bytes": 875017, "evictions": 0}
+{"kind": "decode_cache", "unique_raw": 44, "hits": 440, "misses": 44, "maxsize": 512, "currsize": 44, "byte_length": 182374, "retained_bytes": 1123530, "evictions": 0}
+{"kind": "decode_cache", "unique_raw": 52, "hits": 1420, "misses": 52, "maxsize": 512, "currsize": 52, "byte_length": 393103, "retained_bytes": 2201891, "evictions": 0}
+{"kind": "provider_client_headers", "seconds": 0.0015396319977298845}
+{"kind": "decode_cache", "unique_raw": 196, "hits": 278690, "misses": 196, "maxsize": 512, "currsize": 196, "byte_length": 1770338, "retained_bytes": 6898799, "evictions": 0}
+{"kind": "decode_cache", "unique_raw": 183, "hits": 67958, "misses": 183, "maxsize": 512, "currsize": 183, "byte_length": 1772916, "retained_bytes": 7208892, "evictions": 0}
+{"kind": "decode_cache", "unique_raw": 344, "hits": 2321939, "misses": 344, "maxsize": 512, "currsize": 344, "byte_length": 3850020, "retained_bytes": 13630695, "evictions": 0}
+{"kind": "decode_cache", "unique_raw": 331, "hits": 328070, "misses": 331, "maxsize": 512, "currsize": 331, "byte_length": 3669723, "retained_bytes": 13243688, "evictions": 0}
+{"kind": "decode_cache", "unique_raw": 331, "hits": 328070, "misses": 331, "maxsize": 512, "currsize": 331, "byte_length": 3669723, "retained_bytes": 13243688, "evictions": 0}
+{"kind": "decode_cache", "unique_raw": 258, "hits": 8426, "misses": 258, "maxsize": 512, "currsize": 258, "byte_length": 3025949, "retained_bytes": 10328348, "evictions": 0}

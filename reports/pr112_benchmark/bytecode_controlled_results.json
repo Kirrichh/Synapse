@@ -1,0 +1,1043 @@
+{
+  "base_sha": "1e226e52a3400d4fb0336420569d8bab43c8f783",
+  "candidate_sha": "e0188add452d6478dc4c65814ba0947229769812",
+  "pairs": 5,
+  "inventory": {
+    "base": {
+      "python": "3.12.14",
+      "unicode": "15.0.0",
+      "distributions": [
+        [
+          "PyYAML",
+          "6.0.3"
+        ],
+        [
+          "Pygments",
+          "2.21.0"
+        ],
+        [
+          "attrs",
+          "26.1.0"
+        ],
+        [
+          "cffi",
+          "2.1.1"
+        ],
+        [
+          "cryptography",
+          "50.0.2"
+        ],
+        [
+          "filelock",
+          "3.32.6"
+        ],
+        [
+          "hypothesis",
+          "6.170.12"
+        ],
+        [
+          "iniconfig",
+          "2.3.1"
+        ],
+        [
+          "jsonschema",
+          "4.26.0"
+        ],
+        [
+          "jsonschema-specifications",
+          "2025.9.1"
+        ],
+        [
+          "maturin",
+          "1.15.0"
+        ],
+        [
+          "packaging",
+          "26.3"
+        ],
+        [
+          "pluggy",
+          "1.7.0"
+        ],
+        [
+          "psutil",
+          "7.2.2"
+        ],
+        [
+          "pycparser",
+          "3.12"
+        ],
+        [
+          "pytest",
+          "9.1.1"
+        ],
+        [
+          "referencing",
+          "0.37.0"
+        ],
+        [
+          "rfc8785",
+          "0.1.4"
+        ],
+        [
+          "rpds-py",
+          "2026.9.1"
+        ],
+        [
+          "sortedcontainers",
+          "2.4.0"
+        ],
+        [
+          "typing_extensions",
+          "4.16.0"
+        ]
+      ],
+      "backend": {
+        "implementation": "python"
+      }
+    },
+    "candidate": {
+      "python": "3.12.14",
+      "unicode": "15.0.0",
+      "distributions": [
+        [
+          "PyYAML",
+          "6.0.3"
+        ],
+        [
+          "Pygments",
+          "2.21.0"
+        ],
+        [
+          "attrs",
+          "26.1.0"
+        ],
+        [
+          "cffi",
+          "2.1.1"
+        ],
+        [
+          "cryptography",
+          "50.0.2"
+        ],
+        [
+          "filelock",
+          "3.32.6"
+        ],
+        [
+          "hypothesis",
+          "6.170.12"
+        ],
+        [
+          "iniconfig",
+          "2.3.1"
+        ],
+        [
+          "jsonschema",
+          "4.26.0"
+        ],
+        [
+          "jsonschema-specifications",
+          "2025.9.1"
+        ],
+        [
+          "maturin",
+          "1.15.0"
+        ],
+        [
+          "packaging",
+          "26.3"
+        ],
+        [
+          "pluggy",
+          "1.7.0"
+        ],
+        [
+          "psutil",
+          "7.2.2"
+        ],
+        [
+          "pycparser",
+          "3.12"
+        ],
+        [
+          "pytest",
+          "9.1.1"
+        ],
+        [
+          "referencing",
+          "0.37.0"
+        ],
+        [
+          "rfc8785",
+          "0.1.4"
+        ],
+        [
+          "rpds-py",
+          "2026.9.1"
+        ],
+        [
+          "sortedcontainers",
+          "2.4.0"
+        ],
+        [
+          "typing_extensions",
+          "4.16.0"
+        ]
+      ],
+      "backend": {
+        "implementation": "python"
+      }
+    }
+  },
+  "platform": "Linux-6.18.55-x86_64-with-glibc2.41",
+  "machine": "x86_64",
+  "bytecode": "both source archives contain no .pyc; CLI Python uses -B",
+  "filesystem_cache": "uncontrolled; not called cold",
+  "cpu": "wait4 user plus system for the CLI and children it waited for",
+  "rss": "wait4 maximum of an individual process, not aggregate process-tree peak",
+  "artifact_sha256": "c7ed0e37a280f658541606b32b4ad5df219c587915af38c66c54c8f0581c75b0",
+  "runs": [
+    {
+      "pair": 1,
+      "member": "base",
+      "cli": [
+        {
+          "wall_seconds": 4.4303285159985535,
+          "cpu_user_seconds": 4.378595,
+          "cpu_system_seconds": 0.051355,
+          "max_rss_kib": 57964,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "source-publication",
+          "cpu_seconds": 4.42995
+        },
+        {
+          "wall_seconds": 2.1914141030010796,
+          "cpu_user_seconds": 2.14741,
+          "cpu_system_seconds": 0.043147,
+          "max_rss_kib": 57596,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "source-recall",
+          "cpu_seconds": 2.1905569999999996
+        },
+        {
+          "wall_seconds": 4.1771724249992985,
+          "cpu_user_seconds": 4.103666,
+          "cpu_system_seconds": 0.073886,
+          "max_rss_kib": 64548,
+          "exit_code": 3,
+          "kind": "cli",
+          "scenario": "run-initial",
+          "cpu_seconds": 4.1775519999999995
+        },
+        {
+          "wall_seconds": 123.31549038099911,
+          "cpu_user_seconds": 122.429248,
+          "cpu_system_seconds": 0.812454,
+          "max_rss_kib": 73356,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "approve-initial",
+          "cpu_seconds": 123.241702
+        },
+        {
+          "wall_seconds": 0.4209626390002086,
+          "cpu_user_seconds": 0.404551,
+          "cpu_system_seconds": 0.015887,
+          "max_rss_kib": 42768,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "replay-mock",
+          "cpu_seconds": 0.420438
+        }
+      ],
+      "provider_server_seconds": [
+        0.00038263499845925253
+      ]
+    },
+    {
+      "pair": 1,
+      "member": "candidate",
+      "cli": [
+        {
+          "wall_seconds": 2.1608466950001457,
+          "cpu_user_seconds": 2.132593,
+          "cpu_system_seconds": 0.028686,
+          "max_rss_kib": 58240,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "source-publication",
+          "cpu_seconds": 2.161279
+        },
+        {
+          "wall_seconds": 1.3921099290000711,
+          "cpu_user_seconds": 1.360144,
+          "cpu_system_seconds": 0.029231999999999998,
+          "max_rss_kib": 57880,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "source-recall",
+          "cpu_seconds": 1.389376
+        },
+        {
+          "wall_seconds": 2.585269363999032,
+          "cpu_user_seconds": 2.537887,
+          "cpu_system_seconds": 0.046204999999999996,
+          "max_rss_kib": 65376,
+          "exit_code": 3,
+          "kind": "cli",
+          "scenario": "run-initial",
+          "cpu_seconds": 2.584092
+        },
+        {
+          "wall_seconds": 48.282363582999096,
+          "cpu_user_seconds": 47.50103,
+          "cpu_system_seconds": 0.7877799999999999,
+          "max_rss_kib": 78056,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "approve-initial",
+          "cpu_seconds": 48.28881
+        },
+        {
+          "wall_seconds": 0.43779009399986535,
+          "cpu_user_seconds": 0.41251499999999997,
+          "cpu_system_seconds": 0.024766,
+          "max_rss_kib": 42308,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "replay-mock",
+          "cpu_seconds": 0.437281
+        }
+      ],
+      "provider_server_seconds": [
+        0.00039951100006874185
+      ]
+    },
+    {
+      "pair": 2,
+      "member": "candidate",
+      "cli": [
+        {
+          "wall_seconds": 2.1132909810003184,
+          "cpu_user_seconds": 2.068152,
+          "cpu_system_seconds": 0.044902,
+          "max_rss_kib": 58044,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "source-publication",
+          "cpu_seconds": 2.113054
+        },
+        {
+          "wall_seconds": 1.5629806050001207,
+          "cpu_user_seconds": 1.5096189999999998,
+          "cpu_system_seconds": 0.051799,
+          "max_rss_kib": 57996,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "source-recall",
+          "cpu_seconds": 1.5614179999999998
+        },
+        {
+          "wall_seconds": 2.5908539530009875,
+          "cpu_user_seconds": 2.5417899999999998,
+          "cpu_system_seconds": 0.049271999999999996,
+          "max_rss_kib": 64660,
+          "exit_code": 3,
+          "kind": "cli",
+          "scenario": "run-initial",
+          "cpu_seconds": 2.591062
+        },
+        {
+          "wall_seconds": 46.8205046639996,
+          "cpu_user_seconds": 46.042073,
+          "cpu_system_seconds": 0.768285,
+          "max_rss_kib": 78028,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "approve-initial",
+          "cpu_seconds": 46.810358
+        },
+        {
+          "wall_seconds": 0.4312517710004613,
+          "cpu_user_seconds": 0.414373,
+          "cpu_system_seconds": 0.015967,
+          "max_rss_kib": 42312,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "replay-mock",
+          "cpu_seconds": 0.43034
+        }
+      ],
+      "provider_server_seconds": [
+        0.00043242999890935607
+      ]
+    },
+    {
+      "pair": 2,
+      "member": "base",
+      "cli": [
+        {
+          "wall_seconds": 4.736379562000366,
+          "cpu_user_seconds": 4.693424,
+          "cpu_system_seconds": 0.042785,
+          "max_rss_kib": 58220,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "source-publication",
+          "cpu_seconds": 4.736209000000001
+        },
+        {
+          "wall_seconds": 2.0723777590010286,
+          "cpu_user_seconds": 2.030381,
+          "cpu_system_seconds": 0.039679,
+          "max_rss_kib": 57796,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "source-recall",
+          "cpu_seconds": 2.0700600000000002
+        },
+        {
+          "wall_seconds": 4.2472540079998,
+          "cpu_user_seconds": 4.13856,
+          "cpu_system_seconds": 0.105977,
+          "max_rss_kib": 65172,
+          "exit_code": 3,
+          "kind": "cli",
+          "scenario": "run-initial",
+          "cpu_seconds": 4.244537
+        },
+        {
+          "wall_seconds": 118.51743906999945,
+          "cpu_user_seconds": 117.601489,
+          "cpu_system_seconds": 0.834082,
+          "max_rss_kib": 73688,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "approve-initial",
+          "cpu_seconds": 118.435571
+        },
+        {
+          "wall_seconds": 0.4578473169985955,
+          "cpu_user_seconds": 0.43743299999999996,
+          "cpu_system_seconds": 0.019761,
+          "max_rss_kib": 42428,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "replay-mock",
+          "cpu_seconds": 0.457194
+        }
+      ],
+      "provider_server_seconds": [
+        0.00039313100023719016
+      ]
+    },
+    {
+      "pair": 3,
+      "member": "base",
+      "cli": [
+        {
+          "wall_seconds": 4.531953375999365,
+          "cpu_user_seconds": 4.5009239999999995,
+          "cpu_system_seconds": 0.030723999999999998,
+          "max_rss_kib": 58380,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "source-publication",
+          "cpu_seconds": 4.531648
+        },
+        {
+          "wall_seconds": 1.8927894160005962,
+          "cpu_user_seconds": 1.859423,
+          "cpu_system_seconds": 0.032498,
+          "max_rss_kib": 57824,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "source-recall",
+          "cpu_seconds": 1.891921
+        },
+        {
+          "wall_seconds": 4.148171879000074,
+          "cpu_user_seconds": 4.030914,
+          "cpu_system_seconds": 0.116101,
+          "max_rss_kib": 64620,
+          "exit_code": 3,
+          "kind": "cli",
+          "scenario": "run-initial",
+          "cpu_seconds": 4.147015
+        },
+        {
+          "wall_seconds": 115.3256636189999,
+          "cpu_user_seconds": 114.431281,
+          "cpu_system_seconds": 0.874035,
+          "max_rss_kib": 73768,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "approve-initial",
+          "cpu_seconds": 115.305316
+        },
+        {
+          "wall_seconds": 0.43327015899922117,
+          "cpu_user_seconds": 0.400271,
+          "cpu_system_seconds": 0.031942,
+          "max_rss_kib": 42416,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "replay-mock",
+          "cpu_seconds": 0.43221299999999996
+        }
+      ],
+      "provider_server_seconds": [
+        0.000622145000306773
+      ]
+    },
+    {
+      "pair": 3,
+      "member": "candidate",
+      "cli": [
+        {
+          "wall_seconds": 2.1739811310017103,
+          "cpu_user_seconds": 2.140678,
+          "cpu_system_seconds": 0.031416,
+          "max_rss_kib": 58260,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "source-publication",
+          "cpu_seconds": 2.172094
+        },
+        {
+          "wall_seconds": 1.4472997709999618,
+          "cpu_user_seconds": 1.408746,
+          "cpu_system_seconds": 0.0375,
+          "max_rss_kib": 58008,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "source-recall",
+          "cpu_seconds": 1.4462460000000001
+        },
+        {
+          "wall_seconds": 2.523795429000529,
+          "cpu_user_seconds": 2.460842,
+          "cpu_system_seconds": 0.064149,
+          "max_rss_kib": 65688,
+          "exit_code": 3,
+          "kind": "cli",
+          "scenario": "run-initial",
+          "cpu_seconds": 2.524991
+        },
+        {
+          "wall_seconds": 45.785979414000394,
+          "cpu_user_seconds": 44.966488,
+          "cpu_system_seconds": 0.76474,
+          "max_rss_kib": 77884,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "approve-initial",
+          "cpu_seconds": 45.731228
+        },
+        {
+          "wall_seconds": 0.437894677001168,
+          "cpu_user_seconds": 0.42489,
+          "cpu_system_seconds": 0.012052,
+          "max_rss_kib": 42444,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "replay-mock",
+          "cpu_seconds": 0.436942
+        }
+      ],
+      "provider_server_seconds": [
+        0.000489704998472007
+      ]
+    },
+    {
+      "pair": 4,
+      "member": "candidate",
+      "cli": [
+        {
+          "wall_seconds": 2.106548607998775,
+          "cpu_user_seconds": 2.055048,
+          "cpu_system_seconds": 0.051359999999999996,
+          "max_rss_kib": 58060,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "source-publication",
+          "cpu_seconds": 2.106408
+        },
+        {
+          "wall_seconds": 1.5449380649988598,
+          "cpu_user_seconds": 1.5141749999999998,
+          "cpu_system_seconds": 0.028657,
+          "max_rss_kib": 58400,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "source-recall",
+          "cpu_seconds": 1.5428319999999998
+        },
+        {
+          "wall_seconds": 2.610101473999748,
+          "cpu_user_seconds": 2.54146,
+          "cpu_system_seconds": 0.06967899999999999,
+          "max_rss_kib": 64740,
+          "exit_code": 3,
+          "kind": "cli",
+          "scenario": "run-initial",
+          "cpu_seconds": 2.6111389999999997
+        },
+        {
+          "wall_seconds": 47.635504669999136,
+          "cpu_user_seconds": 46.823661,
+          "cpu_system_seconds": 0.8091079999999999,
+          "max_rss_kib": 78556,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "approve-initial",
+          "cpu_seconds": 47.632769
+        },
+        {
+          "wall_seconds": 0.4790845480001735,
+          "cpu_user_seconds": 0.46218699999999996,
+          "cpu_system_seconds": 0.016238,
+          "max_rss_kib": 42616,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "replay-mock",
+          "cpu_seconds": 0.47842499999999993
+        }
+      ],
+      "provider_server_seconds": [
+        0.0003611030006140936
+      ]
+    },
+    {
+      "pair": 4,
+      "member": "base",
+      "cli": [
+        {
+          "wall_seconds": 4.573321740999745,
+          "cpu_user_seconds": 4.528053,
+          "cpu_system_seconds": 0.042924,
+          "max_rss_kib": 57912,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "source-publication",
+          "cpu_seconds": 4.570977
+        },
+        {
+          "wall_seconds": 2.0200183269989793,
+          "cpu_user_seconds": 1.9943119999999999,
+          "cpu_system_seconds": 0.024201,
+          "max_rss_kib": 58004,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "source-recall",
+          "cpu_seconds": 2.018513
+        },
+        {
+          "wall_seconds": 4.232675983999798,
+          "cpu_user_seconds": 4.187002,
+          "cpu_system_seconds": 0.045953999999999995,
+          "max_rss_kib": 63968,
+          "exit_code": 3,
+          "kind": "cli",
+          "scenario": "run-initial",
+          "cpu_seconds": 4.232956
+        },
+        {
+          "wall_seconds": 122.72213390099932,
+          "cpu_user_seconds": 121.894499,
+          "cpu_system_seconds": 0.7543,
+          "max_rss_kib": 73424,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "approve-initial",
+          "cpu_seconds": 122.648799
+        },
+        {
+          "wall_seconds": 0.43523157199888374,
+          "cpu_user_seconds": 0.414423,
+          "cpu_system_seconds": 0.020279,
+          "max_rss_kib": 42272,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "replay-mock",
+          "cpu_seconds": 0.434702
+        }
+      ],
+      "provider_server_seconds": [
+        0.0004344629996921867
+      ]
+    },
+    {
+      "pair": 5,
+      "member": "base",
+      "cli": [
+        {
+          "wall_seconds": 4.856032986999708,
+          "cpu_user_seconds": 4.797353,
+          "cpu_system_seconds": 0.055566,
+          "max_rss_kib": 57948,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "source-publication",
+          "cpu_seconds": 4.852919
+        },
+        {
+          "wall_seconds": 2.2826160749991686,
+          "cpu_user_seconds": 2.223403,
+          "cpu_system_seconds": 0.058373999999999995,
+          "max_rss_kib": 57904,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "source-recall",
+          "cpu_seconds": 2.281777
+        },
+        {
+          "wall_seconds": 4.177379631999429,
+          "cpu_user_seconds": 4.101351,
+          "cpu_system_seconds": 0.07230099999999999,
+          "max_rss_kib": 64628,
+          "exit_code": 3,
+          "kind": "cli",
+          "scenario": "run-initial",
+          "cpu_seconds": 4.173652000000001
+        },
+        {
+          "wall_seconds": 120.69540326199967,
+          "cpu_user_seconds": 119.702145,
+          "cpu_system_seconds": 0.9353309999999999,
+          "max_rss_kib": 73360,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "approve-initial",
+          "cpu_seconds": 120.637476
+        },
+        {
+          "wall_seconds": 0.4517467050009145,
+          "cpu_user_seconds": 0.435181,
+          "cpu_system_seconds": 0.015986999999999998,
+          "max_rss_kib": 42820,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "replay-mock",
+          "cpu_seconds": 0.45116799999999996
+        }
+      ],
+      "provider_server_seconds": [
+        0.0004535219995887019
+      ]
+    },
+    {
+      "pair": 5,
+      "member": "candidate",
+      "cli": [
+        {
+          "wall_seconds": 2.2770830479985307,
+          "cpu_user_seconds": 2.251712,
+          "cpu_system_seconds": 0.02502,
+          "max_rss_kib": 58008,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "source-publication",
+          "cpu_seconds": 2.276732
+        },
+        {
+          "wall_seconds": 1.5168836369994096,
+          "cpu_user_seconds": 1.48088,
+          "cpu_system_seconds": 0.035292,
+          "max_rss_kib": 58068,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "source-recall",
+          "cpu_seconds": 1.516172
+        },
+        {
+          "wall_seconds": 2.5546861439997883,
+          "cpu_user_seconds": 2.473966,
+          "cpu_system_seconds": 0.081199,
+          "max_rss_kib": 64788,
+          "exit_code": 3,
+          "kind": "cli",
+          "scenario": "run-initial",
+          "cpu_seconds": 2.5551649999999997
+        },
+        {
+          "wall_seconds": 47.07978874900073,
+          "cpu_user_seconds": 46.24091,
+          "cpu_system_seconds": 0.831294,
+          "max_rss_kib": 78168,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "approve-initial",
+          "cpu_seconds": 47.072204
+        },
+        {
+          "wall_seconds": 0.4449900260005961,
+          "cpu_user_seconds": 0.432766,
+          "cpu_system_seconds": 0.011625,
+          "max_rss_kib": 42492,
+          "exit_code": 0,
+          "kind": "cli",
+          "scenario": "replay-mock",
+          "cpu_seconds": 0.444391
+        }
+      ],
+      "provider_server_seconds": [
+        0.00043011600064346567
+      ]
+    }
+  ],
+  "behavior": [
+    {
+      "kind": "behavior",
+      "scenario": "source",
+      "publication_status": "PUBLISHED",
+      "recall_state": "MATCHES",
+      "eligible_count": 1,
+      "selected": [
+        {
+          "paths": [
+            "src/calc.py"
+          ],
+          "status": "PUBLISHED",
+          "verification": "VERIFIED",
+          "execution": "NOT_OBSERVED",
+          "sources": [
+            {
+              "path": "src/calc.py",
+              "sha256": "32aa029644da546d614adff5d23d84c80138b6a7a776ad11231ef8c474902365"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "behavior",
+      "scenario": "initial",
+      "status": "FULL",
+      "route": "MODEL",
+      "patch_sha256": "c88993a78ded432079c2c2357e84fa2277c56f7b8552ef7a895896ce4bddcb32",
+      "provider_calls": 1,
+      "oracle_resolved": true
+    }
+  ],
+  "replay_result": {
+    "drift": 0,
+    "final_history_hash": "",
+    "history_length": 0,
+    "program_hash": "sha256:460d33ed44cd865ef4021954dedaca075f87bc873f0fc1b8b35cbcf1299ea0b9",
+    "state_sanity": {
+      "actor_log_length": 0,
+      "call_frame_depth": 0,
+      "context_stack_depth": 0,
+      "final_ip": null,
+      "guard_stack_depth": 0,
+      "guard_violation_active": false,
+      "history_hash": "",
+      "history_length": 0,
+      "locals_hash": "4539813cc1223b62148e0600f8f891e7fb0fd955513bfa46cb2b103b6668805d",
+      "locals_keys": [
+        "x"
+      ],
+      "mailbox_count": 0,
+      "memory_audit_length": 0,
+      "output_hash": "d646f2fabdd13a7ee16dfb12e59519b7b6880bf51912088c911f653b490c920f",
+      "policy_stack_depth": 0,
+      "stack_depth": 0
+    }
+  },
+  "comparisons": {
+    "approve-initial": {
+      "base": {
+        "wall_seconds": {
+          "median": 120.69540326199967,
+          "min": 115.3256636189999,
+          "max": 123.31549038099911
+        },
+        "cpu_seconds": {
+          "median": 120.637476,
+          "min": 115.305316,
+          "max": 123.241702
+        },
+        "max_rss_kib": {
+          "median": 73424,
+          "min": 73356,
+          "max": 73768
+        }
+      },
+      "candidate": {
+        "wall_seconds": {
+          "median": 47.07978874900073,
+          "min": 45.785979414000394,
+          "max": 48.282363582999096
+        },
+        "cpu_seconds": {
+          "median": 47.072204,
+          "min": 45.731228,
+          "max": 48.28881
+        },
+        "max_rss_kib": {
+          "median": 78056,
+          "min": 77884,
+          "max": 78556
+        }
+      },
+      "wall_delta_seconds": -73.61561451299895,
+      "wall_delta_percent": -60.99288997212079
+    },
+    "replay-mock": {
+      "base": {
+        "wall_seconds": {
+          "median": 0.43523157199888374,
+          "min": 0.4209626390002086,
+          "max": 0.4578473169985955
+        },
+        "cpu_seconds": {
+          "median": 0.434702,
+          "min": 0.420438,
+          "max": 0.457194
+        },
+        "max_rss_kib": {
+          "median": 42428,
+          "min": 42272,
+          "max": 42820
+        }
+      },
+      "candidate": {
+        "wall_seconds": {
+          "median": 0.437894677001168,
+          "min": 0.4312517710004613,
+          "max": 0.4790845480001735
+        },
+        "cpu_seconds": {
+          "median": 0.437281,
+          "min": 0.43034,
+          "max": 0.47842499999999993
+        },
+        "max_rss_kib": {
+          "median": 42444,
+          "min": 42308,
+          "max": 42616
+        }
+      },
+      "wall_delta_seconds": 0.002663105002284283,
+      "wall_delta_percent": 0.6118823113069327
+    },
+    "run-initial": {
+      "base": {
+        "wall_seconds": {
+          "median": 4.177379631999429,
+          "min": 4.148171879000074,
+          "max": 4.2472540079998
+        },
+        "cpu_seconds": {
+          "median": 4.1775519999999995,
+          "min": 4.147015,
+          "max": 4.244537
+        },
+        "max_rss_kib": {
+          "median": 64620,
+          "min": 63968,
+          "max": 65172
+        }
+      },
+      "candidate": {
+        "wall_seconds": {
+          "median": 2.585269363999032,
+          "min": 2.523795429000529,
+          "max": 2.610101473999748
+        },
+        "cpu_seconds": {
+          "median": 2.584092,
+          "min": 2.524991,
+          "max": 2.6111389999999997
+        },
+        "max_rss_kib": {
+          "median": 64788,
+          "min": 64660,
+          "max": 65688
+        }
+      },
+      "wall_delta_seconds": -1.592110268000397,
+      "wall_delta_percent": -38.11265454076918
+    },
+    "source-publication": {
+      "base": {
+        "wall_seconds": {
+          "median": 4.573321740999745,
+          "min": 4.4303285159985535,
+          "max": 4.856032986999708
+        },
+        "cpu_seconds": {
+          "median": 4.570977,
+          "min": 4.42995,
+          "max": 4.852919
+        },
+        "max_rss_kib": {
+          "median": 57964,
+          "min": 57912,
+          "max": 58380
+        }
+      },
+      "candidate": {
+        "wall_seconds": {
+          "median": 2.1608466950001457,
+          "min": 2.106548607998775,
+          "max": 2.2770830479985307
+        },
+        "cpu_seconds": {
+          "median": 2.161279,
+          "min": 2.106408,
+          "max": 2.276732
+        },
+        "max_rss_kib": {
+          "median": 58060,
+          "min": 58008,
+          "max": 58260
+        }
+      },
+      "wall_delta_seconds": -2.4124750459995994,
+      "wall_delta_percent": -52.75104579613993
+    },
+    "source-recall": {
+      "base": {
+        "wall_seconds": {
+          "median": 2.0723777590010286,
+          "min": 1.8927894160005962,
+          "max": 2.2826160749991686
+        },
+        "cpu_seconds": {
+          "median": 2.0700600000000002,
+          "min": 1.891921,
+          "max": 2.281777
+        },
+        "max_rss_kib": {
+          "median": 57824,
+          "min": 57596,
+          "max": 58004
+        }
+      },
+      "candidate": {
+        "wall_seconds": {
+          "median": 1.5168836369994096,
+          "min": 1.3921099290000711,
+          "max": 1.5629806050001207
+        },
+        "cpu_seconds": {
+          "median": 1.516172,
+          "min": 1.389376,
+          "max": 1.5614179999999998
+        },
+        "max_rss_kib": {
+          "median": 58008,
+          "min": 57880,
+          "max": 58400
+        }
+      },
+      "wall_delta_seconds": -0.555494122001619,
+      "wall_delta_percent": -26.804674948325534
+    }
+  }
+}

@@ -8,7 +8,9 @@ import hashlib
 import re
 
 from .worker_transport import (
+    SYNAPSE_ADAPTIVE_MEMORY_TRANSPORT,
     SYNAPSE_MEMORY_TRANSPORT,
+    SYNAPSE_MEMORY_TRANSPORTS,
     WorkerDeliveryEvidence,
     WorkerDeliveryStatus,
     WorkerInvocation,
@@ -41,9 +43,12 @@ class DeliveryFailureCode(str, Enum):
 def _consumed(status, transport_name, split):
     """A process received the context, or Synapse interpreted it from admitted memory."""
     if status is WorkerDeliveryStatus.PROCESS_STARTED:
-        return transport_name != SYNAPSE_MEMORY_TRANSPORT
-    return (status is WorkerDeliveryStatus.SYNAPSE_EXACT_MEMORY and split
-            and transport_name == SYNAPSE_MEMORY_TRANSPORT)
+        return transport_name not in SYNAPSE_MEMORY_TRANSPORTS
+    exact = (status is WorkerDeliveryStatus.SYNAPSE_EXACT_MEMORY
+             and transport_name == SYNAPSE_MEMORY_TRANSPORT)
+    adaptive = (status is WorkerDeliveryStatus.SYNAPSE_ADAPTIVE_MEMORY
+                and transport_name == SYNAPSE_ADAPTIVE_MEMORY_TRANSPORT)
+    return split and (exact or adaptive)
 
 
 class DeliveryViolation(ValueError):

@@ -267,6 +267,27 @@ def test_s4_p2_acc_content_03_blob_substitution_and_collision_fail_closed(monkey
     assert exc.value.failure_code is canon.CanonicalizationFailureCode.DEGRADED_CONTENT
 
 
+@pytest.mark.parametrize("consumer", ("validate", "blob_transport", "manifest_transport"))
+@pytest.mark.parametrize("field,replacement,failure", (
+    ("canonical_core_bytes", b"{}", "BLOB_MISMATCH"),
+    ("_trusted_seal", None, "TRUSTED_OBJECT_FORGED"),
+))
+def test_blob_public_consumers_reject_mutated_or_forged_blob(consumer, field, replacement, failure):
+    unit = make_valid_unit()
+    blob = create_behavior_blob(unit)
+    manifest = create_behavior_manifest(unit, blob, compiler_binding=None)
+    object.__setattr__(blob, field, replacement)
+
+    consume = {
+        "validate": lambda: validate_behavior_blob(blob, unit=unit),
+        "blob_transport": lambda: blob.to_dict(unit=unit),
+        "manifest_transport": lambda: manifest.to_dict(unit=unit, blob=blob),
+    }[consumer]
+    with pytest.raises(BehaviorViolation) as exc:
+        consume()
+    assert _failure(exc) == failure
+
+
 def test_s4_p2_acc_content_04_incompatible_and_forged_records_cannot_be_consumed() -> None:
     unit = make_valid_unit()
     incompatible = make_valid_unit().canonical_core
@@ -291,6 +312,25 @@ def test_s4_p2_acc_content_04_incompatible_and_forged_records_cannot_be_consumed
     object.__setattr__(redacted.absence_detail.redaction_authority, "value", " bad actor ")
     with pytest.raises(ValueError):
         validate_behavior_unit(nested)
+
+
+def test_s4_p2_acc_content_05_cached_unit_context_cannot_replace_full_validation() -> None:
+    unit = make_valid_unit()
+    blob = create_behavior_blob(unit)
+    manifest = create_behavior_manifest(unit, blob, compiler_binding=None)
+
+    object.__setattr__(unit, "context_sha256", "0" * 64)
+    with pytest.raises(BehaviorViolation) as exc:
+        validate_behavior_unit(unit)
+    assert _failure(exc) == "TRUSTED_OBJECT_FORGED"
+    with pytest.raises(BehaviorViolation):
+        manifest.to_dict(unit=unit, blob=blob)
+
+    fresh = make_valid_unit()
+    object.__setattr__(fresh, "content_key", None)
+    with pytest.raises(BehaviorViolation) as exc:
+        validate_behavior_unit(fresh)
+    assert _failure(exc) == "TRUSTED_OBJECT_FORGED"
 
 
 def test_s4_p2_acc_core_03_manifest_has_no_lifecycle_or_authority_state() -> None:
@@ -603,3 +643,95 @@ def test_s4_p2_followup_payload_01_aggregate_inline_values_require_hash_bound_re
         )
     )
     validate_behavior_unit(_unit_from_core(referenced))
+
+
+def _count_core_projections(monkeypatch, core):
+    calls = []
+    for part in (core.canonical_program, core.input_contract, core.output_contract):
+        cls = type(part)
+        original = cls.to_dict
+
+        def counted(self, _original=original, _name=cls.__name__):
+            calls.append(_name)
+            return _original(self)
+
+        monkeypatch.setattr(cls, "to_dict", counted)
+    return calls
+
+
+@pytest.mark.parametrize("project", [
+    validate_behavior_unit,
+    SynapseBehaviorUnit.to_dict,
+    lambda unit: unit.core.to_dict(),
+])
+def test_unit_validation_projects_core_once(monkeypatch, project):
+    unit = make_valid_unit()
+    expected = unit.to_dict()
+    parts = (unit.core.canonical_program, unit.core.input_contract, unit.core.output_contract)
+    calls = _count_core_projections(monkeypatch, unit.core)
+    result = project(unit)
+    assert result is None or result in (expected, expected["core"])
+    assert sorted(calls) == sorted(type(part).__name__ for part in parts)
+
+
+def _artifact_unit_with_transport_refs() -> SynapseBehaviorUnit:
+    vectors = _vectors()
+    core = copy.deepcopy(vectors["vectors"][0]["core"])
+    program = copy.deepcopy(vectors["program_artifact"]["canonical_program"])
+    core["canonical_program"] = program
+    core["artifact_refs"] = [copy.deepcopy(program["artifact_ref"])]
+    unit = _unit_from_core(core)
+    # Transport-form refs pass core validation but cannot be projected, so the
+    # failure shows whether the canonical bundle was checked before projection.
+    object.__setattr__(unit.core, "artifact_refs", tuple(ref.to_dict() for ref in unit.core.artifact_refs))
+    return unit
+
+
+@pytest.mark.parametrize("field,code", [
+    ("_trusted_seal", "TRUSTED_OBJECT_FORGED"),
+    ("canonical_bytes", "TYPE_MISMATCH"),
+    ("program_form", "PROGRAM_MISMATCH"),
+    ("inline_program_ir_bytes", "PROGRAM_MISMATCH"),
+    ("program_artifact_ref", "TYPE_MISMATCH"),
+    ("payload_sha256", "PAYLOAD_HASH_MISMATCH"),
+    ("content_key", "TYPE_MISMATCH"),
+    ("profile_id", "UNKNOWN_PROFILE"),
+    ("codec_id", "UNKNOWN_CODEC"),
+    ("core_schema_id", "UNKNOWN_SCHEMA"),
+    ("ir_schema_id", "UNKNOWN_SCHEMA"),
+    ("language_version", "UNKNOWN_LANGUAGE"),
+    ("compiler_adapter_profile", "UNKNOWN_COMPILER"),
+])
+@pytest.mark.parametrize("entry", [validate_behavior_unit, SynapseBehaviorUnit.to_dict])
+def test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected(field, code, entry):
+    unit = _artifact_unit_with_transport_refs()
+    object.__setattr__(unit.canonical_core, field, "x")
+    with pytest.raises(canon.CanonicalizationViolation) as exc:
+        entry(unit)
+    assert exc.value.failure_code is canon.CanonicalizationFailureCode[code]
+
+
+def test_unit_dict_refuses_a_forged_unit_on_every_call():
+    unit = make_valid_unit()
+    object.__setattr__(unit, "context_sha256", "0" * 64)
+    for _ in range(2):
+        with pytest.raises(BehaviorViolation) as exc:
+            unit.to_dict()
+        assert exc.value.failure_code is BehaviorFailureCode.TRUSTED_OBJECT_FORGED
+
+
+def test_inline_text_limits_count_utf8_bytes_and_refuse_surrogates():
+    for valid in ("x" * 4096, "é" * 2048, "😀" * 1024):
+        DefaultValue(DefaultKind.VALUE, valid)
+    for invalid in ("é" * 2049, "😀" * 1025, "é\ud800"):
+        with pytest.raises(BehaviorViolation) as exc:
+            DefaultValue(DefaultKind.VALUE, invalid)
+        assert exc.value.failure_code is BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN
+
+
+@pytest.mark.parametrize("name", ["bad\ud800", "é\udfff"])
+def test_contract_names_refuse_surrogates_before_syntax(name):
+    with pytest.raises(BehaviorViolation) as exc:
+        ContractField(name, ValueType.STRING, AbsencePolicy.DEFAULTED, DefaultValue(DefaultKind.VALUE, ""),
+                      AbsenceDetail(AbsenceDetailKind.NONE))
+    assert exc.value.failure_code is BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN

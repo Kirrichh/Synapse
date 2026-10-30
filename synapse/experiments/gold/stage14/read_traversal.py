@@ -1,7 +1,7 @@
 """Lifetime of one synchronous reconstruction of retained publication history.
 
-One read can have several publication roots sharing committed predecessors.
-Their physical reader retains bounded immutable bytes for this traversal only.
+One publication read can recursively share committed predecessors.
+Its physical reader retains bounded immutable bytes for that root read only.
 This scope must not cross an execution, publication, or authority decision.
 Independent reads, copied completed contexts and other threads start afresh.
 """

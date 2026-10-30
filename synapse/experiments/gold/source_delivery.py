@@ -6,9 +6,35 @@ from .source_verification import canonical
 from .stage10.context_codec import SOURCE_DELIVERY_PROFILE_V2
 
 
-def _information_item(value):
+def _information_item(value, *, role="REFERENCE"):
     encoded = base64.urlsafe_b64encode(canonical(value)).decode("ascii").rstrip("=")
-    return {"role": "REFERENCE", "media_type": "application/json", "content_base64url": encoded}
+    return {"role": role, "media_type": "application/json", "content_base64url": encoded}
+
+
+def _patch_information(diff_text):
+    encoded = base64.urlsafe_b64encode(diff_text.encode("utf-8")).decode("ascii").rstrip("=")
+    return {"role": "REFERENCE", "media_type": "text/plain", "content_base64url": encoded}
+
+
+def _adaptive_memory_items(frame):
+    """Expose admitted historical patches as neutral, unverified-for-current-task data."""
+    court = frame.get("court", {})
+    patches = court.get("adaptive_patches", [])
+    by_revision = {}
+    items = []
+    for patch in patches:
+        digest, revision = patch["patch_sha256"], patch["repository_revision"]
+        by_revision.setdefault(revision, []).append(digest)
+        items.append(_information_item({"historical_patch_observation": {
+            "repository_revision": revision, "patch_sha256": digest, "oracle_resolved": True}},
+            role="HISTORICAL_EXECUTION_OBSERVATION"))
+        items.append(_patch_information(patch["diff_text"]))
+    for revision in sorted(by_revision):
+        items.append(_information_item({"repository_revision": revision,
+            "procedural_memory": {"profile": "adaptive-verified-patch-memory/v1",
+                                  "patches": sorted(set(by_revision[revision])),
+                                  "generalization": "NOT_ESTABLISHED"}}))
+    return items
 
 
 def _source_information(selected, *, historical=False):
@@ -48,6 +74,7 @@ def source_experience_delivery(value):
         frame = read_active_memory(value["project_memory"], source_snapshot=memory_source_basis(value),
             run_memory_selection=value["run_memory_selection"])["active_memory_frame"]
         items.append(_information_item(_memory_information(frame)))
+        items.extend(_adaptive_memory_items(frame))
     items.append(_information_item({"selection_state": recall["state"], "eligible_count": recall["eligible_count"],
         "omitted_by_limit": recall["omitted_by_limit"], "applicability": "UNASSESSED"}))
     return {"projection_profile": SOURCE_DELIVERY_PROFILE_V2,

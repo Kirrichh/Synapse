@@ -678,7 +678,7 @@ def _load_final_result(store: RunRecordStore) -> GoldRunResult | None:
 
 
 def load_run_state(store: RunRecordStore) -> RunState:
-    """Rebuild one resumable prefix from one immutable store view."""
+    """Rebuild a resumable prefix while validating each physical record read."""
 
     manifest = restore_manifest(store)
     maximum = manifest.config.max_attempts

@@ -54,15 +54,30 @@ class CanonicalBytes:
         return "sha256:" + hashlib.sha256(self.data).hexdigest()
 
 
-def _has_lone_surrogate(text: str) -> bool:
-    if type(text) is str:
-        return _SURROGATE_RE.search(text) is not None
-    # Keep the existing iteration semantics of accepted string subclasses.
-    return any(0xD800 <= ord(ch) <= 0xDFFF for ch in text)
+def scalar_text_utf8_size(text: str) -> int | None:
+    """Return the UTF-8 size of exact ``str`` text, or None if it has a lone surrogate.
+
+    Lone surrogates are the only code points strict UTF-8 cannot encode. ASCII
+    text has none and takes one byte per character, so it needs no scan.
+    """
+
+    if text.isascii():
+        return len(text)
+    if _SURROGATE_RE.search(text) is not None:
+        return None
+    return len(text.encode("utf-8"))
 
 
 def _canonical_text(text: str, *, path: str) -> str:
-    if _has_lone_surrogate(text):
+    if type(text) is str:
+        # ASCII is scalar text and already NFC; this is the hot path.
+        if text.isascii():
+            return text
+        if scalar_text_utf8_size(text) is None:
+            raise CanonicalSerializationError(f"lone surrogate in canonical string at {path}")
+        return unicodedata.normalize("NFC", text)
+    # Keep the existing iteration and encoding semantics of accepted string subclasses.
+    if any(0xD800 <= ord(ch) <= 0xDFFF for ch in text):
         raise CanonicalSerializationError(f"lone surrogate in canonical string at {path}")
     try:
         text.encode("utf-8")
@@ -284,5 +299,6 @@ __all__ = [
     "canonical_json_bytes",
     "canonicalize",
     "is_canonical_serializable",
+    "scalar_text_utf8_size",
     "stable_canonical_hash",
 ]

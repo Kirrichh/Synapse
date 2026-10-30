@@ -2,6 +2,52 @@
 
 The original product candidate was `44dc07ea0d9f762ca96ffd0c90ba8925cfcc2ca8`; the base was `1e226e52a3400d4fb0336420569d8bab43c8f783`. The bytecode-controlled follow-up recorded candidate `e0188add452d6478dc4c65814ba0947229769812`, which is not available in the remote repository. Its measured source snapshot cannot be independently verified from the saved data; do not treat that SHA as a public provenance binding.
 
+## Exact-ASCII fast path and in-call reuse: `d18a4c4b62fb1d7403e8a8fc62fdfa3fcbde2bd9`
+
+The commit `d18a4c4b62fb1d7403e8a8fc62fdfa3fcbde2bd9` (parent `56585964`, merged unchanged so this SHA is published) changes four product files and nothing else:
+
+- exact `str` ASCII text returns early from `canonical_values._canonical_text`, Gold `canonicalization._text`, behavior `_text` and `_inline_string`: ASCII has no surrogates, is already NFC and encodes to UTF-8 at its own length; the syntax pattern and the 4096-byte inline limit still apply to it, and subclasses of `str` keep the old path;
+- the behavior core is validated by its owners (`BehaviorCore.to_dict`, `_seal_unit`) instead of again inside `_behavior_core_payload`, and `SynapseBehaviorUnit.to_dict` uses the core payload its own validation built;
+- a verification record checks seal and digest, then decodes its bytes once per call (`_require_verification_payload`), for `payload()`, `to_dict()` and `require_verification_record`.
+
+Failure codes and messages are unchanged. Raw data are in `controlled_series_d18a4c4.json`, written by the same harness (`72d31d33…`), Python binary (`e50d468e…`), native addon (`5bfd634e…`) and replay artifact (`c7ed0e37…`) as the `56585964` series below. Both trees were verified against their commits (Git trees `2d12baa0…` for `56585964` and `c6b81036…` for `d18a4c4`) before execution and after every run. Linux 6.18.44-fc-v185 x86_64, CPython 3.12.3, Unicode 15.0.0, one host and one environment for all 20 runs; the series was resumed once across a background time limit on that host. Five alternating AB/BA pairs per comparison; the other conditions and units are those of the next section. "Faster" counts the pairs in which the second column used less CPU.
+
+Every run matched the `56585964` series' behavior: publication and recall outcomes, `MODEL` then `EXACT_MEMORY` routes, `FULL` status, patch `c88993a7…`, provider and oracle counts, a restored repository, both resumes, and a zero-drift replay.
+
+`56585964` Python versus `d18a4c4` Python:
+
+| Scenario | Base wall | Candidate wall | Change | CPU | Faster | RSS MiB |
+|---|---:|---:|---:|---:|---:|---:|
+| source-publication | 5.27 [4.76–6.18] | 4.25 [4.13–4.51] | -19.4% | 5.1 → 4.1 | 5/5 | 63.3 → 63.3 |
+| source-recall | 3.26 [2.90–4.02] | 2.90 [2.70–3.21] | -11.3% | 3.2 → 2.8 | 5/5 | 63.3 → 63.5 |
+| run-initial | 6.09 [5.33–6.90] | 5.08 [4.94–5.45] | -16.5% | 5.9 → 5.0 | 5/5 | 70.4 → 71.0 |
+| approve-initial | 106.83 [98.53–115.70] | 82.06 [79.83–90.90] | -23.2% | 105.3 → 80.1 | 5/5 | 79.5 → 79.7 |
+| run-reuse | 16.48 [15.48–16.63] | 13.49 [12.74–14.16] | -18.1% | 16.2 → 13.3 | 5/5 | 75.2 → 75.2 |
+| approve-reuse | 357.29 [340.85–363.83] | 283.51 [256.15–291.97] | -20.6% | 352.6 → 278.6 | 5/5 | 85.0 → 84.9 |
+| resume-first | 65.73 [63.51–66.97] | 53.87 [50.39–56.28] | -18.0% | 64.6 → 53.2 | 5/5 | 83.4 → 83.4 |
+| resume-repeat | 66.59 [64.77–72.81] | 53.03 [48.05–63.23] | -20.4% | 65.9 → 52.3 | 5/5 | 83.5 → 83.4 |
+| replay-mock | 0.81 [0.76–1.16] | 0.97 [0.79–1.11] | +20.3% | 0.8 → 1.0 | 1/5 | 48.5 → 48.4 |
+
+`d18a4c4` Python versus `d18a4c4` native:
+
+| Scenario | Python wall | Native wall | Change | CPU | Faster | RSS MiB |
+|---|---:|---:|---:|---:|---:|---:|
+| source-publication | 4.32 [3.91–4.57] | 4.00 [3.50–4.66] | -7.3% | 4.1 → 3.8 | 4/5 | 63.3 → 63.9 |
+| source-recall | 2.79 [2.67–3.15] | 2.79 [2.35–2.94] | +0.3% | 2.7 → 2.7 | 3/5 | 63.4 → 63.8 |
+| run-initial | 5.10 [5.03–5.85] | 4.36 [4.10–5.02] | -14.6% | 5.0 → 4.2 | 5/5 | 71.2 → 71.6 |
+| approve-initial | 82.10 [78.16–86.15] | 56.71 [51.47–65.51] | -30.9% | 80.4 → 55.5 | 5/5 | 79.6 → 80.0 |
+| run-reuse | 12.94 [12.73–13.39] | 9.47 [9.03–10.03] | -26.8% | 12.7 → 9.3 | 5/5 | 75.4 → 75.6 |
+| approve-reuse | 261.93 [260.12–287.13] | 184.85 [172.33–190.50] | -29.4% | 257.8 → 182.1 | 5/5 | 84.9 → 85.6 |
+| resume-first | 52.75 [50.42–55.20] | 35.84 [32.50–36.20] | -32.1% | 52.1 → 35.4 | 5/5 | 83.5 → 83.8 |
+| resume-repeat | 51.30 [51.12–54.13] | 36.32 [34.11–39.04] | -29.2% | 50.6 → 36.0 | 5/5 | 83.5 → 83.8 |
+| replay-mock | 0.86 [0.79–0.99] | 0.82 [0.79–1.13] | -4.8% | 0.9 → 0.8 | 3/5 | 48.5 → 48.3 |
+
+Against `56585964` the candidate used less CPU in all five pairs of every scenario except `replay-mock`, and the wall ranges do not overlap in `source-publication`, `approve-initial`, `run-reuse`, `approve-reuse` and both resumes. `source-recall` and `run-initial` overlap; their direction holds in every pair but the size is not established. Memory changes stay within 0.6 MiB per process.
+
+`replay-mock` was slower in four of five pairs, so it was repeated alone after the series: 40 alternating pairs on the same host and trees, every call with zero drift and the same replay result, the artifact digest unchanged (`replay_recheck_d18a4c4.json`; a one-off loop through the pinned `timed_exec.py`, not the pinned series harness). Base wall 0.867 s [0.759–1.238], candidate 0.868 s [0.759–1.118]; median CPU 0.859 → 0.854 s; median paired CPU change -0.7%, candidate slower in 19 of 40 pairs. No change in `replay-mock` is established.
+
+The native backend still removes about 30% in the long scenarios on top of the candidate, less than the 43% it removed on `56585964`, because the candidate's Python path no longer spends that time on ASCII text. The two comparisons ran in different halves of one series and the host was about 8% faster in the second half (candidate Python `approve-reuse` 283.5 s, then 261.9 s), so the combined effect from `56585964` Python to `d18a4c4` native (about 357 s to 185 s in `approve-reuse`) is an estimate, not a paired measurement. The `56585964` series below ran on a different, faster run of the same host type; compare figures only within a series.
+
 ## Final controlled series: `56585964513a0b07af111d5a53e4023a1a72ed33`
 
 This is the complete pinned series for the published candidate `56585964513a0b07af111d5a53e4023a1a72ed33` against base `1e226e52a3400d4fb0336420569d8bab43c8f783`; raw data are in `controlled_series_56585964.json`. Both source trees were verified against those commits (Git trees `2d08fc94…` and `2d12baa0…`) before execution and after every run, the harness matched the candidate and contained no bytecode, and the native series loaded the built wheel (binary `3b19d077…`, wrapper `2cb636cc…`). Linux 6.18.44-fc-v185 x86_64, CPython 3.12.3, Unicode 15.0.0, one environment and one host for all 20 runs; the series was resumed across background time limits on that host. Five alternating AB/BA pairs per comparison; each CLI call is a new process; the filesystem cache was uncontrolled and is not called cold. Wall and CPU are seconds (median, wall range in brackets); memory is the `wait4` maximum RSS of one process in MiB, not an aggregate process-tree peak.

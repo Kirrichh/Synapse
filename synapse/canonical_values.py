@@ -62,6 +62,8 @@ def _has_lone_surrogate(text: str) -> bool:
 
 
 def _canonical_text(text: str, *, path: str) -> str:
+    if type(text) is str and text.isascii():
+        return text
     if _has_lone_surrogate(text):
         raise CanonicalSerializationError(f"lone surrogate in canonical string at {path}")
     try:

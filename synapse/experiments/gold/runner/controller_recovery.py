@@ -455,7 +455,8 @@ class AttemptPhaseMaterializer:
     def _persist_guard_result(self, *, session, context, progress):
         raw, _ = require_progress_payload(progress)
         verification = self._verify(session=session, context=context)
-        if verification.payload()["failure_codes"]:
+        facts = verification.payload()
+        if facts["failure_codes"]:
             raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "guard refusal lacks independently verified mechanism evidence")
         promote_verified_use(publisher=self._publisher, session=session, manifest=self._manifest, context=context,
                              verification=verification, mechanism_record=decode_canonical(raw))
@@ -465,7 +466,7 @@ class AttemptPhaseMaterializer:
         result = GoldAttemptResult.create(run_id=self._manifest.run_id, gold_run_id=self._manifest.gold_run_id,
             attempt_index=context.attempt_index, attempt_id=context.attempt_id, outcome=AttemptOutcome.REUSE_GUARD_REFUSED,
             structured_outcome=structured.to_dict(), c1_status=None, oracle_invoked=False, oracle_resolved=None,
-            worker_result_ref=HashBoundRef.from_dict(verification.payload()["worker_result_ref"]),
+            worker_result_ref=HashBoundRef.from_dict(facts["worker_result_ref"]),
             c1_result_ref=None, oracle_result_ref=None, publication_refs=(), context_sha256=context.context_sha256)
         self._persist_result(session=session, context=context, result=result)
 

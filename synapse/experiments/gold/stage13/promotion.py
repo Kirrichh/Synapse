@@ -8,7 +8,7 @@ The record is retained by the existing consumer run store, not an index overlay.
 from ..runner.records import RecordKind
 from ..runner.run_recovery import PendingRunRecord
 from ..stage12.outcome import evaluate_attempt_outcome, inspect_outcome
-from ..stage12.verification_contract import require_verification_record, inspect_verification_record
+from ..stage12.verification_contract import require_verification_payload, inspect_verification_record
 from ..persistence import read_committed_snapshot_transaction
 from ..stage10.context_codec import decode_canonical
 from .publication import EVALUATOR, PublicationViolation, reference
@@ -82,7 +82,7 @@ def read_reuse_promotions(*, publisher, store, manifest, context, facts, mechani
 
 def promote_verified_use(*, publisher, session, manifest, context, verification, mechanism_record):
     """Attach independent promotion before completion; never rewrite the producer."""
-    facts = require_verification_record(verification).payload()
+    facts = require_verification_payload(verification)
     if session.store.get(kind=RecordKind.ATTEMPT_RESULT, key=str(context.attempt_index)) is not None:
         raise PublicationViolation("a completed consumer cannot acquire retrospective promotion")
     use = _basis(publisher=publisher, facts=facts)

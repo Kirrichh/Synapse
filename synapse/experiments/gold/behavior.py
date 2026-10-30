@@ -14,6 +14,7 @@ import hashlib
 import re
 from typing import Any
 
+from synapse.canonical_values import scalar_text_utf8_size
 from synapse.version import LANGUAGE_VERSION
 
 from .canonicalization import (
@@ -154,16 +155,8 @@ def _exact_list(value: object, name: str) -> list[Any]:
 def _text(value: object, name: str, pattern: re.Pattern[str] | None = None) -> str:
     if type(value) is not str or not value:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, f"{name} must be non-empty exact string")
-    if value.isascii():
-        if pattern is not None and pattern.fullmatch(value) is None:
-            raise _fail(BehaviorFailureCode.TYPE_MISMATCH, f"{name} has invalid syntax")
-        return value
-    if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+    if scalar_text_utf8_size(value) is None:
         raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, f"{name} contains lone surrogate")
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError as exc:
-        raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, f"{name} is not valid UTF-8") from exc
     if pattern is not None and pattern.fullmatch(value) is None:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, f"{name} has invalid syntax")
     return value
@@ -185,17 +178,10 @@ def _versioned(value: object, name: str) -> str:
 def _inline_string(value: object, path: str) -> str:
     if type(value) is not str:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, f"{path} must be exact string data")
-    if value.isascii():
-        if len(value) > 4096:
-            raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, "large inline string must be a hash-bound ref")
-        return value
-    if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+    size = scalar_text_utf8_size(value)
+    if size is None:
         raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, f"{path} contains lone surrogate")
-    try:
-        encoded = value.encode("utf-8")
-    except UnicodeEncodeError as exc:
-        raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, f"{path} is not valid UTF-8") from exc
-    if len(encoded) > 4096:
+    if size > 4096:
         raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, "large inline string must be a hash-bound ref")
     return value
 
@@ -1094,8 +1080,7 @@ class BehaviorCore:
         raise TypeError("BehaviorCore is created only by create_behavior_unit or strict transport")
 
     def to_dict(self) -> dict[str, object]:
-        _validate_behavior_core(self)
-        return _behavior_core_payload(self)
+        return _validated_behavior_core_payload(self)
 
     @classmethod
     def from_dict(cls, value: object) -> BehaviorCore:
@@ -1129,28 +1114,12 @@ def _make_behavior_core(
     object.__setattr__(core, "source_evidence_refs", _refs(source_evidence_refs, RefKind.SOURCE_EVIDENCE, "source_evidence_refs"))
     object.__setattr__(core, "artifact_refs", _artifact_refs(artifact_refs, "artifact_refs"))
     object.__setattr__(core, "_trusted_seal", _TRUSTED_SEAL)
-    _validate_behavior_core(core)
+    _validated_behavior_core_payload(core)
     return core
 
 
-def _behavior_core_payload(value: BehaviorCore) -> dict[str, object]:
-    return {
-        "schema_version": value.schema_version,
-        "behavior_kind": value.behavior_kind.value,
-        "language_version": value.language_version,
-        "canonical_program": value.canonical_program.to_dict(),
-        "input_contract": value.input_contract.to_dict(),
-        "output_contract": value.output_contract.to_dict(),
-        "capability_requirements": list(value.capability_requirements),
-        "replay_contract": value.replay_contract.to_dict(),
-        "verification_contract": value.verification_contract.to_dict(),
-        "binding_refs": [ref.to_dict() for ref in value.binding_refs],
-        "source_evidence_refs": [ref.to_dict() for ref in value.source_evidence_refs],
-        "artifact_refs": [ref.to_dict() for ref in value.artifact_refs],
-    }
-
-
-def _validate_behavior_core(value: BehaviorCore) -> None:
+def _validated_behavior_core_payload(value: BehaviorCore) -> dict[str, object]:
+    """Validate a sealed core and return its payload, projected once by this call."""
     if type(value) is not BehaviorCore:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "behavior core must be exact BehaviorCore")
     if getattr(value, "_trusted_seal", None) is not _TRUSTED_SEAL:
@@ -1162,18 +1131,18 @@ def _validate_behavior_core(value: BehaviorCore) -> None:
     if value.language_version != LANGUAGE_VERSION or type(value.language_version) is not str:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "behavior language version is unknown")
     if type(value.canonical_program) is InlineProgram:
-        value.canonical_program.to_dict()
+        program = value.canonical_program.to_dict()
         if _normalize_capabilities(value.capability_requirements):
             raise _fail(BehaviorFailureCode.CAPABILITY_MISMATCH, "pure inline IR derives an empty capability set")
     elif type(value.canonical_program) is ArtifactProgram:
-        value.canonical_program.to_dict()
+        program = value.canonical_program.to_dict()
         _normalize_capabilities(value.capability_requirements)
     else:
         raise _fail(BehaviorFailureCode.INVALID_GRANULARITY, "behavior must have exactly one canonical program")
     if type(value.input_contract) is not InputContract or type(value.output_contract) is not OutputContract:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "input/output contracts must be exact typed values")
-    value.input_contract.to_dict()
-    value.output_contract.to_dict()
+    input_contract = value.input_contract.to_dict()
+    output_contract = value.output_contract.to_dict()
     _validate_contract_context(
         value.input_contract,
         value.output_contract,
@@ -1199,6 +1168,20 @@ def _validate_behavior_core(value: BehaviorCore) -> None:
         # Its exact enum survives every transport path; there is no fact/recipe alias.
         if value.behavior_kind.value != "rejected_hypothesis_guard":
             raise _fail(BehaviorFailureCode.FAILED_HYPOTHESIS_RELABEL, "rejected hypothesis was relabeled")
+    return {
+        "schema_version": value.schema_version,
+        "behavior_kind": value.behavior_kind.value,
+        "language_version": value.language_version,
+        "canonical_program": program,
+        "input_contract": input_contract,
+        "output_contract": output_contract,
+        "capability_requirements": list(value.capability_requirements),
+        "replay_contract": value.replay_contract.to_dict(),
+        "verification_contract": value.verification_contract.to_dict(),
+        "binding_refs": [ref.to_dict() for ref in value.binding_refs],
+        "source_evidence_refs": [ref.to_dict() for ref in value.source_evidence_refs],
+        "artifact_refs": [ref.to_dict() for ref in value.artifact_refs],
+    }
 
 
 def _behavior_core_from_dict(value: object) -> BehaviorCore:
@@ -1268,8 +1251,7 @@ class SynapseBehaviorUnit:
 
 
 def _seal_unit(core: BehaviorCore) -> SynapseBehaviorUnit:
-    _validate_behavior_core(core)
-    payload = _behavior_core_payload(core)
+    payload = _validated_behavior_core_payload(core)
     canonical_core = _make_canonical_behavior_core(payload)
     unit = object.__new__(SynapseBehaviorUnit)
     object.__setattr__(unit, "schema_version", SchemaVersion.BEHAVIOR_UNIT_V1)
@@ -1365,9 +1347,8 @@ def _validate_behavior_unit_payload(value: SynapseBehaviorUnit) -> dict[str, obj
         raise _fail(BehaviorFailureCode.TRUSTED_OBJECT_FORGED, "unit is not factory sealed")
     if value.schema_version is not SchemaVersion.BEHAVIOR_UNIT_V1:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "unit schema is unknown")
-    _validate_behavior_core(value.core)
+    core_payload = _validated_behavior_core_payload(value.core)
     validate_canonical_behavior_core(value.canonical_core)
-    core_payload = _behavior_core_payload(value.core)
     expected = _make_canonical_behavior_core(core_payload)
     if (
         value.canonical_core.canonical_bytes != expected.canonical_bytes

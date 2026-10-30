@@ -645,16 +645,56 @@ def test_s4_p2_followup_payload_01_aggregate_inline_values_require_hash_bound_re
     validate_behavior_unit(_unit_from_core(referenced))
 
 
-def test_unit_validation_projects_core_once(monkeypatch):
-    from synapse.experiments.gold import behavior
-    unit = make_valid_unit()
+def _count_core_projections(monkeypatch, core):
     calls = []
-    original = behavior._behavior_core_payload
+    for part in (core.canonical_program, core.input_contract, core.output_contract):
+        cls = type(part)
+        original = cls.to_dict
 
-    def counted(value):
-        calls.append(value)
-        return original(value)
+        def counted(self, _original=original, _name=cls.__name__):
+            calls.append(_name)
+            return _original(self)
 
-    monkeypatch.setattr(behavior, '_behavior_core_payload', counted)
-    behavior.validate_behavior_unit(unit)
-    assert calls == [unit.core]
+        monkeypatch.setattr(cls, "to_dict", counted)
+    return calls
+
+
+@pytest.mark.parametrize("project", [
+    validate_behavior_unit,
+    SynapseBehaviorUnit.to_dict,
+    lambda unit: unit.core.to_dict(),
+])
+def test_unit_validation_projects_core_once(monkeypatch, project):
+    unit = make_valid_unit()
+    expected = unit.to_dict()
+    parts = (unit.core.canonical_program, unit.core.input_contract, unit.core.output_contract)
+    calls = _count_core_projections(monkeypatch, unit.core)
+    result = project(unit)
+    assert result is None or result in (expected, expected["core"])
+    assert sorted(calls) == sorted(type(part).__name__ for part in parts)
+
+
+def test_unit_dict_refuses_a_forged_unit_on_every_call():
+    unit = make_valid_unit()
+    object.__setattr__(unit, "context_sha256", "0" * 64)
+    for _ in range(2):
+        with pytest.raises(BehaviorViolation) as exc:
+            unit.to_dict()
+        assert exc.value.failure_code is BehaviorFailureCode.TRUSTED_OBJECT_FORGED
+
+
+def test_inline_text_limits_count_utf8_bytes_and_refuse_surrogates():
+    for valid in ("x" * 4096, "é" * 2048, "😀" * 1024):
+        DefaultValue(DefaultKind.VALUE, valid)
+    for invalid in ("é" * 2049, "😀" * 1025, "é\ud800"):
+        with pytest.raises(BehaviorViolation) as exc:
+            DefaultValue(DefaultKind.VALUE, invalid)
+        assert exc.value.failure_code is BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN
+
+
+@pytest.mark.parametrize("name", ["bad\ud800", "é\udfff"])
+def test_contract_names_refuse_surrogates_before_syntax(name):
+    with pytest.raises(BehaviorViolation) as exc:
+        ContractField(name, ValueType.STRING, AbsencePolicy.DEFAULTED, DefaultValue(DefaultKind.VALUE, ""),
+                      AbsenceDetail(AbsenceDetailKind.NONE))
+    assert exc.value.failure_code is BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN

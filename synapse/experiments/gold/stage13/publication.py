@@ -35,7 +35,8 @@ from ..runner.c1_boundary import C1VerificationEvidence
 from ..stage10.context_codec import encode_canonical, decode_canonical
 from ..stage12.reusable import (ReusableVerificationAuthority, rejected_patch_domain, create_rejected_patch_guard,
     read_reusable_use_context, inspect_reusable_use_context, verified_patch_domain, create_verified_patch_guard)
-from ..stage12.verification_contract import VerificationRecord, require_verification_record, inspect_verification_record
+from ..stage12.verification_contract import (VerificationRecord, inspect_verification_record,
+    require_verification_payload, require_verification_record)
 from ..stage12.outcome import evaluate_attempt_outcome, inspect_outcome, FinalStatus
 from ..learned_habit_profile import (CONSOLIDATION_JUDGE, LEARNED_HABIT_POLICY_V1, LEARNED_HABIT_PROFILE_V1,
     LEARNED_HABIT_VERIFICATION_V1,
@@ -511,7 +512,7 @@ class PublicationAuthority:
     def prepare(self, *, verification, manifest, context, c1) -> PublicationRequest | PublicationAuthorityDecision:
         """Derive a complete candidate or an explicit independent refusal."""
         self.validate()
-        facts = require_verification_record(verification).payload()
+        facts = require_verification_payload(verification)
         if ((c1 is None and facts["c1"] is not None)
                 or c1 is not None and (type(c1) is not C1VerificationEvidence or facts["c1"] != c1.payload())
                 or facts["manifest_sha256"] != manifest.manifest_sha256

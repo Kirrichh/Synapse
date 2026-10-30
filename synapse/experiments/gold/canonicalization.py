@@ -38,6 +38,7 @@ from synapse.canonical_values import (
     SAFE_INTEGER_MIN,
     CanonicalSerializationError,
     canonical_bytes as _stable_canonical_bytes,
+    scalar_text_utf8_size,
 )
 from synapse.version import LANGUAGE_VERSION
 
@@ -91,7 +92,6 @@ CVM_HOST_ABI_VERSION = "2.2"
 _MAX_CANONICAL_DEPTH = 128
 _MAX_REF_BYTES = 2**53 - 1
 _TRUSTED_SEAL = object()
-_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
 _POLICY_RULE_LABEL_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}:rule:(0|[1-9][0-9]*):(require|forbid)\Z")
@@ -179,14 +179,11 @@ def _exact_list(value: object, name: str) -> list[Any]:
 def _text(value: object, name: str, *, nonempty: bool = True) -> str:
     if type(value) is not str or (nonempty and not value):
         raise _fail(CanonicalizationFailureCode.TYPE_MISMATCH, f"{name} must be an exact string")
+    # Hot path for every canonical string: ASCII is scalar text without a call.
     if value.isascii():
         return value
-    if _SURROGATE_RE.search(value) is not None:
+    if scalar_text_utf8_size(value) is None:
         raise _fail(CanonicalizationFailureCode.INVALID_UTF8, f"{name} contains a lone surrogate")
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError as exc:
-        raise _fail(CanonicalizationFailureCode.INVALID_UTF8, f"{name} is not valid UTF-8 text") from exc
     return value
 
 

@@ -1,0 +1,128 @@
+[
+ {
+  "id": "scalar-size-ignores-surrogates",
+  "source": "synapse/canonical_values.py",
+  "original": "    if _SURROGATE_RE.search(text) is not None:\n        return None\n    return len(text.encode(\"utf-8\"))",
+  "mutant": "    return len(text.encode(\"utf-8\", \"surrogatepass\"))",
+  "detecting_test": "tests/test_stable_canonical_values_p044.py::test_scalar_text_size_is_the_strict_utf8_length_or_refuses_a_surrogate"
+ },
+ {
+  "id": "scalar-size-counts-characters",
+  "source": "synapse/canonical_values.py",
+  "original": "    return len(text.encode(\"utf-8\"))",
+  "mutant": "    return len(text)",
+  "detecting_test": "tests/test_stable_canonical_values_p044.py::test_scalar_text_size_is_the_strict_utf8_length_or_refuses_a_surrogate"
+ },
+ {
+  "id": "canonical-text-skips-nfc",
+  "source": "synapse/canonical_values.py",
+  "original": "        return unicodedata.normalize(\"NFC\", text)\n    # Keep the existing",
+  "mutant": "        return text\n    # Keep the existing",
+  "detecting_test": "tests/test_stable_canonical_values_p044.py::test_unicode_values_and_keys_are_nfc_normalized"
+ },
+ {
+  "id": "canonical-text-drops-subclass-path",
+  "source": "synapse/canonical_values.py",
+  "original": "    if type(text) is str:\n        # ASCII is scalar text",
+  "mutant": "    if isinstance(text, str):\n        # ASCII is scalar text",
+  "detecting_test": "tests/test_stable_canonical_values_p044.py::test_string_subclass_validation_preserves_iteration_and_utf8_checks"
+ },
+ {
+  "id": "gold-text-skips-surrogates",
+  "source": "synapse/experiments/gold/canonicalization.py",
+  "original": "    if scalar_text_utf8_size(value) is None:\n        raise _fail(CanonicalizationFailureCode.INVALID_UTF8",
+  "mutant": "    if False:\n        raise _fail(CanonicalizationFailureCode.INVALID_UTF8",
+  "detecting_test": "tests/test_stage4_gold_canonicalization.py"
+ },
+ {
+  "id": "behavior-text-skips-surrogates",
+  "source": "synapse/experiments/gold/behavior.py",
+  "original": "    if scalar_text_utf8_size(value) is None:\n        raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, f\"{name}",
+  "mutant": "    if False:\n        raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, f\"{name}",
+  "detecting_test": "tests/test_stage4_gold_behavior.py::test_contract_names_refuse_surrogates_before_syntax"
+ },
+ {
+  "id": "inline-skips-surrogates",
+  "source": "synapse/experiments/gold/behavior.py",
+  "original": "    if size is None:\n        raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, f\"{path}",
+  "mutant": "    if False:\n        raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, f\"{path}",
+  "detecting_test": "tests/test_stage4_gold_behavior.py::test_inline_text_limits_count_utf8_bytes_and_refuse_surrogates"
+ },
+ {
+  "id": "inline-limit-counts-characters",
+  "source": "synapse/experiments/gold/behavior.py",
+  "original": "    if size > 4096:",
+  "mutant": "    if len(value) > 4096:",
+  "detecting_test": "tests/test_stage4_gold_behavior.py::test_inline_text_limits_count_utf8_bytes_and_refuse_surrogates"
+ },
+ {
+  "id": "projection-before-bundle-check",
+  "source": "synapse/experiments/gold/behavior.py",
+  "original": "    projections = _validate_behavior_core(value.core)\n    validate_canonical_behavior_core(value.canonical_core)\n    core_payload = _behavior_core_payload(value.core, projections)\n",
+  "mutant": "    core_payload = _behavior_core_payload(value.core, _validate_behavior_core(value.core))\n    validate_canonical_behavior_core(value.canonical_core)\n",
+  "detecting_test": "tests/test_stage4_gold_behavior.py::test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected"
+ },
+ {
+  "id": "unit-dict-projects-core-again",
+  "source": "synapse/experiments/gold/behavior.py",
+  "original": "            \"core\": core_payload,",
+  "mutant": "            \"core\": self.core.to_dict(),",
+  "detecting_test": "tests/test_stage4_gold_behavior.py::test_unit_validation_projects_core_once"
+ },
+ {
+  "id": "unit-dict-skips-unit-validation",
+  "source": "synapse/experiments/gold/behavior.py",
+  "original": "        core_payload = _validate_behavior_unit_payload(self)",
+  "mutant": "        core_payload = _behavior_core_payload(self.core, _validate_behavior_core(self.core))",
+  "detecting_test": "tests/test_stage4_gold_behavior.py::test_unit_dict_refuses_a_forged_unit_on_every_call"
+ },
+ {
+  "id": "payload-projects-program-again",
+  "source": "synapse/experiments/gold/behavior.py",
+  "original": "        \"canonical_program\": program,",
+  "mutant": "        \"canonical_program\": value.canonical_program.to_dict(),",
+  "detecting_test": "tests/test_stage4_gold_behavior.py::test_unit_validation_projects_core_once"
+ },
+ {
+  "id": "payload-projects-input-again",
+  "source": "synapse/experiments/gold/behavior.py",
+  "original": "        \"input_contract\": input_contract,",
+  "mutant": "        \"input_contract\": value.input_contract.to_dict(),",
+  "detecting_test": "tests/test_stage4_gold_behavior.py::test_unit_validation_projects_core_once"
+ },
+ {
+  "id": "guard-refusal-reuses-first-read",
+  "source": "synapse/experiments/gold/runner/controller_recovery.py",
+  "original": "        if verification.payload()[\"failure_codes\"]:\n            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, \"guard refusal lacks independently verified mechanism evidence\")\n        promote_verified_use(publisher=self._publisher, session=session, manifest=self._manifest, context=context,\n                             verification=verification, mechanism_record=decode_canonical(raw))\n        structured = self._verified_outcome(session=session, context=context)\n        if structured.status is not FinalStatus.UNRESOLVED:\n            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, \"guard refusal has an inconsistent independently verified outcome\")\n        result = GoldAttemptResult.create(run_id=self._manifest.run_id, gold_run_id=self._manifest.gold_run_id,\n            attempt_index=context.attempt_index, attempt_id=context.attempt_id, outcome=AttemptOutcome.REUSE_GUARD_REFUSED,\n            structured_outcome=structured.to_dict(), c1_status=None, oracle_invoked=False, oracle_resolved=None,\n            worker_result_ref=HashBoundRef.from_dict(verification.payload()[\"worker_result_ref\"]),",
+  "mutant": "        facts = verification.payload()\n        if facts[\"failure_codes\"]:\n            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, \"guard refusal lacks independently verified mechanism evidence\")\n        promote_verified_use(publisher=self._publisher, session=session, manifest=self._manifest, context=context,\n                             verification=verification, mechanism_record=decode_canonical(raw))\n        structured = self._verified_outcome(session=session, context=context)\n        if structured.status is not FinalStatus.UNRESOLVED:\n            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, \"guard refusal has an inconsistent independently verified outcome\")\n        result = GoldAttemptResult.create(run_id=self._manifest.run_id, gold_run_id=self._manifest.gold_run_id,\n            attempt_index=context.attempt_index, attempt_id=context.attempt_id, outcome=AttemptOutcome.REUSE_GUARD_REFUSED,\n            structured_outcome=structured.to_dict(), c1_status=None, oracle_invoked=False, oracle_resolved=None,\n            worker_result_ref=HashBoundRef.from_dict(facts[\"worker_result_ref\"]),",
+  "detecting_test": "acceptance/stage4/stage12/test_outcome_contract.py::test_a_guard_refusal_reads_its_record_again_before_persisting"
+ },
+ {
+  "id": "record-dict-checks-once",
+  "source": "synapse/experiments/gold/stage12/verification_contract.py",
+  "original": "        value = {\"verification_ref\": self.reference.to_dict(), \"payload\": self.payload()}",
+  "mutant": "        payload = decode_canonical(require_verification_record(self)._bytes)\n        digest = hashlib.sha256(self._bytes).hexdigest()\n        reference = HashBoundRef(RefKind.ARTIFACT, digest, VERIFICATION_SCHEMA_V5, digest, len(self._bytes), \"application/json\")\n        value = {\"verification_ref\": reference.to_dict(), \"payload\": payload}",
+  "detecting_test": "acceptance/stage4/stage12/test_outcome_contract.py::test_a_planted_digest_is_refused_where_the_record_is_checked_again"
+ },
+ {
+  "id": "record-requires-exact-digest-type",
+  "source": "synapse/experiments/gold/stage12/verification_contract.py",
+  "original": "    if (type(value._bytes) is not bytes or hashlib.sha256(value._bytes).hexdigest() != value._digest",
+  "mutant": "    if (type(value._bytes) is not bytes or type(value._digest) is not str or hashlib.sha256(value._bytes).hexdigest() != value._digest",
+  "detecting_test": "acceptance/stage4/stage12/test_outcome_contract.py::test_a_planted_digest_is_refused_where_the_record_is_checked_again"
+ },
+ {
+  "id": "record-payload-cached",
+  "source": "synapse/experiments/gold/stage12/verification_contract.py",
+  "original": "    def payload(self) -> dict[str, object]:\n        require_verification_record(self)\n        return decode_canonical(self._bytes)",
+  "mutant": "    def payload(self) -> dict[str, object]:\n        cached = self.__dict__.get(\"_cached\")\n        if cached is None:\n            require_verification_record(self)\n            cached = decode_canonical(self._bytes)\n            object.__setattr__(self, \"_cached\", cached)\n        return dict(cached)",
+  "detecting_test": "acceptance/stage4/stage12/test_outcome_contract.py::test_a_record_changed_after_its_seal_is_refused_on_every_call"
+ },
+ {
+  "id": "record-reference-skips-check",
+  "source": "synapse/experiments/gold/stage12/verification_contract.py",
+  "original": "    def reference(self) -> HashBoundRef:\n        require_verification_record(self)\n",
+  "mutant": "    def reference(self) -> HashBoundRef:\n",
+  "detecting_test": "acceptance/stage4/stage12/test_outcome_contract.py::test_a_record_changed_after_its_seal_is_refused_on_every_call"
+ }
+]

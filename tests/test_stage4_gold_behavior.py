@@ -674,6 +674,43 @@ def test_unit_validation_projects_core_once(monkeypatch, project):
     assert sorted(calls) == sorted(type(part).__name__ for part in parts)
 
 
+def _artifact_unit_with_transport_refs() -> SynapseBehaviorUnit:
+    vectors = _vectors()
+    core = copy.deepcopy(vectors["vectors"][0]["core"])
+    program = copy.deepcopy(vectors["program_artifact"]["canonical_program"])
+    core["canonical_program"] = program
+    core["artifact_refs"] = [copy.deepcopy(program["artifact_ref"])]
+    unit = _unit_from_core(core)
+    # Transport-form refs pass core validation but cannot be projected, so the
+    # failure shows whether the canonical bundle was checked before projection.
+    object.__setattr__(unit.core, "artifact_refs", tuple(ref.to_dict() for ref in unit.core.artifact_refs))
+    return unit
+
+
+@pytest.mark.parametrize("field,code", [
+    ("_trusted_seal", "TRUSTED_OBJECT_FORGED"),
+    ("canonical_bytes", "TYPE_MISMATCH"),
+    ("program_form", "PROGRAM_MISMATCH"),
+    ("inline_program_ir_bytes", "PROGRAM_MISMATCH"),
+    ("program_artifact_ref", "TYPE_MISMATCH"),
+    ("payload_sha256", "PAYLOAD_HASH_MISMATCH"),
+    ("content_key", "TYPE_MISMATCH"),
+    ("profile_id", "UNKNOWN_PROFILE"),
+    ("codec_id", "UNKNOWN_CODEC"),
+    ("core_schema_id", "UNKNOWN_SCHEMA"),
+    ("ir_schema_id", "UNKNOWN_SCHEMA"),
+    ("language_version", "UNKNOWN_LANGUAGE"),
+    ("compiler_adapter_profile", "UNKNOWN_COMPILER"),
+])
+@pytest.mark.parametrize("entry", [validate_behavior_unit, SynapseBehaviorUnit.to_dict])
+def test_a_damaged_canonical_bundle_is_refused_before_the_core_is_projected(field, code, entry):
+    unit = _artifact_unit_with_transport_refs()
+    object.__setattr__(unit.canonical_core, field, "x")
+    with pytest.raises(canon.CanonicalizationViolation) as exc:
+        entry(unit)
+    assert exc.value.failure_code is canon.CanonicalizationFailureCode[code]
+
+
 def test_unit_dict_refuses_a_forged_unit_on_every_call():
     unit = make_valid_unit()
     object.__setattr__(unit, "context_sha256", "0" * 64)

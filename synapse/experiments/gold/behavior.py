@@ -1080,7 +1080,7 @@ class BehaviorCore:
         raise TypeError("BehaviorCore is created only by create_behavior_unit or strict transport")
 
     def to_dict(self) -> dict[str, object]:
-        return _validated_behavior_core_payload(self)
+        return _behavior_core_payload(self, _validate_behavior_core(self))
 
     @classmethod
     def from_dict(cls, value: object) -> BehaviorCore:
@@ -1114,12 +1114,37 @@ def _make_behavior_core(
     object.__setattr__(core, "source_evidence_refs", _refs(source_evidence_refs, RefKind.SOURCE_EVIDENCE, "source_evidence_refs"))
     object.__setattr__(core, "artifact_refs", _artifact_refs(artifact_refs, "artifact_refs"))
     object.__setattr__(core, "_trusted_seal", _TRUSTED_SEAL)
-    _validated_behavior_core_payload(core)
+    _validate_behavior_core(core)
     return core
 
 
-def _validated_behavior_core_payload(value: BehaviorCore) -> dict[str, object]:
-    """Validate a sealed core and return its payload, projected once by this call."""
+def _behavior_core_payload(
+    value: BehaviorCore,
+    projections: tuple[dict[str, object], dict[str, object], dict[str, object]],
+) -> dict[str, object]:
+    # Reuses the projections that validated this core in the same operation; how many
+    # times immutable sealed parts are projected is not part of the behavior contract.
+    program, input_contract, output_contract = projections
+    return {
+        "schema_version": value.schema_version,
+        "behavior_kind": value.behavior_kind.value,
+        "language_version": value.language_version,
+        "canonical_program": program,
+        "input_contract": input_contract,
+        "output_contract": output_contract,
+        "capability_requirements": list(value.capability_requirements),
+        "replay_contract": value.replay_contract.to_dict(),
+        "verification_contract": value.verification_contract.to_dict(),
+        "binding_refs": [ref.to_dict() for ref in value.binding_refs],
+        "source_evidence_refs": [ref.to_dict() for ref in value.source_evidence_refs],
+        "artifact_refs": [ref.to_dict() for ref in value.artifact_refs],
+    }
+
+
+def _validate_behavior_core(
+    value: BehaviorCore,
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    """Validate a sealed core; return the program and contract projections it checked."""
     if type(value) is not BehaviorCore:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "behavior core must be exact BehaviorCore")
     if getattr(value, "_trusted_seal", None) is not _TRUSTED_SEAL:
@@ -1168,20 +1193,7 @@ def _validated_behavior_core_payload(value: BehaviorCore) -> dict[str, object]:
         # Its exact enum survives every transport path; there is no fact/recipe alias.
         if value.behavior_kind.value != "rejected_hypothesis_guard":
             raise _fail(BehaviorFailureCode.FAILED_HYPOTHESIS_RELABEL, "rejected hypothesis was relabeled")
-    return {
-        "schema_version": value.schema_version,
-        "behavior_kind": value.behavior_kind.value,
-        "language_version": value.language_version,
-        "canonical_program": program,
-        "input_contract": input_contract,
-        "output_contract": output_contract,
-        "capability_requirements": list(value.capability_requirements),
-        "replay_contract": value.replay_contract.to_dict(),
-        "verification_contract": value.verification_contract.to_dict(),
-        "binding_refs": [ref.to_dict() for ref in value.binding_refs],
-        "source_evidence_refs": [ref.to_dict() for ref in value.source_evidence_refs],
-        "artifact_refs": [ref.to_dict() for ref in value.artifact_refs],
-    }
+    return program, input_contract, output_contract
 
 
 def _behavior_core_from_dict(value: object) -> BehaviorCore:
@@ -1251,7 +1263,7 @@ class SynapseBehaviorUnit:
 
 
 def _seal_unit(core: BehaviorCore) -> SynapseBehaviorUnit:
-    payload = _validated_behavior_core_payload(core)
+    payload = _behavior_core_payload(core, _validate_behavior_core(core))
     canonical_core = _make_canonical_behavior_core(payload)
     unit = object.__new__(SynapseBehaviorUnit)
     object.__setattr__(unit, "schema_version", SchemaVersion.BEHAVIOR_UNIT_V1)
@@ -1347,8 +1359,9 @@ def _validate_behavior_unit_payload(value: SynapseBehaviorUnit) -> dict[str, obj
         raise _fail(BehaviorFailureCode.TRUSTED_OBJECT_FORGED, "unit is not factory sealed")
     if value.schema_version is not SchemaVersion.BEHAVIOR_UNIT_V1:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "unit schema is unknown")
-    core_payload = _validated_behavior_core_payload(value.core)
+    projections = _validate_behavior_core(value.core)
     validate_canonical_behavior_core(value.canonical_core)
+    core_payload = _behavior_core_payload(value.core, projections)
     expected = _make_canonical_behavior_core(core_payload)
     if (
         value.canonical_core.canonical_bytes != expected.canonical_bytes

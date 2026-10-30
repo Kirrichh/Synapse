@@ -31,41 +31,28 @@ class VerificationRecord:
         raise TypeError("VerificationRecord is produced by verify_attempt")
 
     def payload(self) -> dict[str, object]:
-        return require_verification_payload(self)
+        require_verification_record(self)
+        return decode_canonical(self._bytes)
 
     @property
     def reference(self) -> HashBoundRef:
-        require_verification_payload(self)
-        return self._checked_reference()
+        require_verification_record(self)
+        digest = hashlib.sha256(self._bytes).hexdigest()
+        return HashBoundRef(RefKind.ARTIFACT, digest, VERIFICATION_SCHEMA_V5, digest,
+                            len(self._bytes), "application/json")
 
     def to_dict(self) -> dict[str, object]:
-        payload = require_verification_payload(self)
-        value = {"verification_ref": self._checked_reference().to_dict(), "payload": payload}
+        value = {"verification_ref": self.reference.to_dict(), "payload": self.payload()}
         inspect_verification_record(value)
         return value
 
-    def _checked_reference(self) -> HashBoundRef:
-        # Only after require_verification_payload: the exact digest equals sha256(_bytes).
-        return HashBoundRef(RefKind.ARTIFACT, self._digest, VERIFICATION_SCHEMA_V5, self._digest,
-                            len(self._bytes), "application/json")
-
-
-def require_verification_payload(value: object) -> dict[str, object]:
-    """Check one sealed record and return its payload, decoded once by this call."""
-    if type(value) is not VerificationRecord or getattr(value, "_seal", None) is not _SEAL:
-        raise GoldRunViolation(GoldRunFailureCode.TYPE_MISMATCH, "verification must be evaluator-sealed")
-    # An exact digest type keeps a planted str subclass from answering the comparison.
-    if (type(value._bytes) is not bytes or type(value._digest) is not str
-            or hashlib.sha256(value._bytes).hexdigest() != value._digest):
-        raise GoldRunViolation(GoldRunFailureCode.IDENTITY_MISMATCH, "verification record is malformed")
-    payload = decode_canonical(value._bytes)
-    if payload.get("schema_version") != VERIFICATION_SCHEMA_V5:
-        raise GoldRunViolation(GoldRunFailureCode.IDENTITY_MISMATCH, "verification record is malformed")
-    return payload
-
 
 def require_verification_record(value: object) -> VerificationRecord:
-    require_verification_payload(value)
+    if type(value) is not VerificationRecord or getattr(value, "_seal", None) is not _SEAL:
+        raise GoldRunViolation(GoldRunFailureCode.TYPE_MISMATCH, "verification must be evaluator-sealed")
+    if (type(value._bytes) is not bytes or hashlib.sha256(value._bytes).hexdigest() != value._digest
+            or decode_canonical(value._bytes).get("schema_version") != VERIFICATION_SCHEMA_V5):
+        raise GoldRunViolation(GoldRunFailureCode.IDENTITY_MISMATCH, "verification record is malformed")
     return value
 
 

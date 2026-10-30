@@ -2,6 +2,44 @@
 
 The original product candidate was `44dc07ea0d9f762ca96ffd0c90ba8925cfcc2ca8`; the base was `1e226e52a3400d4fb0336420569d8bab43c8f783`. The bytecode-controlled follow-up recorded candidate `e0188add452d6478dc4c65814ba0947229769812`, which is not available in the remote repository. Its measured source snapshot cannot be independently verified from the saved data; do not treat that SHA as a public provenance binding.
 
+## Follow-up tree: `fe615fda30affd11e2d3e5b992a5478781f074e3`
+
+This is the controlled series of the follow-up tree `fe615fd`, whose product code the PR carries from then on (later commits add only evidence), against `56585964`. It used the same harness (`72d31d33…`), Python binary (`e50d468e…`), native addon (`5bfd634e…`) and replay artifact (`c7ed0e37…`) as the series below; raw data are in `controlled_series_fe615fd.json`. Both trees were verified against their commits (Git trees `2d12baa0…` for `56585964` and `93de5279…` for `fe615fd`) before execution and after every run, and every run matched the recorded behavior listed for the `d18a4c4` series. Linux 6.18.44-fc-v185 x86_64, CPython 3.12.3, Unicode 15.0.0, one host and one environment for all 20 runs; the series was resumed once across a background time limit on that host. The host was faster than during the `d18a4c4` series, so compare figures only within a series. Five alternating AB/BA pairs per comparison; units and "Faster" as in the next section.
+
+`56585964` Python versus `fe615fd` Python:
+
+| Scenario | Base wall | Candidate wall | Change | CPU | Faster | RSS MiB |
+|---|---:|---:|---:|---:|---:|---:|
+| source-publication | 3.56 [3.37–4.81] | 3.61 [3.41–3.92] | +1.5% | 3.5 → 3.4 | 3/5 | 63.5 → 63.4 |
+| source-recall | 2.31 [2.13–2.70] | 2.21 [2.02–2.49] | -4.2% | 2.3 → 2.2 | 3/5 | 63.4 → 63.3 |
+| run-initial | 4.40 [4.02–4.80] | 4.29 [4.03–4.81] | -2.5% | 4.3 → 4.2 | 4/5 | 71.2 → 71.1 |
+| approve-initial | 80.86 [78.64–101.00] | 65.38 [63.37–69.73] | -19.2% | 79.8 → 64.1 | 5/5 | 79.8 → 79.6 |
+| run-reuse | 12.33 [11.59–16.58] | 10.55 [9.70–10.74] | -14.5% | 12.2 → 10.4 | 5/5 | 75.3 → 75.3 |
+| approve-reuse | 287.64 [271.33–328.46] | 211.42 [209.85–224.60] | -26.5% | 283.4 → 208.3 | 5/5 | 85.0 → 85.1 |
+| resume-first | 55.37 [51.08–62.35] | 41.82 [40.94–43.13] | -24.5% | 54.5 → 41.4 | 5/5 | 83.4 → 83.5 |
+| resume-repeat | 55.77 [51.50–64.20] | 41.53 [39.89–42.92] | -25.5% | 55.1 → 41.1 | 5/5 | 83.4 → 83.4 |
+| replay-mock | 0.67 [0.57–0.74] | 0.67 [0.64–0.84] | +0.2% | 0.6 → 0.7 | 1/5 | 48.5 → 48.6 |
+
+`fe615fd` Python versus `fe615fd` native:
+
+| Scenario | Python wall | Native wall | Change | CPU | Faster | RSS MiB |
+|---|---:|---:|---:|---:|---:|---:|
+| source-publication | 3.54 [3.49–3.67] | 2.93 [2.82–3.46] | -17.4% | 3.4 → 2.8 | 5/5 | 63.3 → 64.0 |
+| source-recall | 2.34 [2.12–2.98] | 2.19 [2.06–2.41] | -6.3% | 2.3 → 2.2 | 4/5 | 63.5 → 63.9 |
+| run-initial | 4.22 [4.01–4.83] | 3.71 [3.61–3.86] | -12.1% | 4.1 → 3.6 | 5/5 | 71.1 → 70.8 |
+| approve-initial | 69.42 [66.41–74.48] | 45.37 [44.64–47.90] | -34.6% | 68.1 → 44.2 | 5/5 | 79.7 → 79.9 |
+| run-reuse | 10.67 [10.37–11.60] | 7.87 [7.21–8.12] | -26.2% | 10.5 → 7.7 | 5/5 | 75.4 → 75.5 |
+| approve-reuse | 234.45 [211.38–247.50] | 156.17 [143.76–162.97] | -33.4% | 230.7 → 153.8 | 5/5 | 85.0 → 85.6 |
+| resume-first | 45.11 [41.18–48.30] | 29.28 [27.40–31.42] | -35.1% | 44.4 → 28.9 | 5/5 | 83.4 → 83.9 |
+| resume-repeat | 44.29 [41.09–45.31] | 28.64 [27.73–31.35] | -35.3% | 43.4 → 28.2 | 5/5 | 83.4 → 83.9 |
+| replay-mock | 0.70 [0.69–1.01] | 0.70 [0.67–0.77] | -0.1% | 0.7 → 0.7 | 3/5 | 48.6 → 48.4 |
+
+Against `56585964` the follow-up tree used less CPU in all five pairs of `approve-initial`, `run-reuse`, `approve-reuse` and both resumes, and their wall ranges do not overlap: median wall time fell 14.5–26.5% and median CPU 14.6–26.5%, `approve-reuse` by 76 s. No change is established in `source-publication`, `source-recall`, `run-initial` or `replay-mock`. Median memory changes stay within 0.2 MiB per process; the native backend adds at most 0.7 MiB.
+
+`replay-mock` was slower by CPU in four of five pairs, so it was repeated alone after the series in two rounds of alternating pairs on the same host and trees, every call with zero drift and the same replay result and the artifact digest unchanged (`replay_recheck_fe615fd.json`; the one-off loop described there, not the pinned series harness). Median paired CPU change +2.8% in 40 pairs (bootstrap 95% interval -4.3% to +5.8%, slower in 22) and +1.2% in 100 pairs (-0.5% to +4.2%, slower in 53, two-sided sign test p = 0.62). No change in `replay-mock` is established; the interval allows at most about 4%, some 25 ms of its 0.64 s.
+
+The native backend removes another 26–35% in the long scenarios on top of `fe615fd`. The host slowed by about 11% between the two halves of the series (candidate Python `approve-reuse` 211.4 s, then 234.5 s), so the combined effect from `56585964` Python to `fe615fd` native (about 288 s to 156 s in `approve-reuse`) is an estimate, not a paired measurement. Likewise, the larger gain than in the `d18a4c4` series (-26.5% against -20.6% in `approve-reuse`) is consistent with the follow-up's projection reuse but was measured on different days against the same base, not as a paired `d18a4c4` versus `fe615fd` series.
+
 ## Exact-ASCII fast path and in-call reuse: `d18a4c4b62fb1d7403e8a8fc62fdfa3fcbde2bd9`
 
 The commit `d18a4c4b62fb1d7403e8a8fc62fdfa3fcbde2bd9` (parent `56585964`, merged unchanged so this SHA is published) changes four product files and nothing else:
@@ -10,7 +48,7 @@ The commit `d18a4c4b62fb1d7403e8a8fc62fdfa3fcbde2bd9` (parent `56585964`, merged
 - the behavior core is validated by its owners (`BehaviorCore.to_dict`, `_seal_unit`) instead of again inside `_behavior_core_payload`, and `SynapseBehaviorUnit.to_dict` uses the core payload its own validation built;
 - a verification record checks seal and digest, then decodes its bytes once per call (`_require_verification_payload`), for `payload()`, `to_dict()` and `require_verification_record`.
 
-The series measures these three mechanisms together and does not attribute the gain among them. Failure codes and messages are unchanged for every record and unit the producers create; how `d18a4c4` answered a planted digest and how the follow-up restored `56585964` is described below; the follow-up is not part of the measured tree. Raw data are in `controlled_series_d18a4c4.json`, written by the same harness (`72d31d33…`), Python binary (`e50d468e…`), native addon (`5bfd634e…`) and replay artifact (`c7ed0e37…`) as the `56585964` series below. Both trees were verified against their commits (Git trees `2d12baa0…` for `56585964` and `c6b81036…` for `d18a4c4`) before execution and after every run. Linux 6.18.44-fc-v185 x86_64, CPython 3.12.3, Unicode 15.0.0, one host and one environment for all 20 runs; the series was resumed once across a background time limit on that host. Five alternating AB/BA pairs per comparison; the other conditions and units are those of the next section. "Faster" counts the pairs in which the second column used less CPU.
+The series measures these three mechanisms together and does not attribute the gain among them. Failure codes and messages are unchanged for every record and unit the producers create; how `d18a4c4` answered a planted digest and how the follow-up restored `56585964` is described below; the follow-up is measured by its own series in the first section. Raw data are in `controlled_series_d18a4c4.json`, written by the same harness (`72d31d33…`), Python binary (`e50d468e…`), native addon (`5bfd634e…`) and replay artifact (`c7ed0e37…`) as the `56585964` series below. Both trees were verified against their commits (Git trees `2d12baa0…` for `56585964` and `c6b81036…` for `d18a4c4`) before execution and after every run. Linux 6.18.44-fc-v185 x86_64, CPython 3.12.3, Unicode 15.0.0, one host and one environment for all 20 runs; the series was resumed once across a background time limit on that host. Five alternating AB/BA pairs per comparison; the other conditions and units are those of the next section. "Faster" counts the pairs in which the second column used less CPU.
 
 Every run matched the `56585964` series' behavior: publication and recall outcomes, `MODEL` then `EXACT_MEMORY` routes, `FULL` status, patch `c88993a7…`, provider and oracle counts, a restored repository, both resumes, and a zero-drift replay.
 
@@ -48,7 +86,7 @@ Against `56585964` the candidate used less CPU in all five pairs of every scenar
 
 The native backend still removes about 30% in the long scenarios on top of the candidate, less than the 43% it removed on `56585964`, consistent with the candidate's Python path already doing less of that text and projection work; the share of each mechanism was not measured. The two comparisons ran in different halves of one series and the host was about 8% faster in the second half (candidate Python `approve-reuse` 283.5 s, then 261.9 s), so the combined effect from `56585964` Python to `d18a4c4` native (about 357 s to 185 s in `approve-reuse`) is an estimate, not a paired measurement. The `56585964` series below ran on a different, faster run of the same host type; compare figures only within a series.
 
-### Follow-up after review (not part of the measured tree)
+### Follow-up after review (not part of the `d18a4c4` series)
 
 The series above binds to `d18a4c4`. Two review rounds shaped the follow-up; this is its current state against `d18a4c4`. Every seal and digest check runs on every call, and nothing is cached across calls.
 
@@ -74,7 +112,7 @@ Checks of the follow-up on its working tree:
 | Differential fuzz `acceptance/verification/pr112_differential_fuzz.py`, seeds 1 and 2 | 1,136,080 observations in 9 sections, identical section digests for `56585964`, `2e123a8`, `6dd4b3f`, the working tree and a fresh export of `fe615fd`. `6dd4b3f` matches too: the corpus does not plant digest subclasses, damage two parts of a unit at once or change a record between reads, which is why the named tests above pin those cases |
 | Repository suites, every file in its own process, four in parallel | `tests/` 217 files: 5547 passed, 41 skipped, 1 failed; `acceptance/stage4/stage12` 12 files: 107 passed; `acceptance/stage4/stage13` 20 files: 87 passed; the stage14 pre-context lineage recovery file 1 passed; canonical baseline integrity 16 passed; `acceptance/verification` 30 passed; `acceptance/ci` 58 passed. The failure is `test_p2c_late_boundary_process_races_same_and_different_hashes`, one of the two process-race cases of `tests/test_durable_execution.py` that fail on `main` (`e524990`) and on `4c420f1` in this environment; the other passed in this run. With the native addon loaded, the native, canonical differential, canonical value, Gold canonicalization, behavior and stage12 outcome contract files: 206 passed |
 
-Speed of the follow-up is measured process by process here; a controlled CLI series of `fe615fd` follows. CPU medians on the same host, alternating with `2e123a8`: `validate_behavior_unit` 0.387 → 0.340 s per 300 calls (-12.2%, faster in 7 of 8 pairs), `behavior_unit_from_dict` 0.294 → 0.261 s per 100 calls (-11.2%, 7 of 8), `_validate_data_only` on a 9,000-string payload 15.20 → 15.25 ms (no change established, slower in 4 of 10 pairs).
+Speed of the follow-up is measured process by process here; its controlled CLI series is the first section of this file. CPU medians on the same host, alternating with `2e123a8`: `validate_behavior_unit` 0.387 → 0.340 s per 300 calls (-12.2%, faster in 7 of 8 pairs), `behavior_unit_from_dict` 0.294 → 0.261 s per 100 calls (-11.2%, 7 of 8), `_validate_data_only` on a 9,000-string payload 15.20 → 15.25 ms (no change established, slower in 4 of 10 pairs).
 
 ## Final controlled series: `56585964513a0b07af111d5a53e4023a1a72ed33`
 

@@ -13,6 +13,7 @@ import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[2]
+CATALOG = 'acceptance/verification/pr112_followup_mutants.json'
 
 
 def committed_reader(root, commit):
@@ -46,6 +47,27 @@ def test_report_references_executable_mutants_and_existing_tests():
         source = read(seed['target']).decode('utf-8')
         assert source.count(seed['before']) == 1 and seed['before'] != seed['after']
         ast.parse(source.replace(seed['before'], seed['after'], 1))
+    assert_manual_mutants(read, report)
+    assert any(item['id'] == 'canonical-failure-fallback' and item['reason']
+               for item in report['excluded_mutants'])
+
+
+def test_followup_report_is_its_catalog_run_on_its_commit():
+    report = json.loads((ROOT / 'reports/pr112_followup_mutations.json').read_text())
+    assert report['provenance'] == 'git-commit-snapshot'
+    read = committed_reader(ROOT, report['tested_commit'])
+    assert_snapshot_matches(read, report)
+    assert_transforms_match(report)
+    assert_manual_mutants(read, report)
+    catalog = json.loads(read(CATALOG))
+    assert CATALOG in report['snapshot_files']
+    keys = ('id', 'source', 'original', 'mutant', 'detecting_test')
+    assert [{key: mutant[key] for key in keys} for mutant in report['manual_mutants']] == catalog
+    for mutant in report['manual_mutants']:
+        assert mutant['failed_cases'] and mutant['failure_evidence'], mutant['id']
+
+
+def assert_manual_mutants(read, report):
     for mutant in report['manual_mutants']:
         source = read(mutant['source']).decode('utf-8')
         assert mutant['source'] in report['snapshot_files']
@@ -65,8 +87,6 @@ def test_report_references_executable_mutants_and_existing_tests():
             tree = ast.parse(read(path).decode('utf-8'))
             functions = {node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
             assert name.split('[', 1)[0] in functions, mutant['id']
-    assert any(item['id'] == 'canonical-failure-fallback' and item['reason']
-               for item in report['excluded_mutants'])
     assert report['snapshot_files']
     assert all(mutant['result'] == 'killed' for mutant in report['manual_mutants'])
 

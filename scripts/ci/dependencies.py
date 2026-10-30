@@ -19,12 +19,13 @@ BENCHMARK_GUARDS = {
     'acceptance/verification/test_benchmark_plugin_behavior.py',
     'acceptance/verification/test_benchmark_provenance.py',
 }
-# The mutation record is checked against its own pinned commit, so only the
+# Mutation records are checked against their own pinned commits, so only a
 # record itself, not later work on the sources it describes, selects its check.
 # Pytest configuration can load plugins without an import edge.
 DATA_DEPENDENCIES = {
     'governance/stage4_ownership_v2.json': OWNERSHIP_READERS,
     'reports/pr112_targeted_mutations.json': {'acceptance/verification/test_mutation_evidence_integrity.py'},
+    'reports/pr112_followup_mutations.json': {'acceptance/verification/test_mutation_evidence_integrity.py'},
     'pytest.ini': BENCHMARK_GUARDS,
     'pyproject.toml': BENCHMARK_GUARDS,
     'setup.cfg': BENCHMARK_GUARDS,

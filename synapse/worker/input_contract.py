@@ -93,7 +93,8 @@ class LocalInformationInput:
             if (type(item) is not dict
                     or set(item) != {"role", "media_type", "content_base64url"}
                     or type(item["role"]) is not str
-                    or item["role"] not in {"REFERENCE", "REJECTED_HYPOTHESIS", "REPLAY_OBSERVATION", "EXECUTION_OBSERVATION"}
+                    or item["role"] not in {"REFERENCE", "REJECTED_HYPOTHESIS", "REPLAY_OBSERVATION",
+                                            "EXECUTION_OBSERVATION", "HISTORICAL_EXECUTION_OBSERVATION"}
                     or type(item["media_type"]) is not str or not item["media_type"]
                     or type(item["content_base64url"]) is not str or not item["content_base64url"]):
                 raise WorkerInputViolation("local information item has an unknown shape")

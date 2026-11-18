@@ -87,13 +87,14 @@ def test_model_route_remains_available_when_memory_is_missing():
     assert result["planning_route"] == "MODEL" and result["diff_text"]
 
 
-@pytest.mark.parametrize("revision, allowed", [
-    ({"kind": "GIT_COMMIT", "git_sha": "a" * 40}, True),
-    ({"kind": "GIT_COMMIT", "git_sha": "b" * 40}, False),
-    ({"kind": "UNVERIFIED", "git_sha": "a" * 40}, False),
-    ({"kind": "GIT_COMMIT", "git_sha": "a" * 40, "trusted": True}, False),
+@pytest.mark.parametrize("revision, expected_route", [
+    ({"kind": "GIT_COMMIT", "git_sha": "a" * 40}, "EXACT_MEMORY"),
+    # Current execution evidence can validate a byte-identical historical hint.
+    ({"kind": "GIT_COMMIT", "git_sha": "b" * 40}, "EXACT_MEMORY"),
+    ({"kind": "UNVERIFIED", "git_sha": "a" * 40}, None),
+    ({"kind": "GIT_COMMIT", "git_sha": "a" * 40, "trusted": True}, None),
 ])
-def test_element_memory_revision_is_translated_without_accepting_untyped_authority(revision, allowed):
+def test_element_memory_revision_is_translated_without_accepting_untyped_authority(revision, expected_route):
     private, _ = remembered()
     value = private.to_dict()
     item = value["items"][-1]
@@ -102,7 +103,10 @@ def test_element_memory_revision_is_translated_without_accepting_untyped_authori
     frame["repository_revision"] = revision
     item["content_base64url"] = encoded(canonical_json_bytes(frame))
     result = propose_verified_memory(task=task(), information=LocalInformationInput(canonical_json_bytes(value)))
-    assert (result is not None) is allowed
+    if expected_route is None:
+        assert result is None
+    else:
+        assert result["planning_route"] == expected_route
 
 
 @pytest.mark.parametrize("change", [

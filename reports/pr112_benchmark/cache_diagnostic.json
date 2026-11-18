@@ -1,0 +1,164 @@
+{
+  "repeated": {
+    "enabled": [
+      {
+        "wall_seconds": 0.0023086940018401947,
+        "cache": {
+          "hits": 400,
+          "misses": 1,
+          "maxsize": 512,
+          "currsize": 1,
+          "byte_length": 663,
+          "retained_bytes": 9648,
+          "evictions": 0
+        }
+      },
+      {
+        "wall_seconds": 0.002927034998720046,
+        "cache": {
+          "hits": 400,
+          "misses": 1,
+          "maxsize": 512,
+          "currsize": 1,
+          "byte_length": 663,
+          "retained_bytes": 9648,
+          "evictions": 0
+        }
+      },
+      {
+        "wall_seconds": 0.002682283000467578,
+        "cache": {
+          "hits": 400,
+          "misses": 1,
+          "maxsize": 512,
+          "currsize": 1,
+          "byte_length": 663,
+          "retained_bytes": 9648,
+          "evictions": 0
+        }
+      },
+      {
+        "wall_seconds": 0.0035916259985242505,
+        "cache": {
+          "hits": 400,
+          "misses": 1,
+          "maxsize": 512,
+          "currsize": 1,
+          "byte_length": 663,
+          "retained_bytes": 9648,
+          "evictions": 0
+        }
+      },
+      {
+        "wall_seconds": 0.0035465079999994487,
+        "cache": {
+          "hits": 400,
+          "misses": 1,
+          "maxsize": 512,
+          "currsize": 1,
+          "byte_length": 663,
+          "retained_bytes": 9648,
+          "evictions": 0
+        }
+      }
+    ],
+    "disabled": [
+      {
+        "wall_seconds": 0.043615137998131104
+      },
+      {
+        "wall_seconds": 0.06814071700136992
+      },
+      {
+        "wall_seconds": 0.049911278001673054
+      },
+      {
+        "wall_seconds": 0.04579606999686803
+      },
+      {
+        "wall_seconds": 0.04727490000004764
+      }
+    ]
+  },
+  "unique": {
+    "enabled": [
+      {
+        "wall_seconds": 0.07637958000123035,
+        "cache": {
+          "hits": 0,
+          "misses": 400,
+          "maxsize": 512,
+          "currsize": 400,
+          "byte_length": 279690,
+          "retained_bytes": 3887490,
+          "evictions": 0
+        }
+      },
+      {
+        "wall_seconds": 0.08508565599913709,
+        "cache": {
+          "hits": 0,
+          "misses": 400,
+          "maxsize": 512,
+          "currsize": 400,
+          "byte_length": 279690,
+          "retained_bytes": 3887490,
+          "evictions": 0
+        }
+      },
+      {
+        "wall_seconds": 0.07238359999973909,
+        "cache": {
+          "hits": 0,
+          "misses": 400,
+          "maxsize": 512,
+          "currsize": 400,
+          "byte_length": 279690,
+          "retained_bytes": 3887490,
+          "evictions": 0
+        }
+      },
+      {
+        "wall_seconds": 0.0843613529978029,
+        "cache": {
+          "hits": 0,
+          "misses": 400,
+          "maxsize": 512,
+          "currsize": 400,
+          "byte_length": 279690,
+          "retained_bytes": 3887490,
+          "evictions": 0
+        }
+      },
+      {
+        "wall_seconds": 0.08056356599990977,
+        "cache": {
+          "hits": 0,
+          "misses": 400,
+          "maxsize": 512,
+          "currsize": 400,
+          "byte_length": 279690,
+          "retained_bytes": 3887490,
+          "evictions": 0
+        }
+      }
+    ],
+    "disabled": [
+      {
+        "wall_seconds": 0.04550909799945657
+      },
+      {
+        "wall_seconds": 0.04720942399944761
+      },
+      {
+        "wall_seconds": 0.05143797100026859
+      },
+      {
+        "wall_seconds": 0.06042865700146649
+      },
+      {
+        "wall_seconds": 0.04443027999877813
+      }
+    ]
+  }
+}

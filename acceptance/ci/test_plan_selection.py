@@ -88,3 +88,74 @@ def test_native_mutations_follow_affected_owners_and_shared_contracts():
     assert selected_seeds('native', seeds, plan) == ['transport']
     plan['changed'] = ['synapse/machine/release_profile.json']
     assert selected_seeds('native', seeds, plan) == ['transport', 'bundle']
+
+
+def test_report_and_benchmark_changes_select_their_protective_cases(tmp_path):
+    from check_results import check, required_jobs
+
+    evidence = 'acceptance/verification/test_mutation_evidence_integrity.py'
+    isolation = 'acceptance/verification/test_benchmark_isolation.py'
+    behavior = 'acceptance/verification/test_benchmark_plugin_behavior.py'
+    report = 'reports/pr112_targeted_mutations.json'
+    source = 'synapse/example.py'
+    case = 'tests/test_example.py'
+    harness = 'acceptance/benchmarks/pr112/benchmark_plugin.py'
+    snapshot_only = 'synapse/other_evidence_source.py'
+    files = {evidence, isolation, behavior, report, source, case, harness, snapshot_only}
+    for name in files:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({'manual_mutants': [{'source': source, 'detecting_test': case + '::test_case'}],
+                                   'selector_campaign': {'snapshot_files': {snapshot_only: 'hash'}}})
+                        if name == report else '')
+    workflow = {'jobs': {}}
+    plan = build_plan(tmp_path, files, {report}, workflow)
+    assert evidence in plan['additional']
+    assert 'additional-tests' in required_jobs(plan)
+    for result in ({}, {'result': 'failure'}, {'result': 'cancelled'}, {'result': 'skipped'}):
+        statuses = {'select': {'result': 'success'}, 'additional-tests': result}
+        assert not check(statuses, required_jobs(plan))
+    assert check({'select': {'result': 'success'}, 'additional-tests': {'result': 'success'}}, required_jobs(plan))
+    # The record is read from its pinned commit; later work on what it
+    # describes must neither invalidate it nor be gated by it.
+    for changed in (source, case, snapshot_only):
+        plan = build_plan(tmp_path, files, {changed}, workflow)
+        assert evidence not in plan['tests']
+    for changed in (harness, 'pytest.ini'):
+        plan = build_plan(tmp_path, files | {'pytest.ini'}, {changed}, workflow)
+        assert {isolation, behavior}.issubset(plan['additional'])
+    plan = build_plan(tmp_path, files, {'docs/unrelated.md'}, workflow)
+    assert not {evidence, isolation, behavior}.intersection(plan['tests'])
+
+
+def test_native_kernel_does_not_select_unrelated_python_fallback_consumers(tmp_path):
+    native = 'native/stage4_canonical/src/lib.rs'
+    codec = 'synapse/experiments/gold/canonicalization.py'
+    direct = 'tests/test_stage4_native_direct.py'
+    unrelated = 'tests/test_unrelated_python_codec_user.py'
+    files = {native, codec, direct, unrelated}
+    for name in files:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('from synapse.experiments.gold import canonicalization\n' if name in (direct, unrelated) else '')
+    workflow = {'jobs': {'stage4-native': {'steps': [{'run': 'pytest tests/test_stage4_native_direct.py'}]}}}
+    plan = build_plan(tmp_path, files, {native}, workflow)
+    assert plan['groups']['stage4-native']['enabled']
+    assert direct in plan['tests']
+    assert unrelated not in plan['tests']
+
+
+def test_baseline_vectors_and_input_corpus_select_native_parity(tmp_path):
+    data = 'tests/data/stage4_baseline_1e226e52.json'
+    corpus = 'acceptance/stage4/canonical_baseline_cases.py'
+    parity = 'tests/test_stage4_canonical_differential.py'
+    files = {data, corpus, parity}
+    for name in files:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('from acceptance.stage4 import canonical_baseline_cases\n' if name == parity else '')
+    workflow = {'jobs': {'stage4-native': {'steps': [{'run': 'pytest tests/test_stage4_canonical_differential.py'}]}}}
+    for changed in (data, corpus):
+        plan = build_plan(tmp_path, files, {changed}, workflow)
+        assert parity in plan['tests']
+        assert plan['groups']['stage4-native']['enabled']

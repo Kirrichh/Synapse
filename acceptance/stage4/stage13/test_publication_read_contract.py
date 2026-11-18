@@ -48,8 +48,8 @@ def test_shared_predecessor_is_read_once_per_traversal_and_reopened_next_time(tm
     assert calls['shared', False] == 2
 
 
-def test_decorated_read_shares_predecessors_across_roots_only_until_return(tmp_path, monkeypatch):
-    """Measure traversal reuse with a replaced physical reader, not durability."""
+def test_decorated_read_reopens_predecessors_for_each_independent_root(tmp_path, monkeypatch):
+    """An ambient decorator cannot retain a previous root's physical verdict."""
     observed = [1]
 
     def visit(name, retired):
@@ -67,13 +67,13 @@ def test_decorated_read_shares_predecessors_across_roots_only_until_return(tmp_p
         {'root': 'left', 'shared': {'value': 1}},
         {'root': 'right', 'shared': {'value': 1}},
     )
-    assert calls == Counter({('left', False): 1, ('right', False): 1, ('shared', False): 1})
+    assert calls == Counter({('left', False): 1, ('right', False): 1, ('shared', False): 2})
     observed[0] = 2
     assert read_roots() == (
         {'root': 'left', 'shared': {'value': 2}},
         {'root': 'right', 'shared': {'value': 2}},
     )
-    assert calls == Counter({('left', False): 2, ('right', False): 2, ('shared', False): 2})
+    assert calls == Counter({('left', False): 2, ('right', False): 2, ('shared', False): 4})
 
 
 def test_exception_after_a_root_read_discards_the_decorated_scope(tmp_path, monkeypatch):
@@ -99,7 +99,7 @@ def test_exception_after_a_root_read_discards_the_decorated_scope(tmp_path, monk
     assert calls == Counter({('left', False): 1, ('shared', False): 1})
     observed[0], fail[0] = 2, False
     assert read_roots() == ({'value': 2}, {'value': 2})
-    assert calls == Counter({('left', False): 2, ('right', False): 1, ('shared', False): 2})
+    assert calls == Counter({('left', False): 2, ('right', False): 1, ('shared', False): 3})
 
 
 def test_nested_consumers_cannot_change_one_anothers_payload(tmp_path, monkeypatch):

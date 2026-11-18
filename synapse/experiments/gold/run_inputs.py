@@ -127,6 +127,14 @@ def runtime_source_digest() -> str:
         raw = path.read_bytes()
         digest.update(path.relative_to(root).as_posix().encode("utf-8") + b"\0")
         digest.update(hashlib.sha256(raw).digest())
+    from .canonicalization import native_runtime_identity
+    native = native_runtime_identity()
+    digest.update(b"optional-stage4-native\0")
+    digest.update(native["implementation"].encode("ascii") + b"\0")
+    if "binary_sha256" in native:
+        digest.update(bytes.fromhex(native["binary_sha256"]))
+    if "wrapper_sha256" in native:
+        digest.update(b"native-wrapper\0" + bytes.fromhex(native["wrapper_sha256"]))
     return digest.hexdigest()
 
 

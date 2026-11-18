@@ -9,9 +9,11 @@ import hashlib
 import itertools
 import multiprocessing
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from synapse.experiments.gold.project_agents import _adaptive_patches
 from synapse.experiments.gold.project_court import (
     COURT_POLICY_V1, EMPTY_COURT_STATE, judge, read_court)
 from synapse.experiments.gold.project_episode_outcome import EPISODE_OUTCOME_V1
@@ -89,6 +91,18 @@ def test_admission_threshold_refutation_and_sticky_conflict():
     assert states(later) == {PATCH: "SLOW_ONLY"}  # More support never lifts a contradiction.
     with pytest.raises(ValueError, match="fulfilled requirement"):
         judge(EMPTY_COURT_STATE, [entry("partial", "PARTIAL", [assertion()])])
+
+
+def test_adaptive_projection_excludes_restricted_and_unselected_history():
+    task = SimpleNamespace(repository_revision_sha256="3" * 40)
+    _, refuted = judge(EMPTY_COURT_STATE, [entry("against", "NOT_FULFILLED", [assertion("REFUTED", "r1")])])
+    _, admitted = judge(EMPTY_COURT_STATE, [entry("positive", assertions=[assertion(origin="s1")])])
+    _, conflict = judge(admitted, [entry("against", "NOT_FULFILLED", [assertion("REFUTED", "r1")])])
+    for state in (refuted, conflict):
+        court = {"subjects": state["subjects"], "judged": []}
+        assert _adaptive_patches(None, None, court, task, "ALL") == []
+    admitted_court = {"subjects": admitted["subjects"], "judged": []}
+    assert _adaptive_patches(None, None, admitted_court, task, "FAILURE_ONLY") == []
 
 
 def test_pending_outcome_withholds_new_authority_but_keeps_restrictions():
@@ -171,3 +185,29 @@ def test_concurrent_task_streams_append_to_one_court_chain(tmp_path):
     assert len(view["pending"]) == 4
     # Every decision extends its predecessor; none is a second version of the state.
     assert len({str(item["payload"]["predecessor"]) for item in decisions}) == len(decisions) <= 4
+
+
+def test_adaptive_history_skips_incompatible_paths_before_opening_artifacts(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from acceptance.stage4.stage10._builders import plan_world
+    from synapse.experiments.gold import project_agents
+    from synapse.experiments.gold.source_verification import canonical
+    import hashlib
+
+    task = plan_world(subject_path='src/current.py', allowed_scope=('src',),
+                      repository_revision_sha256='3' * 40)[3].task_contract
+    claim = {'task_contract_ref': replace(task, repository_revision_sha256=REVISION).reference.to_dict(),
+             'repository_revision': REVISION, 'patch_sha256': PATCH}
+    origin = {'transaction_id': 'missing'}
+    subject = dict(claim)
+    court = {'subjects': {'s': {'state': 'ADMITTED', 'subject': subject,
+             'support': [hashlib.sha256(canonical(origin)).hexdigest()]}},
+             'judged': [{'learning': {'assertions': [{'claim': claim, 'status': 'CONFIRMED', 'origin': origin}]},
+                         'observation': {'requirement': {'paths': ['src/unrelated.py']}}}]}
+    monkeypatch.setattr(project_agents, 'reopen_completed_run', lambda *a, **k: pytest.fail('unrelated history was reopened'))
+    request = {'source_snapshot': {'project_state_root': str(tmp_path)}}
+    assert project_agents._adaptive_patches(request, None, court, task, 'ALL') == []
+    from synapse.experiments.gold.persistence import PersistenceViolation
+    court['judged'][0]['observation']['requirement']['paths'] = ['src/current.py']
+    with pytest.raises(PersistenceViolation):
+        project_agents._adaptive_patches(request, None, court, task, 'ALL')

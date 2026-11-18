@@ -69,7 +69,7 @@ def capture_project_source_snapshot(*, project, task, limit, target_resolution=N
         snapshot = {"schema_version": SOURCE_SNAPSHOT_V1, "project_state_root": str(state),
             "project_record_sha256": hashlib.sha256(record).hexdigest(), "task_contract": task.to_dict(),
             "operations": captures, "publications": origins, "recall": recall}
-        knowledge = export_source_knowledge(state)
+        knowledge = export_source_knowledge(state, revision=task.repository_revision_sha256)
         from .project_memory_selection import select_run_knowledge
         run_knowledge = select_run_knowledge(read_project_run_knowledge(state_root=state, task=task), run_memory_selection)
         if run_knowledge["origins"]:

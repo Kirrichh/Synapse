@@ -31,6 +31,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  stage4-native:
+    needs: select
+    if: fromJSON(needs.select.outputs.plan).groups['stage4-native'].enabled
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install . pytest 'maturin>=1.5,<2.0'
+      - run: maturin build --release --locked --manifest-path native/stage4_canonical/Cargo.toml --interpreter python --out /tmp/stage4-native-wheel
+      - run: python -m pip install /tmp/stage4-native-wheel/*.whl
+      - run: python -m pytest -q -p no:cacheprovider tests/test_stage4_canonical_differential.py tests/test_stage4_native_direct.py tests/test_stage4_gold_native.py acceptance/stage4/stage11/test_native_runtime_resume_acceptance.py
+        env:
+          SYNAPSE_REQUIRE_STAGE4_NATIVE: '1'
+
   select:
     runs-on: ubuntu-latest
     outputs:
@@ -77,10 +96,12 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+          # These files verify records against pinned commits that a shallow head lacks.
+          fetch-depth: ${{ contains(fromJSON('["acceptance/stage4/test_canonical_baseline_integrity.py","acceptance/verification/test_mutation_evidence_integrity.py"]'), matrix.file) && '0' || '1' }}
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - run: python -m pip install -e '.[dev]'
+          python-version: ${{ matrix.file == 'acceptance/stage4/test_canonical_baseline_integrity.py' && '3.12' || '3.11' }}
+      - run: python -m pip install -e '.[dev]' PyYAML==6.0.3
       - name: Run one affected acceptance file not yet in an existing group
         env:
           ACCEPTANCE_FILE: ${{ matrix.file }}
@@ -1546,7 +1567,7 @@ jobs:
   gold-slow:
     name: gold-slow
     if: ${{ !cancelled() }}
-    needs: [select, selection-acceptance, additional-tests, durable, version, ui, host-runtime, gold-fast, gold-slow-core, gold-slow-retrieval, gold-slow-replay, gold-slow-vm-adapter, gold-slow-od10, gold-slow-e1, gold-stage10-fast, gold-stage10-heavy, gold-stage11-fast, gold-stage11-heavy, gold-stage12-heavy, gold-stage13-heavy, gold-stage14-heavy, gold-stage15-heavy, gold-stage16-heavy, gold-stage16-mutations, agent-sdk-acceptance, memory-acceptance, repository-tests]
+    needs: [select, stage4-native, selection-acceptance, additional-tests, durable, version, ui, host-runtime, gold-fast, gold-slow-core, gold-slow-retrieval, gold-slow-replay, gold-slow-vm-adapter, gold-slow-od10, gold-slow-e1, gold-stage10-fast, gold-stage10-heavy, gold-stage11-fast, gold-stage11-heavy, gold-stage12-heavy, gold-stage13-heavy, gold-stage14-heavy, gold-stage15-heavy, gold-stage16-heavy, gold-stage16-mutations, agent-sdk-acceptance, memory-acceptance, repository-tests]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

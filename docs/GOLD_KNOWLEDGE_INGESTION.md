@@ -3178,6 +3178,14 @@ do not create such an exclusion. This is a narrow use of exact negative
 feedback; extracting general conditions of a method's inapplicability is not
 implemented yet.
 
+For the adaptive memory route, the source projection marks an admitted
+historical oracle observation as `HISTORICAL_EXECUTION_OBSERVATION`, bound to
+its original revision and patch hash. Ordinary `REFERENCE` content cannot
+stand in for that observation. The historical result can identify material for
+a new candidate; it is not an execution observation of the current task and is
+not inherited as the candidate's outcome. Current observations remain separate,
+and C1 and the independent oracle evaluate the new candidate normally.
+
 Every alternative passed is evaluated; the first applicable one in the order of
 the public proposal is selected. The original proposals, the reasons, the
 selected index, the hash of the inputs and of the original and resulting bytes

@@ -17,7 +17,8 @@ from synapse.worker.local_edits import (
 )
 
 from .worker_transport import (
-    SYNAPSE_MEMORY_TRANSPORT, WorkerCandidateReport, WorkerCandidateResult, WorkerCandidateStatus,
+    SYNAPSE_ADAPTIVE_MEMORY_TRANSPORT, SYNAPSE_MEMORY_TRANSPORT,
+    WorkerCandidateReport, WorkerCandidateResult, WorkerCandidateStatus,
     WorkerCandidateUsage, WorkerDeliveryEvidence, WorkerDeliveryStatus, WorkerInvocation, WorkerTokenStatus,
 )
 
@@ -43,6 +44,7 @@ def admitted_memory_candidate(invocation: WorkerInvocation, *, profile: str) -> 
     result = propose_verified_memory(task=task, information=information, profile=profile)
     if result is None or not _within(invocation, result["touched_files"]):
         return None
+    adaptive = result["planning_route"] == "ADAPT_MEMORY"
     return WorkerCandidateResult(
         status=WorkerCandidateStatus.PROPOSED_PATCH, diff_text=result["diff_text"],
         touched_files=tuple(result["touched_files"]),
@@ -54,8 +56,11 @@ def admitted_memory_candidate(invocation: WorkerInvocation, *, profile: str) -> 
         delivery_evidence=WorkerDeliveryEvidence(
             invocation_id=invocation.invocation_id, context_id=invocation.context_id,
             payload_sha256=invocation.payload_sha256, payload_byte_length=invocation.payload_byte_length,
-            envelope_sha256=invocation.envelope_sha256, status=WorkerDeliveryStatus.SYNAPSE_EXACT_MEMORY,
-            transport_name=SYNAPSE_MEMORY_TRANSPORT, input_schema_version=invocation.schema_version,
+            envelope_sha256=invocation.envelope_sha256,
+            status=(WorkerDeliveryStatus.SYNAPSE_ADAPTIVE_MEMORY if adaptive
+                    else WorkerDeliveryStatus.SYNAPSE_EXACT_MEMORY),
+            transport_name=(SYNAPSE_ADAPTIVE_MEMORY_TRANSPORT if adaptive else SYNAPSE_MEMORY_TRANSPORT),
+            input_schema_version=invocation.schema_version,
             information_sha256=invocation.information_sha256,
             information_byte_length=invocation.information_byte_length))
 

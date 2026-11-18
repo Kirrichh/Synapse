@@ -67,3 +67,44 @@ def test_one_origin_cannot_silently_change_status_and_unknown_status_is_not_a_fa
         layers(observation(), observation(status="REFUTED"))
     with pytest.raises(ValueError, match="unsupported status"):
         layers(observation(status="PROVISIONAL"))
+
+
+def test_consolidation_does_not_open_an_unused_prepared_snapshot(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from synapse.experiments.gold import project_learning as learning
+
+    task = plan_world()[3].task_contract
+    frozen = {'declaration': {'task_contract': task.to_dict()}, 'project_state_root': str(tmp_path)}
+    state = SimpleNamespace(final_result=object(), attempts=[SimpleNamespace(result=object(), attempt_index=1)],
+                            manifest=SimpleNamespace(manifest_sha256='a' * 64))
+    records = SimpleNamespace(get=lambda **kw: SimpleNamespace(payload={
+        'state': 'COMMITTED', 'transaction_id': 'tx', 'result_ref': {}}))
+    monkeypatch.setattr(learning, 'PublicationResult', lambda *a: SimpleNamespace(transaction_id='tx', payload=lambda: {'request_ref': {}}))
+    monkeypatch.setattr(learning, 'reference', lambda *a: SimpleNamespace(to_dict=lambda: {}))
+    monkeypatch.setattr(learning, 'request_reference', lambda *a: SimpleNamespace(to_dict=lambda: {}))
+    monkeypatch.setattr(learning, 'read_committed_snapshot_transaction',
+        lambda *a, **k: pytest.fail('unused snapshot read'), raising=False)
+    monkeypatch.setattr(learning, 'read_prepared_publication_request', lambda *a: {
+        'domain': {}, 'identity': {}, 'schema_version': 'unsupported'})
+    with pytest.raises(ValueError, match='another episode or task'):
+        learning.consolidate_episode(frozen=frozen, state=state, records=records, outcome_ref={})
+
+
+def test_consolidation_rejects_replaced_request_after_result_read(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from synapse.experiments.gold import project_learning as learning
+
+    task = plan_world()[3].task_contract
+    frozen = {'declaration': {'task_contract': task.to_dict()}, 'project_state_root': str(tmp_path)}
+    state = SimpleNamespace(final_result=object(), attempts=[SimpleNamespace(result=object(), attempt_index=1)],
+                            manifest=SimpleNamespace(manifest_sha256='a' * 64))
+    records = SimpleNamespace(get=lambda **kw: SimpleNamespace(payload={
+        'state': 'COMMITTED', 'transaction_id': 'tx', 'result_ref': {}}))
+    monkeypatch.setattr(learning, 'PublicationResult', lambda *a: SimpleNamespace(transaction_id='tx',
+        payload=lambda: {'request_ref': {'sha256': 'old'}}))
+    monkeypatch.setattr(learning, 'reference', lambda *a: SimpleNamespace(to_dict=lambda: {}))
+    monkeypatch.setattr(learning, 'read_prepared_publication_request', lambda *a: {
+        'domain': {}, 'identity': {}, 'schema_version': 'unsupported'})
+    monkeypatch.setattr(learning, 'request_reference', lambda request: SimpleNamespace(to_dict=lambda: {'sha256': 'new'}), raising=False)
+    with pytest.raises(ValueError, match='publication request differs'):
+        learning.consolidate_episode(frozen=frozen, state=state, records=records, outcome_ref={})

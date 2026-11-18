@@ -345,7 +345,7 @@ def observe_local_context_influence(*, receipt, invocation, worker_result):
     reported = validate_local_edit_result(reported, task_sha256=invocation.payload_sha256,
                                          information_sha256=information.sha256)
     actual = (propose_verified_memory(task=task, information=information, profile=reported["profile"])
-              if reported.get("planning_route") == "EXACT_MEMORY" else
+              if reported.get("planning_route") in {"EXACT_MEMORY", "ADAPT_MEMORY"} else
               propose_local_edits(task=task, information=information, proposal=reported["proposal"], profile=reported["profile"]))
     if actual is None:
         raise _fail(InfluenceFailureCode.EVIDENCE_MISMATCH, "automatic proposal lacks its retained memory basis")
@@ -360,6 +360,8 @@ def observe_local_context_influence(*, receipt, invocation, worker_result):
         raise _fail(InfluenceFailureCode.EVIDENCE_MISMATCH, "worker local claim differs from independent interpretation")
 
     def selection(result):
+        if result is None:
+            return {"status": "NO_APPLICABLE_PROPOSAL", "patch_sha256": None}
         patch = result["diff_text"]
         return {"status": result["status"], "patch_sha256": None if patch is None else
                 hashlib.sha256(patch.encode("utf-8")).hexdigest()}
@@ -371,7 +373,9 @@ def observe_local_context_influence(*, receipt, invocation, worker_result):
         retained = [item for item in items if item["role"] != role]
         restricted = LocalInformationInput(encode_canonical({"schema_version": information.to_dict()["schema_version"],
                                                             "items": retained}))
-        alternative = propose_local_edits(task=task, information=restricted, proposal=actual["proposal"], profile=actual["profile"])
+        alternative = (propose_verified_memory(task=task, information=restricted, profile=actual["profile"])
+                       if actual.get("planning_route") in {"EXACT_MEMORY", "ADAPT_MEMORY"} else
+                       propose_local_edits(task=task, information=restricted, proposal=actual["proposal"], profile=actual["profile"]))
         changed = selection(alternative)
         comparisons.append({"removed_role": role,
             "removed_item_sha256": [hashlib.sha256(encode_canonical(item)).hexdigest() for item in items if item["role"] == role],

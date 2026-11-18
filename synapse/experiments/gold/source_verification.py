@@ -28,10 +28,13 @@ from synapse.change.workspace import (
     load_committed_bytes, require_tree_mode, resolve_revision,
 )
 
+from .recipe_executable import admit_recipe_executable, recipe_executable
+from .native_syntax import NativeSymbolKind, native_language
 from .bindings import (
+    discover_retained_code, inspect_retained_code_binding, find_native_symbol, PythonBinding,
     PYTHON_BINDING_RESOLVER_V1, PythonSymbolKind, binding_to_ref, binding_canonical_payload_bytes,
-    resolve_python_binding, inspect_retained_python_binding,
-    discover_retained_python_bindings, BindingViolation, check_python_layout,
+    resolve_python_binding,
+    BindingViolation, check_python_layout,
 )
 from .canonicalization import (
     HashBoundRef, RefKind, canonicalize_stage4_payload,
@@ -47,6 +50,7 @@ SOURCE_VERIFICATION_V1 = "synapse.stage4.gold.source-verification/v1"
 SOURCE_KNOWLEDGE_V1 = "synapse.stage4.gold.source-knowledge/v1"
 SOURCE_FILE_V1 = "synapse.stage4.gold.repository-source/v1"
 SOURCE_RUNTIME_V1 = "synapse.stage4.gold.source-runtime/v1"
+SOURCE_RUNTIME_V2 = "synapse.stage4.gold.source-runtime/v2"
 SOURCE_OBSERVATION_V1 = "synapse.stage4.gold.source-observation/v1"
 SOURCE_OBSERVATION_V2 = "synapse.stage4.gold.source-observation/v2"
 SOURCE_EXECUTION_RESULT_V1 = "synapse.stage4.gold.source-execution-result/v1"
@@ -69,13 +73,14 @@ def source_ref(raw: bytes, schema: str, kind=RefKind.SOURCE_EVIDENCE):
                         "application/octet-stream" if schema == SOURCE_FILE_V1 else "application/json")
 
 
-def observe_source_runtime():
-    """Measure this verifier's actual Python/package environment, without secrets.
+def observe_source_runtime(tool=None):
+    """Measure the verifier environment and the optional native recipe executable.
 
     Package versions are observed metadata, not a claim to hash all installed
-    code or contain side effects. Recipes in this profile use this interpreter.
+    code or contain side effects. A native tool has a separate content digest.
     """
-    return {"schema_version": SOURCE_RUNTIME_V1, "python": sys.version,
+    return {"schema_version": SOURCE_RUNTIME_V2 if tool else SOURCE_RUNTIME_V1,
+        **({"executable": tool.measure()} if tool else {}), "python": sys.version,
         "implementation": platform.python_implementation(), "system": platform.system(), "machine": platform.machine(),
         "packages": [list(item) for item in sorted({(item.metadata["Name"].lower(), item.version) for item in distributions()
                             if item.metadata["Name"]})]}
@@ -124,7 +129,7 @@ def inspect_source_claim(value):
         if identity in identities:
             raise ValueError("source symbol is repeated")
         identities.add(identity)
-        PythonSymbolKind(symbol["symbol_kind"])
+        (NativeSymbolKind if native_language(symbol["path"]) else PythonSymbolKind)(symbol["symbol_kind"])
     for field, kind in (("policy_inputs", ExternalInputKind.POLICY),
                         ("environment_inputs", ExternalInputKind.ENVIRONMENT), ("tool_inputs", ExternalInputKind.TOOL)):
         if type(value[field]) is not list or not value[field]:
@@ -142,11 +147,15 @@ def inspect_source_claim(value):
         if not value["symbols"] or value["recipe"] is not None:
             raise ValueError("repository facts require symbols and no command recipe")
     elif value["kind"] == "VERIFICATION_RECIPE":
-        recipe = _shape(value["recipe"], {"command", "expectation"}, "verification recipe")
+        fields = {"command", "expectation"}
+        if type(value["recipe"]) is dict and "tool" in value["recipe"]:
+            fields.add("tool")
+        recipe = _shape(value["recipe"], fields, "verification recipe")
         command = recipe["command"]
         if (type(command) is not list or not command
                 or any(type(item) is not str or not item or "\x00" in item for item in command)):
             raise ValueError("recipe requires explicit command arguments")
+        recipe_executable(recipe)
         exp = _shape(recipe["expectation"], {"expected_exit_codes", "expected_nonzero_exit",
             "combined_output_contains", "combined_output_not_contains", "timeout_seconds"}, "recipe expectation")
         if (type(exp["expected_exit_codes"]) is not list or not exp["expected_exit_codes"]
@@ -243,12 +252,17 @@ def inspect_source_verification(value, *, evidence):
         if ref not in evidence:
             raise ValueError("source verification lost retained evidence")
         return evidence[ref]
-    runtime = _shape(value["observed_runtime"], {"schema_version", "python", "implementation", "system", "machine", "packages"},
-                     "source runtime observation")
+    tool = recipe_executable(claim["recipe"])
+    runtime_fields = {"schema_version", "python", "implementation", "system", "machine", "packages"}
+    runtime_schema = SOURCE_RUNTIME_V1
+    if tool is not None:
+        runtime_fields.add("executable")
+        runtime_schema = SOURCE_RUNTIME_V2
+    runtime = _shape(value["observed_runtime"], runtime_fields, "source runtime observation")
     runtime_bytes = canonical(runtime)
-    if (runtime["schema_version"] != SOURCE_RUNTIME_V1
+    if (runtime["schema_version"] != runtime_schema or tool is not None and runtime["executable"] != tool.to_dict()
             or retained(value["runtime_ref"]) != runtime_bytes
-            or source_ref(runtime_bytes, SOURCE_RUNTIME_V1).to_dict() != value["runtime_ref"]):
+            or source_ref(runtime_bytes, runtime_schema).to_dict() != value["runtime_ref"]):
         raise ValueError("source verification lost its actual runtime observation")
     if (retained(value["claim_ref"]) != canonical(claim)
             or source_ref(canonical(claim), SOURCE_CLAIM_V1, RefKind.CONTRACT_CONDITION).to_dict() != value["claim_ref"]):
@@ -272,7 +286,7 @@ def inspect_source_verification(value, *, evidence):
         if any(item[key] != val for key, val in symbol.items()) or item["repository_revision"] != RepositoryRevision.git_commit(claim["revision"]).to_dict():
             raise ValueError("source binding differs from its asserted identity")
         source = next(source for source in value["sources"] if source["path"] == item["path"])
-        binding = inspect_retained_python_binding(item, retained(source["ref"]))
+        binding = inspect_retained_code_binding(item, retained(source["ref"]))
         if retained(binding_to_ref(binding).to_dict()) != binding_canonical_payload_bytes(binding):
             raise ValueError("source binding lost its retained canonical payload")
     if claim["kind"] == "REPOSITORY_FACT_CHECK":
@@ -293,7 +307,7 @@ def inspect_source_verification(value, *, evidence):
 
 
 def verify_source_claim(*, repo_root: Path, claim, external_evidence, attempt_id: AttemptId,
-                        observation_sink: Callable | None = None, python_roots: tuple[str, ...] = ()):
+                        observation_sink: Callable | None = None, python_roots: tuple[str, ...] = (), recipe_tools=()):
     """Execute an explicit source claim against committed inputs.
 
     An unsuccessful command is returned as a failure with its observations;
@@ -317,8 +331,12 @@ def verify_source_claim(*, repo_root: Path, claim, external_evidence, attempt_id
     revision = RepositoryRevision.git_commit(claim["revision"])
     if resolve_revision(repo_root, revision.git_sha) != revision.git_sha:
         raise ValueError("source revision is not the exact commit")
-    runtime = json.loads(canonical(observe_source_runtime()))
-    runtime_ref = source_ref(canonical(runtime), SOURCE_RUNTIME_V1)
+    tool = admit_recipe_executable(claim["recipe"], recipe_tools)
+    runtime = json.loads(canonical(observe_source_runtime(tool) if tool else observe_source_runtime()))
+    runtime_schema = runtime["schema_version"]
+    if tool and runtime["executable"] != tool.to_dict():
+        raise ValueError("native recipe executable changed before observation")
+    runtime_ref = source_ref(canonical(runtime), runtime_schema)
     observe("RUNTIME_OBSERVED", {"runtime_ref": runtime_ref.to_dict()},
             ((runtime_ref, canonical(runtime)),))
     evidence = {}
@@ -341,13 +359,14 @@ def verify_source_claim(*, repo_root: Path, claim, external_evidence, attempt_id
         observe("SOURCE_CAPTURED", sources[-1], ((ref, raw),))
     if claim["kind"] == "SOURCE_STUDY":
         for item in sources:
-            if not item["path"].endswith(".py"):
+            if not item["path"].endswith(".py") and native_language(item["path"]) is None:
                 observe("SOURCE_UNINTERPRETED", {"path": item["path"], "reason": "NO_STRUCTURAL_RESOLVER"})
                 continue
             try:
-                discovered = discover_retained_python_bindings(evidence[HashBoundRef.from_dict(item["ref"])],
+                discovered = discover_retained_code(evidence[HashBoundRef.from_dict(item["ref"])],
                     repository_revision=revision, path=item["path"], python_roots=python_roots)
-                check_python_layout(repo_root, discovered[0])
+                if type(discovered[0]) is PythonBinding:
+                    check_python_layout(repo_root, discovered[0])
             except BindingViolation as exc:
                 observe("SOURCE_UNINTERPRETED", {"path": item["path"], "reason": exc.failure_code.value})
                 continue
@@ -357,10 +376,15 @@ def verify_source_claim(*, repo_root: Path, claim, external_evidence, attempt_id
         return {"status": "RETAINED", "operation_id": claim["operation_id"],
                 "elapsed_ns": time.monotonic_ns() - start, "reason": "SOURCE_MATERIALS_RETAINED"}
     for symbol in claim["symbols"]:
-        binding = resolve_python_binding(repo_root, repository_revision=revision,
-            **{k: v for k, v in symbol.items() if k != "symbol_kind"},
-            symbol_kind=PythonSymbolKind(symbol["symbol_kind"]), resolver_version=PYTHON_BINDING_RESOLVER_V1,
-            python_roots=python_roots)
+        if native_language(symbol["path"]):
+            file_ref = next(item["ref"] for item in sources if item["path"] == symbol["path"])
+            records = discover_retained_code(evidence[HashBoundRef.from_dict(file_ref)], repository_revision=revision, path=symbol["path"])
+            binding = find_native_symbol(records, symbol)
+        else:
+            binding = resolve_python_binding(repo_root, repository_revision=revision,
+                **{k: v for k, v in symbol.items() if k != "symbol_kind"},
+                symbol_kind=PythonSymbolKind(symbol["symbol_kind"]), resolver_version=PYTHON_BINDING_RESOLVER_V1,
+                python_roots=python_roots)
         bindings.append(binding.to_dict())
         evidence[binding_to_ref(binding)] = binding_canonical_payload_bytes(binding)
         observe("BINDING_RESOLVED", {"binding": binding.to_dict()},
@@ -368,16 +392,17 @@ def verify_source_claim(*, repo_root: Path, claim, external_evidence, attempt_id
     command_result = None
     if claim["recipe"] is not None:
         recipe = claim["recipe"]
-        if recipe["command"][0] != sys.executable:
-            raise ValueError("source recipe profile requires this measured Python interpreter")
         exp = dict(recipe["expectation"])
         for name in ("expected_exit_codes", "combined_output_contains", "combined_output_not_contains"):
             exp[name] = tuple(exp[name])
         checkout = create_detached_worktree(repo_root, revision.git_sha)
         try:
             observe("COMMAND_STARTED", {"command": recipe["command"]})
+            execution_options = {"executable": tool.path} if tool else {}
+            if tool is None and recipe["command"][0] != sys.executable:
+                execution_options["executable"] = sys.executable
             result = run_expected_command(recipe["command"], checkout.path,
-                                          CommandExpectation(**exp), "source-verification")
+                                          CommandExpectation(**exp), "source-verification", **execution_options)
             command_result = result.to_json()
             # Retain output before cleanup or further checks can fail. A
             # checked sub-result survives failure of the complete operation.
@@ -386,8 +411,8 @@ def verify_source_claim(*, repo_root: Path, claim, external_evidence, attempt_id
             observe("WORKTREE_CHECKED", {"clean": clean})
             # A failed expectation is still experience. Recheck its measured
             # conditions before classifying it, just as for a passing command.
-            after = canonical(observe_source_runtime())
-            after_ref = source_ref(after, SOURCE_RUNTIME_V1)
+            after = canonical(observe_source_runtime(tool) if tool else observe_source_runtime())
+            after_ref = source_ref(after, runtime_schema)
             unchanged = after == canonical(runtime)
             observe("RUNTIME_RECHECKED", {"unchanged": unchanged, "runtime_ref": after_ref.to_dict()},
                     ((after_ref, after),), schema=SOURCE_OBSERVATION_V2)
@@ -407,7 +432,7 @@ def verify_source_claim(*, repo_root: Path, claim, external_evidence, attempt_id
         "meaning": "verified-source-identity" if claim["kind"] == "REPOSITORY_FACT_CHECK" else "historically-observed-command-contract"}
     knowledge_ref = source_ref(canonical(knowledge), SOURCE_KNOWLEDGE_V1)
     evidence[knowledge_ref] = canonical(knowledge)
-    runtime_ref = source_ref(canonical(runtime), SOURCE_RUNTIME_V1)
+    runtime_ref = source_ref(canonical(runtime), runtime_schema)
     evidence[runtime_ref] = canonical(runtime)
     if sum(len(raw) for raw in evidence.values()) > MAX_EVIDENCE_BYTES:
         raise ValueError("source verification exceeds its retained byte budget")
@@ -502,7 +527,10 @@ def inspect_source_observations(claim, observations, evidence):
                 raise ValueError("source runtime observation is repeated or out of order")
             runtime_ref = data["runtime_ref"]
             runtime = json.loads(retained(runtime_ref))
-            if source_ref(canonical(runtime), SOURCE_RUNTIME_V1).to_dict() != runtime_ref:
+            tool = recipe_executable(claim["recipe"])
+            schema = SOURCE_RUNTIME_V2 if tool else SOURCE_RUNTIME_V1
+            if (runtime.get("schema_version") != schema or tool is not None and runtime.get("executable") != tool.to_dict()
+                    or source_ref(canonical(runtime), schema).to_dict() != runtime_ref):
                 raise ValueError("source runtime identity differs")
         elif phase == "SOURCE_CAPTURED":
             _shape(data, {"path", "ref"}, phase)
@@ -517,7 +545,7 @@ def inspect_source_observations(claim, observations, evidence):
             source = next((source for source in sources if source["path"] == item["path"]), None)
             if source is None or command_started or len(sources) != len(claim["sources"]):
                 raise ValueError("binding observation precedes its sources or follows command execution")
-            binding = inspect_retained_python_binding(item, retained(source["ref"]))
+            binding = inspect_retained_code_binding(item, retained(source["ref"]))
             if (item["repository_revision"] != RepositoryRevision.git_commit(claim["revision"]).to_dict()
                     or retained(binding_to_ref(binding).to_dict()) != binding_canonical_payload_bytes(binding)):
                 raise ValueError("observed binding differs from retained identity")
@@ -557,7 +585,7 @@ def inspect_source_observations(claim, observations, evidence):
                 raise ValueError("source runtime recheck has no completed worktree observation")
             if measured:
                 after = retained(data["runtime_ref"])
-                if (source_ref(after, SOURCE_RUNTIME_V1).to_dict() != data["runtime_ref"]
+                if (source_ref(after, schema).to_dict() != data["runtime_ref"]
                         or (after == retained(runtime_ref)) != data["unchanged"]):
                     raise ValueError("source runtime comparison differs from retained measurements")
             unchanged = data["unchanged"]

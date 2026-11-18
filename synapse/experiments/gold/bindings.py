@@ -26,6 +26,7 @@ from synapse.change.workspace import (
     sha256_bytes,
 )
 
+from . import native_syntax
 from .canonicalization import (
     STABLE_CANONICAL_CODEC_ID,
     STAGE4_CANONICAL_PROFILE_V1,
@@ -35,6 +36,7 @@ from .canonicalization import (
     decode_stage4_canonical_bytes,
 )
 from .contracts import ContractViolation, RepositoryRevision, RepositoryRevisionKind
+
 
 
 BINDING_SCHEMA_V1 = "synapse.stage4.gold.binding/v1"
@@ -82,6 +84,7 @@ _ENCODING_COOKIE_RE = re.compile(
 
 class BindingKind(str, Enum):
     PYTHON = "PYTHON"
+    NATIVE_CODE = "NATIVE_CODE"
     DOCUMENT = "DOCUMENT"
     REQUIREMENT = "REQUIREMENT"
     CREATION = "CREATION"
@@ -113,6 +116,7 @@ class BindingFailureCode(str, Enum):
     RESOURCE_LIMIT_EXCEEDED = "RESOURCE_LIMIT_EXCEEDED"
     INVALID_PYTHON_ENCODING = "INVALID_PYTHON_ENCODING"
     INVALID_PYTHON_SOURCE = "INVALID_PYTHON_SOURCE"
+    NATIVE_SOURCE_UNRESOLVED = "NATIVE_SOURCE_UNRESOLVED"
     INVALID_PYTHON_SCOPE = "INVALID_PYTHON_SCOPE"
     MODULE_MISMATCH = "MODULE_MISMATCH"
     MODULE_AMBIGUOUS = "MODULE_AMBIGUOUS"
@@ -207,6 +211,8 @@ def _parse_enum(value: object, enum_type: type[Enum], code: BindingFailureCode, 
 def _require_contract_version(value: object, binding_kind: BindingKind) -> str:
     supported = ((BINDING_CONTRACT_VERSION_V1, BINDING_CONTRACT_VERSION_V2) if binding_kind is BindingKind.PYTHON
                  else (BINDING_CONTRACT_VERSION_V1,))
+    if binding_kind is BindingKind.NATIVE_CODE:
+        supported = (native_syntax.CONTRACT,)
     if type(value) is not str or value not in supported:
         raise _fail(BindingFailureCode.CONTRACT_VERSION_MISMATCH, "binding contract version is unsupported")
     return value
@@ -412,6 +418,31 @@ class PythonBinding:
 
 
 @dataclass(frozen=True, init=False)
+class NativeCodeBinding:
+    schema_version: str
+    binding_kind: BindingKind
+    repository_revision: RepositoryRevision
+    path: str
+    language: str
+    module: str
+    qualname: str
+    symbol_kind: native_syntax.NativeSymbolKind
+    source_span_hash: str
+    contract_version: str
+    resolver_version: str
+    binding_id: BindingId
+    _canonical_payload: bytes
+    _trusted_seal: object
+
+    def __new__(cls, *args, **kwargs):
+        raise TypeError("native bindings require verified source bytes")
+
+    def to_dict(self):
+        _validate_native_record(self)
+        return {**_native_payload(self), "binding_id": self.binding_id.to_dict()}
+
+
+@dataclass(frozen=True, init=False)
 class DocumentBinding:
     schema_version: str
     binding_kind: BindingKind
@@ -541,7 +572,7 @@ class CreationBinding:
         return binding
 
 
-Binding = PythonBinding | DocumentBinding | RequirementBinding | CreationBinding
+Binding = PythonBinding | NativeCodeBinding | DocumentBinding | RequirementBinding | CreationBinding
 
 
 def _creation_payload(value: CreationBinding) -> dict[str, object]:
@@ -571,6 +602,74 @@ def _python_payload(value: PythonBinding) -> dict[str, object]:
     if value.contract_version == BINDING_CONTRACT_VERSION_V2:
         payload.update(python_root=value.python_root, python_roots=list(value.python_roots))
     return payload
+
+
+def _native_payload(record):
+    return {**_common_payload(binding_kind=BindingKind.NATIVE_CODE, repository_revision=record.repository_revision,
+                              path=record.path, contract_version=record.contract_version, resolver_version=record.resolver_version),
+            "language": record.language, "module": record.module, "qualname": record.qualname,
+            "symbol_kind": record.symbol_kind.value, "source_span_hash": record.source_span_hash}
+
+
+def _validate_native_record(record):
+    _validate_common_record(record, NativeCodeBinding, BindingKind.NATIVE_CODE)
+    _require_resolver_version(record.resolver_version, native_syntax.resolver_for(record.path))
+    if (record.language != native_syntax.native_language(record.path) or record.module != record.path
+            or type(record.symbol_kind) is not native_syntax.NativeSymbolKind):
+        raise _fail(BindingFailureCode.MODULE_MISMATCH, "native binding has an invalid language, file or symbol kind")
+    _text(record.qualname, "qualname")
+    _sha256(record.source_span_hash, BindingFailureCode.SOURCE_SPAN_HASH_MISMATCH, "source span hash")
+    _validate_payload_identity(record, _native_payload(record))
+    return record
+
+
+def discover_retained_code(raw, *, repository_revision, path, python_roots=()):
+    if path.endswith(".py"):
+        return discover_retained_python_bindings(raw, repository_revision=repository_revision, path=path, python_roots=python_roots)
+    revision = _require_git_commit_revision(repository_revision)
+    path = _canonical_path(path)
+    if type(raw) is not bytes or len(raw) > MAX_PYTHON_SOURCE_BYTES_V1:
+        raise _fail(BindingFailureCode.RESOURCE_LIMIT_EXCEEDED, "native source exceeds the byte budget")
+    try:
+        spans = native_syntax.native_spans(raw, path)
+    except (native_syntax.SyntaxUnavailable, UnicodeError) as exc:
+        raise _fail(BindingFailureCode.NATIVE_SOURCE_UNRESOLVED, str(exc)[:240]) from exc
+    common = _common_payload(binding_kind=BindingKind.NATIVE_CODE, repository_revision=revision, path=path,
+                             contract_version=native_syntax.CONTRACT, resolver_version=native_syntax.resolver_for(path))
+    records = []
+    for name, kind, start, end in spans:
+        payload = {**common, "language": native_syntax.native_language(path), "module": path, "qualname": name,
+                   "symbol_kind": kind.value, "source_span_hash": hashlib.sha256(raw[start:end]).hexdigest()}
+        record = _seal_binding(NativeCodeBinding, {**payload, "binding_kind": BindingKind.NATIVE_CODE,
+                               "repository_revision": revision, "symbol_kind": kind, "_payload": payload})
+        records.append(_validate_native_record(record))
+    return tuple(records)
+
+
+def discover_code_bindings(repo_root, *, repository_revision, path, python_roots=()):
+    revision, path, raw = _load_snapshot_bytes(repo_root, repository_revision, path, maximum_bytes=MAX_PYTHON_SOURCE_BYTES_V1)
+    records = discover_retained_code(raw, repository_revision=revision, path=path, python_roots=python_roots)
+    if type(records[0]) is PythonBinding:
+        check_python_layout(repo_root, records[0])
+    return records
+
+
+def find_native_symbol(records, symbol):
+    for record in records:
+        if (record.module == symbol["module"] and record.qualname == symbol["qualname"]
+                and record.symbol_kind.value == symbol["symbol_kind"] and record.contract_version == symbol["contract_version"]):
+            return record
+    raise _fail(BindingFailureCode.SYMBOL_MISSING, "no exact native symbol under the requested contract")
+
+
+def inspect_retained_code_binding(value, raw):
+    if type(value) is dict and value.get("binding_kind") == BindingKind.NATIVE_CODE.value:
+        records = discover_retained_code(raw, repository_revision=_revision_from_dict(value["repository_revision"]), path=value["path"])
+        result = find_native_symbol(records, value)
+        if result.to_dict() != value:
+            raise _fail(BindingFailureCode.BINDING_ID_MISMATCH, "native transport differs from retained bytes")
+        return result
+    return inspect_retained_python_binding(value, raw)
 
 
 def _document_payload(value: DocumentBinding) -> dict[str, object]:
@@ -1522,6 +1621,7 @@ def binding_from_dict(
     fields = {
         BindingKind.PYTHON: (_PYTHON_FIELDS_V2 if value.get("contract_version") == BINDING_CONTRACT_VERSION_V2
                              else _PYTHON_FIELDS),
+        BindingKind.NATIVE_CODE: (*_PYTHON_FIELDS, "language"),
         BindingKind.DOCUMENT: _DOCUMENT_FIELDS,
         BindingKind.REQUIREMENT: _REQUIREMENT_FIELDS,
         BindingKind.CREATION: _CREATION_FIELDS,
@@ -1553,6 +1653,9 @@ def binding_from_dict(
         )
         if data["source_span_hash"] != result.source_span_hash or type(data["source_span_hash"]) is not str:
             raise _fail(BindingFailureCode.SOURCE_SPAN_HASH_MISMATCH, "transport source span hash changed")
+    elif kind is BindingKind.NATIVE_CODE:
+        records = discover_code_bindings(repo_root, repository_revision=consumer, path=data["path"])
+        result = find_native_symbol(records, data)
     elif kind is BindingKind.DOCUMENT:
         resolver_version = _require_resolver_version(data["resolver_version"], DOCUMENT_BINDING_RESOLVER_V1)
         result = resolve_document_binding(
@@ -1599,6 +1702,8 @@ def binding_from_dict(
 def binding_to_ref(binding: object) -> HashBoundRef:
     if type(binding) is PythonBinding:
         record: Binding = _validate_python_binding_record(binding)
+    elif type(binding) is NativeCodeBinding:
+        record = _validate_native_record(binding)
     elif type(binding) is DocumentBinding:
         record = _validate_document_binding_record(binding)
     elif type(binding) is RequirementBinding:
@@ -1622,6 +1727,8 @@ def binding_canonical_payload_bytes(binding: object) -> bytes:
 
     if type(binding) is PythonBinding:
         record: Binding = _validate_python_binding_record(binding)
+    elif type(binding) is NativeCodeBinding:
+        record = _validate_native_record(binding)
     elif type(binding) is DocumentBinding:
         record = _validate_document_binding_record(binding)
     elif type(binding) is RequirementBinding:

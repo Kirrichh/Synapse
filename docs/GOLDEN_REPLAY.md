@@ -101,10 +101,15 @@ program whose history carries such a `trace_id` still drifts there. Palace
 record identities (`imprint_id`) are not derived from the run id and stay
 outside this contract.
 
-Known limitation: an `intention cascade` takes its `cascade_id` from
-`uuid.uuid4()` and its `created_at` from the host clock
-(`synapse/intention.py`), neither recorded as a `side_effect` nor derived from
-the run id. A program that declares a cascade therefore drifts in mock replay.
+A newly recorded `intention cascade` captures the UUID and host timestamp used
+for its identity and creation time. Mock replay takes both values from the
+ordered side-effect history. Re-record older cascade artifacts to capture
+these inputs.
+
+Recording stages the six artifact files together. When evaluation or writing
+fails, the previous complete artifact stays available. Replay and the debugger
+load one published generation. Following a process exit during a replacement,
+the next reader or writer recovers the last complete directory.
 
 ## Stable state validation
 
@@ -158,13 +163,13 @@ failure, not a live fallback.
 Record:
 
 ```bash
-python3 -m synapse.cli run examples/full_demo.syn --record --output /tmp/full_demo.golden
+python3 -m synapse run examples/full_demo.syn --record --output /tmp/full_demo.golden
 ```
 
 Replay:
 
 ```bash
-python3 -m synapse.cli replay --mock /tmp/full_demo.golden
+python3 -m synapse replay --mock /tmp/full_demo.golden
 ```
 
 Gate:

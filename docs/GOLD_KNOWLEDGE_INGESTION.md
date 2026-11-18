@@ -2589,12 +2589,12 @@ from Git.
 | `revision` | Full SHA of the source Git commit |
 | `kind` | `REPOSITORY_FACT_CHECK` or `VERIFICATION_RECIPE` |
 | `sources` | Exact permitted paths of ordinary committed files |
-| `symbols` | Non-empty list of Python bindings: `path`, `module`, `qualname`, `symbol_kind`, `contract_version` |
+| `symbols` | Non-empty list of source bindings with `path`, `module`, `qualname`, `symbol_kind`, `contract_version` |
 | `recipe` | `null` for facts; `command` and `expectation` for a procedure |
 | `replay_gas_budget` | Budget of the pure replay, matching the later run; for example 10000 |
 | `policy_inputs`, `environment_inputs`, `tool_inputs` | Complete `ObservedExternalInput` items, ordered by name, with their own retained files |
 
-The binding version depends on the project. A project connected without import
+For Python the binding version depends on the project. A project connected without import
 roots binds symbols under `synapse.stage4.gold.binding-contract/v1`: the module
 is derived from the path from the repository root. For example, the symbol
 `src/calc.py`, `src.calc`, `add`, `FUNCTION` denotes an actually existing
@@ -2649,9 +2649,24 @@ installed following `project learn`, does not apply: its compatibility
 evidence names `ENVIRONMENT_MISMATCH` for the task contract and for the
 verifier's result.
 
-A procedure specifies the argument array `command`; its first element is the
-exact `sys.executable` of the Synapse process. The initial profile supports
-procedures of this Python environment. `expectation` requires
+With the `native-code` extra installed, Gold can bind named declarations in
+languages listed by `synapse project languages --check`. For these files `path` and `module` both name the
+repository-relative file. `contract_version` is
+`synapse.stage4.gold.native-code-binding/v1`. The binding records the exact
+committed source span and its SHA-256. Syntax errors and ambiguous declarations,
+including overloaded C++ functions with the same qualified name, have no
+usable symbol binding. Python import roots apply only to Python files.
+
+A Python recipe uses the current `sys.executable` as its first argument.
+For a native recipe the operator includes a descriptor in the connected project's
+`entitlements.recipe_tools` array. Copy the same descriptor into `recipe.tool`.
+Its fields are `name` (for example `node`), the absolute executable `path` and
+its hexadecimal `sha256`. The first argument of `recipe.command` must equal
+that name or path. The verifier executes the admitted path and records the
+executable digest. Linked libraries, compiler subprocesses and external SDKs
+may require additional environment controls for reproducibility.
+
+`expectation` requires
 `expected_exit_codes`, `expected_nonzero_exit`, a non-empty
 `combined_output_contains`, `combined_output_not_contains` and a bounded
 `timeout_seconds`. Checking the exit code without an observed result is not
@@ -2805,7 +2820,7 @@ An ordinary study of files uses `source-ingestion/v2` with `source-claim/v2`:
 `kind: SOURCE_STUDY`, `symbols: []`, `recipe: null`. The other fields of the
 v1 declaration, including the exact commit, the permitted `sources`, observed
 dependencies and budgets, are required. The system derives the supported
-Python bindings through the existing `bindings.py`. Documents, invalid Python
+Python and registered native-language bindings through `bindings.py`. Documents, invalid syntax
 and ambiguous definitions are stored with the reason why they have no
 interpretation. Code and commands from the text are not executed. A `RETAINED`
 result does not create a publication. A detected span of a symbol does not
@@ -3793,3 +3808,5 @@ the eight kinds of memory, and the lifecycle of persistent agents. The command
 graph and local alternatives do not prove arbitrary procedural planning. Source
 files, refusals, failures and unknown outcomes continue to be retained
 regardless of the admission of executable knowledge.
+
+The installed structural profiles, optional grammar dependencies, extension format and replay identity are documented in [Gold language profiles](GOLD_LANGUAGE_REGISTRY.md).

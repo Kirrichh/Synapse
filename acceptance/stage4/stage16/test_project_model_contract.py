@@ -76,3 +76,20 @@ def test_absolute_imports_resolve_against_the_import_names_of_a_rooted_project()
 
     assert build("shapes") == ({("tests.test_area", "shapes")}, [])
     assert build("src.shapes") == (set(), ["shapes"])
+
+
+def test_native_modules_do_not_create_python_import_edges():
+    raw = b"import missing_package\n"
+    path = "example.js"
+    ref = source_ref(raw, "project-model-source/v1").to_dict()
+    experience = {
+        "bindings": [{"path": path, "qualname": path, "symbol_kind": "MODULE", "module": path,
+                      "binding_kind": "NATIVE_CODE"}],
+        "sources": [{"path": path, "ref": ref}],
+        "retained": [{"ref": ref, "content_base64url": base64.urlsafe_b64encode(raw).decode().rstrip("=")}],
+    }
+    result = build_project_model(project_identity="a" * 64,
+        resolution={"elements": [], "effect_paths": [], "repository_revision": "b" * 40},
+        source_snapshot={"recall": {"selected": [{"experience": experience}]}})
+    assert any(node["name"] == path and node["symbol_kind"] == "MODULE" for node in result["nodes"] if node["kind"] == "Element")
+    assert result["unresolved_dependencies"] == []

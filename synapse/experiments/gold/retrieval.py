@@ -18,6 +18,7 @@ from .bindings import (
     BindingKind,
     DocumentBinding,
     PythonBinding,
+    NativeCodeBinding,
     RequirementBinding,
     binding_to_ref,
 )
@@ -449,16 +450,16 @@ class RetrievalBindingTarget:
 
 
 def binding_to_retrieval_target(binding: object) -> RetrievalBindingTarget:
-    if type(binding) not in (PythonBinding, DocumentBinding, RequirementBinding):
+    if type(binding) not in (PythonBinding, NativeCodeBinding, DocumentBinding, RequirementBinding):
         raise _fail(RetrievalFailureCode.MALFORMED_QUERY, "retrieval target requires an exact binding object")
     ref = binding_to_ref(binding)
     result = object.__new__(RetrievalBindingTarget)
     object.__setattr__(result, "schema_version", RETRIEVAL_BINDING_TARGET_V1)
     object.__setattr__(result, "binding_kind", binding.binding_kind)
     object.__setattr__(result, "path", binding.path)
-    object.__setattr__(result, "module", binding.module if type(binding) is PythonBinding else None)
-    object.__setattr__(result, "qualname", binding.qualname if type(binding) is PythonBinding else None)
-    object.__setattr__(result, "symbol_kind", binding.symbol_kind.value if type(binding) is PythonBinding else None)
+    object.__setattr__(result, "module", binding.module if type(binding) in (PythonBinding, NativeCodeBinding) else None)
+    object.__setattr__(result, "qualname", binding.qualname if type(binding) in (PythonBinding, NativeCodeBinding) else None)
+    object.__setattr__(result, "symbol_kind", binding.symbol_kind.value if type(binding) in (PythonBinding, NativeCodeBinding) else None)
     object.__setattr__(result, "document_id", binding.document_id if type(binding) in (DocumentBinding, RequirementBinding) else None)
     object.__setattr__(result, "document_revision", binding.document_revision if type(binding) in (DocumentBinding, RequirementBinding) else None)
     object.__setattr__(result, "section_id", binding.section_id if type(binding) in (DocumentBinding, RequirementBinding) else None)
@@ -476,15 +477,15 @@ def validate_retrieval_binding_target(value: RetrievalBindingTarget) -> None:
     if value.schema_version != RETRIEVAL_BINDING_TARGET_V1 or type(value.binding_kind) is not BindingKind:
         raise _fail(RetrievalFailureCode.UNKNOWN_SCHEMA, "retrieval binding target schema/kind is invalid")
     binding = value._binding
-    if type(binding) not in (PythonBinding, DocumentBinding, RequirementBinding):
+    if type(binding) not in (PythonBinding, NativeCodeBinding, DocumentBinding, RequirementBinding):
         raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "retrieval target lost its exact binding")
     expected_payload = {
         "schema_version": RETRIEVAL_BINDING_TARGET_V1,
         "binding_kind": binding.binding_kind,
         "path": binding.path,
-        "module": binding.module if type(binding) is PythonBinding else None,
-        "qualname": binding.qualname if type(binding) is PythonBinding else None,
-        "symbol_kind": binding.symbol_kind.value if type(binding) is PythonBinding else None,
+        "module": binding.module if type(binding) in (PythonBinding, NativeCodeBinding) else None,
+        "qualname": binding.qualname if type(binding) in (PythonBinding, NativeCodeBinding) else None,
+        "symbol_kind": binding.symbol_kind.value if type(binding) in (PythonBinding, NativeCodeBinding) else None,
         "document_id": binding.document_id if type(binding) in (DocumentBinding, RequirementBinding) else None,
         "document_revision": binding.document_revision if type(binding) in (DocumentBinding, RequirementBinding) else None,
         "section_id": binding.section_id if type(binding) in (DocumentBinding, RequirementBinding) else None,

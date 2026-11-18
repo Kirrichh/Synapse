@@ -23,6 +23,8 @@ BENCHMARK_GUARDS = {
 # record itself, not later work on the sources it describes, selects its check.
 # Pytest configuration can load plugins without an import edge.
 DATA_DEPENDENCIES = {
+    'language-packs/r/pyproject.toml': {'acceptance/stage4/stage16/test_language_registry.py'},
+    'language-packs/r/synapse_gold_r/profile.json': {'acceptance/stage4/stage16/test_language_registry.py'},
     'governance/stage4_ownership_v2.json': OWNERSHIP_READERS,
     'reports/pr112_targeted_mutations.json': {'acceptance/verification/test_mutation_evidence_integrity.py'},
     'reports/pr112_followup_mutations.json': {'acceptance/verification/test_mutation_evidence_integrity.py'},

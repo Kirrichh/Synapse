@@ -1,0 +1,209 @@
+[
+  {
+    "language": "cpp",
+    "path": "calc.cpp",
+    "source": "int add(int a, int b) { return a - b; }\n",
+    "symbol": "add",
+    "kind": "FUNCTION",
+    "old": "a - b",
+    "fixed": "a + b"
+  },
+  {
+    "language": "javascript",
+    "path": "calc.js",
+    "source": "exports.add = (a, b) => a - b;\n",
+    "symbol": "add",
+    "kind": "FUNCTION",
+    "old": "a - b",
+    "fixed": "a + b"
+  },
+  {
+    "language": "go",
+    "path": "calc.go",
+    "source": "package calc\n\nfunc Add(a, b int) int { return a - b }\n",
+    "symbol": "Add",
+    "kind": "FUNCTION",
+    "old": "a - b",
+    "fixed": "a + b"
+  },
+  {
+    "language": "python",
+    "path": "calc.py",
+    "source": "def add(a, b):\n    return a - b\n",
+    "symbol": "add",
+    "kind": "FUNCTION",
+    "old": "a - b",
+    "fixed": "a + b"
+  },
+  {
+    "language": "c",
+    "path": "calc.c",
+    "source": "int add(int a, int b) { return a - b; }\n",
+    "symbol": "add",
+    "kind": "FUNCTION",
+    "old": "a - b",
+    "fixed": "a + b"
+  },
+  {
+    "language": "typescript",
+    "path": "calc.ts",
+    "source": "export function add(a: number, b: number): number { return a - b; }\n",
+    "symbol": "add",
+    "kind": "FUNCTION",
+    "old": "a - b",
+    "fixed": "a + b"
+  },
+  {
+    "language": "rust",
+    "path": "calc.rs",
+    "source": "pub fn add(a: i32, b: i32) -> i32 { a - b }\n",
+    "symbol": "add",
+    "kind": "FUNCTION",
+    "old": "a - b",
+    "fixed": "a + b"
+  },
+  {
+    "language": "java",
+    "path": "Calc.java",
+    "source": "class Calc { static int add(int a, int b) { return a - b; } }\n",
+    "symbol": "Calc.add",
+    "kind": "METHOD",
+    "old": "a - b",
+    "fixed": "a + b"
+  },
+  {
+    "language": "kotlin",
+    "path": "calc.kt",
+    "source": "fun add(a: Int, b: Int): Int { return a - b }\n",
+    "symbol": "add",
+    "kind": "FUNCTION",
+    "old": "a - b",
+    "fixed": "a + b"
+  },
+  {
+    "language": "csharp",
+    "path": "Calc.cs",
+    "source": "public class Calc { public static int add(int a, int b) { return a - b; } }\n",
+    "symbol": "Calc.add",
+    "kind": "METHOD",
+    "old": "a - b",
+    "fixed": "a + b"
+  },
+  {
+    "language": "swift",
+    "path": "calc.swift",
+    "source": "func add(_ a: Int, _ b: Int) -> Int { return a - b }\n",
+    "symbol": "add",
+    "kind": "FUNCTION",
+    "old": "a - b",
+    "fixed": "a + b"
+  },
+  {
+    "language": "dart",
+    "path": "calc.dart",
+    "source": "int add(int a, int b) { return a - b; }\n",
+    "symbol": "add",
+    "kind": "FUNCTION",
+    "old": "a - b",
+    "fixed": "a + b"
+  },
+  {
+    "language": "php",
+    "path": "calc.php",
+    "source": "<?php\nfunction add($a, $b) { return $a - $b; }\n",
+    "symbol": "add",
+    "kind": "FUNCTION",
+    "old": "$a - $b",
+    "fixed": "$a + $b"
+  },
+  {
+    "language": "ruby",
+    "path": "calc.rb",
+    "source": "def add(a,b)\n  a - b\nend\n",
+    "symbol": "add",
+    "kind": "FUNCTION",
+    "old": "a - b",
+    "fixed": "a + b"
+  },
+  {
+    "language": "lua",
+    "path": "calc.lua",
+    "source": "function add(a,b) return a - b end\n",
+    "symbol": "add",
+    "kind": "FUNCTION",
+    "old": "a - b",
+    "fixed": "a + b"
+  },
+  {
+    "language": "r",
+    "path": "calc.R",
+    "source": "add <- function(a,b) { a - b }\n",
+    "symbol": "add",
+    "kind": "FUNCTION",
+    "old": "a - b",
+    "fixed": "a + b"
+  },
+  {
+    "language": "bash",
+    "path": "calc.sh",
+    "source": "add() { local a=$1 b=$2; echo $((a - b)); }\n",
+    "symbol": "add",
+    "kind": "FUNCTION",
+    "old": "a - b",
+    "fixed": "a + b"
+  },
+  {
+    "language": "powershell",
+    "path": "calc.ps1",
+    "source": "function add([int]$a,[int]$b) { return $a - $b }\n",
+    "symbol": "add",
+    "kind": "FUNCTION",
+    "old": "$a - $b",
+    "fixed": "$a + $b"
+  },
+  {
+    "language": "assembly",
+    "path": "calc.s",
+    "source": ".text\n.globl add\nadd:\n    movl %edi, %eax\n    subl %esi, %eax\n    ret\n",
+    "symbol": "add",
+    "kind": "LABEL",
+    "old": "subl %esi, %eax",
+    "fixed": "addl %esi, %eax"
+  },
+  {
+    "language": "sql",
+    "path": "calc.sql",
+    "source": "CREATE VIEW add_result AS SELECT a - b AS result FROM inputs;\n",
+    "symbol": "add_result",
+    "kind": "VIEW",
+    "old": "a - b",
+    "fixed": "a + b"
+  },
+  {
+    "language": "hcl",
+    "path": "calc.tf",
+    "source": "locals {\n  add = 2 - 3\n}\n",
+    "symbol": "add",
+    "kind": "ATTRIBUTE",
+    "old": "2 - 3",
+    "fixed": "2 + 3"
+  },
+  {
+    "language": "html",
+    "path": "index.html",
+    "source": "<!doctype html><html><body><output id=\"add\">-1</output></body></html>\n",
+    "symbol": "add",
+    "kind": "ELEMENT",
+    "old": ">-1<",
+    "fixed": ">5<"
+  },
+  {
+    "language": "css",
+    "path": "calc.css",
+    "source": "#add::after { content: \"-1\"; }\n",
+    "symbol": "#add::after",
+    "kind": "RULE",
+    "old": "\"-1\"",
+    "fixed": "\"5\""
+  }
+]

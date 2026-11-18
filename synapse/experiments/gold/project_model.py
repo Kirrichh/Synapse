@@ -1,7 +1,7 @@
 """Project elements and task-scoped memory, derived from retained observations.
 
 System and subsystem nodes describe the known project structure; elements are
-committed Python identities or retained documents. Model coverage is explicit.
+committed code identities or retained documents. Model coverage is explicit.
 Goals are declarations, current state is revision-bound evidence, and a delta
 remains unverified until a separate execution result establishes it.
 """
@@ -91,9 +91,14 @@ def build_project_model(*, project_identity, resolution, source_snapshot):
             parent = symbols.get((path, owner_name), module_parent) if separator else module_parent
         node["parent_id"] = parent
         edges.add((parent, identifier, "CONTAINS"))
-    module_names = {nodes[identifier]["binding"]["module"]: identifier for path, identifier in modules.items()}
+    # Historical Python module observations predate the binding_kind field.
+    python_modules = {
+        path: identifier for path, identifier in modules.items()
+        if nodes[identifier]["binding"].get("binding_kind", "PYTHON" if path.endswith(".py") else None) == "PYTHON"
+    }
+    module_names = {nodes[identifier]["binding"]["module"]: identifier for identifier in python_modules.values()}
     unresolved = []
-    for path, identifier in sorted(modules.items()):
+    for path, identifier in sorted(python_modules.items()):
         if path not in sources:
             continue
         try:

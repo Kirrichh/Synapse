@@ -86,12 +86,14 @@ def run_expected_command(
     cwd: str | Path,
     expectation: CommandExpectation,
     phase_name: str,
+    *, executable: str | None = None,
 ) -> PhaseResult:
     start = time.monotonic()
     try:
         completed = subprocess.run(
             list(command),
             cwd=str(cwd),
+            executable=executable,
             text=True,
             capture_output=True,
             timeout=expectation.timeout_seconds,

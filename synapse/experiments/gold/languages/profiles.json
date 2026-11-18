@@ -1,0 +1,287 @@
+[
+  {
+    "id": "python",
+    "label": "Python",
+    "suffixes": [
+      ".py"
+    ],
+    "driver": "python",
+    "grammar": "python",
+    "query": "",
+    "extent": "node",
+    "variants": {}
+  },
+  {
+    "id": "cpp",
+    "label": "C++",
+    "suffixes": [
+      ".cpp",
+      ".cc",
+      ".cxx",
+      ".hpp",
+      ".hh",
+      ".hxx",
+      ".C"
+    ],
+    "driver": "legacy",
+    "grammar": "cpp",
+    "query": "",
+    "extent": "node",
+    "variants": {}
+  },
+  {
+    "id": "javascript",
+    "label": "JavaScript",
+    "suffixes": [
+      ".js",
+      ".mjs",
+      ".cjs",
+      ".jsx"
+    ],
+    "driver": "legacy",
+    "grammar": "javascript",
+    "query": "",
+    "extent": "node",
+    "variants": {}
+  },
+  {
+    "id": "go",
+    "label": "Go",
+    "suffixes": [
+      ".go"
+    ],
+    "driver": "legacy",
+    "grammar": "go",
+    "query": "",
+    "extent": "node",
+    "variants": {}
+  },
+  {
+    "id": "c",
+    "label": "C",
+    "suffixes": [
+      ".c"
+    ],
+    "driver": "query",
+    "grammar": "c",
+    "query": "(function_definition declarator: (function_declarator declarator: (identifier) @name)) @function\n(function_definition declarator: (pointer_declarator declarator: (function_declarator declarator: (identifier) @name))) @function",
+    "extent": "node",
+    "variants": {}
+  },
+  {
+    "id": "typescript",
+    "label": "TypeScript",
+    "suffixes": [
+      ".ts",
+      ".mts",
+      ".cts",
+      ".tsx"
+    ],
+    "driver": "query",
+    "grammar": "typescript",
+    "query": "(function_declaration name: (identifier) @name) @function\n(class_declaration name: (type_identifier) @name) @class\n(method_definition name: (property_identifier) @name) @method\n(variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)]) @function\n(interface_declaration name: (type_identifier) @name) @type",
+    "extent": "node",
+    "variants": {
+      ".tsx": "tsx"
+    }
+  },
+  {
+    "id": "rust",
+    "label": "Rust",
+    "suffixes": [
+      ".rs"
+    ],
+    "driver": "query",
+    "grammar": "rust",
+    "query": "(function_item name: (identifier) @name) @function\n(struct_item name: (type_identifier) @name) @type\n(enum_item name: (type_identifier) @name) @type\n(trait_item name: (type_identifier) @name) @class\n(impl_item type: (type_identifier) @name) @owner",
+    "extent": "node",
+    "variants": {}
+  },
+  {
+    "id": "java",
+    "label": "Java",
+    "suffixes": [
+      ".java"
+    ],
+    "driver": "query",
+    "grammar": "java",
+    "query": "(class_declaration name: (identifier) @name) @class\n(interface_declaration name: (identifier) @name) @class\n(method_declaration name: (identifier) @name) @method\n(constructor_declaration name: (identifier) @name) @method",
+    "extent": "node",
+    "variants": {}
+  },
+  {
+    "id": "csharp",
+    "label": "C#",
+    "suffixes": [
+      ".cs"
+    ],
+    "driver": "query",
+    "grammar": "csharp",
+    "query": "(class_declaration name: (identifier) @name) @class\n(struct_declaration name: (identifier) @name) @class\n(interface_declaration name: (identifier) @name) @class\n(method_declaration name: (identifier) @name) @method",
+    "extent": "node",
+    "variants": {}
+  },
+  {
+    "id": "kotlin",
+    "label": "Kotlin",
+    "suffixes": [
+      ".kt",
+      ".kts"
+    ],
+    "driver": "query",
+    "grammar": "kotlin",
+    "query": "(function_declaration (simple_identifier) @name) @function\n(class_declaration (type_identifier) @name) @class",
+    "extent": "node",
+    "variants": {}
+  },
+  {
+    "id": "swift",
+    "label": "Swift",
+    "suffixes": [
+      ".swift"
+    ],
+    "driver": "query",
+    "grammar": "swift",
+    "query": "(function_declaration name: (simple_identifier) @name) @function\n(class_declaration name: (type_identifier) @name) @class",
+    "extent": "node",
+    "variants": {}
+  },
+  {
+    "id": "dart",
+    "label": "Dart",
+    "suffixes": [
+      ".dart"
+    ],
+    "driver": "query",
+    "grammar": "dart",
+    "query": "(function_signature name: (identifier) @name) @function\n(class_definition name: (identifier) @name) @class",
+    "extent": "dart_body",
+    "variants": {}
+  },
+  {
+    "id": "php",
+    "label": "PHP",
+    "suffixes": [
+      ".php"
+    ],
+    "driver": "query",
+    "grammar": "php",
+    "query": "(function_definition name: (name) @name) @function\n(class_declaration name: (name) @name) @class\n(method_declaration name: (name) @name) @method",
+    "extent": "node",
+    "variants": {}
+  },
+  {
+    "id": "ruby",
+    "label": "Ruby",
+    "suffixes": [
+      ".rb",
+      ".rake"
+    ],
+    "driver": "query",
+    "grammar": "ruby",
+    "query": "(method name: (identifier) @name) @function\n(class name: (constant) @name) @class\n(module name: (constant) @name) @owner",
+    "extent": "node",
+    "variants": {}
+  },
+  {
+    "id": "lua",
+    "label": "Lua",
+    "suffixes": [
+      ".lua"
+    ],
+    "driver": "query",
+    "grammar": "lua",
+    "query": "(function_declaration name: (identifier) @name) @function",
+    "extent": "node",
+    "variants": {}
+  },
+  {
+    "id": "bash",
+    "label": "Bash",
+    "suffixes": [
+      ".sh",
+      ".bash"
+    ],
+    "driver": "query",
+    "grammar": "bash",
+    "query": "(function_definition name: (word) @name) @function",
+    "extent": "node",
+    "variants": {}
+  },
+  {
+    "id": "powershell",
+    "label": "PowerShell",
+    "suffixes": [
+      ".ps1",
+      ".psm1"
+    ],
+    "driver": "query",
+    "grammar": "powershell",
+    "query": "(function_statement (function_name) @name) @function",
+    "extent": "node",
+    "variants": {}
+  },
+  {
+    "id": "assembly",
+    "label": "Assembly",
+    "suffixes": [
+      ".s",
+      ".S"
+    ],
+    "driver": "query",
+    "grammar": "asm",
+    "query": "(label (ident) @name) @label",
+    "extent": "asm_label",
+    "variants": {}
+  },
+  {
+    "id": "sql",
+    "label": "SQL",
+    "suffixes": [
+      ".sql"
+    ],
+    "driver": "query",
+    "grammar": "sql",
+    "query": "(create_view (object_reference name: (identifier) @name)) @view\n(create_table (object_reference name: (identifier) @name)) @type",
+    "extent": "node",
+    "variants": {}
+  },
+  {
+    "id": "hcl",
+    "label": "HCL",
+    "suffixes": [
+      ".hcl",
+      ".tf"
+    ],
+    "driver": "query",
+    "grammar": "hcl",
+    "query": "(block (identifier) @block (body (attribute (identifier) @name) @attribute) (#eq? @block \"locals\"))",
+    "extent": "node",
+    "variants": {}
+  },
+  {
+    "id": "html",
+    "label": "HTML",
+    "suffixes": [
+      ".html",
+      ".htm"
+    ],
+    "driver": "query",
+    "grammar": "html",
+    "query": "(element (start_tag (attribute (attribute_name) @key (quoted_attribute_value (attribute_value) @name))) (#eq? @key \"id\")) @element",
+    "extent": "node",
+    "variants": {}
+  },
+  {
+    "id": "css",
+    "label": "CSS",
+    "suffixes": [
+      ".css"
+    ],
+    "driver": "query",
+    "grammar": "css",
+    "query": "(rule_set (selectors) @name) @rule",
+    "extent": "node",
+    "variants": {}
+  }
+]

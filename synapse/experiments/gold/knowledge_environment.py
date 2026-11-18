@@ -58,6 +58,7 @@ from synapse.experiments.gold.contracts import (
     create_stage4_authority_handle,
     history_anchor_from_dict,
 )
+from synapse.experiments.gold.recipe_executable import RecipeExecutable
 from synapse.experiments.gold.knowledge_store import AuthoritativeKnowledgeStore
 from synapse.experiments.gold.library import (
     LIBRARY_PUBLISHER_IDENTITY_V1,
@@ -230,8 +231,13 @@ class GoldProjectEntitlements:
     scopes: tuple[str, ...]
     capabilities: tuple[str, ...]
     oracles: tuple[str, ...]
+    recipe_tools: tuple[RecipeExecutable, ...] = ()
 
     def __post_init__(self) -> None:
+        if type(self.recipe_tools) is not tuple or not all(type(tool) is RecipeExecutable for tool in self.recipe_tools):
+            raise ValueError("native recipe tools must be exact operator grants")
+        if len({tool.name for tool in self.recipe_tools}) != len(self.recipe_tools):
+            raise ValueError("native recipe tool names must be unique")
         for name in ("scopes", "capabilities", "oracles"):
             value = getattr(self, name)
             if type(value) is not tuple or not value or any(
@@ -247,6 +253,7 @@ class GoldProjectEntitlements:
             "scopes": list(self.scopes),
             "capabilities": list(self.capabilities),
             "oracles": list(self.oracles),
+            **({"recipe_tools": [tool.to_dict() for tool in self.recipe_tools]} if self.recipe_tools else {}),
         }
 
     @classmethod
@@ -257,6 +264,7 @@ class GoldProjectEntitlements:
             scopes=tuple(value["scopes"]),
             capabilities=tuple(value["capabilities"]),
             oracles=tuple(value["oracles"]),
+            recipe_tools=tuple(RecipeExecutable.from_dict(tool) for tool in value.get("recipe_tools", ())),
         )
 
 

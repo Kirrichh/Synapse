@@ -342,35 +342,40 @@ class GoldenArtifactTraceAdapter:
     def __init__(self, artifact_dir: "Path | str", *, verify_chain: bool = True) -> None:
         from pathlib import Path
 
-        root = Path(artifact_dir)
-        if not root.exists() or not root.is_dir():
-            raise ReplayArtifactError(f"artifact directory not found: {root}")
+        from synapse.recording_publication import read_recording
 
-        manifest_path = root / "manifest.json"
-        if not manifest_path.exists():
-            raise ReplayArtifactError(f"missing manifest.json in artifact: {root}")
+        def load_trace(root):
+            if not root.exists() or not root.is_dir():
+                raise ReplayArtifactError(f"artifact directory not found: {root}")
 
-        try:
-            manifest = _read_json(manifest_path)
-        except Exception as exc:  # malformed JSON
-            raise ReplayArtifactError(f"unreadable manifest.json: {exc}") from exc
+            manifest_path = root / "manifest.json"
+            if not manifest_path.exists():
+                raise ReplayArtifactError(f"missing manifest.json in artifact: {root}")
 
-        if not isinstance(manifest, Mapping):
-            raise ReplayArtifactError("manifest.json must be a JSON object")
+            try:
+                manifest = _read_json(manifest_path)
+            except Exception as exc:  # malformed JSON
+                raise ReplayArtifactError(f"unreadable manifest.json: {exc}") from exc
 
-        files = manifest.get("files")
-        if not isinstance(files, Mapping) or "history" not in files:
-            raise ReplayArtifactError("manifest.files.history is missing")
+            if not isinstance(manifest, Mapping):
+                raise ReplayArtifactError("manifest.json must be a JSON object")
 
-        history_path = root / str(files["history"])
-        if not history_path.exists():
-            raise ReplayArtifactError(f"missing history file: {history_path}")
+            files = manifest.get("files")
+            if not isinstance(files, Mapping) or "history" not in files:
+                raise ReplayArtifactError("manifest.files.history is missing")
 
-        try:
-            history = _read_json(history_path)
-        except Exception as exc:
-            raise ReplayArtifactError(f"unreadable history.json: {exc}") from exc
+            history_path = root / str(files["history"])
+            if not history_path.exists():
+                raise ReplayArtifactError(f"missing history file: {history_path}")
 
+            try:
+                history = _read_json(history_path)
+            except Exception as exc:
+                raise ReplayArtifactError(f"unreadable history.json: {exc}") from exc
+
+            return manifest, history
+
+        manifest, history = read_recording(artifact_dir, load_trace)
         if not isinstance(history, list):
             raise ReplayArtifactError("history.json must be a JSON array of events")
 
@@ -399,7 +404,7 @@ class GoldenArtifactTraceAdapter:
                     f"manifest.final_history_hash ({self._final_history_hash})"
                 )
 
-        self._artifact_dir = str(root)
+        self._artifact_dir = str(Path(artifact_dir))
         self._manifest = dict(manifest)
         self._execution_history: tuple[Mapping[str, Any], ...] = tuple(immutable_history)
         self._cursor = 0

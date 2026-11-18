@@ -55,6 +55,276 @@
       "after": "from synapse.cli.main import main\n\nmain()\n",
       "killer": "tests/test_stage4_gold_canonical_entrypoint.py::test_gold_package_has_no_module_entrypoint",
       "expected_failure": "NR-02 forbids"
+    },
+    {
+      "id": "REGISTRY-ERASE-BEFORE-SERIALIZATION",
+      "requirement": "partial serialization cannot replace a good record",
+      "path": "synapse/recording_publication.py",
+      "before": "            yield staged",
+      "after": "            if output.exists():\n                shutil.rmtree(output)\n            yield staged",
+      "killer": "tests/test_golden_replay_publication.py::test_partial_serialization_cannot_replace_a_good_record",
+      "expected_failure": "hashes(out)"
+    },
+    {
+      "id": "REGISTRY-LEAVE-INTERRUPTED-STAGING",
+      "requirement": "process loss between directory renames recovers previous record",
+      "path": "synapse/recording_publication.py",
+      "before": "        shutil.rmtree(staged)",
+      "after": "        pass",
+      "killer": "tests/test_golden_replay_publication.py::test_process_loss_between_directory_renames_recovers_previous_record",
+      "expected_failure": "incomplete"
+    },
+    {
+      "id": "REGISTRY-SKIP-RECOVERY",
+      "requirement": "process loss between directory renames recovers previous record",
+      "path": "synapse/recording_publication.py",
+      "before": "            os.replace(previous, output)",
+      "after": "            return",
+      "killer": "tests/test_golden_replay_publication.py::test_process_loss_between_directory_renames_recovers_previous_record",
+      "expected_failure": "returncode"
+    },
+    {
+      "id": "REGISTRY-SKIP-LEGACY-RETRY",
+      "requirement": "reading a legacy record retries if its first replacement starts",
+      "path": "synapse/recording_publication.py",
+      "before": "            if not control.exists():\n                raise",
+      "after": "            raise",
+      "killer": "tests/test_golden_replay_publication.py::test_reading_a_legacy_record_retries_if_its_first_replacement_starts",
+      "expected_failure": "ArtifactIntegrityError"
+    },
+    {
+      "id": "REGISTRY-LIVE-CASCADE-ID",
+      "requirement": "cascade replays twice with live draws disabled",
+      "path": "synapse/interpreter.py",
+      "before": "uuid.UUID(self.execute_side_effect(\"uuid\", []))",
+      "after": "uuid.uuid4()",
+      "killer": "tests/test_golden_replay_recorded_side_effects.py::test_cascade_replays_twice_with_live_draws_disabled",
+      "expected_failure": "uuid"
+    },
+    {
+      "id": "REGISTRY-UNRECORDED-CASCADE-TIME",
+      "requirement": "cascade replays twice with live draws disabled",
+      "path": "synapse/interpreter.py",
+      "before": "created_at = self.execute_side_effect(\"time\", [])",
+      "after": "created_at = 0.0",
+      "killer": "tests/test_golden_replay_recorded_side_effects.py::test_cascade_replays_twice_with_live_draws_disabled",
+      "expected_failure": "time"
+    },
+    {
+      "id": "REGISTRY-IGNORE-DECLARATION-BYTES",
+      "requirement": "symbol is bound to committed and retained bytes",
+      "path": "synapse/experiments/gold/bindings.py",
+      "before": "hashlib.sha256(raw[start:end]).hexdigest()",
+      "after": "hashlib.sha256(path.encode()).hexdigest()",
+      "killer": "acceptance/stage4/stage16/test_native_source_bindings.py::test_symbol_is_bound_to_committed_and_retained_bytes[javascript]",
+      "expected_failure": "DID NOT RAISE"
+    },
+    {
+      "id": "REGISTRY-GUESS-OVERLOAD",
+      "requirement": "ambiguous invalid and unsupported source has no binding",
+      "path": "synapse/experiments/gold/languages/original_declarations.py",
+      "before": "if qualified in names:",
+      "after": "if False:",
+      "killer": "acceptance/stage4/stage16/test_native_source_bindings.py::test_ambiguous_invalid_and_unsupported_source_has_no_binding",
+      "expected_failure": "DID NOT RAISE"
+    },
+    {
+      "id": "REGISTRY-LOSE-NATIVE-TASK-FUNCTION",
+      "requirement": "governing task selects the committed native function",
+      "path": "synapse/experiments/gold/task_targets.py",
+      "before": "elif any(re.search(",
+      "after": "elif not isinstance(binding, NativeCodeBinding) and any(re.search(",
+      "killer": "acceptance/stage4/stage16/test_native_source_bindings.py::test_governing_task_selects_the_committed_native_function[go]",
+      "expected_failure": "qualname"
+    },
+    {
+      "id": "REGISTRY-DISCARD-RECIPE-GRANT",
+      "requirement": "ungranted native recipe is refused",
+      "path": "synapse/experiments/gold/recipe_executable.py",
+      "before": "tool not in granted or tool.measure() != tool.to_dict()",
+      "after": "tool.measure() != tool.to_dict()",
+      "killer": "acceptance/stage4/stage16/test_native_recipe_authority.py::test_ungranted_native_recipe_is_refused",
+      "expected_failure": "REFUSED"
+    },
+    {
+      "id": "REGISTRY-IGNORE-TOOL-DIGEST",
+      "requirement": "changed tool cannot reuse an identical claim or get a second receipt",
+      "path": "synapse/experiments/gold/recipe_executable.py",
+      "before": "tool not in granted or tool.measure() != tool.to_dict()",
+      "after": "tool not in granted",
+      "killer": "acceptance/stage4/stage16/test_native_recipe_authority.py::test_changed_tool_cannot_reuse_an_identical_claim_or_get_a_second_receipt",
+      "expected_failure": "REFUSED"
+    },
+    {
+      "id": "REGISTRY-IGNORE-CONSUMER-RUNTIME",
+      "requirement": "changed tool cannot reuse an identical claim or get a second receipt",
+      "path": "synapse/experiments/gold/compatibility.py",
+      "before": "if _canonical(current_runtime) != _canonical(facts[\"observed_runtime\"]):",
+      "after": "if False:",
+      "killer": "acceptance/stage4/stage16/test_native_recipe_authority.py::test_changed_tool_cannot_reuse_an_identical_claim_or_get_a_second_receipt",
+      "expected_failure": "ENVIRONMENT_MISMATCH"
+    },
+    {
+      "id": "REGISTRY-RUN-UNPINNED-PATH",
+      "requirement": "changed tool cannot reuse an identical claim or get a second receipt",
+      "path": "synapse/change/verification.py",
+      "before": "            executable=executable,",
+      "after": "            executable=None,",
+      "killer": "acceptance/stage4/stage16/test_native_recipe_authority.py::test_changed_tool_cannot_reuse_an_identical_claim_or_get_a_second_receipt",
+      "expected_failure": "PUBLISHED"
+    },
+    {
+      "id": "REGISTRY-FORGET-QUERY-IDENTITY",
+      "requirement": "r profile content affects identity",
+      "path": "synapse/experiments/gold/languages/registry.py",
+      "before": "[owner, data, PARSER_VERSION",
+      "after": "[owner, data['id'], PARSER_VERSION",
+      "killer": "acceptance/stage4/stage16/test_language_registry.py::test_r_profile_content_affects_identity",
+      "expected_failure": "resolver"
+    },
+    {
+      "id": "REGISTRY-IGNORE-SUFFIX-GRAMMAR",
+      "requirement": "tsx uses its own grammar",
+      "path": "synapse/experiments/gold/languages/registry.py",
+      "before": "return self.variants.get(PurePosixPath(path).suffix, self.grammar)",
+      "after": "return self.grammar",
+      "killer": "acceptance/stage4/stage16/test_language_registry.py::test_tsx_uses_its_own_grammar",
+      "expected_failure": "invalid source"
+    },
+    {
+      "id": "REGISTRY-HASH-LABEL-ONLY",
+      "requirement": "labels cover their instructions but stop at the next label",
+      "path": "synapse/experiments/gold/languages/query_declarations.py",
+      "before": "if extent == \"asm_label\" and kind is Kind.LABEL:",
+      "after": "if extent == \"asm_label\": return target.end_byte\n    if extent == \"asm_label\" and kind is Kind.LABEL:",
+      "killer": "acceptance/stage4/stage16/test_language_registry.py::test_labels_cover_their_instructions_but_stop_at_the_next_label",
+      "expected_failure": "first"
+    },
+    {
+      "id": "REGISTRY-DROP-LEXICAL-OWNER",
+      "requirement": "declaration binds its implementation",
+      "path": "synapse/experiments/gold/languages/query_declarations.py",
+      "before": "qualified = \".\".join([*(scope[0] for scope in scopes), name])",
+      "after": "qualified = name",
+      "killer": "acceptance/stage4/stage16/test_language_registry.py::test_declaration_binds_its_implementation[java]",
+      "expected_failure": "StopIteration"
+    },
+    {
+      "id": "REGISTRY-ACCEPT-AMBIGUOUS-QUERY-TARGET",
+      "requirement": "duplicate declarations are rejected",
+      "path": "synapse/experiments/gold/languages/query_declarations.py",
+      "before": "if qualified in names:",
+      "after": "if False:",
+      "killer": "acceptance/stage4/stage16/test_language_registry.py::test_duplicate_declarations_are_rejected",
+      "expected_failure": "DID NOT RAISE"
+    },
+    {
+      "id": "REGISTRY-ACCEPT-MALFORMED-TREE",
+      "requirement": "syntax errors do not produce a module",
+      "path": "synapse/experiments/gold/native_syntax.py",
+      "before": "if root.has_error or root.descendant_count",
+      "after": "if root.descendant_count",
+      "killer": "acceptance/stage4/stage16/test_language_registry.py::test_syntax_errors_do_not_produce_a_module",
+      "expected_failure": "DID NOT RAISE"
+    },
+    {
+      "id": "REGISTRY-IGNORE-RESOURCE-DIGEST",
+      "requirement": "installed profile binds the recorded resource without importing its package",
+      "path": "synapse/experiments/gold/languages/registry.py",
+      "before": "len(raw) != file.size or actual != file.hash.value",
+      "after": "len(raw) != file.size",
+      "killer": "acceptance/stage4/stage16/test_language_registry.py::test_installed_profile_binds_the_recorded_resource_without_importing_its_package",
+      "expected_failure": "DID NOT RAISE"
+    },
+    {
+      "id": "REGISTRY-MARK-UNAVAILABLE-GRAMMAR-READY",
+      "requirement": "operator reports an unavailable grammar",
+      "path": "synapse/experiments/gold/source_ingestion.py",
+      "before": "return int(any(row.get(\"status\") == \"UNAVAILABLE\" for row in rows)),",
+      "after": "return 0,",
+      "killer": "acceptance/stage4/stage16/test_language_registry.py::test_operator_reports_an_unavailable_grammar",
+      "expected_failure": "assert 0 == 1"
+    },
+    {
+      "id": "REGISTRY-FORGET-LEGACY-PYTHON-MODULE",
+      "requirement": "absolute imports resolve against the import names of a rooted project",
+      "path": "synapse/experiments/gold/project_model.py",
+      "before": "\"PYTHON\" if path.endswith(\".py\") else None",
+      "after": "None",
+      "killer": "acceptance/stage4/stage16/test_project_model_contract.py::test_absolute_imports_resolve_against_the_import_names_of_a_rooted_project",
+      "expected_failure": "shapes"
+    },
+    {
+      "id": "REGISTRY-PARSE-NATIVE-IMPORTS-AS-PYTHON",
+      "requirement": "native modules do not create python import edges",
+      "path": "synapse/experiments/gold/project_model.py",
+      "before": "if nodes[identifier][\"binding\"].get(\"binding_kind\", \"PYTHON\" if path.endswith(\".py\") else None) == \"PYTHON\"",
+      "after": "if True",
+      "killer": "acceptance/stage4/stage16/test_project_model_contract.py::test_native_modules_do_not_create_python_import_edges",
+      "expected_failure": "missing_package"
+    },
+    {
+      "id": "REGISTRY-DROP-INTERPRETER-ENVIRONMENT",
+      "requirement": "legacy python recipe recognizes its interpreter only in the same environment",
+      "path": "synapse/experiments/gold/recipe_executable.py",
+      "before": "or not command.parent.samefile(python.parent)",
+      "after": "or False",
+      "killer": "acceptance/stage4/stage16/test_native_recipe_authority.py::test_legacy_python_recipe_recognizes_its_interpreter_only_in_the_same_environment",
+      "expected_failure": "DID NOT RAISE"
+    },
+    {
+      "id": "REGISTRY-REJECT-EQUIVALENT-INTERPRETER",
+      "requirement": "legacy python recipe recognizes its interpreter only in the same environment",
+      "path": "synapse/experiments/gold/recipe_executable.py",
+      "before": "or not command.parent.samefile(python.parent)",
+      "after": "or True",
+      "killer": "acceptance/stage4/stage16/test_native_recipe_authority.py::test_legacy_python_recipe_recognizes_its_interpreter_only_in_the_same_environment",
+      "expected_failure": "measured Python interpreter"
+    },
+    {
+      "id": "REGISTRY-LOAD-PROFILE-ENTRY-POINT",
+      "requirement": "language registry may read metadata but cannot load entry points",
+      "path": "scripts/stage9_ownership_dag.py",
+      "before": "elif registry and isinstance(node, ast.Attribute) and node.attr == \"load\":",
+      "after": "elif False:",
+      "killer": "tests/test_stage4_gold_ownership_dag.py::test_language_registry_may_read_metadata_but_cannot_load_entry_points",
+      "expected_failure": "entry point load"
+    },
+    {
+      "id": "REGISTRY-ALLOW-DYNAMIC-IMPORTS",
+      "requirement": "language registry may read metadata but cannot load entry points",
+      "path": "scripts/stage9_ownership_dag.py",
+      "before": "if all(alias.name in allowed and alias.asname is None for alias in node.names):",
+      "after": "if True:",
+      "killer": "tests/test_stage4_gold_ownership_dag.py::test_language_registry_may_read_metadata_but_cannot_load_entry_points",
+      "expected_failure": "importlib"
+    },
+    {
+      "id": "REGISTRY-IGNORE-PROFILE-PACK-CHANGES",
+      "requirement": "installed r profile assets select structural acceptance",
+      "path": "scripts/ci/dependencies.py",
+      "before": "    'language-packs/r/pyproject.toml': {'acceptance/stage4/stage16/test_language_registry.py'},",
+      "after": "    'language-packs/r/pyproject.toml': set(),",
+      "killer": "acceptance/ci/test_dependency_selection.py::test_installed_r_profile_assets_select_structural_acceptance",
+      "expected_failure": "test_language_registry"
+    },
+    {
+      "id": "REGISTRY-ALLOW-FOREIGN-RECORDING-MANIFEST",
+      "requirement": "replacement preserves foreign files",
+      "path": "synapse/recording_publication.py",
+      "before": "if not isinstance(metadata, dict) or metadata.get(\"generated_by\") not in (",
+      "after": "if False and metadata.get(\"generated_by\") not in (",
+      "killer": "tests/test_golden_replay_publication.py::test_replacement_preserves_foreign_files[False]",
+      "expected_failure": "DID NOT RAISE"
+    },
+    {
+      "id": "REGISTRY-DISCARD-FOREIGN-RECORDING-FILES",
+      "requirement": "replacement preserves foreign files",
+      "path": "synapse/recording_publication.py",
+      "before": "or any(item.is_symlink() or not (staged / item.name).is_file()",
+      "after": "or any(item.is_symlink()",
+      "killer": "tests/test_golden_replay_publication.py::test_replacement_preserves_foreign_files[True]",
+      "expected_failure": "DID NOT RAISE"
     }
   ]
 }

@@ -32,6 +32,8 @@ from .bindings import (
     BindingViolation,
     DocumentBinding,
     PythonBinding,
+    NativeCodeBinding,
+    binding_from_dict,
     RequirementBinding,
     binding_to_ref,
     consume_document_binding,
@@ -1290,7 +1292,7 @@ def _validate_binding_records(value: object) -> tuple[object, ...]:
         raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "binding records must be an exact tuple")
     result: list[object] = []
     for item in value:
-        if type(item) not in (PythonBinding, DocumentBinding, RequirementBinding):
+        if type(item) not in (PythonBinding, NativeCodeBinding, DocumentBinding, RequirementBinding):
             raise _fail(CompatibilityFailureCode.BINDING_INCOMPATIBLE, "binding record uses an unknown exact type")
         binding_to_ref(item)
         result.append(item)
@@ -1795,7 +1797,13 @@ def _source_gap(evaluator, context, evidence, facts):
     revision = facts["claim"]["revision"]
     if revision != context.repository_revision.git_sha:
         return CompatibilityReason.SCOPE_EXPANSION
-    if _canonical(observe_source_runtime()) != _canonical(facts["observed_runtime"]):
+    from .recipe_executable import recipe_executable
+    tool = recipe_executable(facts["claim"]["recipe"])
+    try:
+        current_runtime = observe_source_runtime(tool) if tool else observe_source_runtime()
+    except (OSError, ValueError):
+        return CompatibilityReason.ENVIRONMENT_MISMATCH
+    if _canonical(current_runtime) != _canonical(facts["observed_runtime"]):
         return CompatibilityReason.ENVIRONMENT_MISMATCH
     paths = [binding.path for binding in evidence.bindings]
     if not paths or not all(path in context.allowed_scope for path in paths):
@@ -1863,6 +1871,8 @@ def _consume_exact_bindings(
         for binding in evidence.bindings:
             if type(binding) is PythonBinding:
                 consume_python_binding(evaluator._binding_repo_root, binding, repository_revision=repository_revision)
+            elif type(binding) is NativeCodeBinding:
+                binding_from_dict(binding.to_dict(), repo_root=evaluator._binding_repo_root, consumer_revision=repository_revision)
             elif type(binding) is DocumentBinding:
                 consume_document_binding(evaluator._binding_repo_root, binding, repository_revision=repository_revision)
             elif type(binding) is RequirementBinding:

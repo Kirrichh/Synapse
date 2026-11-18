@@ -18,6 +18,7 @@ from synapse.lexer import Lexer
 from synapse.parser import Parser
 from synapse.interpreter import Interpreter, RuntimeMode
 from synapse.builtins import LLMBackend
+from synapse.recording_publication import publish_recording, read_recording
 if TYPE_CHECKING:
     from synapse.llm import LLMResult
 from synapse.runtime.host_abi import HOST_ABI_VERSION
@@ -427,16 +428,6 @@ def record_source(source: str, output_dir: Path | str, *, source_path: str = "<m
     script it to make repeated identical prompts answer differently); the
     default keeps the runtime's own backend.
     """
-    output = Path(output_dir)
-    if output.exists():
-        # Avoid stale files corrupting the artifact; keep implementation simple.
-        for child in sorted(output.rglob("*"), reverse=True):
-            if child.is_file():
-                child.unlink()
-            elif child.is_dir():
-                child.rmdir()
-    output.mkdir(parents=True, exist_ok=True)
-
     initial = Interpreter()
     initial.source_code = source
     initial_snapshot = initial.snapshot()
@@ -491,12 +482,13 @@ def record_source(source: str, output_dir: Path | str, *, source_path: str = "<m
         },
     }
 
-    _write_json(output / "manifest.json", manifest)
-    (output / "source.syn").write_text(source, encoding="utf-8")
-    _write_json(output / "initial_vm_snapshot.json", initial_snapshot)
-    _write_json(output / "vm_snapshot.json", final_snapshot)
-    _write_json(output / "history.json", history)
-    _write_json(output / "llm_cache.mock.json", llm_cache)
+    with publish_recording(output_dir) as output:
+        _write_json(output / "manifest.json", manifest)
+        (output / "source.syn").write_text(source, encoding="utf-8")
+        _write_json(output / "initial_vm_snapshot.json", initial_snapshot)
+        _write_json(output / "vm_snapshot.json", final_snapshot)
+        _write_json(output / "history.json", history)
+        _write_json(output / "llm_cache.mock.json", llm_cache)
     return manifest
 
 
@@ -528,14 +520,8 @@ def _diff_events(expected: list[dict[str, Any]], actual: list[dict[str, Any]]) -
     return drift
 
 
-def replay_mock_artifact(artifact_dir: Path | str) -> ReplayResult:
-    """Replay a golden artifact using only embedded mocks and stable validators."""
-    root = Path(artifact_dir)
+def _load_replay_inputs(root: Path, *, integrate: bool = False):
     manifest = _read_artifact_json(root, "manifest.json")
-    # Fail closed on an unreadable schema before loading or executing anything
-    # the artifact describes. Byte-level reads are guarded the same way: a
-    # corrupted artifact must surface as a typed integrity failure, never as
-    # an unhandled decode/parse traceback.
     schema_version = _artifact_schema_version(manifest)
     source = _decode_artifact_text(root, _artifact_file_entry(manifest, "source"))
     expected_history = _read_artifact_json(root, _artifact_file_entry(manifest, "history"))
@@ -551,14 +537,18 @@ def replay_mock_artifact(artifact_dir: Path | str) -> ReplayResult:
             f"host_abi_version mismatch: artifact={manifest['metadata'].get('host_abi_version')} runtime={HOST_ABI_VERSION}"
         )
     final_hash = manifest["final"]["final_history_hash"]
-    if not _history_chain_valid(expected_history, final_hash):
+    if (not integrate or final_hash) and not _history_chain_valid(expected_history, final_hash):
         raise ArtifactIntegrityError("execution_history chain broken in artifact")
-
-    # Replay from the recorded initial state. The replay environment uses a
-    # cache-only LLM backend, so provider calls are impossible and missing cache
-    # entries become deterministic failures. The recorded time/random/uuid
-    # values are served the same way: a live draw is impossible.
     initial_snapshot = _read_artifact_json(root, _artifact_file_entry(manifest, "initial_vm_snapshot"))
+    return manifest, schema_version, source, expected_history, expected_snapshot, llm_cache, initial_snapshot
+
+
+def replay_mock_artifact(artifact_dir: Path | str) -> ReplayResult:
+    """Replay a golden artifact using only embedded mocks and stable validators."""
+    (manifest, schema_version, source, expected_history, expected_snapshot,
+     llm_cache, initial_snapshot) = read_recording(artifact_dir, _load_replay_inputs)
+    actual_hash = manifest["metadata"]["program_hash"]
+    final_hash = manifest["final"]["final_history_hash"]
     replay_interp = Interpreter.restore_snapshot(initial_snapshot)
     recorded_run_id = manifest["metadata"].get("run_id")
     if recorded_run_id is not None:
@@ -591,7 +581,7 @@ def replay_mock_artifact(artifact_dir: Path | str) -> ReplayResult:
         )
 
     return ReplayResult(
-        artifact_dir=str(root),
+        artifact_dir=str(Path(artifact_dir)),
         program_hash=actual_hash,
         history_length=len(actual_history),
         final_history_hash=actual_final_hash,
@@ -625,15 +615,6 @@ def record_integrate_artifact(
     an exception (e.g. barrier-violation abort).  In that case the interpreter
     run is allowed to raise and the history up to the abort is recorded.
     """
-    output = Path(output_dir)
-    if output.exists():
-        for child in sorted(output.rglob("*"), reverse=True):
-            if child.is_file():
-                child.unlink()
-            elif child.is_dir():
-                child.rmdir()
-    output.mkdir(parents=True, exist_ok=True)
-
     initial = Interpreter()
     initial.source_code = source
     initial_snapshot = initial.snapshot()
@@ -695,13 +676,14 @@ def record_integrate_artifact(
         },
     }
 
-    import json as _json
-    (output / "manifest.json").write_text(_json.dumps(manifest, indent=2, default=str), encoding="utf-8")
-    (output / "source.syn").write_text(source, encoding="utf-8")
-    (output / "history.json").write_text(_json.dumps(history, indent=2, default=str), encoding="utf-8")
-    (output / "initial_vm_snapshot.json").write_text(_json.dumps(initial_snapshot, indent=2, default=str), encoding="utf-8")
-    (output / "vm_snapshot.json").write_text(_json.dumps(final_snapshot, indent=2, default=str), encoding="utf-8")
-    (output / "llm_cache.mock.json").write_text(_json.dumps(llm_cache, indent=2, default=str), encoding="utf-8")
+    with publish_recording(output_dir) as output:
+        import json as _json
+        (output / "manifest.json").write_text(_json.dumps(manifest, indent=2, default=str), encoding="utf-8")
+        (output / "source.syn").write_text(source, encoding="utf-8")
+        (output / "history.json").write_text(_json.dumps(history, indent=2, default=str), encoding="utf-8")
+        (output / "initial_vm_snapshot.json").write_text(_json.dumps(initial_snapshot, indent=2, default=str), encoding="utf-8")
+        (output / "vm_snapshot.json").write_text(_json.dumps(final_snapshot, indent=2, default=str), encoding="utf-8")
+        (output / "llm_cache.mock.json").write_text(_json.dumps(llm_cache, indent=2, default=str), encoding="utf-8")
 
     return manifest
 
@@ -719,32 +701,10 @@ def replay_integrate_artifact(artifact_dir: "Path | str") -> "ReplayResult":
     so the integrate body is NOT re-executed.
     """
     import copy as _copy
-    root = Path(artifact_dir)
-    manifest = _read_artifact_json(root, "manifest.json")
-    # Fail closed on an unreadable schema before loading or executing anything
-    # the artifact describes. Byte-level reads share the typed integrity
-    # guards of the strict replay path.
-    schema_version = _artifact_schema_version(manifest)
-    source = _decode_artifact_text(root, _artifact_file_entry(manifest, "source"))
-    expected_history = _read_artifact_json(root, _artifact_file_entry(manifest, "history"))
-    expected_snapshot = _read_artifact_json(root, _artifact_file_entry(manifest, "vm_snapshot"))
-    llm_cache = _read_artifact_json(root, _artifact_file_entry(manifest, "llm_cache"))
-
-    expected_hash = manifest["metadata"]["program_hash"]
-    actual_hash = program_hash_for_source(source)
-    if actual_hash != expected_hash:
-        raise ArtifactIntegrityError(
-            f"program_hash mismatch: expected {expected_hash}, got {actual_hash}"
-        )
-    if manifest["metadata"].get("host_abi_version") != HOST_ABI_VERSION:
-        raise DeterministicReplayError(
-            f"host_abi_version mismatch: artifact={manifest['metadata'].get('host_abi_version')} runtime={HOST_ABI_VERSION}"
-        )
+    (manifest, schema_version, source, expected_history, expected_snapshot,
+     llm_cache, initial_snapshot) = read_recording(artifact_dir, lambda root: _load_replay_inputs(root, integrate=True))
+    actual_hash = manifest["metadata"]["program_hash"]
     final_hash = manifest["final"]["final_history_hash"]
-    if final_hash and not _history_chain_valid(expected_history, final_hash):
-        raise ArtifactIntegrityError("execution_history chain broken in artifact")
-
-    initial_snapshot = _read_artifact_json(root, _artifact_file_entry(manifest, "initial_vm_snapshot"))
     replay_interp = Interpreter.restore_snapshot(initial_snapshot)
     replay_interp.integrate_i2_skeleton_enabled = True
     replay_interp.execution_history = _copy.deepcopy(expected_history)
@@ -778,7 +738,7 @@ def replay_integrate_artifact(artifact_dir: "Path | str") -> "ReplayResult":
         )
 
     return ReplayResult(
-        artifact_dir=str(root),
+        artifact_dir=str(Path(artifact_dir)),
         program_hash=actual_hash,
         history_length=len(actual_history),
         final_history_hash=actual_final_hash,

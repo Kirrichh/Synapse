@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "synapse-gold-language-r"
+version = "1.0.0"
+description = "R source declaration profile for Synapse Gold"
+requires-python = ">=3.10"
+dependencies = ["tree-sitter-language-pack==0.13.0", "tree-sitter==0.26.1"]
+
+[project.entry-points."synapse.gold.languages.v1"]
+r = "synapse_gold_r:profile"
+
+[tool.setuptools.package-data]
+synapse_gold_r = ["profile.json"]

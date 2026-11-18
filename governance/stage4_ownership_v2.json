@@ -8,7 +8,11 @@
     "activity_provenance.py": "subject-bound activity production and consumption provenance",
     "admission.py": "ingestion/publication/retrieval/consumption gates",
     "behavior.py": "SynapseBehaviorUnit, BehaviorBlob, BehaviorManifest",
-    "bindings.py": "Python/Document/Requirement binding resolution",
+    "bindings.py": "revision-bound Python, native code, document and requirement resolution",
+    "languages/__init__.py": "Gold structural language profile package boundary",
+    "languages/registry.py": "installed declarative language profiles, grammar selection and resolver identity",
+    "native_syntax.py": "bounded structural interpretation of committed and retained native source bytes",
+    "recipe_executable.py": "operator grants, native executable identity and measurement for source verification recipes",
     "canonicalization.py": "canonical profiles, ContentKey, migration relations",
     "compatibility.py": "CompatibilityContext/Evidence/Decision, revalidation",
     "contracts.py": "common IDs, enums, schema envelopes",
@@ -111,6 +115,9 @@
     "stage10/planning_basis.py": "bounded method observations, deterministic coverage decisions and retained planning-basis schema"
   },
   "owner_components": {
+    "languages/original_declarations.py": "native_syntax.py",
+    "languages/query_declarations.py": "native_syntax.py",
+    "languages/symbols.py": "native_syntax.py",
     "memory_blocks.py": "memory_event_storage.py",
     "memory_event_budget.py": "memory_event_storage.py",
     "memory_event_encoding.py": "memory_event_storage.py",

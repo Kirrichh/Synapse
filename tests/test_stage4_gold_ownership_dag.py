@@ -55,6 +55,21 @@ def test_only_the_declared_assembly_dependency_is_accepted(assembly, monkeypatch
     assert dag.main() == 0
 
 
+@pytest.mark.parametrize(("source", "expected"), [
+    ("from importlib.metadata import entry_points, version", set()),
+    ("from importlib.resources import files", set()),
+    ("from importlib import import_module", {"importlib"}),
+    ("from importlib.metadata import entry_points as resolver", {"importlib.metadata"}),
+    ("from importlib.resources import as_file", {"importlib.resources"}),
+    ("profile.load()", {"entry point load"}),
+])
+def test_language_registry_may_read_metadata_but_cannot_load_entry_points(assembly, source, expected):
+    registry = assembly / "languages" / "registry.py"
+    registry.parent.mkdir()
+    registry.write_text(source, encoding="utf-8")
+    assert dag.dynamic_bypasses(registry) == expected
+
+
 def test_unused_assembly_permissions_are_refused(assembly, monkeypatch, capsys):
     monkeypatch.setattr(dag, "STAGE4_COMPOSITION_DEPENDENCIES", {"root.py": ["leaf.py"]})
     assert dag.main() == 1

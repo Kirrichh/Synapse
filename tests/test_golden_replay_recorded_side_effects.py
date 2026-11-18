@@ -20,6 +20,7 @@ import pytest
 
 from synapse.builtins import BUILTINS
 from synapse.golden_replay import (
+    ArtifactIntegrityError,
     DeterministicReplayError,
     RecordedSideEffects,
     ReplayArtifactError,
@@ -146,3 +147,30 @@ def test_a_malformed_run_id_is_an_artifact_error(tmp_path: Path, run_id) -> None
 
     with pytest.raises(ReplayArtifactError, match="run_id must be a non-empty string"):
         replay_mock_artifact(artifact)
+
+
+CASCADE = '''
+intention cascade "First" { mission "Check" task "One" bind first }
+intention cascade "Second" { mission "Check" task "Two" bind second }
+print(first.id)
+print(second.created_at)
+'''
+
+
+def test_cascade_replays_twice_with_live_draws_disabled(tmp_path, monkeypatch):
+    out = tmp_path / "record"
+    record_source(CASCADE, out)
+    history = json.loads((out / "history.json").read_text())
+    draws = [x["name"] for x in history if x["type"] == "side_effect"]
+    assert draws == ["uuid", "time", "uuid", "time"]
+    ids = [x["cascade_id"] for x in history if x["type"] == "intention_cascade_created"]
+    assert len(set(ids)) == 2
+    _refuse_live_draw(monkeypatch)
+    first = replay_mock_artifact(out)
+    second = replay_mock_artifact(out)
+    assert first.drift == second.drift == 0
+    assert first.final_history_hash == second.final_history_hash
+    history[0]["result"] = "damaged recorded value"
+    (out / "history.json").write_text(json.dumps(history))
+    with pytest.raises(ArtifactIntegrityError):
+        replay_mock_artifact(out)

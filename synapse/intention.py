@@ -6,11 +6,11 @@ from typing import Any, Dict, List
 LEVELS = ["mission", "objective", "task", "action"]
 
 class IntentionCascade:
-    def __init__(self, name: str, levels: Dict[str, Any]):
+    def __init__(self, name: str, levels: Dict[str, Any], *, identity: str | None = None, created_at: float | None = None):
         self.name = name
         self.levels = {k: levels.get(k) for k in LEVELS if k in levels}
-        self.id = f"cascade-{uuid.uuid4().hex[:12]}"
-        self.created_at = time.time()
+        self.id = f"cascade-{uuid.uuid4().hex[:12]}" if identity is None else identity
+        self.created_at = time.time() if created_at is None else created_at
         self.status = "planned"
 
     def to_dict(self) -> Dict[str, Any]:

@@ -57,3 +57,12 @@ def test_machine_only_change_does_not_schedule_other_cli_commands():
     reached = affected(graph, {'synapse/machine/entry.py'})
     assert 'acceptance/ui_bridge/test_machine.py' in reached
     assert 'tests/test_debugger.py' not in reached
+
+
+def test_installed_r_profile_assets_select_structural_acceptance():
+    case = "acceptance/stage4/stage16/test_language_registry.py"
+    assets = {"language-packs/r/pyproject.toml", "language-packs/r/synapse_gold_r/profile.json"}
+    graph = {case: set()}
+    add_runtime_edges(graph, {case, *assets})
+    for asset in assets:
+        assert case in affected(graph, {asset})

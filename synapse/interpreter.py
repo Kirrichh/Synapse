@@ -5088,7 +5088,10 @@ class Interpreter:
 
     def evaluate_intention_cascade(self, node: IntentionCascadeDef, env: Environment) -> Dict[str, Any]:
         levels = {k: self.evaluate(v, env) for k, v in (node.levels or {}).items()}
-        cascade = IntentionCascade(node.name, levels).to_dict()
+        # Use the same recorded draws as explicit uuid() and time() in DSL programs.
+        identity = "cascade-" + uuid.UUID(self.execute_side_effect("uuid", [])).hex[:12]
+        created_at = self.execute_side_effect("time", [])
+        cascade = IntentionCascade(node.name, levels, identity=identity, created_at=created_at).to_dict()
         self.intention_cascades[node.name] = cascade
         event = {"type": "intention_cascade_created", "name": node.name, "cascade_id": cascade["id"], "levels": levels, "trace_id": self.current_trace_id()}
         self.record_history_event(event)

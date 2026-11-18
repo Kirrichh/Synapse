@@ -239,6 +239,7 @@ def names_taken_from(path: pathlib.Path, module: str) -> set[str]:
 def dynamic_bypasses(path: pathlib.Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     found: set[str] = set()
+    registry = path == GOLD_PACKAGE / "languages" / "registry.py"
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -252,10 +253,20 @@ def dynamic_bypasses(path: pathlib.Path) -> set[str]:
                     and node.module == "importlib.metadata"
                     and all(alias.name == "distributions" and alias.asname is None for alias in node.names)):
                 continue
+            # A profile is distribution data. Its entry point must never run.
+            if registry and node.level == 0:
+                allowed = {
+                    "importlib.metadata": {"PackageNotFoundError", "entry_points", "version"},
+                    "importlib.resources": {"files"},
+                }.get(node.module, set())
+                if all(alias.name in allowed and alias.asname is None for alias in node.names):
+                    continue
             if node.module.split(".")[0] in DYNAMIC_IMPORT_NAMES:
                 found.add(node.module)
         elif isinstance(node, ast.Name) and node.id in DYNAMIC_IMPORT_NAMES:
             found.add(node.id)
+        elif registry and isinstance(node, ast.Attribute) and node.attr == "load":
+            found.add("entry point load")
     return found
 
 

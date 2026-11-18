@@ -57,6 +57,7 @@ Changelog = "https://github.com/Kirrichh/Synapse/blob/main/docs/CHANGELOG.md"
 synapse = "synapse.cli:main"
 
 [project.optional-dependencies]
+native-code = ["tree-sitter-language-pack==0.13.0", "tree-sitter-c-sharp==0.23.5", "tree-sitter==0.26.1", "tree-sitter-cpp==0.23.4", "tree-sitter-javascript==0.25.0", "tree-sitter-go==0.25.0"]
 dev = ["pytest>=7", "hypothesis>=6.100"]
 agent-a2a = ["a2a-sdk==1.1.2", "httpx==0.28.1"]
 agent-acp = ["agent-client-protocol==0.12.1"]
@@ -71,5 +72,6 @@ include = ["synapse*"]
 exclude = ["synapse.ui", "synapse.ui.*", "tests*", "examples*", "personal_slice*", "scripts*", "reports*", "docs*"]
 
 [tool.setuptools.package-data]
+"synapse.experiments.gold.languages" = ["profiles.json"]
 "synapse.machine" = ["release_profile.json", "schemas/*.json"]
 "synapse.commands" = ["*.schema.json"]

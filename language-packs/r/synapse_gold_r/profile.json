@@ -1,0 +1,13 @@
+{
+  "id": "r",
+  "label": "R",
+  "suffixes": [
+    ".r",
+    ".R"
+  ],
+  "driver": "query",
+  "grammar": "r",
+  "query": "(binary_operator lhs: (identifier) @name operator: [\"<-\" \"=\"] rhs: (function_definition)) @function",
+  "extent": "node",
+  "variants": {}
+}

@@ -544,6 +544,8 @@ def main(argv=None) -> int:
 
     project = sub.add_parser("project", help="connect a repository to Synapse and read its standing")
     project_sub = project.add_subparsers(dest="project_cmd")
+    project_languages = project_sub.add_parser("languages", help="list Gold structural language profiles")
+    project_languages.add_argument("--check", action="store_true", help="load each installed grammar and query")
     project_connect = project_sub.add_parser("connect")
     project_connect.add_argument("--repo", required=True, help="repository to connect")
     project_connect.add_argument("--state-dir", required=True, help="state root for the project's durable world")
@@ -734,6 +736,11 @@ def main(argv=None) -> int:
     if args.cmd == "memory":
         return _handle_memory(args, ap)
     if args.cmd == "project":
+        if args.project_cmd == "languages":
+            from .experiments.gold.source_ingestion import inspect_project_languages
+            code, result = inspect_project_languages(check=args.check)
+            print(_json_dump(result))
+            return code
         if args.project_cmd == "recall":
             from .experiments.gold.source_ingestion import execute_source_recall
             code, result = execute_source_recall(state_root=Path(args.state_dir), input_path=Path(args.input))

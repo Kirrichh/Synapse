@@ -7,7 +7,7 @@ not syntax resolution, memory admission, plan approval or execution authority.
 from pathlib import Path
 import re
 
-from .bindings import PythonSymbolKind, binding_to_ref, discover_python_bindings, resolve_creation_binding
+from .bindings import NativeCodeBinding, binding_to_ref, discover_code_bindings, resolve_creation_binding
 from .contracts import RepositoryRevision
 from .stage10.context_codec import decode_canonical, encode_canonical
 from .stage10.intent import EffectDisposition, EffectKind
@@ -56,11 +56,11 @@ def _resolve(task, repository_root, python_roots=()):
             if len(elements) > MAX_PROJECT_ELEMENTS:
                 raise ValueError("project elements exceed the selection budget")
             continue
-        bindings = discover_python_bindings(repository_root, repository_revision=revision, path=path,
+        bindings = discover_code_bindings(repository_root, repository_revision=revision, path=path,
                                             python_roots=python_roots)
         for binding in bindings:
             reasons = []
-            if binding.symbol_kind is PythonSymbolKind.MODULE:
+            if binding.symbol_kind.value == "MODULE":
                 reasons.append("EXPECTED_EFFECT_PATH")
             elif any(re.search(r"(?<![\w.])" + re.escape(name) + r"(?![\w.])", task.task_statement)
                      for name in (binding.qualname, binding.module + "." + binding.qualname)):
@@ -86,7 +86,8 @@ def _resolve(task, repository_root, python_roots=()):
     elements.sort(key=_element_key)
     return {
         "schema_version": TASK_TARGET_RESOLUTION_V2 if python_roots else TASK_TARGET_RESOLUTION_V1,
-        "profile": TARGET_SELECTION_PROFILE_V1,
+        "profile": ("committed-code-effect-paths-and-mentioned-symbols/v1"
+                    if any(type(item) is NativeCodeBinding for item in targets) else TARGET_SELECTION_PROFILE_V1),
         "task_contract_ref": task.reference.to_dict(), "repository_revision": revision.to_dict(),
         "effect_paths": list(paths), "elements": elements,
         "target_bindings": [binding_to_ref(item).to_dict() for item in targets],

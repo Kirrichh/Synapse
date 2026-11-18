@@ -13,6 +13,9 @@ from pathlib import Path
 from synapse.change.workspace import GitWorkspaceError
 
 from .admission_journal import FileSnapshotFence, JournalAdapterViolation
+from .recipe_executable import admit_recipe_executable
+from .languages.registry import LanguageError, inventory
+from .native_syntax import native_language, CONTRACT as NATIVE_CONTRACT
 from .bindings import BINDING_CONTRACT_VERSION_V1, BINDING_CONTRACT_VERSION_V2
 from .canonicalization import HashBoundRef
 from .contracts import AttemptId
@@ -64,7 +67,7 @@ def _ingest_sources(*, state_root: Path, input_path: Path):
     if claim["recipe"] is not None and "execute" not in grant.capabilities:
         raise ValueError("source recipe execution is outside the project's declared capabilities")
     contract = BINDING_CONTRACT_VERSION_V2 if project.declaration.python_roots else BINDING_CONTRACT_VERSION_V1
-    if any(symbol["contract_version"] != contract for symbol in claim["symbols"]):
+    if any(symbol["contract_version"] != (NATIVE_CONTRACT if native_language(symbol["path"]) else contract) for symbol in claim["symbols"]):
         raise ValueError("source claim names modules under another binding contract than the project's")
     evidence_paths = {}
     if type(declaration["files"]) is not list:
@@ -127,15 +130,16 @@ def _ingest_sources(*, state_root: Path, input_path: Path):
         def finish(result):
             journal.write_checkpoint(operation_root, "result", {"schema_version": journal.SOURCE_RESULT_CHECKPOINT_V2,
                 "observation_count": sequence, "observation_head_sha256": head, "result": result}, fence, guard)
-        assertion = {key: value for key, value in claim.items() if key != "operation_id"}
-        for result, request, _ in experience.source_publications(state_root):
-            previous = {key: value for key, value in request["domain"].items() if key != "operation_id"}
-            if previous == assertion:
-                known = {"status": "ALREADY_KNOWN", "operation_id": claim["operation_id"],
-                         "publication": result, "reason": "SAME_VERIFIED_SOURCE_CONTRACT"}
-                finish(known)
-                return 0, {**known, "knowledge": experience.export_source_knowledge(state_root)}
         try:
+            assertion = {key: value for key, value in claim.items() if key != "operation_id"}
+            for result, request, _ in experience.source_publications(state_root):
+                previous = {key: value for key, value in request["domain"].items() if key != "operation_id"}
+                if previous == assertion:
+                    admit_recipe_executable(claim["recipe"], grant.recipe_tools)
+                    known = {"status": "ALREADY_KNOWN", "operation_id": claim["operation_id"],
+                             "publication": result, "reason": "SAME_VERIFIED_SOURCE_CONTRACT"}
+                    finish(known)
+                    return 0, {**known, "knowledge": experience.export_source_knowledge(state_root)}
             evidence = {}
             for index, (ref, path) in enumerate(evidence_paths.items(), 1):
                 raw = read_regular_bytes(path, maximum_bytes=MAX_EVIDENCE_BYTES)
@@ -150,7 +154,7 @@ def _ingest_sources(*, state_root: Path, input_path: Path):
                 evidence[ref] = raw
             verification = verify_source_claim(repo_root=project.declaration.repo_root, claim=claim,
                 external_evidence=evidence, attempt_id=AttemptId("source-verification-1"),
-                observation_sink=retain_observation, python_roots=project.declaration.python_roots)
+                observation_sink=retain_observation, python_roots=project.declaration.python_roots, recipe_tools=grant.recipe_tools)
         except (ValueError, OSError, TypeError, GitWorkspaceError, PersistenceViolation) as exc:
             if fence.current_epoch() % 2:
                 raise  # A failed journal mutation cannot authorize another write.
@@ -185,3 +189,12 @@ def execute_source_recall(*, state_root: Path, input_path: Path):
             entitlements=None if project.declaration.entitlements is None else project.declaration.entitlements.to_dict(), query=read_input_json(input_path))
     except (OSError, ValueError, TypeError, KeyError, PersistenceViolation, JournalAdapterViolation) as exc:
         return 2, {"status": "REFUSED", "reason": str(exc)}
+
+
+def inspect_project_languages(*, check: bool):
+    """Report installed source profiles and signal unavailable grammars to the operator."""
+    try:
+        rows = inventory(check)
+    except LanguageError as exc:
+        return 1, {"error": str(exc)}
+    return int(any(row.get("status") == "UNAVAILABLE" for row in rows)), {"languages": rows}

@@ -46,7 +46,7 @@ def connect(root: Path, repo: Path, **declared: object) -> subprocess.CompletedP
     declaration.write_text(json.dumps({
         "policy_version": "source-policy/v1", "environment_profile_id": "source-env",
         "identities": identities.to_dict(),
-        "entitlements": {"scopes": ["src", "tests"], "capabilities": ["read"], "oracles": ["source-verifier", "swebench"]},
+        "entitlements": {"scopes": ["src", "tests"], "capabilities": ["read"], "oracles": ["change-oracle", "source-verifier"]},
         **declared}), encoding="utf-8")
     return cli("project", "connect", "--repo", str(repo), "--state-dir", str(root / "state"),
                "--declaration", str(declaration))

@@ -243,11 +243,11 @@ def production_point_of_use_case(
         ActorIdentity("point-of-use-consumer"),
     )
     grant = A.GrantEnvelope(
-        scopes=("repo:x",), capabilities=("read",), oracles=("swebench",),
+        scopes=("repo:x",), capabilities=("read",), oracles=("change-oracle",),
         policy_version=policy_version,
     )
     requested = A.RequestedEnvelope(
-        scopes=("repo:x",), capabilities=("read",), oracles=("swebench",)
+        scopes=("repo:x",), capabilities=("read",), oracles=("change-oracle",)
     )
     grant_dependency = SimpleNamespace(available=True)
 
@@ -497,10 +497,10 @@ def _controller(harness, *, probe):
         trusted_clock=lambda: NOW,
     )
     grant = A.GrantEnvelope(
-        scopes=("repo:x",), capabilities=("read",), oracles=("swebench",), policy_version=POLICY
+        scopes=("repo:x",), capabilities=("read",), oracles=("change-oracle",), policy_version=POLICY
     )
     requested = A.RequestedEnvelope(
-        scopes=("repo:x",), capabilities=("read",), oracles=("swebench",)
+        scopes=("repo:x",), capabilities=("read",), oracles=("change-oracle",)
     )
     controller = A.configure_gate_controller(
         declaration=declaration,

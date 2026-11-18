@@ -1,0 +1,164 @@
+[
+  {
+    "id": "CI-transitive-consumers",
+    "target": "scripts/ci/dependencies.py",
+    "before": "reverse[dependency].add(consumer)",
+    "after": "reverse[consumer].add(dependency)"
+  },
+  {
+    "id": "CI-parent-fixtures",
+    "target": "scripts/ci/dependencies.py",
+    "before": "graph[path].add(fixture)",
+    "after": "pass"
+  },
+  {
+    "id": "CI-package-initialization",
+    "target": "scripts/ci/dependencies.py",
+    "before": "graph[path].add(initializer)",
+    "after": "pass"
+  },
+  {
+    "id": "CI-subprocess-import",
+    "target": "scripts/ci/dependencies.py",
+    "before": "names = re.findall(r'\\b(?:synapse|acceptance|scripts|tests)(?:\\.\\w+)+', node.value)",
+    "after": "names = []"
+  },
+  {
+    "id": "CI-machine-data",
+    "target": "scripts/ci/dependencies.py",
+    "before": "graph[path].update(name for name in files if name.startswith('synapse/machine/') and not name.endswith('.py'))",
+    "after": "pass"
+  },
+  {
+    "id": "CI-exact-matrix",
+    "target": "scripts/ci/select_tests.py",
+    "before": "chosen = [row for row in rows if touches({row['file']} if row.get('file') else fixed)]",
+    "after": "chosen = rows"
+  },
+  {
+    "id": "CI-new-acceptance",
+    "target": "scripts/ci/select_tests.py",
+    "before": "'additional': additional",
+    "after": "'additional': []"
+  },
+  {
+    "id": "CI-shared-ui-contract",
+    "target": "scripts/ci/select_tests.py",
+    "before": "native = workflow or control or any",
+    "after": "native = workflow or False or any"
+  },
+  {
+    "id": "CI-required-evidence",
+    "target": "scripts/ci/check_results.py",
+    "before": "== 'success'",
+    "after": "in {'success', 'skipped'}"
+  },
+  {
+    "id": "CI-branch-cumulative",
+    "target": "scripts/ci/changes.py",
+    "before": "return 'refs/remotes/origin/' + default, head, True",
+    "after": "return event.get('before', ''), head, False"
+  },
+  {
+    "id": "CI-rename-boundaries",
+    "target": "scripts/ci/changes.py",
+    "before": "'--no-renames'",
+    "after": "'--find-renames'"
+  },
+  {
+    "id": "CI-execution-filter",
+    "target": "scripts/ci/pytest_selected.py",
+    "before": "elif candidate.split('::')[0] in selected:",
+    "after": "elif True:"
+  },
+  {
+    "id": "CI-failure-propagation",
+    "target": "scripts/ci/pytest_selected.py",
+    "before": "return subprocess.call([sys.executable, '-m', 'pytest', *arguments])",
+    "after": "subprocess.call([sys.executable, '-m', 'pytest', *arguments])\n    return 0"
+  },
+  {
+    "id": "CI-mutation-selection",
+    "target": "scripts/ci/ui_mutations.py",
+    "before": "if selected.intersection(case.split('::')[0] for case in seed['cases'])",
+    "after": "if True"
+  },
+  {
+    "id": "CI-shared-environment",
+    "target": "scripts/ci/select_tests.py",
+    "before": "(cases if environment_changed else cases & reached)",
+    "after": "(cases & reached)"
+  },
+  {
+    "id": "CI-manual-provider",
+    "target": "scripts/ci/select_tests.py",
+    "before": "- MANUAL",
+    "after": "- set()"
+  },
+  {
+    "id": "CI-native-mutation-owner",
+    "target": "scripts/ci/ui_mutations.py",
+    "before": "if shared or seed['target'] in paths:",
+    "after": "if True:"
+  },
+  {
+    "id": "CI-lazy-command-boundary",
+    "target": "scripts/ci/dependencies.py",
+    "before": "if id(node) in lazy_dispatch:",
+    "after": "if False:"
+  },
+  {
+    "id": "CI-manifest-canonical-reader",
+    "target": "scripts/ci/dependencies.py",
+    "before": "    'tests/test_stage4_gold_canonical_entrypoint.py',",
+    "after": ""
+  },
+  {
+    "id": "CI-manifest-dag-reader",
+    "target": "scripts/ci/dependencies.py",
+    "before": "    'scripts/stage9_ownership_dag.py',",
+    "after": ""
+  },
+  {
+    "id": "CI-unknown-governance",
+    "target": "scripts/ci/dependencies.py",
+    "before": "graph[consumer].update(unknown_governance)",
+    "after": "pass"
+  },
+  {
+    "id": "CI-deleted-data",
+    "target": "scripts/ci/select_tests.py",
+    "before": "add_runtime_edges(graph, files | changed)",
+    "after": "add_runtime_edges(graph, files)"
+  },
+  {
+    "id": "CI-renderer-recovery-owner",
+    "target": "scripts/ci/select_tests.py",
+    "before": ", 'acceptance/ui_bridge/browser_'",
+    "after": ""
+  },
+  {
+    "id": "CI-legacy-mutation-selection",
+    "target": "scripts/ci/ui_mutations.py",
+    "before": "plan.get('mutation_files', plan['files'])",
+    "after": "plan['files']"
+  },
+  {
+    "id": "CI-legacy-mutation-job",
+    "target": "scripts/ci/select_tests.py",
+    "before": "ui['python_mutations'] = any(",
+    "after": "ui['python_mutations'] = False and any("
+  },
+  {
+    "id": "CI-mutation-only-gate",
+    "target": "scripts/ci/check_results.py",
+    "before": ", 'python_mutations'",
+    "after": ""
+  },
+  {
+    "id": "CI-missing-plan-refusal",
+    "target": "scripts/ci/check_results.py",
+    "before": "raise SystemExit(f'{name} is missing or invalid; verification evidence is unavailable.') from None",
+    "after": "return {'groups': {}, 'durable': False, 'version': False, 'additional': [], 'tooling': False, 'ui': {}}"
+  }
+]

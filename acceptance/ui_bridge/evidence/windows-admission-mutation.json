@@ -1,0 +1,11 @@
+{
+  "id": "WIN-active-job-admission",
+  "behavior": "a replacement cannot launch while the existing core remains in the Job",
+  "target": "synapse/ui/src-tauri/src/lifecycle/windows/job.rs",
+  "selected_acceptance": [
+    "acceptance/ui_bridge/native/windows_lifecycle.rs"
+  ],
+  "baseline": "PASS",
+  "source_sha256": "7c49c4d7698de717637012eccf563736cf237ca7d71c5f91bda3f146152ce55c",
+  "result": "KILLED"
+}

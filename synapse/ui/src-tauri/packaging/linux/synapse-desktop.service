@@ -1,0 +1,16 @@
+[Unit]
+Description=Synapse desktop and managed local executors
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/synapse-desktop
+ExitType=main
+KillMode=control-group
+Restart=no
+TimeoutStopSec=5s
+SendSIGKILL=yes
+
+[Install]
+WantedBy=graphical-session.target

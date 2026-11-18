@@ -1,0 +1,378 @@
+{
+  "date": "2026-10-18",
+  "scope": "Control profile and component behavior only; installed Windows/Linux lifecycle and WebView security are not established.",
+  "baseline": "PASS",
+  "mutants": [
+    {
+      "id": "PY-duplicate-properties",
+      "behavior": "duplicate properties",
+      "target": "synapse/machine/codec.py",
+      "source_sha256": "5571c7577996523cb63fb528364818648f7724c9a2164b0fa61710060ae7b0dc",
+      "result": "KILLED",
+      "seconds": 0.38,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_json_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-negative-zero",
+      "behavior": "negative zero",
+      "target": "synapse/machine/codec.py",
+      "source_sha256": "5571c7577996523cb63fb528364818648f7724c9a2164b0fa61710060ae7b0dc",
+      "result": "KILLED",
+      "seconds": 0.36,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_corpus_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-integer-precision",
+      "behavior": "integer precision",
+      "target": "synapse/machine/codec.py",
+      "source_sha256": "5571c7577996523cb63fb528364818648f7724c9a2164b0fa61710060ae7b0dc",
+      "result": "KILLED",
+      "seconds": 0.367,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_json_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-depth-limit",
+      "behavior": "depth limit",
+      "target": "synapse/machine/codec.py",
+      "source_sha256": "5571c7577996523cb63fb528364818648f7724c9a2164b0fa61710060ae7b0dc",
+      "result": "KILLED",
+      "seconds": 0.355,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_json_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-payload-byte-limit",
+      "behavior": "payload byte limit",
+      "target": "synapse/machine/codec.py",
+      "source_sha256": "5571c7577996523cb63fb528364818648f7724c9a2164b0fa61710060ae7b0dc",
+      "result": "KILLED",
+      "seconds": 0.454,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_json_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-utf8-strictness",
+      "behavior": "utf8 strictness",
+      "target": "synapse/machine/codec.py",
+      "source_sha256": "5571c7577996523cb63fb528364818648f7724c9a2164b0fa61710060ae7b0dc",
+      "result": "KILLED",
+      "seconds": 0.367,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_json_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-unicode-scalars",
+      "behavior": "unicode scalars",
+      "target": "synapse/machine/codec.py",
+      "source_sha256": "5571c7577996523cb63fb528364818648f7724c9a2164b0fa61710060ae7b0dc",
+      "result": "KILLED",
+      "seconds": 0.385,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_json_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-frame-boundary",
+      "behavior": "frame boundary",
+      "target": "synapse/machine/codec.py",
+      "source_sha256": "5571c7577996523cb63fb528364818648f7724c9a2164b0fa61710060ae7b0dc",
+      "result": "KILLED",
+      "seconds": 0.369,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_frame_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-outbound-boundary",
+      "behavior": "outbound boundary",
+      "target": "synapse/machine/codec.py",
+      "source_sha256": "5571c7577996523cb63fb528364818648f7724c9a2164b0fa61710060ae7b0dc",
+      "result": "KILLED",
+      "seconds": 0.501,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_frame_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-wire-endianness",
+      "behavior": "wire endianness",
+      "target": "synapse/machine/codec.py",
+      "source_sha256": "5571c7577996523cb63fb528364818648f7724c9a2164b0fa61710060ae7b0dc",
+      "result": "KILLED",
+      "seconds": 0.367,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_frame_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-partial-writes",
+      "behavior": "partial writes",
+      "target": "synapse/machine/codec.py",
+      "source_sha256": "5571c7577996523cb63fb528364818648f7724c9a2164b0fa61710060ae7b0dc",
+      "result": "KILLED",
+      "seconds": 0.43,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_frame_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-schema-refusal",
+      "behavior": "schema refusal",
+      "target": "synapse/machine/contract.py",
+      "source_sha256": "8ead6c21e0b574b24d0d0d5d72a7c1565ede74d3c366efcc20cd77656e85afae",
+      "result": "KILLED",
+      "seconds": 0.417,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_json_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-version-refusal",
+      "behavior": "version refusal",
+      "target": "synapse/machine/contract.py",
+      "source_sha256": "8ead6c21e0b574b24d0d0d5d72a7c1565ede74d3c366efcc20cd77656e85afae",
+      "result": "KILLED",
+      "seconds": 0.454,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_json_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-diagnostic-redaction",
+      "behavior": "diagnostic redaction",
+      "target": "synapse/machine/contract.py",
+      "source_sha256": "8ead6c21e0b574b24d0d0d5d72a7c1565ede74d3c366efcc20cd77656e85afae",
+      "result": "KILLED",
+      "seconds": 0.401,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_json_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-early-requests",
+      "behavior": "early requests",
+      "target": "synapse/machine/session.py",
+      "source_sha256": "4b09a5c1426123082de35eae87beaa9ff18d4c8175cc3de2552d4dad1a03e715",
+      "result": "KILLED",
+      "seconds": 0.361,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_session_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-closed-session",
+      "behavior": "closed session",
+      "target": "synapse/machine/session.py",
+      "source_sha256": "4b09a5c1426123082de35eae87beaa9ff18d4c8175cc3de2552d4dad1a03e715",
+      "result": "KILLED",
+      "seconds": 0.433,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_session_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-peer-role",
+      "behavior": "peer role",
+      "target": "synapse/machine/session.py",
+      "source_sha256": "4b09a5c1426123082de35eae87beaa9ff18d4c8175cc3de2552d4dad1a03e715",
+      "result": "KILLED",
+      "seconds": 0.356,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_session_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-negotiated-limit",
+      "behavior": "negotiated limit",
+      "target": "synapse/machine/session.py",
+      "source_sha256": "4b09a5c1426123082de35eae87beaa9ff18d4c8175cc3de2552d4dad1a03e715",
+      "result": "KILLED",
+      "seconds": 0.342,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_session_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-unknown-methods",
+      "behavior": "unknown methods",
+      "target": "synapse/machine/session.py",
+      "source_sha256": "4b09a5c1426123082de35eae87beaa9ff18d4c8175cc3de2552d4dad1a03e715",
+      "result": "KILLED",
+      "seconds": 0.396,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_session_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-nonempty-parameters",
+      "behavior": "nonempty parameters",
+      "target": "synapse/machine/session.py",
+      "source_sha256": "4b09a5c1426123082de35eae87beaa9ff18d4c8175cc3de2552d4dad1a03e715",
+      "result": "KILLED",
+      "seconds": 0.412,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_session_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-shutdown-terminal",
+      "behavior": "shutdown terminal",
+      "target": "synapse/machine/session.py",
+      "source_sha256": "4b09a5c1426123082de35eae87beaa9ff18d4c8175cc3de2552d4dad1a03e715",
+      "result": "KILLED",
+      "seconds": 0.374,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_session_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-prefetched-limit",
+      "behavior": "prefetched limit",
+      "target": "synapse/machine/transport.py",
+      "source_sha256": "a3ea2469e2b828ec6aaaec81d230060efcbf05e74cd4ff90ddf84bc4c41fcade",
+      "result": "KILLED",
+      "seconds": 4.78,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_machine_cli_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-write-deadline",
+      "behavior": "write deadline",
+      "target": "synapse/machine/transport.py",
+      "source_sha256": "a3ea2469e2b828ec6aaaec81d230060efcbf05e74cd4ff90ddf84bc4c41fcade",
+      "result": "KILLED",
+      "seconds": 2.491,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_transport_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-cli-machine-dispatch",
+      "behavior": "cli machine dispatch",
+      "target": "synapse/cli.py",
+      "source_sha256": "0e35322569c9561c9e5c2da2c162f3ef025d2862b2049fa09847ea34f9161991",
+      "result": "KILLED",
+      "seconds": 3.028,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_machine_cli_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-session-exit-status",
+      "behavior": "session exit status",
+      "target": "synapse/machine/entry.py",
+      "source_sha256": "adb784faede035354d12678f9343367999d15a98def8a3f034dcc719495b3d67",
+      "result": "KILLED",
+      "seconds": 4.396,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_machine_cli_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-fixed-handshake-deadline",
+      "behavior": "fixed handshake deadline",
+      "target": "synapse/machine/entry.py",
+      "source_sha256": "adb784faede035354d12678f9343367999d15a98def8a3f034dcc719495b3d67",
+      "result": "KILLED",
+      "seconds": 16.63,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_handshake_deadline_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-stdlib-exclusions",
+      "behavior": "stdlib exclusions",
+      "target": "scripts/ui/build_core_bundle.py",
+      "source_sha256": "c013041c901c79aaa471af641df041a671052bf5e40bbb4f4f9cbe933203e5c2",
+      "result": "KILLED",
+      "seconds": 0.149,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_bundle_tool_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-inventory-identity",
+      "behavior": "inventory identity",
+      "target": "scripts/ui/build_core_bundle.py",
+      "source_sha256": "c013041c901c79aaa471af641df041a671052bf5e40bbb4f4f9cbe933203e5c2",
+      "result": "KILLED",
+      "seconds": 0.15,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_bundle_tool_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-distribution-isolation",
+      "behavior": "desktop code cannot enter the installed Python namespace",
+      "target": "pyproject.toml",
+      "source_sha256": "7e7aa41841d94e135f8d30f4538cfd867aa66fa6c37165bcaf09042fe5d3394f",
+      "result": "KILLED",
+      "seconds": 0.809,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_python_distribution_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-outgoing-validation",
+      "behavior": "invalid outgoing envelope cannot reach the pipe",
+      "target": "synapse/machine/transport.py",
+      "source_sha256": "a3ea2469e2b828ec6aaaec81d230060efcbf05e74cd4ff90ddf84bc4c41fcade",
+      "result": "KILLED",
+      "seconds": 0.384,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_transport_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-explicit-shutdown-dispatch",
+      "behavior": "new methods cannot silently become shutdown",
+      "target": "synapse/machine/session.py",
+      "source_sha256": "4b09a5c1426123082de35eae87beaa9ff18d4c8175cc3de2552d4dad1a03e715",
+      "result": "KILLED",
+      "seconds": 0.359,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_session_acceptance.py"
+      ]
+    },
+    {
+      "id": "PY-canonical-delegation",
+      "behavior": "canonical CLI delegation and exit propagation",
+      "target": "synapse/__main__.py",
+      "source_sha256": "7930c492665be8079819bb0b6450be85fcee8b95c66a4430680c363b018fe859",
+      "result": "KILLED",
+      "seconds": 0.366,
+      "selected_acceptance": [
+        "tests/test_system_execution_path.py::test_package_entrypoint_only_delegates_to_cli_and_propagates_its_exit"
+      ]
+    },
+    {
+      "id": "PY-canonical-argument-owner",
+      "behavior": "canonical adapter cannot acquire argument ownership",
+      "target": "synapse/__main__.py",
+      "source_sha256": "7930c492665be8079819bb0b6450be85fcee8b95c66a4430680c363b018fe859",
+      "result": "KILLED",
+      "seconds": 0.335,
+      "selected_acceptance": [
+        "tests/test_system_execution_path.py::test_package_entrypoint_only_delegates_to_cli_and_propagates_its_exit"
+      ]
+    }
+  ],
+  "survivor_resolution": {
+    "id": "PY-session-exit-status",
+    "initial_result": "SURVIVED",
+    "missing_behavior": "A fatal schema-valid negotiation refusal must exit with status 2.",
+    "added_acceptance": "test_fatal_negotiation_refusal_exits_unsuccessfully",
+    "final_result": "KILLED"
+  },
+  "retention": "Reviewed structured evidence only; raw subprocess output is not retained."
+}

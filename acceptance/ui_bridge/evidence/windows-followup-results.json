@@ -1,0 +1,537 @@
+{
+  "schema": 2,
+  "platform": "Windows x86_64",
+  "scope": "PR110 Windows control and containment follow-up; Linux explicitly deferred by owner",
+  "python_ui": {
+    "passed": 119,
+    "failed": 0
+  },
+  "native": {
+    "passed": 31,
+    "failed": 0,
+    "canonical_diagnostic": "INVALID_LENGTH preserved over actual bundled stderr",
+    "network_policy": "Included in final 31-case serial native suite; four detecting policy mutants"
+  },
+  "source_encoding": "UTF-8 with LF",
+  "sources": {
+    "synapse/machine/entry.py": "8f28c458f03736896d3779d7db606dcc04b32fd67793ad93a7f2d6862f12e26b",
+    "synapse/ui/src-tauri/src/lifecycle/windows/launch.rs": "3f0d9aa7b4d1d6bf5c579ed8058dc63092faa861bcf008bbce2b5176633cde08",
+    "synapse/ui/src-tauri/src/webview_network.rs": "3679f5dec3696742a61178d70994a4dfbaefb7e8711e9e0a4e3a48993f2759e8",
+    "synapse/ui/src-tauri/src/desktop/mod.rs": "de79edf412fb0a744c5a8e599561e6618aacd2dae940ba5e9f5e6657c8cd98cd"
+  },
+  "startup_before": {
+    "schema": 1,
+    "method": "external Win32 debugger; private acceptance process only",
+    "records": [
+      {
+        "scenario": "normal",
+        "result": "PASS",
+        "child_exited": true,
+        "child_executed": true,
+        "child_wait": 0,
+        "owner_exit": 0,
+        "member_at_create_return": false,
+        "observed_steps": [
+          "debugger_ready",
+          "CreateProcessW",
+          "created",
+          "AssignProcessToJobObject",
+          "ResumeThread"
+        ],
+        "reply": "STARTED"
+      },
+      {
+        "scenario": "assignment_failure",
+        "result": "PASS",
+        "child_exited": true,
+        "child_executed": false,
+        "child_wait": 0,
+        "owner_exit": 0,
+        "member_at_create_return": false,
+        "observed_steps": [
+          "debugger_ready",
+          "CreateProcessW",
+          "created",
+          "AssignProcessToJobObject"
+        ],
+        "reply": "CONTAINMENT_FAILED"
+      },
+      {
+        "scenario": "resume_failure",
+        "result": "PASS",
+        "child_exited": true,
+        "child_executed": false,
+        "child_wait": 0,
+        "owner_exit": 0,
+        "member_at_create_return": false,
+        "observed_steps": [
+          "debugger_ready",
+          "CreateProcessW",
+          "created",
+          "AssignProcessToJobObject",
+          "ResumeThread"
+        ],
+        "reply": "SPAWN_FAILED"
+      },
+      {
+        "scenario": "owner_after_create",
+        "result": "FAIL",
+        "child_exited": false,
+        "child_executed": false,
+        "child_wait": 258,
+        "owner_exit": 7,
+        "member_at_create_return": false,
+        "observed_steps": [
+          "debugger_ready",
+          "CreateProcessW",
+          "created"
+        ],
+        "reply": null
+      },
+      {
+        "scenario": "owner_before_resume",
+        "result": "PASS",
+        "child_exited": true,
+        "child_executed": false,
+        "child_wait": 0,
+        "owner_exit": 7,
+        "member_at_create_return": false,
+        "observed_steps": [
+          "debugger_ready",
+          "CreateProcessW",
+          "created",
+          "AssignProcessToJobObject",
+          "ResumeThread"
+        ],
+        "reply": null
+      }
+    ]
+  },
+  "startup_after": {
+    "schema": 1,
+    "method": "external Win32 debugger; private acceptance process only",
+    "records": [
+      {
+        "scenario": "normal",
+        "result": "PASS",
+        "child_exited": true,
+        "child_executed": true,
+        "child_wait": 0,
+        "owner_exit": 0,
+        "member_at_create_return": true,
+        "observed_steps": [
+          "debugger_ready",
+          "UpdateProcThreadAttribute",
+          "attribute_return",
+          "UpdateProcThreadAttribute",
+          "CreateProcessW",
+          "created",
+          "ResumeThread"
+        ],
+        "reply": "STARTED"
+      },
+      {
+        "scenario": "job_attribute_failure",
+        "result": "PASS",
+        "child_exited": true,
+        "child_executed": false,
+        "child_wait": null,
+        "owner_exit": 0,
+        "member_at_create_return": null,
+        "observed_steps": [
+          "debugger_ready",
+          "UpdateProcThreadAttribute",
+          "attribute_return",
+          "UpdateProcThreadAttribute"
+        ],
+        "reply": "CONTAINMENT_FAILED"
+      },
+      {
+        "scenario": "invalid_job",
+        "result": "PASS",
+        "child_exited": true,
+        "child_executed": false,
+        "child_wait": null,
+        "owner_exit": 0,
+        "member_at_create_return": null,
+        "observed_steps": [
+          "debugger_ready",
+          "UpdateProcThreadAttribute",
+          "attribute_return",
+          "UpdateProcThreadAttribute",
+          "CreateProcessW",
+          "created"
+        ],
+        "reply": "SPAWN_FAILED"
+      },
+      {
+        "scenario": "resume_failure",
+        "result": "PASS",
+        "child_exited": true,
+        "child_executed": false,
+        "child_wait": 0,
+        "owner_exit": 0,
+        "member_at_create_return": true,
+        "observed_steps": [
+          "debugger_ready",
+          "UpdateProcThreadAttribute",
+          "attribute_return",
+          "UpdateProcThreadAttribute",
+          "CreateProcessW",
+          "created",
+          "ResumeThread"
+        ],
+        "reply": "SPAWN_FAILED"
+      },
+      {
+        "scenario": "owner_after_create",
+        "result": "PASS",
+        "child_exited": true,
+        "child_executed": false,
+        "child_wait": 0,
+        "owner_exit": 7,
+        "member_at_create_return": true,
+        "observed_steps": [
+          "debugger_ready",
+          "UpdateProcThreadAttribute",
+          "attribute_return",
+          "UpdateProcThreadAttribute",
+          "CreateProcessW",
+          "created"
+        ],
+        "reply": null
+      },
+      {
+        "scenario": "owner_before_resume",
+        "result": "PASS",
+        "child_exited": true,
+        "child_executed": false,
+        "child_wait": 0,
+        "owner_exit": 7,
+        "member_at_create_return": true,
+        "observed_steps": [
+          "debugger_ready",
+          "UpdateProcThreadAttribute",
+          "attribute_return",
+          "UpdateProcThreadAttribute",
+          "CreateProcessW",
+          "created",
+          "ResumeThread"
+        ],
+        "reply": null
+      }
+    ]
+  },
+  "actual_runtime_descendants": {
+    "schema": 1,
+    "records": [
+      {
+        "scenario": "orderly",
+        "result": "PASS",
+        "agent_supervisor": "real run_process",
+        "mcp_transport": "real McpToolTransport and mcp 2.2.0 stdio client",
+        "all_in_product_job": true,
+        "all_exited": true
+      },
+      {
+        "scenario": "abrupt",
+        "result": "PASS",
+        "agent_supervisor": "real run_process",
+        "mcp_transport": "real McpToolTransport and mcp 2.2.0 stdio client",
+        "all_in_product_job": true,
+        "all_exited": true
+      }
+    ]
+  },
+  "final_installed_artifact": {
+    "identity": {
+      "build_shell_sha256": "46304fd2a38d58505f28cf781a5949598a409369a1889eff0e57f11e54a36209",
+      "installed_shell_sha256": "db91b560b646639220f742ad912c12d10613a4ffaea4ba180c67a22d00282ffc",
+      "installer_sha256": "54bf0d139af43ccb3be98eba236fc87dc407970950283b71690b8cc6decd6e50",
+      "manifest_sha256": "3b57fc4b9a5895547792f461ec0778878b0d1245e82154d70071d1058fe7fde3"
+    },
+    "host": {
+      "schema": 1,
+      "elevated": false,
+      "phases": {
+        "network_mutations": "PASS",
+        "desktop_build": "PASS",
+        "installed_artifact": "PASS",
+        "installed_window": "PASS"
+      },
+      "status": "PASS"
+    },
+    "installed": {
+      "schema": 1,
+      "elevated": false,
+      "checks": [
+        {
+          "name": "installation stays in the task workspace",
+          "status": "PASS"
+        },
+        {
+          "name": "only the previous verified task installation is updated",
+          "status": "PASS"
+        },
+        {
+          "name": "existing installer registration belongs to this test",
+          "status": "PASS"
+        },
+        {
+          "name": "NSIS install success",
+          "status": "PASS"
+        },
+        {
+          "name": "build bundle marker is present",
+          "status": "PASS"
+        },
+        {
+          "name": "installed shell matches exact NSIS transformation",
+          "status": "PASS"
+        },
+        {
+          "name": "installed inventory matches staged inventory",
+          "status": "PASS"
+        },
+        {
+          "name": "installed resource hashes",
+          "status": "PASS"
+        },
+        {
+          "name": "no local pip provenance",
+          "status": "PASS"
+        },
+        {
+          "name": "installed canonical command",
+          "status": "PASS"
+        },
+        {
+          "name": "second shell admits no overlapping core",
+          "status": "PASS"
+        },
+        {
+          "name": "refused shell termination preserves active core",
+          "status": "PASS"
+        },
+        {
+          "name": "abrupt installed shell death terminates its core",
+          "status": "PASS"
+        },
+        {
+          "name": "installed canonical command",
+          "status": "PASS"
+        },
+        {
+          "name": "replacement starts after old core exit",
+          "status": "PASS"
+        },
+        {
+          "name": "core crash leaves shell available for explicit recovery",
+          "status": "PASS"
+        }
+      ],
+      "shell_sha256": "db91b560b646639220f742ad912c12d10613a4ffaea4ba180c67a22d00282ffc",
+      "installer_sha256": "54bf0d139af43ccb3be98eba236fc87dc407970950283b71690b8cc6decd6e50",
+      "status": "PASS"
+    },
+    "window_observation": "See installed_crash_consent: actual DOM and both confirmation outcomes passed"
+  },
+  "linux": "DEFERRED_BY_OWNER",
+  "security_before_network_fix": {
+    "schema": 1,
+    "instrumentation": "per-process WebView2 CDP; CSP enforced",
+    "checks": [
+      {
+        "name": "actual installed native session ready",
+        "status": "PASS"
+      },
+      {
+        "name": "force close refused while core is ready",
+        "status": "PASS"
+      },
+      {
+        "name": "foreign subscription ACK refused",
+        "status": "PASS"
+      },
+      {
+        "name": "ungranted native command refused: plugin:shell|execute",
+        "status": "PASS"
+      },
+      {
+        "name": "ungranted native command refused: plugin:fs|read_file",
+        "status": "PASS"
+      },
+      {
+        "name": "ungranted native command refused: plugin:webview|create_webview_window",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks JavaScript eval",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks DOM inline script",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks non-IPC fetch",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks frame and image loads",
+        "status": "PASS"
+      },
+      {
+        "name": "new window denied",
+        "status": "PASS"
+      },
+      {
+        "name": "foreign top-level navigation denied",
+        "status": "FAIL",
+        "observed": {
+          "sameOrigin": true,
+          "networkRequests": 1,
+          "requests": [
+            {
+              "phase": "navigation",
+              "method": "GET",
+              "probe": "navigation",
+              "destination": "document",
+              "mode": "navigate"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "security_after_network_fix": {
+    "schema": 1,
+    "instrumentation": "per-process WebView2 CDP; CSP enforced",
+    "checks": [
+      {
+        "name": "actual installed native session ready",
+        "status": "PASS"
+      },
+      {
+        "name": "force close refused while core is ready",
+        "status": "PASS"
+      },
+      {
+        "name": "foreign subscription ACK refused",
+        "status": "PASS"
+      },
+      {
+        "name": "ungranted native command refused: plugin:shell|execute",
+        "status": "PASS"
+      },
+      {
+        "name": "ungranted native command refused: plugin:fs|read_file",
+        "status": "PASS"
+      },
+      {
+        "name": "ungranted native command refused: plugin:webview|create_webview_window",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks JavaScript eval",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks DOM inline script",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks non-IPC fetch",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks frame and image loads",
+        "status": "PASS"
+      },
+      {
+        "name": "new window denied",
+        "status": "PASS"
+      },
+      {
+        "name": "foreign top-level navigation denied",
+        "status": "PASS",
+        "observed": {
+          "sameOrigin": true,
+          "networkRequests": 0,
+          "requests": []
+        }
+      },
+      {
+        "name": "unacknowledged Channel has one outstanding snapshot",
+        "status": "PASS"
+      },
+      {
+        "name": "native heartbeat progresses despite missing Channel ACK",
+        "status": "PASS"
+      },
+      {
+        "name": "old Channel cannot acknowledge replacement subscription",
+        "status": "PASS"
+      },
+      {
+        "name": "shutdown completes despite unacknowledged real Channel",
+        "status": "PASS"
+      },
+      {
+        "name": "renderer recovers confirmed stopped state after reload",
+        "status": "PASS"
+      },
+      {
+        "name": "blocked content made no network request",
+        "status": "PASS"
+      }
+    ]
+  },
+  "installed_crash_consent": {
+    "schema": 1,
+    "instrumentation": "per-process WebView2 CDP; CSP enforced",
+    "checks": [
+      {
+        "name": "actual installed native session ready",
+        "status": "PASS"
+      },
+      {
+        "name": "crash target is the owned installed canonical core",
+        "status": "PASS"
+      },
+      {
+        "name": "actual renderer displays core loss and explicit recovery",
+        "status": "PASS"
+      },
+      {
+        "name": "force close asks for confirmation",
+        "status": "PASS"
+      },
+      {
+        "name": "cancel keeps failed shell open",
+        "status": "PASS"
+      },
+      {
+        "name": "second force close asks for confirmation",
+        "status": "PASS"
+      },
+      {
+        "name": "confirmed force close exits actual installed shell",
+        "status": "PASS"
+      }
+    ]
+  },
+  "findings": {
+    "F-08": "RESOLVED",
+    "F-10": "RESOLVED",
+    "F-11": "RESOLVED_FOR_OBSERVED_WINDOWS_REQUEST_BOUNDARY"
+  },
+  "limits": [
+    "Existing Windows PC and debug NSIS package, not signed release or clean-machine acceptance",
+    "Foreign privileged caller context and all supported environments are not established",
+    "Request-source-kind interception is required; unsupported WebView2 runtimes refuse startup",
+    "No general guarantee about all WebView2 browser-process or operating-system traffic",
+    "Full installed byte corpus and JCS/domain-owner contracts remain open",
+    "Linux execution explicitly deferred by owner"
+  ]
+}

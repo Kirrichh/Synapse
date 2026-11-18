@@ -69,7 +69,7 @@ def _declaration(repo: Path, state: Path, *, granted: bool) -> GoldProjectDeclar
         identities=_identities(),
         entitlements=(
             GoldProjectEntitlements(
-                scopes=("repo:acceptance",), capabilities=("read",), oracles=("swebench",)
+                scopes=("repo:acceptance",), capabilities=("read",), oracles=("change-oracle",)
             )
             if granted
             else None
@@ -190,7 +190,7 @@ def _write_declaration(root: Path, *, granted: bool) -> Path:
         "environment_profile_id": "acceptance-environment",
         "identities": _identities().to_dict(),
         "entitlements": (
-            {"scopes": ["repo:acceptance"], "capabilities": ["read"], "oracles": ["swebench"]}
+            {"scopes": ["repo:acceptance"], "capabilities": ["read"], "oracles": ["change-oracle"]}
             if granted
             else None
         ),

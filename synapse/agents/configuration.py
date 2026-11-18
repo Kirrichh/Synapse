@@ -17,7 +17,7 @@ from .registry import AgentRegistry, CapabilityAdmission, load_admitted_adapter,
 
 AGENT_CONFIGURATION_V1 = "synapse.agent.configuration/v1"
 CAPABILITY_ADMISSION_V1 = "synapse.agent.capability-admission/v1"
-_EXECUTION_DEPENDENCIES = {"jsonschema", "psutil", "filelock", "packaging"}
+_EXECUTION_DEPENDENCIES = {"jsonschema", "psutil", "filelock", "packaging", "rfc8785"}
 _BUILTINS = {
     "stdio": ("synapse.agents.stdio_adapter", "StdioAdapterFactory"),
     "docling": ("synapse.agents.docling_adapter", "DoclingAdapterFactory"),
@@ -182,6 +182,11 @@ def registry_from_configuration(value, *, context=None):
 def required_runtime_files(factory, native):
     """Capture executable and trusted adapter code before importing a plugin."""
     paths = {str(p.resolve()) for p in Path(__file__).parent.glob("*.py")}
+    # Invocation retention now depends on command canonicalization and its
+    # schemas. They must participate in the same frozen runtime admission.
+    commands = Path(__file__).parent.parent / "commands"
+    paths.update(str(p.absolute()) for pattern in ("*.py", "*.schema.json")
+                 for p in commands.glob(pattern))
     import sys
     paths.add(str(Path(sys.executable).resolve()))
     command = native.get("command")

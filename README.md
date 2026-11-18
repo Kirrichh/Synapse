@@ -29,7 +29,7 @@ fact. Synapse makes those concerns programmable:
 - execution history records meaningful transitions and can be hashed into a
   tamper-evident chain;
 - golden artifacts support mock replay and trace comparison;
-- controlled-change and SWE-bench experiment layers can attach bounded
+- controlled-change and applied-verification layers can attach bounded
   evidence to applied changes without treating a worker proposal as success;
 - durable state and recorded results can be reused within their contracts,
   reducing accidental loss and repeated analysis without asserting that an
@@ -80,8 +80,8 @@ boundaries, for:
 - affective state, affective events and memory, thresholds, atomic affective
   resonance, somatic markers, and affective consensus inputs;
 - habits, context, energy, fatigue, recovery, storage, and runtime metrics;
-- controlled change, applied verification, Gold evidence, an external
-  SWE-bench oracle binding, and success-only paired measurement contracts;
+- controlled change, applied verification, Gold evidence, an independent
+  before/after change oracle, and success-only paired measurement contracts;
 - mobility envelopes and network transport prototypes;
 - verified reusable knowledge as a separate future direction, not as an
   authority supplied by raw transcript carry.
@@ -259,7 +259,7 @@ python -m synapse change apply \
 
 The command provides bounded application, verification, and reporting
 semantics. It does not claim OS-level sandboxing, provider isolation, or live
-SWE-bench authority by itself.
+benchmark authority by itself.
 
 ## Verification
 
@@ -327,7 +327,7 @@ directions include:
 1. preserve and extend deterministic execution without turning the CVM into a
    host-runtime monolith;
 2. close durable and strict-replay gaps per construct;
-3. keep controlled-change and SWE-bench evidence boundaries auditable;
+3. keep controlled-change and applied-verification evidence boundaries auditable;
 4. design a canonical provider telemetry gateway before reusable token/cost
    comparison;
 5. design validated, scoped, distilled reusable evidence before any

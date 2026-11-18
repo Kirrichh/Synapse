@@ -80,7 +80,7 @@ def _permissive_gate_controller(case):
         grant_probe=lambda: A.GrantEnvelope(
             scopes=("repo:x",),
             capabilities=("read",),
-            oracles=("swebench",),
+            oracles=("change-oracle",),
             policy_version=case.controller.policy_version,
         ),
         head_reader=lambda: {},
@@ -211,7 +211,7 @@ def test_selection_refuses_non_retrieval_and_blocked_gate_decisions(
         requested=A.RequestedEnvelope(
             scopes=("repo:x", "repo:y"),
             capabilities=("read",),
-            oracles=("swebench",),
+            oracles=("change-oracle",),
         ),
         predecessor=case.chain.publication,
         sequence=30,

@@ -12,7 +12,7 @@ from acceptance.stage4.stage16.harness import Experiment
 from acceptance.stage4.stage16.protocol import read_source
 from synapse.experiments.gold.stage15.telemetry import reference
 from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V1, LOCAL_EDIT_PROPOSAL_V1
-from tests.test_swebench_gold_runner import OLD_SOURCE, NEW_SOURCE
+from tests.test_applied_verification_gold_runner import OLD_SOURCE, NEW_SOURCE
 
 
 def test_solved_task_reports_real_results_and_lost_accounting_does_not_rewrite_full(tmp_path, monkeypatch):
@@ -43,7 +43,7 @@ def test_solved_task_reports_real_results_and_lost_accounting_does_not_rewrite_f
         for slot in allocations:
             definition = read_source(slot["input_ref"])
             oracle = definition["oracle"] if slot["arm"] == "BASELINE" else read_source(definition["declaration_ref"])["oracle"]
-            assert json.loads((Path(oracle["swebench_work_dir"]) / "oracle_state.json").read_bytes())["calls"] == 1
+            assert json.loads((Path(oracle["work_dir"]) / "oracle_state.json").read_bytes())["calls"] == 1
         completed = subprocess.run([sys.executable, "-B", "-m", "acceptance.stage4.stage16", "report",
             "--experiment", str(experiment.root), "--format", "table"], cwd=REPOSITORY,
             capture_output=True, text=True, timeout=90)

@@ -6,17 +6,21 @@ without a terminal record is never silently dispatched a second time.
 
 from contextlib import contextmanager
 import hashlib
-import os
 from pathlib import Path
 import sqlite3
 import time
 
+from synapse.commands.binding import CommandRefused
+
 from .codec import canonical_bytes, decode_json, result_from_dict
+from .invocation_commands import initialize_commands
+from .invocation_observation import initialize_observation, publish_change
 from .policy import AgentExecutionError, AgentFailureCode
 
 
 class InvocationStore:
     def __init__(self, root: Path):
+        self.read_only = False
         self.root = root
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
         if root.is_symlink():
@@ -36,13 +40,57 @@ class InvocationStore:
                     invocation_id TEXT NOT NULL, sequence INTEGER NOT NULL,
                     payload BLOB NOT NULL, PRIMARY KEY(invocation_id, sequence));
             """)
+            initialize_commands(db)
+            initialize_observation(db)
+
+    @classmethod
+    def open_existing(cls, root: Path):
+        """Open only retained state. Reading cannot initialize or recover a store."""
+        if root.is_symlink() or not root.is_dir():
+            raise CommandRefused("OBJECT_UNAVAILABLE")
+        database = root / "executions.sqlite3"
+        if database.is_symlink() or not database.is_file():
+            raise CommandRefused("OBJECT_UNAVAILABLE")
+        result = cls.__new__(cls)
+        result.root, result.database, result.read_only = root, database, True
+        return result
+
+    @classmethod
+    def open_commands(cls, root: Path):
+        """Open this owner's existing command tables without creating a world."""
+        result = cls.open_existing(root)
+        with result.connect() as db:
+            names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if not {"invocations", "cancellation_commands", "observation_meta", "observation_changes"} <= names:
+                raise CommandRefused("OBJECT_UNAVAILABLE")
+        result.read_only = False
+        return result
+
+    def require_membership(self, invocation_ids: tuple[str, ...]) -> None:
+        """Establish membership from retained owner records, not client scope IDs."""
+        with self.connect() as db:
+            db.execute("BEGIN")
+            for invocation_id in invocation_ids:
+                row = db.execute("SELECT binding FROM invocations WHERE id=?", (invocation_id,)).fetchone()
+                if row is None:
+                    raise CommandRefused("OBJECT_UNAVAILABLE")
+                try:
+                    binding = decode_json(row[0])
+                    if binding["request"]["invocation_id"] != invocation_id:
+                        raise ValueError()
+                except (ValueError, TypeError, KeyError) as exc:
+                    raise CommandRefused("RECORD_INVALID") from exc
 
     @contextmanager
     def connect(self):
-        db = sqlite3.connect(self.database, timeout=30)
+        db = (sqlite3.connect(self.database.absolute().as_uri() + "?mode=ro", uri=True, timeout=5)
+              if self.read_only else sqlite3.connect(self.database, timeout=30))
         try:
-            db.execute("PRAGMA journal_mode=WAL")
-            db.execute("PRAGMA synchronous=FULL")
+            if self.read_only:
+                db.execute("PRAGMA query_only=ON")
+            else:
+                db.execute("PRAGMA journal_mode=WAL")
+                db.execute("PRAGMA synchronous=FULL")
             with db:
                 yield db
         finally:
@@ -50,6 +98,8 @@ class InvocationStore:
 
     @contextmanager
     def executing(self, invocation_id):
+        if self.read_only:
+            raise CommandRefused("SCOPE_REFUSED")
         from filelock import FileLock, Timeout
         lock = FileLock(self.root / (hashlib.sha256(invocation_id.encode()).hexdigest() + ".lock"))
         try:
@@ -82,6 +132,7 @@ class InvocationStore:
                 return result_from_dict(decode_json(row[2]))
             db.execute("INSERT INTO invocations(id,binding,state,started) VALUES(?,?,?,?)",
                        (invocation_id, binding, "CLAIMED", time.time()))
+            publish_change(db, invocation_id)
         return None
 
     def retain(self, payload: bytes) -> str:
@@ -120,10 +171,15 @@ class InvocationStore:
                 (time.time(), raw, hashlib.sha256(raw).hexdigest(), invocation_id)).rowcount
             if changed != 1:
                 raise ValueError("agent terminal result cannot replace a different invocation state")
+            publish_change(db, invocation_id)
 
     def cancel(self, invocation_id: str) -> bool:
         with self.connect() as db:
-            return db.execute("UPDATE invocations SET cancelled=1 WHERE id=? AND state='CLAIMED'", (invocation_id,)).rowcount == 1
+            changed = db.execute("UPDATE invocations SET cancelled=1 WHERE id=? AND state='CLAIMED' AND cancelled=0", (invocation_id,)).rowcount == 1
+            if changed:
+                publish_change(db, invocation_id)
+                return True
+            return db.execute("SELECT 1 FROM invocations WHERE id=? AND state='CLAIMED'", (invocation_id,)).fetchone() is not None
 
     def is_cancelled(self, invocation_id: str) -> bool:
         with self.connect() as db:

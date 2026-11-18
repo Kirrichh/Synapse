@@ -7,26 +7,25 @@ import pytest
 
 from synapse.experiments.gold.runner.c1_boundary import C1EvidenceContext, matches_retained_oracle_configuration
 from synapse.experiments.gold.stage10.context_codec import encode_canonical
-from synapse.experiments.swebench.swebench_harness_oracle import (
-    SWEbenchHarnessOracleConfig, build_oracle_config_fingerprint_payload, compute_oracle_config_fingerprint,
+from synapse.experiments.applied_verification.change_oracle import (
+    ChangeOracleConfig, build_oracle_config_fingerprint_payload, compute_oracle_config_fingerprint,
     build_oracle_environment_fingerprint_payload, compute_oracle_environment_fingerprint,
 )
-from tests.test_swebench_gold_runner import policy
+from tests.test_applied_verification_gold_runner import policy
 
 
 def comparison():
-    config = SWEbenchHarnessOracleConfig(python_executable=Path('/observed/python'),
-        swebench_work_dir=Path('/observed/oracle'), dataset_name='contract-only', split='test',
-        instance_timeout_seconds=10, max_workers=1)
+    config = ChangeOracleConfig(work_dir=Path('/observed/oracle'), fail_to_pass=(('/observed/python', 'check.py'),),
+        command_timeout_seconds=10)
     boundary = C1EvidenceContext(Path('/observed/repo'), policy(), 'observed-environment', config)
-    observed = build_oracle_config_fingerprint_payload(config, swebench_version='retained-version')
-    environment = build_oracle_environment_fingerprint_payload(config, swebench_version='retained-version')
+    observed = build_oracle_config_fingerprint_payload(config)
+    environment = build_oracle_environment_fingerprint_payload(config)
     return boundary, {'oracle_diagnostics': {
         'oracle_config_fingerprint_payload': observed,
         'oracle_config_fingerprint': compute_oracle_config_fingerprint(observed),
         'oracle_environment_fingerprint_payload': environment,
         'oracle_environment_fingerprint': compute_oracle_environment_fingerprint(environment),
-        'cwd': str(config.swebench_work_dir)}}
+        'cwd': str(config.work_dir)}}
 
 
 def test_exact_captured_configuration_matches_without_executing_oracle():
@@ -35,11 +34,13 @@ def test_exact_captured_configuration_matches_without_executing_oracle():
 
 
 @pytest.mark.parametrize('changes', [
-    {'python_executable': Path('/another/python')},
-    {'swebench_work_dir': Path('/another/oracle')},
-    {'dataset_name': 'another-dataset'},
+    {'fail_to_pass': (('/another/python', 'check.py'),)},
+    {'pass_to_pass': (('/observed/python', 'regressions.py'),)},
+    {'work_dir': Path('/another/oracle')},
+    {'command_timeout_seconds': 11},
+    {'evaluator_patch': Path('/observed/hidden.patch'), 'evaluator_patch_sha256': 'a' * 64},
 ])
-def test_other_executor_directory_or_dataset_cannot_inherit_old_outcome(changes):
+def test_other_check_directory_or_evaluator_cannot_inherit_old_outcome(changes):
     boundary, payload = comparison()
     changed = replace(boundary, oracle_config=replace(boundary.oracle_config, **changes))
     assert not matches_retained_oracle_configuration(changed, encode_canonical(payload))
@@ -48,8 +49,8 @@ def test_other_executor_directory_or_dataset_cannot_inherit_old_outcome(changes)
 @pytest.mark.parametrize('mutate', [
     lambda info: info.pop('oracle_environment_fingerprint_payload'),
     lambda info: info.update(oracle_environment_fingerprint='0' * 64),
-    lambda info: info['oracle_environment_fingerprint_payload'].update(swebench_version='other-version'),
-    lambda info: info['oracle_environment_fingerprint_payload'].update(python_executable='/another/python'),
+    lambda info: info['oracle_environment_fingerprint_payload'].update(adapter='another-oracle'),
+    lambda info: info['oracle_config_fingerprint_payload'].update(fail_to_pass=[['/another/python', 'check.py']]),
     lambda info: info.update(cwd='/another/oracle'),
 ])
 def test_retained_configuration_needs_matching_environment_bytes_and_execution_location(mutate):

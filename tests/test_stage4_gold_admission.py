@@ -71,9 +71,9 @@ FROZEN_SET_REF = HashBoundRef(
 )
 
 GRANT = A.GrantEnvelope(
-    scopes=("repo:x",), capabilities=("read",), oracles=("swebench",), policy_version="policy-v1"
+    scopes=("repo:x",), capabilities=("read",), oracles=("change-oracle",), policy_version="policy-v1"
 )
-REQUEST = A.RequestedEnvelope(scopes=("repo:x",), capabilities=("read",), oracles=("swebench",))
+REQUEST = A.RequestedEnvelope(scopes=("repo:x",), capabilities=("read",), oracles=("change-oracle",))
 
 CLEAN_TAINT = A.TaintFinding(
     consumable=True, chain_complete=True, quarantined=False, blocks_publication=False
@@ -652,7 +652,7 @@ def test_a_grant_probe_answering_with_a_subclass_is_refused() -> None:
     forged = UncheckedGrant(
         scopes=("repo:x", "repo:x", "repo:everything"),
         capabilities=("read",),
-        oracles=("swebench",),
+        oracles=("change-oracle",),
         policy_version="policy-v1",
     )
     assert isinstance(forged, A.GrantEnvelope)

@@ -1,0 +1,38 @@
+{
+  "baseline": "PASS",
+  "mutants": [
+    {
+      "id": "EVIDENCE-raw-result-output",
+      "behavior": "Subprocess diagnostics must not be printed by the mutation runner",
+      "target": "acceptance/ui_bridge/mutation/run.py",
+      "source_sha256": "d599b5ab1788c24f92c11b99e532a278c9c36a87eabcdc19edc4086062846091",
+      "result": "KILLED",
+      "seconds": 0.169,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_mutation_evidence_acceptance.py"
+      ]
+    },
+    {
+      "id": "EVIDENCE-raw-result-record",
+      "behavior": "Structured mutation evidence must not contain raw subprocess diagnostics",
+      "target": "acceptance/ui_bridge/mutation/run.py",
+      "source_sha256": "d599b5ab1788c24f92c11b99e532a278c9c36a87eabcdc19edc4086062846091",
+      "result": "KILLED",
+      "seconds": 0.166,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_mutation_evidence_acceptance.py"
+      ]
+    },
+    {
+      "id": "EVIDENCE-raw-baseline-output",
+      "behavior": "A failed baseline must not persist raw subprocess diagnostics",
+      "target": "acceptance/ui_bridge/mutation/run.py",
+      "source_sha256": "d599b5ab1788c24f92c11b99e532a278c9c36a87eabcdc19edc4086062846091",
+      "result": "KILLED",
+      "seconds": 0.165,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/test_mutation_evidence_acceptance.py"
+      ]
+    }
+  ]
+}

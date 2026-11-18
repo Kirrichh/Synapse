@@ -1,0 +1,40 @@
+[package]
+name = "synapse-desktop"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.99"
+
+[lib]
+name = "synapse_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "synapse-desktop"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[features]
+default = ["desktop", "custom-protocol"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:webview2-com", "dep:windows"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+serde_json_canonicalizer = "=0.3.2"
+jsonschema = { version = "0.59", default-features = false }
+sha2 = "0.10"
+ed25519-dalek = "=3.0.0"
+zeroize = "1"
+uuid = { version = "1", features = ["v4"] }
+url = "2"
+tauri = { version = "2", optional = true , features = [] }
+
+[target.'cfg(windows)'.dependencies]
+webview2-com = { version = "0.39", optional = true }
+windows = { version = "0.62", optional = true, features = ["Win32_System_Com"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Credentials", "Win32_Security_Cryptography", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Environment"] }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [], optional = true }
+sha2 = "0.10"

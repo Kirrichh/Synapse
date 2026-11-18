@@ -1,0 +1,113 @@
+[package]
+name = "synapse-ui-acceptance"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+synapse-desktop = { path = "../../../synapse/ui/src-tauri", default-features = false }
+serde_json = "1"
+jsonschema = { version = "0.59", default-features = false }
+sha2 = "0.10"
+tempfile = "3"
+url = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_SystemServices"] }
+
+[[bin]]
+name = "windows_containment_probe"
+path = "windows_containment_probe.rs"
+
+[[bin]]
+name = "windows_startup_probe"
+path = "windows_startup_probe.rs"
+
+[[bin]]
+name = "windows_runtime_probe"
+path = "windows_runtime_probe.rs"
+
+[[bin]]
+name = "windows_installed_pipe"
+path = "windows_installed_pipe.rs"
+
+[[bin]]
+name = "windows_pipe_bytes"
+path = "windows_pipe_bytes.rs"
+
+[[test]]
+name = "application_delivery"
+path = "application_delivery.rs"
+[[test]]
+name = "application"
+path = "application.rs"
+[[test]]
+name = "domain_protocol"
+path = "domain_protocol.rs"
+[[test]]
+name = "client_identity"
+path = "client_identity.rs"
+[[test]]
+name = "protocol"
+path = "protocol.rs"
+[[test]]
+name = "jcs"
+path = "jcs.rs"
+[[test]]
+name = "intent_store"
+path = "intent_store.rs"
+[[test]]
+name = "intent_directory"
+path = "intent_directory.rs"
+[[test]]
+name = "command_recovery"
+path = "command_recovery.rs"
+[[test]]
+name = "transport"
+path = "transport.rs"
+[[test]]
+name = "bundle"
+path = "bundle.rs"
+[[test]]
+name = "publication"
+path = "publication.rs"
+[[test]]
+name = "platform"
+path = "platform.rs"
+[[test]]
+name = "canonical_core"
+path = "canonical_core.rs"
+[[test]]
+name = "controller"
+path = "controller.rs"
+[[test]]
+name = "bridge"
+path = "bridge.rs"
+
+[[test]]
+name = "writer_failure"
+path = "writer_failure.rs"
+
+[[test]]
+name = "refusals"
+path = "refusals.rs"
+
+[[test]]
+name = "diagnostics"
+path = "diagnostics.rs"
+
+[[test]]
+name = "windows_lifecycle"
+path = "windows_lifecycle.rs"
+
+[[test]]
+name = "windows_containment"
+path = "windows_containment.rs"
+
+[[test]]
+name = "webview_network"
+path = "webview_network.rs"
+
+[[test]]
+name = "controller_delivery"
+path = "controller_delivery.rs"

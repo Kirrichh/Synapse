@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synapse.invalid/contracts/command-binding-v1",
+  "$defs": {
+    "recipient": {"type":"string", "minLength":1, "maxLength":192, "pattern":"^[A-Za-z0-9]", "not":{"pattern":"[^A-Za-z0-9._:/-]"}}
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["command_id", "method", "method_version", "recipient", "expected_revision", "params"],
+  "properties": {
+    "command_id": {"type":"string", "format":"uuid", "minLength":36, "maxLength":36},
+    "method": {"const":"invocation.cancel"},
+    "method_version": {"const":"1"},
+    "recipient": {"$ref":"#/$defs/recipient"},
+    "expected_revision": {"type":"string", "minLength":64, "maxLength":64, "not":{"pattern":"[^0-9a-f]"}},
+    "params": {
+      "type":"object", "additionalProperties":false, "required":["invocation_id"],
+      "properties":{"invocation_id":{"$ref":"#/$defs/recipient"}}
+    }
+  }
+}

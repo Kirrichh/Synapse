@@ -28,7 +28,7 @@ def prepare(root, *, candidate_repo=False, execute=False, extra_sources=None, py
     if python_roots and not candidate_repo:
         raise ValueError("import roots are declared for the candidate repository's src layout only")
     if candidate_repo:
-        from tests.test_swebench_gold_runner import build_candidate_repo
+        from tests.test_applied_verification_gold_runner import build_candidate_repo
         revision, _ = build_candidate_repo(repo)
         source_path, module, qualname = "src/calc.py", "calc" if python_roots else "src.calc", "add"
         if extra_sources:
@@ -58,7 +58,7 @@ def prepare(root, *, candidate_repo=False, execute=False, extra_sources=None, py
         AuthorityIdentity("source-revocation"), ActorIdentity("source-lifecycle"), AuthorityIdentity("source-operator"))
     connect_gold_project(GoldProjectDeclaration(repo, state, "source-policy/v1", "source-env", identities,
         GoldProjectEntitlements(tuple(sorted((source_path, *(extra_sources or {})))),
-            ("execute", "read") if execute else ("read",), ("source-verifier", "swebench")),
+            ("execute", "read") if execute else ("read",), ("change-oracle", "source-verifier")),
         python_roots=tuple(python_roots)))
     claim = {"schema_version": SOURCE_CLAIM_V1, "operation_id": "learn-calculation", "revision": revision,
         "kind": "REPOSITORY_FACT_CHECK", "sources": [source_path], "replay_gas_budget": 10_000,
@@ -131,8 +131,8 @@ def consumer_case(root, *, learn_recipe=False, include_fact=False, automatic_tar
     from synapse.experiments.gold.stage10.planning import CAPABILITY_BY_OPERATION, OperationKind
     from synapse.experiments.gold.stage10.repository_scope import create_repository_scope
     from synapse.experiments.gold.stage10.task_contract import GoverningTaskContract, TASK_CONTRACT_SCHEMA_V2, TASK_CONTRACT_SCHEMA_V3
-    from synapse.experiments.swebench.swebench_harness_oracle import SWEbenchHarnessOracleConfig
-    from tests.test_swebench_gold_runner import policy
+    from acceptance.stage4.stage11._oracle_process import acceptance_oracle
+    from tests.test_applied_verification_gold_runner import policy
 
     if extra_sources and not automatic_targets:
         raise ValueError("multi-target acceptance requires automatic governing tasks")
@@ -201,9 +201,8 @@ def consumer_case(root, *, learn_recipe=False, include_fact=False, automatic_tar
     prompt_path = root / 'worker-prompt.txt'
     # Any admitted agent: this one records what it received and proposes nothing.
     agent = create_process_agent(root / 'agent', outcomes=('NO_PATCH',), patch_source='', record_path=prompt_path)
-    config = replace(manifest.config, oracle_name='synapse.experiments.swebench.gold_oracle_binding.GoldSWEbenchOracleBinding')
-    oracle_config = SWEbenchHarnessOracleConfig(python_executable=Path(sys.executable), swebench_work_dir=root / 'harness',
-        dataset_name='acceptance', split='test', instance_timeout_seconds=10, max_workers=1)
+    config = replace(manifest.config, oracle_name='synapse.experiments.applied_verification.gold_oracle_binding.GoldChangeOracleBinding')
+    oracle_config = acceptance_oracle(root / 'harness')
     project = open_gold_project(state)
     input_path = root / 'experiment.json'
     input_path.write_text(json.dumps({'schema_version': EXPERIMENT_INPUT_SCHEMA_V4, 'run_id': manifest.run_id.value,

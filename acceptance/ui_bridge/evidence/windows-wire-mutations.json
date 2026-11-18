@@ -1,0 +1,19 @@
+{
+  "baseline": "PASS",
+  "mutants": [
+    {
+      "id": "PY-wire-newline-normalization",
+      "behavior": "formed frame payload bytes cannot undergo newline conversion",
+      "target": "synapse/machine/codec.py",
+      "source_sha256": "5571c7577996523cb63fb528364818648f7724c9a2164b0fa61710060ae7b0dc",
+      "result": "KILLED"
+    },
+    {
+      "id": "RS-wire-newline-normalization",
+      "behavior": "formed frame payload bytes cannot undergo newline conversion",
+      "target": "synapse/ui/src-tauri/src/transport.rs",
+      "source_sha256": "83c9449571921b8916a633240ee77ad21916a644ec0952b26a0de266bdcae611",
+      "result": "KILLED"
+    }
+  ]
+}

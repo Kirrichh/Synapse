@@ -1,0 +1,342 @@
+{
+  "date": "2026-10-18",
+  "scope": "Control profile and component behavior only; installed Windows/Linux lifecycle and WebView security are not established.",
+  "baseline": "PASS",
+  "mutants": [
+    {
+      "id": "TS-negative-zero",
+      "behavior": "negative zero",
+      "target": "synapse/ui/src/contracts/decode.ts",
+      "source_sha256": "c9ec88dcab420f16556b844363d847f8ff9e4d98fde312d9510f64391513ac22",
+      "result": "KILLED",
+      "seconds": 0.235,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts",
+        "acceptance/ui_bridge/typescript/reconnection.test.ts",
+        "acceptance/ui_bridge/typescript/refusals.test.ts"
+      ]
+    },
+    {
+      "id": "TS-integer-precision",
+      "behavior": "integer precision",
+      "target": "synapse/ui/src/contracts/decode.ts",
+      "source_sha256": "c9ec88dcab420f16556b844363d847f8ff9e4d98fde312d9510f64391513ac22",
+      "result": "KILLED",
+      "seconds": 0.345,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts",
+        "acceptance/ui_bridge/typescript/reconnection.test.ts",
+        "acceptance/ui_bridge/typescript/refusals.test.ts"
+      ]
+    },
+    {
+      "id": "TS-duplicate-properties",
+      "behavior": "duplicate properties",
+      "target": "synapse/ui/src/contracts/decode.ts",
+      "source_sha256": "c9ec88dcab420f16556b844363d847f8ff9e4d98fde312d9510f64391513ac22",
+      "result": "KILLED",
+      "seconds": 0.386,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts",
+        "acceptance/ui_bridge/typescript/reconnection.test.ts",
+        "acceptance/ui_bridge/typescript/refusals.test.ts"
+      ]
+    },
+    {
+      "id": "TS-unicode-scalars",
+      "behavior": "unicode scalars",
+      "target": "synapse/ui/src/contracts/decode.ts",
+      "source_sha256": "c9ec88dcab420f16556b844363d847f8ff9e4d98fde312d9510f64391513ac22",
+      "result": "KILLED",
+      "seconds": 0.389,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts",
+        "acceptance/ui_bridge/typescript/reconnection.test.ts",
+        "acceptance/ui_bridge/typescript/refusals.test.ts"
+      ]
+    },
+    {
+      "id": "TS-json-depth",
+      "behavior": "json depth",
+      "target": "synapse/ui/src/contracts/decode.ts",
+      "source_sha256": "c9ec88dcab420f16556b844363d847f8ff9e4d98fde312d9510f64391513ac22",
+      "result": "KILLED",
+      "seconds": 0.452,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts",
+        "acceptance/ui_bridge/typescript/reconnection.test.ts",
+        "acceptance/ui_bridge/typescript/refusals.test.ts"
+      ]
+    },
+    {
+      "id": "TS-utf8-byte-bound",
+      "behavior": "utf8 byte bound",
+      "target": "synapse/ui/src/contracts/decode.ts",
+      "source_sha256": "c9ec88dcab420f16556b844363d847f8ff9e4d98fde312d9510f64391513ac22",
+      "result": "KILLED",
+      "seconds": 0.529,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts",
+        "acceptance/ui_bridge/typescript/reconnection.test.ts",
+        "acceptance/ui_bridge/typescript/refusals.test.ts"
+      ]
+    },
+    {
+      "id": "TS-envelope-schema",
+      "behavior": "envelope schema",
+      "target": "synapse/ui/src/contracts/decode.ts",
+      "source_sha256": "c9ec88dcab420f16556b844363d847f8ff9e4d98fde312d9510f64391513ac22",
+      "result": "KILLED",
+      "seconds": 0.431,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts",
+        "acceptance/ui_bridge/typescript/reconnection.test.ts",
+        "acceptance/ui_bridge/typescript/refusals.test.ts"
+      ]
+    },
+    {
+      "id": "TS-snapshot-schema",
+      "behavior": "snapshot schema",
+      "target": "synapse/ui/src/contracts/decode.ts",
+      "source_sha256": "c9ec88dcab420f16556b844363d847f8ff9e4d98fde312d9510f64391513ac22",
+      "result": "KILLED",
+      "seconds": 0.49,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts",
+        "acceptance/ui_bridge/typescript/reconnection.test.ts",
+        "acceptance/ui_bridge/typescript/refusals.test.ts"
+      ]
+    },
+    {
+      "id": "TS-nested-protocol",
+      "behavior": "nested protocol",
+      "target": "synapse/ui/src/contracts/decode.ts",
+      "source_sha256": "c9ec88dcab420f16556b844363d847f8ff9e4d98fde312d9510f64391513ac22",
+      "result": "KILLED",
+      "seconds": 0.387,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts",
+        "acceptance/ui_bridge/typescript/reconnection.test.ts",
+        "acceptance/ui_bridge/typescript/refusals.test.ts"
+      ]
+    },
+    {
+      "id": "TS-diagnostic-redaction",
+      "behavior": "diagnostic redaction",
+      "target": "synapse/ui/src/contracts/decode.ts",
+      "source_sha256": "c9ec88dcab420f16556b844363d847f8ff9e4d98fde312d9510f64391513ac22",
+      "result": "KILLED",
+      "seconds": 0.486,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts",
+        "acceptance/ui_bridge/typescript/reconnection.test.ts",
+        "acceptance/ui_bridge/typescript/refusals.test.ts"
+      ]
+    },
+    {
+      "id": "TS-native-session",
+      "behavior": "native session",
+      "target": "synapse/ui/src/connection/model.ts",
+      "source_sha256": "758b6dbd6baeba179d17d7e5e963a19a2ca9bee68941e0c6b5dd584dff571569",
+      "result": "KILLED",
+      "seconds": 0.475,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts",
+        "acceptance/ui_bridge/typescript/reconnection.test.ts",
+        "acceptance/ui_bridge/typescript/refusals.test.ts"
+      ]
+    },
+    {
+      "id": "TS-duplicate-delivery",
+      "behavior": "duplicate delivery",
+      "target": "synapse/ui/src/connection/model.ts",
+      "source_sha256": "758b6dbd6baeba179d17d7e5e963a19a2ca9bee68941e0c6b5dd584dff571569",
+      "result": "KILLED",
+      "seconds": 0.434,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts",
+        "acceptance/ui_bridge/typescript/reconnection.test.ts",
+        "acceptance/ui_bridge/typescript/refusals.test.ts"
+      ]
+    },
+    {
+      "id": "TS-generated-envelope",
+      "behavior": "generated envelope",
+      "target": "synapse/ui/tooling/generate-contracts.mjs",
+      "source_sha256": "54e54ec3ff649e0c89a260e124c53cffe2cde6d0ad48e4afc64effce72a62264",
+      "result": "KILLED",
+      "seconds": 0.62,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts",
+        "acceptance/ui_bridge/typescript/reconnection.test.ts",
+        "acceptance/ui_bridge/typescript/refusals.test.ts"
+      ]
+    },
+    {
+      "id": "TS-generated-bootstrap",
+      "behavior": "generated bootstrap",
+      "target": "synapse/ui/tooling/generate-contracts.mjs",
+      "source_sha256": "54e54ec3ff649e0c89a260e124c53cffe2cde6d0ad48e4afc64effce72a62264",
+      "result": "KILLED",
+      "seconds": 0.725,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts",
+        "acceptance/ui_bridge/typescript/reconnection.test.ts",
+        "acceptance/ui_bridge/typescript/refusals.test.ts"
+      ]
+    },
+    {
+      "id": "TS-language-switch",
+      "behavior": "language switch",
+      "target": "synapse/ui/src/App.tsx",
+      "source_sha256": "cbb086b97d8ebae0fac281db5acd098079a645a1142b94d9eb4d663a6130b8e6",
+      "result": "KILLED",
+      "seconds": 3.039,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/browser_acceptance.py"
+      ]
+    },
+    {
+      "id": "TS-forced-close-confirmation",
+      "behavior": "forced close confirmation",
+      "target": "synapse/ui/src/components/ConnectionPanel.tsx",
+      "source_sha256": "18f02a0e6d61e6389b36e7e1e652b8655e9ce216fb1654444916992193b8920e",
+      "result": "KILLED",
+      "seconds": 4.844,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/browser_acceptance.py"
+      ]
+    },
+    {
+      "id": "TS-renderer-acknowledgment",
+      "behavior": "renderer acknowledgment",
+      "target": "synapse/ui/src/connection/desktop.ts",
+      "source_sha256": "cda1521794d8a623a3fb32f59e303741f782c5a40e1e70082b55a1ee06b8630e",
+      "result": "KILLED",
+      "seconds": 4.076,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/browser_acceptance.py"
+      ]
+    },
+    {
+      "id": "TS-corruption-closes-observer",
+      "behavior": "corruption closes observer",
+      "target": "synapse/ui/src/connection/desktop.ts",
+      "source_sha256": "cda1521794d8a623a3fb32f59e303741f782c5a40e1e70082b55a1ee06b8630e",
+      "result": "KILLED",
+      "seconds": 3.789,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/browser_acceptance.py"
+      ]
+    },
+    {
+      "id": "TS-native-overload",
+      "behavior": "native overload",
+      "target": "synapse/ui/src/connection/useConnection.ts",
+      "source_sha256": "13d4b6b4d1c73408d0e5cc62ac58c9d3c098f8660d82c1101e1f08601fd52e28",
+      "result": "KILLED",
+      "seconds": 8.654,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/browser_acceptance.py"
+      ]
+    },
+    {
+      "id": "TS-fresh-subscription",
+      "behavior": "recovery opens a new delivery session",
+      "target": "synapse/ui/src/connection/useConnection.ts",
+      "source_sha256": "13d4b6b4d1c73408d0e5cc62ac58c9d3c098f8660d82c1101e1f08601fd52e28",
+      "result": "KILLED",
+      "seconds": 9.135,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/browser_acceptance.py"
+      ]
+    },
+    {
+      "id": "TS-same-sequence-recovery",
+      "behavior": "fresh subscription may return unchanged native sequence",
+      "target": "synapse/ui/src/connection/model.ts",
+      "source_sha256": "758b6dbd6baeba179d17d7e5e963a19a2ca9bee68941e0c6b5dd584dff571569",
+      "result": "KILLED",
+      "seconds": 0.53,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts",
+        "acceptance/ui_bridge/typescript/reconnection.test.ts",
+        "acceptance/ui_bridge/typescript/refusals.test.ts"
+      ]
+    },
+    {
+      "id": "TS-subscription-binding",
+      "behavior": "old subscription cannot overwrite new state",
+      "target": "synapse/ui/src/connection/model.ts",
+      "source_sha256": "758b6dbd6baeba179d17d7e5e963a19a2ca9bee68941e0c6b5dd584dff571569",
+      "result": "KILLED",
+      "seconds": 0.519,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/typescript/connection.test.ts",
+        "acceptance/ui_bridge/typescript/contracts.test.ts",
+        "acceptance/ui_bridge/typescript/reconnection.test.ts",
+        "acceptance/ui_bridge/typescript/refusals.test.ts"
+      ]
+    },
+    {
+      "id": "TS-recovery-no-spawn",
+      "behavior": "view recovery does not launch a core",
+      "target": "synapse/ui/src/connection/useConnection.ts",
+      "source_sha256": "13d4b6b4d1c73408d0e5cc62ac58c9d3c098f8660d82c1101e1f08601fd52e28",
+      "result": "KILLED",
+      "seconds": 11.832,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/browser_acceptance.py"
+      ]
+    },
+    {
+      "id": "TS-remount-no-start",
+      "behavior": "remounting a stopped core cannot request restart",
+      "target": "synapse/ui/src/connection/useConnection.ts",
+      "source_sha256": "13d4b6b4d1c73408d0e5cc62ac58c9d3c098f8660d82c1101e1f08601fd52e28",
+      "result": "KILLED",
+      "seconds": 5.19,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/browser_acceptance.py"
+      ]
+    },
+    {
+      "id": "TS-force-native-state",
+      "behavior": "local channel failure cannot offer native force close",
+      "target": "synapse/ui/src/components/ConnectionPanel.tsx",
+      "source_sha256": "18f02a0e6d61e6389b36e7e1e652b8655e9ce216fb1654444916992193b8920e",
+      "result": "KILLED",
+      "seconds": 3.59,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/browser_acceptance.py"
+      ]
+    },
+    {
+      "id": "TS-ack-failure-closes",
+      "behavior": "ACK failure closes the delivery channel",
+      "target": "synapse/ui/src/connection/desktop.ts",
+      "source_sha256": "cda1521794d8a623a3fb32f59e303741f782c5a40e1e70082b55a1ee06b8630e",
+      "result": "KILLED",
+      "seconds": 9.454,
+      "selected_acceptance": [
+        "acceptance/ui_bridge/browser_acceptance.py"
+      ]
+    }
+  ],
+  "retention": "Reviewed structured evidence only; raw subprocess output is not retained."
+}

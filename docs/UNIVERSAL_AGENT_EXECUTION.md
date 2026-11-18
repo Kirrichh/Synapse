@@ -208,17 +208,21 @@ Observed during this implementation:
 Further verification results and domain readiness must be recorded as observed,
 not inferred from installed SDKs or successful imports.
 
-Heavy acceptance stays outside the product in independently runnable files:
+Heavy acceptance stays outside the product in independently runnable files.
+The historical `test_agent_profile_gold_acceptance.py` command was removed as
+a duplicate when heavy Gold scenarios moved to admitted profiles, as recorded
+in [Gold ingestion](GOLD_KNOWLEDGE_INGESTION.md#coding-agent--a-pluggable-profile-no-built-in-executor).
+Do not treat that absent file as a currently runnable check. The SDK checks remain:
 
 ```sh
-python -m pytest -q acceptance/stage4/stage16/test_agent_profile_gold_acceptance.py
 python -m pytest -q acceptance/agents/test_a2a_sdk_acceptance.py
 python -m pytest -q acceptance/agents/test_mcp_sdk_acceptance.py
 ```
 
-CI schedules the Gold profile, A2A and MCP files as separate matrix jobs with
-`fail-fast: false`. Each uses its own temporary state and loopback port, so they
-can run concurrently. Fast journal/contract cases remain in the fast job.
+The earlier implementation scheduled the profile, A2A and MCP files as separate
+matrix jobs with `fail-fast: false`. This is historical scheduling evidence;
+it does not reintroduce the removed profile file. The SDK cases use independent
+temporary state and loopback ports. Fast journal/contract cases remain separate.
 These results do not establish live isolated Docling/ACP execution or a Gold
 document-domain verification profile.
 

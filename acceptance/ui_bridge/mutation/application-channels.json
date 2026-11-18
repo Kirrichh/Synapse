@@ -1,0 +1,119 @@
+[
+  {
+    "id": "APP-CHANNEL-slot",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/application_delivery.rs",
+    "before": "if current.pending.is_some()",
+    "after": "if false",
+    "behavior": "A slow renderer cannot admit another application request.",
+    "case": "application_delivery"
+  },
+  {
+    "id": "APP-CHANNEL-early-ack",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/application_delivery.rs",
+    "before": "item.id == subscription && item.delivered",
+    "after": "item.id == subscription",
+    "behavior": "An ACK before a result cannot release the request slot.",
+    "case": "application_delivery"
+  },
+  {
+    "id": "APP-CHANNEL-ack-binding",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/application_delivery.rs",
+    "before": "&& item.pending.as_deref() == Some(request)",
+    "after": "&& true",
+    "behavior": "An unrelated ACK cannot acknowledge the occupied result.",
+    "case": "application_delivery"
+  },
+  {
+    "id": "APP-CHANNEL-failed-delivery",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/application_delivery.rs",
+    "before": "&& item.pending.as_deref() == Some(&ticket.request) && !item.delivered) {\n            current.pending = None;",
+    "after": "&& item.pending.as_deref() == Some(&ticket.request)) {\n            current.pending = None;",
+    "behavior": "A failed sink is unresolved delivery, not a pre-enqueue refusal.",
+    "case": "application_delivery"
+  },
+  {
+    "id": "APP-CHANNEL-unsubscription",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/application_delivery.rs",
+    "before": "if state.as_ref().is_some_and(|item| item.id == subscription) { *state = None; }",
+    "after": "if false { *state = None; }",
+    "behavior": "Unsubscription discards only that delivery context.",
+    "case": "application_delivery"
+  },
+  {
+    "id": "APP-CHANNEL-renderer-busy",
+    "kind": "typescript",
+    "target": "synapse/ui/src/application/session.ts",
+    "before": "if (this.pending) throw new ApplicationError(\"BUSY\");",
+    "after": "if (false) throw new ApplicationError(\"BUSY\");",
+    "behavior": "One unresolved operation bounds renderer state.",
+    "tsx": true,
+    "cases": [
+      "acceptance/ui_bridge/typescript/application-session.test.ts"
+    ]
+  },
+  {
+    "id": "APP-CHANNEL-old-subscription",
+    "kind": "typescript",
+    "target": "synapse/ui/src/application/session.ts",
+    "before": "if (value.subscription_id !== this.subscription) return;",
+    "after": "if (false) return;",
+    "behavior": "Old subscription replies cannot populate the new view.",
+    "tsx": true,
+    "cases": [
+      "acceptance/ui_bridge/typescript/application-session.test.ts"
+    ]
+  },
+  {
+    "id": "APP-CHANNEL-request-correlation",
+    "kind": "typescript",
+    "target": "synapse/ui/src/application/session.ts",
+    "before": "pending.id !== value.request_id || pending.accepting",
+    "after": "pending.accepting",
+    "behavior": "A reply must match the native-issued request identity.",
+    "tsx": true,
+    "cases": [
+      "acceptance/ui_bridge/typescript/application-session.test.ts"
+    ]
+  },
+  {
+    "id": "APP-CHANNEL-ack-before-release",
+    "kind": "typescript",
+    "target": "synapse/ui/src/application/session.ts",
+    "before": "try { await this.port.acknowledge(value.subscription_id, value.request_id); }",
+    "after": "try { void this.port.acknowledge(value.subscription_id, value.request_id); }",
+    "behavior": "UI admission remains blocked until its exact ACK completes.",
+    "tsx": true,
+    "cases": [
+      "acceptance/ui_bridge/typescript/application-session.test.ts"
+    ]
+  },
+  {
+    "id": "APP-CHANNEL-closed-vocabulary",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/application-decode.ts",
+    "before": "if (!validateApplicationDelivery(value))",
+    "after": "if (false)",
+    "behavior": "Decoded results obey the product-owned closed schema.",
+    "tsx": true,
+    "cases": [
+      "acceptance/ui_bridge/typescript/application-session.test.ts"
+    ]
+  },
+  {
+    "id": "APP-CHANNEL-synchronous-refusal",
+    "kind": "typescript",
+    "target": "synapse/ui/src/application/session.ts",
+    "before": "Promise.resolve().then(() => this.port.request(subscription, request)).then(id => {",
+    "after": "this.port.request(subscription, request).then(id => {",
+    "behavior": "A synchronous transport refusal must release the local request slot.",
+    "tsx": true,
+    "cases": [
+      "acceptance/ui_bridge/typescript/application-session.test.ts"
+    ]
+  }
+]

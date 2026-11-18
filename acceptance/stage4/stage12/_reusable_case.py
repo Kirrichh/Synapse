@@ -41,7 +41,7 @@ def reusable_case(root):
             AuthorityIdentity("candidate-classifier"), AuthorityIdentity("candidate-reviewer"),
             AuthorityIdentity("candidate-supersession"), AuthorityIdentity("candidate-revocation"),
             ActorIdentity("candidate-lifecycle"), AuthorityIdentity("candidate-human"),
-        ), entitlements=GoldProjectEntitlements(("src",), ("read",), ("swebench",)),
+        ), entitlements=GoldProjectEntitlements(("src",), ("read",), ("change-oracle",)),
     )
     connect_gold_project(declaration)
     project = open_gold_project(declaration.state_root)

@@ -12,6 +12,7 @@ from synapse.canonical_values import (
     canonical_json_bytes,
     canonicalize,
     is_canonical_serializable,
+    scalar_text_utf8_size,
 )
 
 
@@ -44,6 +45,18 @@ def test_lone_surrogate_rejected(text):
 def test_surrogate_boundaries_preserve_valid_unicode_bytes():
     text = "\ud7ff\ue000\U00010000\U0010ffff память 😀"
     assert canonical_json_bytes(text) == ('"' + text + '"').encode("utf-8")
+
+
+@pytest.mark.parametrize("text", [
+    "", "ascii", "\x7f", "\x80", "é", "e\u0301", "\ud7ff\ue000", "\U00010000\U0010ffff", "память 😀", "a" * 5000,
+    "bad\ud800", "\udbff", "\udc00", "\udfff", "\ud800\udc00", "a" * 4096 + "\udfff",
+])
+def test_scalar_text_size_is_the_strict_utf8_length_or_refuses_a_surrogate(text):
+    try:
+        expected = len(text.encode("utf-8"))
+    except UnicodeEncodeError:
+        expected = None
+    assert scalar_text_utf8_size(text) == expected
 
 
 def test_string_subclass_validation_preserves_iteration_and_utf8_checks():

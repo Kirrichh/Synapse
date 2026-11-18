@@ -8,7 +8,8 @@ from ..runner.records import RecordKind
 from ..runner.run_recovery import PendingRunRecord
 from ..stage12.reusable import register_verified_reusable_output
 from ..stage14.read_traversal import publication_read_scope
-from .publication_store import PublicationResult, PublicationStore, QUARANTINE_SCHEMA_V1, PUBLICATION_RESULT_V3
+from .publication_store import (PublicationResult, PublicationStore, QUARANTINE_SCHEMA_V1, PUBLICATION_RESULT_V3,
+    read_prepared_publication_request)
 from .publication import REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4, PublicationAuthorityDecision, PublicationViolation, reference
 
 
@@ -135,8 +136,7 @@ def read_project_run_knowledge(*, state_root, task, origins=None):
             raise PublicationViolation("run knowledge origins are repeated or unordered")
     candidates, files, captured, publications = [], {}, [], {}
     for index, transaction_id in enumerate(transactions):
-        _, prepared = read_committed_snapshot_transaction(root / "prepared", transaction_id=transaction_id)
-        request = decode_canonical(prepared["request.json"])
+        request = read_prepared_publication_request(root, transaction_id)
         if request["schema_version"] not in {REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4}:
             if origins is not None:
                 raise PublicationViolation("run knowledge origin names a source publication")
@@ -200,9 +200,7 @@ def assess_retained_publication_pair(left_publication, left_evidence, right_publ
         if (result["registration"]["unit"] != evidence.unit.to_dict()
                 or result["registration"]["attestation"] != evidence.attestation.to_dict()):
             raise PublicationViolation("pair assessment names another retained candidate")
-        _, prepared = read_committed_snapshot_transaction(publication.root / "prepared",
-                                                        transaction_id=publication.transaction_id)
-        request = decode_canonical(prepared["request.json"])
+        request = read_prepared_publication_request(publication.root, publication.transaction_id)
         domain = request["domain"]
         refs.add(HashBoundRef.from_dict(request["verification"]["verification_ref"]))
         refs.add(reference(result, PUBLICATION_RESULT_V3))

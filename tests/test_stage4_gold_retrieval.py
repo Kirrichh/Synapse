@@ -229,11 +229,11 @@ def _gate_controller(*, admit: bool = True):
         trusted_clock=lambda: NOW,
     )
     grant = A.GrantEnvelope(
-        scopes=("repo:x",), capabilities=("read",), oracles=("swebench",),
+        scopes=("repo:x",), capabilities=("read",), oracles=("change-oracle",),
         policy_version="policy-v1",
     )
     requested = A.RequestedEnvelope(
-        scopes=("repo:x",), capabilities=("read",), oracles=("swebench",)
+        scopes=("repo:x",), capabilities=("read",), oracles=("change-oracle",)
     )
     controller = A.configure_gate_controller(
         declaration=declaration,

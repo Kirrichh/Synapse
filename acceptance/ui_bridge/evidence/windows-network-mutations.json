@@ -1,0 +1,366 @@
+{
+  "schema": 1,
+  "source_encoding": "UTF-8 with LF",
+  "target": "synapse/ui/src-tauri/src/webview_network.rs",
+  "source_sha256": "3679f5dec3696742a61178d70994a4dfbaefb7e8711e9e0a4e3a48993f2759e8",
+  "startup_sha256": "de79edf412fb0a744c5a8e599561e6618aacd2dae940ba5e9f5e6657c8cd98cd",
+  "policy": [
+    {
+      "id": "NET-host",
+      "before": "matches!(url.host_str(), Some(\"tauri.localhost\" | \"ipc.localhost\"))",
+      "after": "true",
+      "result": "KILLED"
+    },
+    {
+      "id": "NET-port",
+      "before": "url.port().is_none()",
+      "after": "true",
+      "result": "KILLED"
+    },
+    {
+      "id": "NET-user",
+      "before": "url.username().is_empty()",
+      "after": "true",
+      "result": "KILLED"
+    },
+    {
+      "id": "NET-scheme",
+      "before": "url.scheme() == if https { \"https\" } else { \"http\" }",
+      "after": "true",
+      "result": "KILLED"
+    }
+  ],
+  "variants": [
+    {
+      "id": "NET-filter",
+      "before": "w!(\"*\"), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,",
+      "after": "w!(\"http://tauri.localhost/*\"), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,",
+      "artifact": "NET-filter.exe",
+      "sha256": "47504f29d32fbdea78ab4e90b3c8048734dc31f2ded158731f8d2ed1c172702d",
+      "result": "KILLED",
+      "observation": {
+        "schema": 1,
+        "instrumentation": "per-process WebView2 CDP; CSP enforced",
+        "checks": [
+          {
+            "name": "actual installed native session ready",
+            "status": "PASS"
+          },
+          {
+            "name": "force close refused while core is ready",
+            "status": "PASS"
+          },
+          {
+            "name": "foreign subscription ACK refused",
+            "status": "PASS"
+          },
+          {
+            "name": "ungranted native command refused: plugin:shell|execute",
+            "status": "PASS"
+          },
+          {
+            "name": "ungranted native command refused: plugin:fs|read_file",
+            "status": "PASS"
+          },
+          {
+            "name": "ungranted native command refused: plugin:webview|create_webview_window",
+            "status": "PASS"
+          },
+          {
+            "name": "CSP blocks JavaScript eval",
+            "status": "PASS"
+          },
+          {
+            "name": "CSP blocks DOM inline script",
+            "status": "PASS"
+          },
+          {
+            "name": "CSP blocks non-IPC fetch",
+            "status": "PASS"
+          },
+          {
+            "name": "CSP blocks frame and image loads",
+            "status": "PASS"
+          },
+          {
+            "name": "new window denied",
+            "status": "PASS"
+          },
+          {
+            "name": "foreign top-level navigation denied",
+            "status": "FAIL",
+            "observed": {
+              "sameOrigin": true,
+              "networkRequests": 1,
+              "requests": [
+                {
+                  "phase": "navigation",
+                  "method": "GET",
+                  "probe": "navigation",
+                  "destination": "document",
+                  "mode": "navigate"
+                }
+              ]
+            }
+          }
+        ],
+        "failure": {
+          "stage": "window_checks",
+          "kind": "ASSERTION",
+          "shellExited": false
+        }
+      }
+    },
+    {
+      "id": "NET-response",
+      "before": "if !local && args.SetResponse(&denied).is_err() {",
+      "after": "if !local && false {",
+      "artifact": "NET-response.exe",
+      "sha256": "c06be8d24f8420d47afd91966c963fc771459e8e3a1cd61b32f21e9281d2db18",
+      "result": "KILLED",
+      "observation": {
+        "schema": 1,
+        "instrumentation": "per-process WebView2 CDP; CSP enforced",
+        "checks": [
+          {
+            "name": "actual installed native session ready",
+            "status": "PASS"
+          },
+          {
+            "name": "force close refused while core is ready",
+            "status": "PASS"
+          },
+          {
+            "name": "foreign subscription ACK refused",
+            "status": "PASS"
+          },
+          {
+            "name": "ungranted native command refused: plugin:shell|execute",
+            "status": "PASS"
+          },
+          {
+            "name": "ungranted native command refused: plugin:fs|read_file",
+            "status": "PASS"
+          },
+          {
+            "name": "ungranted native command refused: plugin:webview|create_webview_window",
+            "status": "PASS"
+          },
+          {
+            "name": "CSP blocks JavaScript eval",
+            "status": "PASS"
+          },
+          {
+            "name": "CSP blocks DOM inline script",
+            "status": "PASS"
+          },
+          {
+            "name": "CSP blocks non-IPC fetch",
+            "status": "PASS"
+          },
+          {
+            "name": "CSP blocks frame and image loads",
+            "status": "PASS"
+          },
+          {
+            "name": "new window denied",
+            "status": "PASS"
+          },
+          {
+            "name": "foreign top-level navigation denied",
+            "status": "FAIL",
+            "observed": {
+              "sameOrigin": true,
+              "networkRequests": 1,
+              "requests": [
+                {
+                  "phase": "navigation",
+                  "method": "GET",
+                  "probe": "navigation",
+                  "destination": "document",
+                  "mode": "navigate"
+                }
+              ]
+            }
+          }
+        ],
+        "failure": {
+          "stage": "window_checks",
+          "kind": "ASSERTION",
+          "shellExited": false
+        }
+      }
+    }
+  ],
+  "policy_baseline": "PASS",
+  "policy_final": "PASS",
+  "baseline_sha256": "b60aba95ccb682d460d6a80d5972f06c982f1a7ac3e5c159159f8f80cd3b8567",
+  "native_baseline": "PASS",
+  "native_baseline_observation": {
+    "schema": 1,
+    "instrumentation": "per-process WebView2 CDP; CSP enforced",
+    "checks": [
+      {
+        "name": "actual installed native session ready",
+        "status": "PASS"
+      },
+      {
+        "name": "force close refused while core is ready",
+        "status": "PASS"
+      },
+      {
+        "name": "foreign subscription ACK refused",
+        "status": "PASS"
+      },
+      {
+        "name": "ungranted native command refused: plugin:shell|execute",
+        "status": "PASS"
+      },
+      {
+        "name": "ungranted native command refused: plugin:fs|read_file",
+        "status": "PASS"
+      },
+      {
+        "name": "ungranted native command refused: plugin:webview|create_webview_window",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks JavaScript eval",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks DOM inline script",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks non-IPC fetch",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks frame and image loads",
+        "status": "PASS"
+      },
+      {
+        "name": "new window denied",
+        "status": "PASS"
+      },
+      {
+        "name": "foreign top-level navigation denied",
+        "status": "PASS",
+        "observed": {
+          "sameOrigin": true,
+          "networkRequests": 0,
+          "requests": []
+        }
+      },
+      {
+        "name": "unacknowledged Channel has one outstanding snapshot",
+        "status": "PASS"
+      },
+      {
+        "name": "native heartbeat progresses despite missing Channel ACK",
+        "status": "PASS"
+      },
+      {
+        "name": "old Channel cannot acknowledge replacement subscription",
+        "status": "PASS"
+      },
+      {
+        "name": "shutdown completes despite unacknowledged real Channel",
+        "status": "PASS"
+      },
+      {
+        "name": "renderer recovers confirmed stopped state after reload",
+        "status": "PASS"
+      },
+      {
+        "name": "blocked content made no network request",
+        "status": "PASS"
+      }
+    ]
+  },
+  "native_final": "PASS",
+  "native_final_observation": {
+    "schema": 1,
+    "instrumentation": "per-process WebView2 CDP; CSP enforced",
+    "checks": [
+      {
+        "name": "actual installed native session ready",
+        "status": "PASS"
+      },
+      {
+        "name": "force close refused while core is ready",
+        "status": "PASS"
+      },
+      {
+        "name": "foreign subscription ACK refused",
+        "status": "PASS"
+      },
+      {
+        "name": "ungranted native command refused: plugin:shell|execute",
+        "status": "PASS"
+      },
+      {
+        "name": "ungranted native command refused: plugin:fs|read_file",
+        "status": "PASS"
+      },
+      {
+        "name": "ungranted native command refused: plugin:webview|create_webview_window",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks JavaScript eval",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks DOM inline script",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks non-IPC fetch",
+        "status": "PASS"
+      },
+      {
+        "name": "CSP blocks frame and image loads",
+        "status": "PASS"
+      },
+      {
+        "name": "new window denied",
+        "status": "PASS"
+      },
+      {
+        "name": "foreign top-level navigation denied",
+        "status": "PASS",
+        "observed": {
+          "sameOrigin": true,
+          "networkRequests": 0,
+          "requests": []
+        }
+      },
+      {
+        "name": "unacknowledged Channel has one outstanding snapshot",
+        "status": "PASS"
+      },
+      {
+        "name": "native heartbeat progresses despite missing Channel ACK",
+        "status": "PASS"
+      },
+      {
+        "name": "old Channel cannot acknowledge replacement subscription",
+        "status": "PASS"
+      },
+      {
+        "name": "shutdown completes despite unacknowledged real Channel",
+        "status": "PASS"
+      },
+      {
+        "name": "renderer recovers confirmed stopped state after reload",
+        "status": "PASS"
+      },
+      {
+        "name": "blocked content made no network request",
+        "status": "PASS"
+      }
+    ]
+  }
+}

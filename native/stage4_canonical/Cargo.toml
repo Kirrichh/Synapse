@@ -1,0 +1,13 @@
+[package]
+name = "synapse-stage4-canonical"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.63"
+
+[lib]
+name = "_stage4_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "=0.22.6", features = ["extension-module", "abi3-py310"] }
+unicode-normalization = "=0.1.22"

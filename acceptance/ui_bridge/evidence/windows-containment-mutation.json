@@ -1,0 +1,11 @@
+{
+  "id": "WIN-kill-on-job-close",
+  "target": "synapse/ui/src-tauri/src/lifecycle/windows/job.rs",
+  "behavior": "owner loss terminates the core and its local descendants",
+  "selected_acceptance": [
+    "acceptance/ui_bridge/native/windows_containment.rs"
+  ],
+  "baseline": "PASS",
+  "result": "KILLED",
+  "source_sha256": "7c49c4d7698de717637012eccf563736cf237ca7d71c5f91bda3f146152ce55c"
+}

@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "target": "synapse/ui/src-tauri/src/lifecycle/windows/launch.rs",
+  "source_sha256": "3f0d9aa7b4d1d6bf5c579ed8058dc63092faa861bcf008bbce2b5176633cde08",
+  "baseline": "PASS",
+  "records": [
+    {
+      "id": "PIPE-stderr-merge",
+      "before": "startup.StartupInfo.hStdError = handles[2];",
+      "after": "startup.StartupInfo.hStdError = handles[1];",
+      "result": "KILLED"
+    },
+    {
+      "id": "PIPE-stdout-misdirection",
+      "before": "startup.StartupInfo.hStdOutput = handles[1];",
+      "after": "startup.StartupInfo.hStdOutput = handles[2];",
+      "result": "KILLED"
+    }
+  ],
+  "final": "PASS"
+}

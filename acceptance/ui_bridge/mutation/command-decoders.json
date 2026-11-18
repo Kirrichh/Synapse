@@ -1,0 +1,197 @@
+[
+  {
+    "id": "DEC-key-check",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/json-keys.ts",
+    "before": "if (keys.has(key))",
+    "after": "if (false)",
+    "behavior": "all duplicate keys are refused",
+    "cases": [
+      "acceptance/ui_bridge/typescript/jcs.test.ts",
+      "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+      "acceptance/ui_bridge/typescript/contracts.test.ts"
+    ],
+    "tsx": true,
+    "generate": false
+  },
+  {
+    "id": "DEC-decoded-key",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/json-keys.ts",
+    "before": "JSON.parse(text.slice(start, index + 1))",
+    "after": "text.slice(start, index + 1)",
+    "behavior": "escaped property names preserve lexical identity",
+    "cases": [
+      "acceptance/ui_bridge/typescript/jcs.test.ts",
+      "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+      "acceptance/ui_bridge/typescript/contracts.test.ts"
+    ],
+    "tsx": true,
+    "generate": false
+  },
+  {
+    "id": "DEC-object-scope",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/json-keys.ts",
+    "before": "containers.pop();",
+    "after": "void containers;",
+    "behavior": "sibling containers have independent property sets",
+    "cases": [
+      "acceptance/ui_bridge/typescript/jcs.test.ts",
+      "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+      "acceptance/ui_bridge/typescript/contracts.test.ts"
+    ],
+    "tsx": true,
+    "generate": false
+  },
+  {
+    "id": "DEC-key-whitespace",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/json-keys.ts",
+    "before": "while (next < text.length && /[\\x20\\t\\r\\n]/.test(text[next])) next += 1;",
+    "after": "void next;",
+    "behavior": "whitespace before colon cannot bypass duplicate refusal",
+    "cases": [
+      "acceptance/ui_bridge/typescript/jcs.test.ts",
+      "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+      "acceptance/ui_bridge/typescript/contracts.test.ts"
+    ],
+    "tsx": true,
+    "generate": false
+  },
+  {
+    "id": "DEC-quoted-content",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/json-keys.ts",
+    "before": "if (text[index] === \"\\\\\") index += 1;",
+    "after": "if (false) index += 1;",
+    "behavior": "escaped quotes and key-like string content remain data",
+    "cases": [
+      "acceptance/ui_bridge/typescript/jcs.test.ts",
+      "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+      "acceptance/ui_bridge/typescript/contracts.test.ts"
+    ],
+    "tsx": true,
+    "generate": false
+  },
+  {
+    "id": "DEC-control-admission",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/decode.ts",
+    "before": "try { requireUniqueJsonKeys(text); } catch { throw new ContractError(); }",
+    "after": "void text;",
+    "behavior": "control path also refuses identical duplicate authoritative fields",
+    "cases": [
+      "acceptance/ui_bridge/typescript/jcs.test.ts",
+      "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+      "acceptance/ui_bridge/typescript/contracts.test.ts"
+    ],
+    "tsx": true,
+    "generate": false
+  },
+  {
+    "id": "DEC-command-admission",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/jcs.ts",
+    "before": "requireUniqueJsonKeys(text);",
+    "after": "void text;",
+    "behavior": "command path refuses equal duplicate fields before hashing",
+    "cases": [
+      "acceptance/ui_bridge/typescript/jcs.test.ts",
+      "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+      "acceptance/ui_bridge/typescript/contracts.test.ts"
+    ],
+    "tsx": true,
+    "generate": false
+  },
+  {
+    "id": "DEC-mutation-schema",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/command-decode.ts",
+    "before": "if (!validateCommand(value))",
+    "after": "if (false)",
+    "behavior": "mutation decoder enforces owner schema",
+    "cases": [
+      "acceptance/ui_bridge/typescript/jcs.test.ts",
+      "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+      "acceptance/ui_bridge/typescript/contracts.test.ts"
+    ],
+    "tsx": true,
+    "generate": false
+  },
+  {
+    "id": "DEC-target-binding",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/command-decode.ts",
+    "before": "if (command.recipient !== command.params.invocation_id)",
+    "after": "if (false)",
+    "behavior": "command recipient must match the declared operation object",
+    "cases": [
+      "acceptance/ui_bridge/typescript/jcs.test.ts",
+      "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+      "acceptance/ui_bridge/typescript/contracts.test.ts"
+    ],
+    "tsx": true,
+    "generate": false
+  },
+  {
+    "id": "DEC-status-schema",
+    "kind": "typescript",
+    "target": "synapse/ui/src/contracts/command-decode.ts",
+    "before": "if (!validateReconciliation(value))",
+    "after": "if (false)",
+    "behavior": "reconciliation remains a closed owner contract",
+    "cases": [
+      "acceptance/ui_bridge/typescript/jcs.test.ts",
+      "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+      "acceptance/ui_bridge/typescript/contracts.test.ts"
+    ],
+    "tsx": true,
+    "generate": false
+  },
+  {
+    "id": "DEC-format-generation",
+    "kind": "typescript",
+    "target": "synapse/ui/tooling/generate-contracts.mjs",
+    "before": "validateFormats: true",
+    "after": "validateFormats: false",
+    "behavior": "generated UUID validation is an assertion",
+    "cases": [
+      "acceptance/ui_bridge/typescript/jcs.test.ts",
+      "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+      "acceptance/ui_bridge/typescript/contracts.test.ts"
+    ],
+    "tsx": true,
+    "generate": true
+  },
+  {
+    "id": "DEC-constraint-stripping",
+    "kind": "typescript",
+    "target": "synapse/ui/tooling/generate-contracts.mjs",
+    "before": "removeAdditional: false",
+    "after": "removeAdditional: true",
+    "behavior": "unknown fields cannot be silently removed",
+    "cases": [
+      "acceptance/ui_bridge/typescript/jcs.test.ts",
+      "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+      "acceptance/ui_bridge/typescript/contracts.test.ts"
+    ],
+    "tsx": true,
+    "generate": true
+  },
+  {
+    "id": "DEC-coercion",
+    "kind": "typescript",
+    "target": "synapse/ui/tooling/generate-contracts.mjs",
+    "before": "coerceTypes: false",
+    "after": "coerceTypes: true",
+    "behavior": "wire fields cannot be silently coerced",
+    "cases": [
+      "acceptance/ui_bridge/typescript/jcs.test.ts",
+      "acceptance/ui_bridge/typescript/command-contracts.test.ts",
+      "acceptance/ui_bridge/typescript/contracts.test.ts"
+    ],
+    "tsx": true,
+    "generate": true
+  }
+]

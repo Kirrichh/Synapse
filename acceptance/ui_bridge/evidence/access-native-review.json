@@ -1,0 +1,493 @@
+{
+  "schema_version": "synapse.ui.acceptance/v1",
+  "scope": "Windows access authority and native invocation integration; not installed application sign-off",
+  "administrative_host": {
+    "result": "PASS",
+    "checks": [
+      "real UAC protected enrollment",
+      "durable registration and exact grant",
+      "protected registry reopen",
+      "signed authentication",
+      "durable revocation",
+      "ordinary protected read",
+      "ordinary administrative operation refusal",
+      "ordinary actual OS write refusal",
+      "isolated known registry and resource cleanup"
+    ]
+  },
+  "python": {
+    "selected_cases": 25,
+    "result": "PASS"
+  },
+  "native": {
+    "application": 3,
+    "client_identity": 2,
+    "domain_protocol": 2,
+    "controller": 3,
+    "result": "PASS",
+    "composition": "actual Windows credentials and Rust/Python byte pipe with synthetic registry and real invocation owner"
+  },
+  "desktop_compile": "PASS",
+  "campaigns": [
+    {
+      "name": "access-mutation-current-evidence",
+      "baseline": "PASS",
+      "mutants": [
+        {
+          "id": "ACCESS-method",
+          "behavior": "Unlisted operations are refused on an otherwise valid grant.",
+          "target": "synapse/access/authority.py",
+          "source_sha256": "a384bfd0629a44e6a7a2b44c52059e087973d4d76be085ed9cc318970f3f77a8",
+          "result": "KILLED",
+          "seconds": 0.75,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_access_authority_acceptance.py"
+          ]
+        },
+        {
+          "id": "ACCESS-object",
+          "behavior": "A grant cannot disclose an unlisted object.",
+          "target": "synapse/access/authority.py",
+          "source_sha256": "a384bfd0629a44e6a7a2b44c52059e087973d4d76be085ed9cc318970f3f77a8",
+          "result": "KILLED",
+          "seconds": 0.969,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_access_authority_acceptance.py"
+          ]
+        },
+        {
+          "id": "ACCESS-grant-revocation",
+          "behavior": "Revocation stops new reads, cancellation retries and saved-result disclosure.",
+          "target": "synapse/access/authority.py",
+          "source_sha256": "a384bfd0629a44e6a7a2b44c52059e087973d4d76be085ed9cc318970f3f77a8",
+          "result": "KILLED",
+          "seconds": 1.093,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_access_authority_acceptance.py",
+            "acceptance/ui_bridge/test_authorized_invocations_acceptance.py"
+          ]
+        },
+        {
+          "id": "ACCESS-grant-version",
+          "behavior": "Queued requests cannot silently adopt a changed grant version.",
+          "target": "synapse/access/authority.py",
+          "source_sha256": "a384bfd0629a44e6a7a2b44c52059e087973d4d76be085ed9cc318970f3f77a8",
+          "result": "KILLED",
+          "seconds": 0.969,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_access_authority_acceptance.py"
+          ]
+        },
+        {
+          "id": "ACCESS-app-binding",
+          "behavior": "An authenticated application cannot use another application's grant.",
+          "target": "synapse/access/authority.py",
+          "source_sha256": "a384bfd0629a44e6a7a2b44c52059e087973d4d76be085ed9cc318970f3f77a8",
+          "result": "KILLED",
+          "seconds": 0.969,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_access_authority_acceptance.py"
+          ]
+        },
+        {
+          "id": "ACCESS-expiry",
+          "behavior": "Expired rights cannot disclose owner data.",
+          "target": "synapse/access/authority.py",
+          "source_sha256": "a384bfd0629a44e6a7a2b44c52059e087973d4d76be085ed9cc318970f3f77a8",
+          "result": "KILLED",
+          "seconds": 0.969,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_access_authority_acceptance.py"
+          ]
+        },
+        {
+          "id": "ACCESS-current-app",
+          "behavior": "An existing connection rechecks current application registration.",
+          "target": "synapse/access/authority.py",
+          "source_sha256": "a384bfd0629a44e6a7a2b44c52059e087973d4d76be085ed9cc318970f3f77a8",
+          "result": "KILLED",
+          "seconds": 0.953,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_access_authority_acceptance.py"
+          ]
+        },
+        {
+          "id": "ACCESS-resource-custody",
+          "behavior": "Each request verifies and holds its registered resource.",
+          "target": "synapse/access/authority.py",
+          "source_sha256": "a384bfd0629a44e6a7a2b44c52059e087973d4d76be085ed9cc318970f3f77a8",
+          "result": "KILLED",
+          "seconds": 0.953,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_access_authority_acceptance.py"
+          ]
+        },
+        {
+          "id": "ACCESS-proof",
+          "behavior": "A known client identifier without its private-key proof fails.",
+          "target": "synapse/access/authentication.py",
+          "source_sha256": "2f0363551985e47d03617f9c320cac9a7a37747ad9d3237fb2ff260454dc9594",
+          "result": "KILLED",
+          "seconds": 0.953,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_access_authority_acceptance.py"
+          ]
+        },
+        {
+          "id": "ACCESS-single-use",
+          "behavior": "A consumed challenge cannot authenticate again.",
+          "target": "synapse/access/authentication.py",
+          "source_sha256": "2f0363551985e47d03617f9c320cac9a7a37747ad9d3237fb2ff260454dc9594",
+          "result": "KILLED",
+          "seconds": 0.953,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_access_authority_acceptance.py"
+          ]
+        },
+        {
+          "id": "ACCESS-authority-instance",
+          "behavior": "Session custody cannot cross authority instances.",
+          "target": "synapse/access/authentication.py",
+          "source_sha256": "2f0363551985e47d03617f9c320cac9a7a37747ad9d3237fb2ff260454dc9594",
+          "result": "KILLED",
+          "seconds": 0.953,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_access_authority_acceptance.py"
+          ]
+        },
+        {
+          "id": "ACCESS-close",
+          "behavior": "Closing a byte connection destroys its authenticated context.",
+          "target": "synapse/access/authentication.py",
+          "source_sha256": "2f0363551985e47d03617f9c320cac9a7a37747ad9d3237fb2ff260454dc9594",
+          "result": "KILLED",
+          "seconds": 0.953,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_access_authority_acceptance.py"
+          ]
+        },
+        {
+          "id": "ACCESS-membership",
+          "behavior": "A declared object name must resolve to a retained record in the authorized store.",
+          "target": "synapse/machine/invocations.py",
+          "source_sha256": "1a8edf201b5d2661ce8d3bca899d43d9b47a232e78dc75a0e2d304abe46f4ca9",
+          "result": "KILLED",
+          "seconds": 1.0,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_authorized_invocations_acceptance.py"
+          ]
+        },
+        {
+          "id": "ACCESS-response-authorization",
+          "behavior": "The adapter checks the actual operation, not merely a read right.",
+          "target": "synapse/machine/invocations.py",
+          "source_sha256": "1a8edf201b5d2661ce8d3bca899d43d9b47a232e78dc75a0e2d304abe46f4ca9",
+          "result": "KILLED",
+          "seconds": 1.312,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_authorized_invocations_acceptance.py"
+          ]
+        },
+        {
+          "id": "ACCESS-closed-input",
+          "behavior": "Renderer authority/path fields cannot pass through a known request.",
+          "target": "synapse/machine/invocations.py",
+          "source_sha256": "1a8edf201b5d2661ce8d3bca899d43d9b47a232e78dc75a0e2d304abe46f4ca9",
+          "result": "KILLED",
+          "seconds": 1.265,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_authorized_invocations_acceptance.py"
+          ]
+        },
+        {
+          "id": "ACCESS-preserve-cancel-owner",
+          "behavior": "Successful cancellation must change and retain the actual owner's state.",
+          "target": "synapse/machine/invocations.py",
+          "source_sha256": "1a8edf201b5d2661ce8d3bca899d43d9b47a232e78dc75a0e2d304abe46f4ca9",
+          "result": "KILLED",
+          "seconds": 1.343,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_authorized_invocations_acceptance.py"
+          ]
+        },
+        {
+          "id": "ACCESS-resource-file-id",
+          "behavior": "A replacement directory at an approved path is refused.",
+          "target": "synapse/access/windows_objects.py",
+          "source_sha256": "5c92de73103c238c4663758f3e490876406e8d62ef56429175b5b63a9b6d2cea",
+          "result": "KILLED",
+          "seconds": 0.875,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_access_windows_objects_acceptance.py"
+          ]
+        },
+        {
+          "id": "ACCESS-pin-handle",
+          "behavior": "Resource custody prevents rename through the protected operation.",
+          "target": "synapse/access/windows_objects.py",
+          "source_sha256": "5c92de73103c238c4663758f3e490876406e8d62ef56429175b5b63a9b6d2cea",
+          "result": "KILLED",
+          "seconds": 1.172,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_access_windows_objects_acceptance.py"
+          ]
+        },
+        {
+          "id": "ACCESS-admin-token",
+          "behavior": "An ordinary process cannot obtain the administrative context.",
+          "target": "synapse/access/windows_objects.py",
+          "source_sha256": "5c92de73103c238c4663758f3e490876406e8d62ef56429175b5b63a9b6d2cea",
+          "result": "KILLED",
+          "seconds": 1.141,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_access_windows_objects_acceptance.py"
+          ]
+        },
+        {
+          "id": "ACCESS-pin-owner-db",
+          "behavior": "SQLite's actual database cannot be swapped between authorization and use.",
+          "target": "synapse/access/windows_invocations.py",
+          "source_sha256": "0553eaaa399548ad9d35fac45563cd5ca57628ed1802f0dac9985ed6e3065864",
+          "result": "KILLED",
+          "seconds": 1.172,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_access_windows_objects_acceptance.py"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "domain-mutation-evidence",
+      "baseline": "PASS",
+      "mutants": [
+        {
+          "id": "DOMAIN-unique-key",
+          "behavior": "One public key cannot identify two registered instances.",
+          "target": "synapse/access/authority.py",
+          "source_sha256": "a384bfd0629a44e6a7a2b44c52059e087973d4d76be085ed9cc318970f3f77a8",
+          "result": "KILLED",
+          "seconds": 1.047,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_domain_session_acceptance.py"
+          ]
+        },
+        {
+          "id": "DOMAIN-stored-key-ambiguity",
+          "behavior": "Persisted duplicate public keys are refused.",
+          "target": "synapse/access/registry_codec.py",
+          "source_sha256": "7cb13e7a2195cbd6e1764da585ad1daaa14acbb2e0f92aa3b9679b965d9eb44e",
+          "result": "KILLED",
+          "seconds": 1.344,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_domain_session_acceptance.py"
+          ]
+        },
+        {
+          "id": "DOMAIN-grant-list-application",
+          "behavior": "Grant discovery rechecks the current registered application.",
+          "target": "synapse/access/authority.py",
+          "source_sha256": "a384bfd0629a44e6a7a2b44c52059e087973d4d76be085ed9cc318970f3f77a8",
+          "result": "KILLED",
+          "seconds": 1.344,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_domain_session_acceptance.py"
+          ]
+        },
+        {
+          "id": "DOMAIN-grant-list-scope",
+          "behavior": "Grant discovery never exposes another application's objects.",
+          "target": "synapse/access/authority.py",
+          "source_sha256": "a384bfd0629a44e6a7a2b44c52059e087973d4d76be085ed9cc318970f3f77a8",
+          "result": "KILLED",
+          "seconds": 1.328,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_domain_session_acceptance.py"
+          ]
+        },
+        {
+          "id": "DOMAIN-grant-list-expiry",
+          "behavior": "Expired rights disappear from application discovery.",
+          "target": "synapse/access/authority.py",
+          "source_sha256": "a384bfd0629a44e6a7a2b44c52059e087973d4d76be085ed9cc318970f3f77a8",
+          "result": "KILLED",
+          "seconds": 1.328,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_domain_session_acceptance.py"
+          ]
+        },
+        {
+          "id": "DOMAIN-close-reset",
+          "behavior": "Explicit access close starts a fresh challenge without reusing proof.",
+          "target": "synapse/machine/domain_session.py",
+          "source_sha256": "8d4dee696da0a3a394d99464b13a2d517e14b884ed8f9381842de6c2d2288638",
+          "result": "KILLED",
+          "seconds": 1.328,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_domain_session_acceptance.py"
+          ]
+        },
+        {
+          "id": "DOMAIN-before-ready",
+          "behavior": "Domain requests before the control handshake create no authority context.",
+          "target": "synapse/machine/domain_session.py",
+          "source_sha256": "8d4dee696da0a3a394d99464b13a2d517e14b884ed8f9381842de6c2d2288638",
+          "result": "KILLED",
+          "seconds": 1.313,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_domain_session_acceptance.py"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-correlation",
+          "behavior": "Only the corresponding request can consume a reply.",
+          "target": "synapse/ui/src-tauri/src/domain_protocol.rs",
+          "source_sha256": "0ba5e8ab6efd3dd8e54a86286ce16d9d27c37461ad0c55f1d3e10b846962eea0",
+          "result": "KILLED",
+          "seconds": 2.313,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/domain_protocol.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-method",
+          "behavior": "A result from another method is not an answer.",
+          "target": "synapse/ui/src-tauri/src/domain_protocol.rs",
+          "source_sha256": "0ba5e8ab6efd3dd8e54a86286ce16d9d27c37461ad0c55f1d3e10b846962eea0",
+          "result": "KILLED",
+          "seconds": 3.828,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/domain_protocol.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-schema",
+          "behavior": "Unknown refusal vocabulary is rejected at the reply boundary.",
+          "target": "synapse/ui/src-tauri/src/domain_protocol.rs",
+          "source_sha256": "0ba5e8ab6efd3dd8e54a86286ce16d9d27c37461ad0c55f1d3e10b846962eea0",
+          "result": "KILLED",
+          "seconds": 4.062,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/domain_protocol.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-instance-reuse",
+          "behavior": "Restart must reuse the registered private key.",
+          "target": "synapse/ui/src-tauri/src/client_identity.rs",
+          "source_sha256": "0b3f10b3f4075e617d7ee7bf250c4026a40fcf89f3ef47909e001d8250179497",
+          "result": "KILLED",
+          "seconds": 2.031,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/client_identity.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-credential-tag",
+          "behavior": "A malformed credential is not an application identity.",
+          "target": "synapse/ui/src-tauri/src/client_identity.rs",
+          "source_sha256": "0b3f10b3f4075e617d7ee7bf250c4026a40fcf89f3ef47909e001d8250179497",
+          "result": "KILLED",
+          "seconds": 3.609,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/client_identity.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-credential-persistence",
+          "behavior": "Session-only key persistence does not satisfy restart recovery.",
+          "target": "synapse/ui/src-tauri/src/client_identity.rs",
+          "source_sha256": "0b3f10b3f4075e617d7ee7bf250c4026a40fcf89f3ef47909e001d8250179497",
+          "result": "KILLED",
+          "seconds": 3.625,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/client_identity.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-signature",
+          "behavior": "A real Python verifier rejects a signature over a different challenge.",
+          "target": "synapse/ui/src-tauri/src/client_identity.rs",
+          "source_sha256": "0b3f10b3f4075e617d7ee7bf250c4026a40fcf89f3ef47909e001d8250179497",
+          "result": "KILLED",
+          "seconds": 3.219,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-identity-selection",
+          "behavior": "The signed native instance must match the registered public key.",
+          "target": "synapse/ui/src-tauri/src/client_identity.rs",
+          "source_sha256": "0b3f10b3f4075e617d7ee7bf250c4026a40fcf89f3ef47909e001d8250179497",
+          "result": "KILLED",
+          "seconds": 4.797,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-closed-renderer",
+          "behavior": "Renderer fields cannot assign native context.",
+          "target": "synapse/ui/src-tauri/src/application.rs",
+          "source_sha256": "63f4725be4d1492361c395a0131e8ca155c5c08f9a3420f4f37130a52374c63d",
+          "result": "KILLED",
+          "seconds": 6.828,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-read-mutation",
+          "behavior": "The read API cannot submit a renderer-issued mutation identity.",
+          "target": "synapse/ui/src-tauri/src/application.rs",
+          "source_sha256": "63f4725be4d1492361c395a0131e8ca155c5c08f9a3420f4f37130a52374c63d",
+          "result": "KILLED",
+          "seconds": 4.985,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-intent-permission",
+          "behavior": "Read-only grants cannot issue mutation intents.",
+          "target": "synapse/ui/src-tauri/src/application.rs",
+          "source_sha256": "63f4725be4d1492361c395a0131e8ca155c5c08f9a3420f4f37130a52374c63d",
+          "result": "KILLED",
+          "seconds": 6.625,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-selected-grant",
+          "behavior": "An unlisted grant reference cannot select another granted scope.",
+          "target": "synapse/ui/src-tauri/src/application.rs",
+          "source_sha256": "63f4725be4d1492361c395a0131e8ca155c5c08f9a3420f4f37130a52374c63d",
+          "result": "KILLED",
+          "seconds": 6.718,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application.rs"
+          ]
+        },
+        {
+          "id": "NATIVE-DOMAIN-retry-status",
+          "behavior": "Repeated submission reconciles the original identity before any resend.",
+          "target": "synapse/ui/src-tauri/src/application.rs",
+          "source_sha256": "63f4725be4d1492361c395a0131e8ca155c5c08f9a3420f4f37130a52374c63d",
+          "result": "KILLED",
+          "seconds": 6.047,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/native/application.rs"
+          ]
+        }
+      ]
+    }
+  ],
+  "reviewed_mutation": "Removing the database pin permits the actual SQLite file rename; the behavioral assertion fails (one failed, three passed).",
+  "limits": [
+    "No installed canonical application result for this revision",
+    "Renderer and class-specific channel delivery remain unfinished",
+    "No native Linux verification",
+    "No clean-machine, signing or wider Windows-version claim"
+  ]
+}

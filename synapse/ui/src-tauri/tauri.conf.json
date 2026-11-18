@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Synapse",
+  "version": "0.1.0",
+  "identifier": "org.synapse.desktop",
+  "build": {
+    "beforeDevCommand": "npm run build",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{ "label": "main", "create": false, "title": "Synapse", "width": 1500, "height": 980,
+      "minWidth": 960, "minHeight": 700, "devtools": false }],
+    "security": {
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'",
+      "capabilities": ["main"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "targets": ["deb", "nsis"],
+    "resources": { "resources/core/": "core/" },
+    "linux": { "deb": { "desktopTemplate": "packaging/linux/synapse.desktop", "files": {
+      "/usr/lib/systemd/user/synapse-desktop.service": "packaging/linux/synapse-desktop.service"
+    } } }
+  }
+}

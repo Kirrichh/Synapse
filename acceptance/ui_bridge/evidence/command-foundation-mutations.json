@@ -1,0 +1,1195 @@
+{
+  "schema_version": 1,
+  "scope": "Command and invocation-owner components; no application IPC, negotiated domain route, installed acceptance or P1 completion.",
+  "environment": {
+    "platform": "Windows x86_64",
+    "python": "3.12.14",
+    "pytest": "9.1.1",
+    "node": "24.18.0",
+    "rust": "1.99.1 MSVC",
+    "protection": "Production user-bound DPAPI in a host process outside the restricted agent sandbox"
+  },
+  "method": "Serial seeded mutants in isolated external source copies, with passing selected baselines; no working-checkout mutation or dependency installation.",
+  "acceptance": {
+    "python_command_and_owner_cases": 88,
+    "python_admission_cases": 3,
+    "native_cases": 11,
+    "typescript_cases": 26,
+    "typescript_type_check": "PASS"
+  },
+  "first_command_round": {
+    "baseline": "PASS",
+    "mutants": [
+      {
+        "id": "JCS-PY-rounding",
+        "behavior": "Reject decimal precision loss before binding",
+        "target": "synapse/commands/jcs.py",
+        "source_sha256": "b71ba971d92266581841daeafa38e46a9dd00f5b2f40bf3dcd0ce3c16130c0ed",
+        "result": "KILLED",
+        "seconds": 0.688,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_jcs_acceptance.py"
+        ]
+      },
+      {
+        "id": "JCS-PY-duplicates",
+        "behavior": "Reject duplicate keys at every nesting level",
+        "target": "synapse/commands/jcs.py",
+        "source_sha256": "b71ba971d92266581841daeafa38e46a9dd00f5b2f40bf3dcd0ce3c16130c0ed",
+        "result": "KILLED",
+        "seconds": 0.875,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_jcs_acceptance.py"
+        ]
+      },
+      {
+        "id": "JCS-PY-depth",
+        "behavior": "Bound input and canonical nesting",
+        "target": "synapse/commands/jcs.py",
+        "source_sha256": "b71ba971d92266581841daeafa38e46a9dd00f5b2f40bf3dcd0ce3c16130c0ed",
+        "result": "SURVIVED",
+        "seconds": 0.812,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_jcs_acceptance.py"
+        ]
+      },
+      {
+        "id": "JCS-PY-bytes",
+        "behavior": "Bound command payloads",
+        "target": "synapse/commands/jcs.py",
+        "source_sha256": "b71ba971d92266581841daeafa38e46a9dd00f5b2f40bf3dcd0ce3c16130c0ed",
+        "result": "SURVIVED",
+        "seconds": 0.812,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_jcs_acceptance.py"
+        ]
+      },
+      {
+        "id": "JCS-PY-canonical",
+        "behavior": "Use RFC8785 numeric and UTF16 serialization",
+        "target": "synapse/commands/jcs.py",
+        "source_sha256": "b71ba971d92266581841daeafa38e46a9dd00f5b2f40bf3dcd0ce3c16130c0ed",
+        "result": "KILLED",
+        "seconds": 0.875,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_jcs_acceptance.py"
+        ]
+      },
+      {
+        "id": "JCS-PY-parameter-object",
+        "behavior": "Hash only object parameters",
+        "target": "synapse/commands/jcs.py",
+        "source_sha256": "b71ba971d92266581841daeafa38e46a9dd00f5b2f40bf3dcd0ce3c16130c0ed",
+        "result": "KILLED",
+        "seconds": 0.859,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_jcs_acceptance.py"
+        ]
+      },
+      {
+        "id": "JCS-TS-rounding",
+        "behavior": "Reject precision loss before binary64 conversion",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "6b20274b4a58b5e9a17ac858eb9d15ab2fcfea38eec2580221f35d1442b90e21",
+        "result": "KILLED",
+        "seconds": 0.125,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts"
+        ]
+      },
+      {
+        "id": "JCS-TS-duplicates",
+        "behavior": "Reject duplicate object properties",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "6b20274b4a58b5e9a17ac858eb9d15ab2fcfea38eec2580221f35d1442b90e21",
+        "result": "KILLED",
+        "seconds": 0.157,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts"
+        ]
+      },
+      {
+        "id": "JCS-TS-order",
+        "behavior": "Canonical UTF16 property order",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "6b20274b4a58b5e9a17ac858eb9d15ab2fcfea38eec2580221f35d1442b90e21",
+        "result": "KILLED",
+        "seconds": 0.172,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts"
+        ]
+      },
+      {
+        "id": "JCS-TS-surrogates",
+        "behavior": "Reject unmatched high surrogates",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "6b20274b4a58b5e9a17ac858eb9d15ab2fcfea38eec2580221f35d1442b90e21",
+        "result": "KILLED",
+        "seconds": 0.171,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts"
+        ]
+      },
+      {
+        "id": "JCS-TS-depth",
+        "behavior": "Bound nesting before use",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "6b20274b4a58b5e9a17ac858eb9d15ab2fcfea38eec2580221f35d1442b90e21",
+        "result": "KILLED",
+        "seconds": 0.141,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts"
+        ]
+      },
+      {
+        "id": "JCS-TS-bytes",
+        "behavior": "Bound input and canonical output bytes",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "6b20274b4a58b5e9a17ac858eb9d15ab2fcfea38eec2580221f35d1442b90e21",
+        "result": "KILLED",
+        "seconds": 0.172,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts"
+        ]
+      },
+      {
+        "id": "JCS-TS-array-properties",
+        "behavior": "Do not discard significant array properties",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "6b20274b4a58b5e9a17ac858eb9d15ab2fcfea38eec2580221f35d1442b90e21",
+        "result": "KILLED",
+        "seconds": 0.156,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts"
+        ]
+      },
+      {
+        "id": "JCS-TS-array-symbols",
+        "behavior": "Reject symbol properties on arrays",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "6b20274b4a58b5e9a17ac858eb9d15ab2fcfea38eec2580221f35d1442b90e21",
+        "result": "KILLED",
+        "seconds": 0.156,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts"
+        ]
+      },
+      {
+        "id": "JCS-TS-array-getter",
+        "behavior": "Avoid invoking array getters while hashing",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "6b20274b4a58b5e9a17ac858eb9d15ab2fcfea38eec2580221f35d1442b90e21",
+        "result": "KILLED",
+        "seconds": 0.156,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts"
+        ]
+      },
+      {
+        "id": "JCS-TS-array-enumerability",
+        "behavior": "Refuse hidden array elements",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "6b20274b4a58b5e9a17ac858eb9d15ab2fcfea38eec2580221f35d1442b90e21",
+        "result": "KILLED",
+        "seconds": 0.157,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts"
+        ]
+      },
+      {
+        "id": "JCS-RS-rounding",
+        "behavior": "Reject numeric precision loss",
+        "target": "synapse/ui/src-tauri/src/jcs.rs",
+        "source_sha256": "a54c0a912fd1734bc6c02e8a13adce8328a6a8462dd653668a0d56928e505321",
+        "result": "KILLED",
+        "seconds": 2.266,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/jcs.rs"
+        ]
+      },
+      {
+        "id": "JCS-RS-duplicates",
+        "behavior": "Reject duplicate keys",
+        "target": "synapse/ui/src-tauri/src/jcs.rs",
+        "source_sha256": "a54c0a912fd1734bc6c02e8a13adce8328a6a8462dd653668a0d56928e505321",
+        "result": "KILLED",
+        "seconds": 3.266,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/jcs.rs"
+        ]
+      },
+      {
+        "id": "JCS-RS-depth",
+        "behavior": "Bound nested input/output",
+        "target": "synapse/ui/src-tauri/src/jcs.rs",
+        "source_sha256": "a54c0a912fd1734bc6c02e8a13adce8328a6a8462dd653668a0d56928e505321",
+        "result": "SURVIVED",
+        "seconds": 3.204,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/jcs.rs"
+        ]
+      },
+      {
+        "id": "JCS-RS-bytes",
+        "behavior": "Bound command payloads",
+        "target": "synapse/ui/src-tauri/src/jcs.rs",
+        "source_sha256": "a54c0a912fd1734bc6c02e8a13adce8328a6a8462dd653668a0d56928e505321",
+        "result": "SURVIVED",
+        "seconds": 3.25,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/jcs.rs"
+        ]
+      },
+      {
+        "id": "JCS-RS-canonical",
+        "behavior": "Preserve RFC8785 serialization",
+        "target": "synapse/ui/src-tauri/src/jcs.rs",
+        "source_sha256": "a54c0a912fd1734bc6c02e8a13adce8328a6a8462dd653668a0d56928e505321",
+        "result": "KILLED",
+        "seconds": 3.282,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/jcs.rs"
+        ]
+      },
+      {
+        "id": "JCS-RS-parameter-object",
+        "behavior": "Only object parameters receive command hashes",
+        "target": "synapse/ui/src-tauri/src/jcs.rs",
+        "source_sha256": "a54c0a912fd1734bc6c02e8a13adce8328a6a8462dd653668a0d56928e505321",
+        "result": "KILLED",
+        "seconds": 3.234,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/jcs.rs"
+        ]
+      },
+      {
+        "id": "INTENT-persist-before-send",
+        "behavior": "Never return sendable content before durable binding",
+        "target": "synapse/ui/src-tauri/src/intent_store.rs",
+        "source_sha256": "4e01721ea09a4e6536b58f1920e5e8345db1b451f3710b4145d0b8c3e2fc0660",
+        "result": "KILLED",
+        "seconds": 2.109,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/intent_store.rs"
+        ]
+      },
+      {
+        "id": "INTENT-conflict",
+        "behavior": "Reject changed content under the same intent",
+        "target": "synapse/ui/src-tauri/src/intent_store.rs",
+        "source_sha256": "4e01721ea09a4e6536b58f1920e5e8345db1b451f3710b4145d0b8c3e2fc0660",
+        "result": "KILLED",
+        "seconds": 3.406,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/intent_store.rs"
+        ]
+      },
+      {
+        "id": "INTENT-scope",
+        "behavior": "Reject foreign protected scope",
+        "target": "synapse/ui/src-tauri/src/intent_store.rs",
+        "source_sha256": "4e01721ea09a4e6536b58f1920e5e8345db1b451f3710b4145d0b8c3e2fc0660",
+        "result": "KILLED",
+        "seconds": 3.437,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/intent_store.rs"
+        ]
+      },
+      {
+        "id": "INTENT-lock",
+        "behavior": "Only one native intent store owner",
+        "target": "synapse/ui/src-tauri/src/intent_store.rs",
+        "source_sha256": "4e01721ea09a4e6536b58f1920e5e8345db1b451f3710b4145d0b8c3e2fc0660",
+        "result": "KILLED",
+        "seconds": 3.343,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/intent_store.rs"
+        ]
+      },
+      {
+        "id": "INTENT-agent-root",
+        "behavior": "Keep pre-send storage outside agent workspaces",
+        "target": "synapse/ui/src-tauri/src/intent_store.rs",
+        "source_sha256": "4e01721ea09a4e6536b58f1920e5e8345db1b451f3710b4145d0b8c3e2fc0660",
+        "result": "KILLED",
+        "seconds": 3.594,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/intent_store.rs"
+        ]
+      },
+      {
+        "id": "BINDING-client-id",
+        "behavior": "Renderer cannot select command identity",
+        "target": "synapse/ui/src-tauri/src/commands.rs",
+        "source_sha256": "3dc85cc5adc88f6c23643e20402200559d504f8cc03f79344536938bc4a170e9",
+        "result": "KILLED",
+        "seconds": 3.75,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/intent_store.rs"
+        ]
+      },
+      {
+        "id": "BINDING-schema",
+        "behavior": "Closed versioned command admission",
+        "target": "synapse/ui/src-tauri/src/commands.rs",
+        "source_sha256": "3dc85cc5adc88f6c23643e20402200559d504f8cc03f79344536938bc4a170e9",
+        "result": "KILLED",
+        "seconds": 3.109,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/intent_store.rs"
+        ]
+      },
+      {
+        "id": "BINDING-owner",
+        "behavior": "Bind target domain owner",
+        "target": "synapse/ui/src-tauri/src/commands.rs",
+        "source_sha256": "3dc85cc5adc88f6c23643e20402200559d504f8cc03f79344536938bc4a170e9",
+        "result": "KILLED",
+        "seconds": 3.266,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/intent_store.rs"
+        ]
+      },
+      {
+        "id": "RECOVERY-absence-scope",
+        "behavior": "Foreign absence never permits retry",
+        "target": "synapse/ui/src-tauri/src/command_recovery.rs",
+        "source_sha256": "1c307b734e1af069d2c42bf3376ce90df8ab3848f3a202ffa34637fd8e747050",
+        "result": "KILLED",
+        "seconds": 2.094,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/command_recovery.rs"
+        ]
+      },
+      {
+        "id": "RECOVERY-result-binding",
+        "behavior": "Historical receipt matches exact persisted command",
+        "target": "synapse/ui/src-tauri/src/command_recovery.rs",
+        "source_sha256": "1c307b734e1af069d2c42bf3376ce90df8ab3848f3a202ffa34637fd8e747050",
+        "result": "KILLED",
+        "seconds": 3.313,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/command_recovery.rs"
+        ]
+      },
+      {
+        "id": "RECOVERY-outcome",
+        "behavior": "Do not invent confirmed process cancellation",
+        "target": "synapse/ui/src-tauri/src/command_recovery.rs",
+        "source_sha256": "1c307b734e1af069d2c42bf3376ce90df8ab3848f3a202ffa34637fd8e747050",
+        "result": "KILLED",
+        "seconds": 3.297,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/command_recovery.rs"
+        ]
+      },
+      {
+        "id": "RECOVERY-replay",
+        "behavior": "Recovery returns historical owner result",
+        "target": "synapse/ui/src-tauri/src/command_recovery.rs",
+        "source_sha256": "1c307b734e1af069d2c42bf3376ce90df8ab3848f3a202ffa34637fd8e747050",
+        "result": "KILLED",
+        "seconds": 3.328,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/command_recovery.rs"
+        ]
+      }
+    ]
+  },
+  "survivor_resolution": {
+    "ids": [
+      "JCS-PY-depth",
+      "JCS-PY-bytes",
+      "JCS-RS-depth",
+      "JCS-RS-bytes"
+    ],
+    "cause": "Boundary acceptance derived its limits from the mutated implementation constants.",
+    "resolution": "Independent fixed 32-container and 65536-byte contract cases detect increased limits. Final baselines and mutants passed."
+  },
+  "final_command_round": {
+    "baseline": "PASS",
+    "mutants": [
+      {
+        "id": "JCS-PY-rounding",
+        "behavior": "Reject decimal precision loss before binding",
+        "target": "synapse/commands/jcs.py",
+        "source_sha256": "b71ba971d92266581841daeafa38e46a9dd00f5b2f40bf3dcd0ce3c16130c0ed",
+        "result": "KILLED",
+        "seconds": 0.719,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_jcs_acceptance.py"
+        ]
+      },
+      {
+        "id": "JCS-PY-duplicates",
+        "behavior": "Reject duplicate keys at every nesting level",
+        "target": "synapse/commands/jcs.py",
+        "source_sha256": "b71ba971d92266581841daeafa38e46a9dd00f5b2f40bf3dcd0ce3c16130c0ed",
+        "result": "KILLED",
+        "seconds": 0.907,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_jcs_acceptance.py"
+        ]
+      },
+      {
+        "id": "JCS-PY-depth",
+        "behavior": "Bound input and canonical nesting",
+        "target": "synapse/commands/jcs.py",
+        "source_sha256": "b71ba971d92266581841daeafa38e46a9dd00f5b2f40bf3dcd0ce3c16130c0ed",
+        "result": "KILLED",
+        "seconds": 0.875,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_jcs_acceptance.py"
+        ]
+      },
+      {
+        "id": "JCS-PY-bytes",
+        "behavior": "Bound command payloads",
+        "target": "synapse/commands/jcs.py",
+        "source_sha256": "b71ba971d92266581841daeafa38e46a9dd00f5b2f40bf3dcd0ce3c16130c0ed",
+        "result": "KILLED",
+        "seconds": 0.89,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_jcs_acceptance.py"
+        ]
+      },
+      {
+        "id": "JCS-PY-canonical",
+        "behavior": "Use RFC8785 numeric and UTF16 serialization",
+        "target": "synapse/commands/jcs.py",
+        "source_sha256": "b71ba971d92266581841daeafa38e46a9dd00f5b2f40bf3dcd0ce3c16130c0ed",
+        "result": "KILLED",
+        "seconds": 0.937,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_jcs_acceptance.py"
+        ]
+      },
+      {
+        "id": "JCS-PY-parameter-object",
+        "behavior": "Hash only object parameters",
+        "target": "synapse/commands/jcs.py",
+        "source_sha256": "b71ba971d92266581841daeafa38e46a9dd00f5b2f40bf3dcd0ce3c16130c0ed",
+        "result": "KILLED",
+        "seconds": 0.859,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_jcs_acceptance.py"
+        ]
+      },
+      {
+        "id": "JCS-TS-rounding",
+        "behavior": "Reject precision loss before binary64 conversion",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "6b20274b4a58b5e9a17ac858eb9d15ab2fcfea38eec2580221f35d1442b90e21",
+        "result": "KILLED",
+        "seconds": 0.125,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts"
+        ]
+      },
+      {
+        "id": "JCS-TS-duplicates",
+        "behavior": "Reject duplicate object properties",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "6b20274b4a58b5e9a17ac858eb9d15ab2fcfea38eec2580221f35d1442b90e21",
+        "result": "KILLED",
+        "seconds": 0.156,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts"
+        ]
+      },
+      {
+        "id": "JCS-TS-order",
+        "behavior": "Canonical UTF16 property order",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "6b20274b4a58b5e9a17ac858eb9d15ab2fcfea38eec2580221f35d1442b90e21",
+        "result": "KILLED",
+        "seconds": 0.156,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts"
+        ]
+      },
+      {
+        "id": "JCS-TS-surrogates",
+        "behavior": "Reject unmatched high surrogates",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "6b20274b4a58b5e9a17ac858eb9d15ab2fcfea38eec2580221f35d1442b90e21",
+        "result": "KILLED",
+        "seconds": 0.141,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts"
+        ]
+      },
+      {
+        "id": "JCS-TS-depth",
+        "behavior": "Bound nesting before use",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "6b20274b4a58b5e9a17ac858eb9d15ab2fcfea38eec2580221f35d1442b90e21",
+        "result": "KILLED",
+        "seconds": 0.156,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts"
+        ]
+      },
+      {
+        "id": "JCS-TS-bytes",
+        "behavior": "Bound input and canonical output bytes",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "6b20274b4a58b5e9a17ac858eb9d15ab2fcfea38eec2580221f35d1442b90e21",
+        "result": "KILLED",
+        "seconds": 0.156,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts"
+        ]
+      },
+      {
+        "id": "JCS-TS-array-properties",
+        "behavior": "Do not discard significant array properties",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "6b20274b4a58b5e9a17ac858eb9d15ab2fcfea38eec2580221f35d1442b90e21",
+        "result": "KILLED",
+        "seconds": 0.141,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts"
+        ]
+      },
+      {
+        "id": "JCS-TS-array-symbols",
+        "behavior": "Reject symbol properties on arrays",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "6b20274b4a58b5e9a17ac858eb9d15ab2fcfea38eec2580221f35d1442b90e21",
+        "result": "KILLED",
+        "seconds": 0.157,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts"
+        ]
+      },
+      {
+        "id": "JCS-TS-array-getter",
+        "behavior": "Avoid invoking array getters while hashing",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "6b20274b4a58b5e9a17ac858eb9d15ab2fcfea38eec2580221f35d1442b90e21",
+        "result": "KILLED",
+        "seconds": 0.156,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts"
+        ]
+      },
+      {
+        "id": "JCS-TS-array-enumerability",
+        "behavior": "Refuse hidden array elements",
+        "target": "synapse/ui/src/contracts/jcs.ts",
+        "source_sha256": "6b20274b4a58b5e9a17ac858eb9d15ab2fcfea38eec2580221f35d1442b90e21",
+        "result": "KILLED",
+        "seconds": 0.172,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/typescript/jcs.test.ts"
+        ]
+      },
+      {
+        "id": "JCS-RS-rounding",
+        "behavior": "Reject numeric precision loss",
+        "target": "synapse/ui/src-tauri/src/jcs.rs",
+        "source_sha256": "a54c0a912fd1734bc6c02e8a13adce8328a6a8462dd653668a0d56928e505321",
+        "result": "KILLED",
+        "seconds": 2.36,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/jcs.rs"
+        ]
+      },
+      {
+        "id": "JCS-RS-duplicates",
+        "behavior": "Reject duplicate keys",
+        "target": "synapse/ui/src-tauri/src/jcs.rs",
+        "source_sha256": "a54c0a912fd1734bc6c02e8a13adce8328a6a8462dd653668a0d56928e505321",
+        "result": "KILLED",
+        "seconds": 3.485,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/jcs.rs"
+        ]
+      },
+      {
+        "id": "JCS-RS-depth",
+        "behavior": "Bound nested input/output",
+        "target": "synapse/ui/src-tauri/src/jcs.rs",
+        "source_sha256": "a54c0a912fd1734bc6c02e8a13adce8328a6a8462dd653668a0d56928e505321",
+        "result": "KILLED",
+        "seconds": 3.421,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/jcs.rs"
+        ]
+      },
+      {
+        "id": "JCS-RS-bytes",
+        "behavior": "Bound command payloads",
+        "target": "synapse/ui/src-tauri/src/jcs.rs",
+        "source_sha256": "a54c0a912fd1734bc6c02e8a13adce8328a6a8462dd653668a0d56928e505321",
+        "result": "KILLED",
+        "seconds": 3.437,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/jcs.rs"
+        ]
+      },
+      {
+        "id": "JCS-RS-canonical",
+        "behavior": "Preserve RFC8785 serialization",
+        "target": "synapse/ui/src-tauri/src/jcs.rs",
+        "source_sha256": "a54c0a912fd1734bc6c02e8a13adce8328a6a8462dd653668a0d56928e505321",
+        "result": "KILLED",
+        "seconds": 3.375,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/jcs.rs"
+        ]
+      },
+      {
+        "id": "JCS-RS-parameter-object",
+        "behavior": "Only object parameters receive command hashes",
+        "target": "synapse/ui/src-tauri/src/jcs.rs",
+        "source_sha256": "a54c0a912fd1734bc6c02e8a13adce8328a6a8462dd653668a0d56928e505321",
+        "result": "KILLED",
+        "seconds": 3.39,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/jcs.rs"
+        ]
+      },
+      {
+        "id": "INTENT-persist-before-send",
+        "behavior": "Never return sendable content before durable binding",
+        "target": "synapse/ui/src-tauri/src/intent_store.rs",
+        "source_sha256": "f43ee4e9004d6b102629ad2cc6a3c6c367c7386abaad3f7a43ba2e2d9c64cce8",
+        "result": "KILLED",
+        "seconds": 2.188,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/intent_store.rs"
+        ]
+      },
+      {
+        "id": "INTENT-conflict",
+        "behavior": "Reject changed content under the same intent",
+        "target": "synapse/ui/src-tauri/src/intent_store.rs",
+        "source_sha256": "f43ee4e9004d6b102629ad2cc6a3c6c367c7386abaad3f7a43ba2e2d9c64cce8",
+        "result": "KILLED",
+        "seconds": 3.516,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/intent_store.rs"
+        ]
+      },
+      {
+        "id": "INTENT-scope",
+        "behavior": "Reject foreign protected scope",
+        "target": "synapse/ui/src-tauri/src/intent_store.rs",
+        "source_sha256": "f43ee4e9004d6b102629ad2cc6a3c6c367c7386abaad3f7a43ba2e2d9c64cce8",
+        "result": "KILLED",
+        "seconds": 3.765,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/intent_store.rs"
+        ]
+      },
+      {
+        "id": "INTENT-lock",
+        "behavior": "Only one native intent store owner",
+        "target": "synapse/ui/src-tauri/src/intent_store.rs",
+        "source_sha256": "f43ee4e9004d6b102629ad2cc6a3c6c367c7386abaad3f7a43ba2e2d9c64cce8",
+        "result": "KILLED",
+        "seconds": 3.484,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/intent_store.rs"
+        ]
+      },
+      {
+        "id": "INTENT-agent-root",
+        "behavior": "Keep pre-send storage outside agent workspaces",
+        "target": "synapse/ui/src-tauri/src/intent_store.rs",
+        "source_sha256": "f43ee4e9004d6b102629ad2cc6a3c6c367c7386abaad3f7a43ba2e2d9c64cce8",
+        "result": "KILLED",
+        "seconds": 3.484,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/intent_store.rs"
+        ]
+      },
+      {
+        "id": "INTENT-recovery-read-only",
+        "behavior": "Recovery reads never rewrite protected intent records",
+        "target": "synapse/ui/src-tauri/src/intent_store.rs",
+        "source_sha256": "f43ee4e9004d6b102629ad2cc6a3c6c367c7386abaad3f7a43ba2e2d9c64cce8",
+        "result": "KILLED",
+        "seconds": 2.313,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/command_recovery.rs"
+        ]
+      },
+      {
+        "id": "INTENT-recovery-binding",
+        "behavior": "Recovered content preserves the independently specified owner binding",
+        "target": "synapse/ui/src-tauri/src/intent_store.rs",
+        "source_sha256": "f43ee4e9004d6b102629ad2cc6a3c6c367c7386abaad3f7a43ba2e2d9c64cce8",
+        "result": "KILLED",
+        "seconds": 3.562,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/command_recovery.rs"
+        ]
+      },
+      {
+        "id": "BINDING-client-id",
+        "behavior": "Renderer cannot select command identity",
+        "target": "synapse/ui/src-tauri/src/commands.rs",
+        "source_sha256": "3dc85cc5adc88f6c23643e20402200559d504f8cc03f79344536938bc4a170e9",
+        "result": "KILLED",
+        "seconds": 3.562,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/intent_store.rs"
+        ]
+      },
+      {
+        "id": "BINDING-schema",
+        "behavior": "Closed versioned command admission",
+        "target": "synapse/ui/src-tauri/src/commands.rs",
+        "source_sha256": "3dc85cc5adc88f6c23643e20402200559d504f8cc03f79344536938bc4a170e9",
+        "result": "KILLED",
+        "seconds": 3.297,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/intent_store.rs"
+        ]
+      },
+      {
+        "id": "BINDING-owner",
+        "behavior": "Bind target domain owner",
+        "target": "synapse/ui/src-tauri/src/commands.rs",
+        "source_sha256": "3dc85cc5adc88f6c23643e20402200559d504f8cc03f79344536938bc4a170e9",
+        "result": "KILLED",
+        "seconds": 3.515,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/intent_store.rs"
+        ]
+      },
+      {
+        "id": "RECOVERY-absence-scope",
+        "behavior": "Foreign absence never permits retry",
+        "target": "synapse/ui/src-tauri/src/command_recovery.rs",
+        "source_sha256": "826f82e3967ed1432497bbfdb9f84662f989099d23e44fe88dc40d4ba2b4085d",
+        "result": "KILLED",
+        "seconds": 3.485,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/command_recovery.rs"
+        ]
+      },
+      {
+        "id": "RECOVERY-result-binding",
+        "behavior": "Historical receipt matches exact persisted command",
+        "target": "synapse/ui/src-tauri/src/command_recovery.rs",
+        "source_sha256": "826f82e3967ed1432497bbfdb9f84662f989099d23e44fe88dc40d4ba2b4085d",
+        "result": "KILLED",
+        "seconds": 3.406,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/command_recovery.rs"
+        ]
+      },
+      {
+        "id": "RECOVERY-outcome",
+        "behavior": "Do not invent confirmed process cancellation",
+        "target": "synapse/ui/src-tauri/src/command_recovery.rs",
+        "source_sha256": "826f82e3967ed1432497bbfdb9f84662f989099d23e44fe88dc40d4ba2b4085d",
+        "result": "KILLED",
+        "seconds": 3.484,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/command_recovery.rs"
+        ]
+      },
+      {
+        "id": "RECOVERY-replay",
+        "behavior": "Recovery returns historical owner result",
+        "target": "synapse/ui/src-tauri/src/command_recovery.rs",
+        "source_sha256": "826f82e3967ed1432497bbfdb9f84662f989099d23e44fe88dc40d4ba2b4085d",
+        "result": "KILLED",
+        "seconds": 3.422,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/native/command_recovery.rs"
+        ]
+      },
+      {
+        "id": "STATUS-query-validation",
+        "behavior": "Refuse malformed reconciliation before any owner lookup",
+        "target": "synapse/commands/reconciliation.py",
+        "source_sha256": "1d3dab76ade9c580e5d60bbc66ff162f58b6b5dbb1e44b0afa6eac2031661e44",
+        "result": "KILLED",
+        "seconds": 1.344,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+        ]
+      },
+      {
+        "id": "BINDING-identifier-newline",
+        "behavior": "Reject line terminators inside object identities",
+        "target": "synapse/commands/binding.schema.json",
+        "source_sha256": "706b44d36e583da30e2a9bb39038229d3ef260d98372f2f94aa6023bd10dcb86",
+        "result": "KILLED",
+        "seconds": 1.562,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+        ]
+      },
+      {
+        "id": "STATUS-identifier-newline",
+        "behavior": "Reject line terminators inside object identities",
+        "target": "synapse/commands/reconciliation.schema.json",
+        "source_sha256": "e24b0525c3aaaeb5f87293ebecd9fe90443195674ab97b7f292cfdc9bb891d4d",
+        "result": "KILLED",
+        "seconds": 1.547,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+        ]
+      },
+      {
+        "id": "STATUS-query-before-read",
+        "behavior": "Reject invalid identities before touching the journal",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "2293e7032dcf4bfc70bd4b04295f462c410059f57d01c9dbbed9f5dd8040582f",
+        "result": "KILLED",
+        "seconds": 1.531,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+        ]
+      },
+      {
+        "id": "STATUS-absence-recipient",
+        "behavior": "Bind absence to the requested object",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "2293e7032dcf4bfc70bd4b04295f462c410059f57d01c9dbbed9f5dd8040582f",
+        "result": "KILLED",
+        "seconds": 1.453,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+        ]
+      }
+    ]
+  },
+  "final_owner_round": {
+    "baseline": "PASS",
+    "mutants": [
+      {
+        "id": "INV-claim-publication",
+        "behavior": "A claim publishes its state in the owner transaction.",
+        "target": "synapse/agents/retention.py",
+        "source_sha256": "2fb585d5c1991bd63e9869352baafd50632d42fae82884d038dcc9172d283412",
+        "result": "KILLED",
+        "seconds": 1.016,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-finish-publication",
+        "behavior": "Terminal publication also advances the owner projection.",
+        "target": "synapse/agents/retention.py",
+        "source_sha256": "2fb585d5c1991bd63e9869352baafd50632d42fae82884d038dcc9172d283412",
+        "result": "KILLED",
+        "seconds": 1.11,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_transactions_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-cancel-publication",
+        "behavior": "Legacy cooperative cancellation remains observable.",
+        "target": "synapse/agents/retention.py",
+        "source_sha256": "2fb585d5c1991bd63e9869352baafd50632d42fae82884d038dcc9172d283412",
+        "result": "KILLED",
+        "seconds": 1.25,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-command-publication",
+        "behavior": "Command cancellation and its projection commit together.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "2293e7032dcf4bfc70bd4b04295f462c410059f57d01c9dbbed9f5dd8040582f",
+        "result": "KILLED",
+        "seconds": 1.234,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-receipt-atomicity",
+        "behavior": "Failure retaining a receipt must roll back cancellation.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "2293e7032dcf4bfc70bd4b04295f462c410059f57d01c9dbbed9f5dd8040582f",
+        "result": "KILLED",
+        "seconds": 1.391,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py",
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-projection-atomicity",
+        "behavior": "Projection failure cannot leave an unobservable owner change.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b0ef1a9106710abc947d249f7c683c67e778c9232421e203233cf1d0a19b534c",
+        "result": "KILLED",
+        "seconds": 1.297,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_transactions_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-snapshot-cut",
+        "behavior": "Snapshot items and its inclusive position describe one SQLite read cut.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b0ef1a9106710abc947d249f7c683c67e778c9232421e203233cf1d0a19b534c",
+        "result": "KILLED",
+        "seconds": 1.219,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-covered-range",
+        "behavior": "Missing intermediate changes cannot become confirmed coverage.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b0ef1a9106710abc947d249f7c683c67e778c9232421e203233cf1d0a19b534c",
+        "result": "KILLED",
+        "seconds": 1.219,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-foreign-cursor",
+        "behavior": "Generation and retained range constrain replay cursors.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b0ef1a9106710abc947d249f7c683c67e778c9232421e203233cf1d0a19b534c",
+        "result": "KILLED",
+        "seconds": 8.422,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py",
+          "acceptance/ui_bridge/test_invocation_observation_retention_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-filter",
+        "behavior": "Filtered changes stay outside the selected projection.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b0ef1a9106710abc947d249f7c683c67e778c9232421e203233cf1d0a19b534c",
+        "result": "KILLED",
+        "seconds": 1.547,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-filtered-progress",
+        "behavior": "Coverage progresses through inspected changes outside the filter.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b0ef1a9106710abc947d249f7c683c67e778c9232421e203233cf1d0a19b534c",
+        "result": "KILLED",
+        "seconds": 1.219,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-projection-retention",
+        "behavior": "Compaction bounds the change journal without erasing invocation history.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b0ef1a9106710abc947d249f7c683c67e778c9232421e203233cf1d0a19b534c",
+        "result": "KILLED",
+        "seconds": 8.454,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_retention_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-binding-conflict",
+        "behavior": "An existing command identity cannot acquire another scope or content.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "2293e7032dcf4bfc70bd4b04295f462c410059f57d01c9dbbed9f5dd8040582f",
+        "result": "KILLED",
+        "seconds": 1.453,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-revision-conflict",
+        "behavior": "New cancellation requires the observed owner revision.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "2293e7032dcf4bfc70bd4b04295f462c410059f57d01c9dbbed9f5dd8040582f",
+        "result": "KILLED",
+        "seconds": 1.672,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-cancellation-effect",
+        "behavior": "A successful receipt proves the cooperative flag was set.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "2293e7032dcf4bfc70bd4b04295f462c410059f57d01c9dbbed9f5dd8040582f",
+        "result": "KILLED",
+        "seconds": 1.656,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-historical-replay",
+        "behavior": "Redelivery identifies its saved historical receipt as replayed.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "2293e7032dcf4bfc70bd4b04295f462c410059f57d01c9dbbed9f5dd8040582f",
+        "result": "KILLED",
+        "seconds": 1.734,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-read-scope",
+        "behavior": "Reconciliation cannot cross principal, workspace or recipient.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "2293e7032dcf4bfc70bd4b04295f462c410059f57d01c9dbbed9f5dd8040582f",
+        "result": "KILLED",
+        "seconds": 1.906,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-receipt-content",
+        "behavior": "A valid digest cannot substitute another command result.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "2293e7032dcf4bfc70bd4b04295f462c410059f57d01c9dbbed9f5dd8040582f",
+        "result": "KILLED",
+        "seconds": 1.907,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_receipt_integrity_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-retained-binding",
+        "behavior": "A retained binding must satisfy the current declared owner contract.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "2293e7032dcf4bfc70bd4b04295f462c410059f57d01c9dbbed9f5dd8040582f",
+        "result": "KILLED",
+        "seconds": 1.86,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_receipt_integrity_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-receipt-digest",
+        "behavior": "Changed receipt bytes are refused before replay.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "2293e7032dcf4bfc70bd4b04295f462c410059f57d01c9dbbed9f5dd8040582f",
+        "result": "KILLED",
+        "seconds": 2.063,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py",
+          "acceptance/ui_bridge/test_invocation_receipt_integrity_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-read-only-connection",
+        "behavior": "Read-only owners cannot mutate through execution entries.",
+        "target": "synapse/agents/retention.py",
+        "source_sha256": "2fb585d5c1991bd63e9869352baafd50632d42fae82884d038dcc9172d283412",
+        "result": "KILLED",
+        "seconds": 1.453,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_transactions_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-no-unknown-liveness",
+        "behavior": "An unfinished claim is not confirmed as running.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b0ef1a9106710abc947d249f7c683c67e778c9232421e203233cf1d0a19b534c",
+        "result": "KILLED",
+        "seconds": 1.281,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-terminal-evidence",
+        "behavior": "Restoration validates the existing owner evidence rather than just a result hash.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b0ef1a9106710abc947d249f7c683c67e778c9232421e203233cf1d0a19b534c",
+        "result": "KILLED",
+        "seconds": 2.11,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_receipt_integrity_acceptance.py"
+        ]
+      }
+    ]
+  },
+  "admission_boundary": {
+    "before_fix": "3 failed: changed code/schema and omitted JCS dependency escaped verification",
+    "after_fix": "3 passed",
+    "mutation_round": {
+      "baseline": "PASS",
+      "mutants": [
+        {
+          "id": "ADMISSION-command-code",
+          "behavior": "Command runtime code participates in admitted identity",
+          "target": "synapse/agents/configuration.py",
+          "source_sha256": "006372cff6e4f95f208c8e529c9d1177ea8123a8582a1c7a9cfcb74fd76eda93",
+          "result": "KILLED",
+          "seconds": 4.312,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_command_admission_drift_acceptance.py"
+          ]
+        },
+        {
+          "id": "ADMISSION-command-schema",
+          "behavior": "Command schemas participate in admitted identity",
+          "target": "synapse/agents/configuration.py",
+          "source_sha256": "006372cff6e4f95f208c8e529c9d1177ea8123a8582a1c7a9cfcb74fd76eda93",
+          "result": "KILLED",
+          "seconds": 4.297,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_command_admission_drift_acceptance.py"
+          ]
+        },
+        {
+          "id": "ADMISSION-jcs-dependency",
+          "behavior": "Require JCS dependency identity before execution",
+          "target": "synapse/agents/configuration.py",
+          "source_sha256": "006372cff6e4f95f208c8e529c9d1177ea8123a8582a1c7a9cfcb74fd76eda93",
+          "result": "KILLED",
+          "seconds": 4.219,
+          "selected_acceptance": [
+            "acceptance/ui_bridge/test_command_admission_drift_acceptance.py"
+          ]
+        }
+      ]
+    }
+  },
+  "acceptance_source_sha256_lf": {
+    "acceptance/ui_bridge/native/command_recovery.rs": "1f19a15dbafc09217443aa4511e5f7b58ba41e7597a258e401f360c0e1964e51",
+    "acceptance/ui_bridge/native/intent_store.rs": "92260aa9fde33d5619fdd022e050bfb49b3584eafb3b13cf6fdec0fc28a96040",
+    "acceptance/ui_bridge/native/jcs.rs": "c448b340e077948c4ff7bd6aa2458b40e3d86722f9ed7d594593e31023ef067e",
+    "acceptance/ui_bridge/test_command_admission_drift_acceptance.py": "98f08fba58bb3c9f3928be3b1c22a2038c60e4c7db64d0147b5dee20a354d0a3",
+    "acceptance/ui_bridge/test_invocation_commands_acceptance.py": "ebd24d1155ce77075170c0b063d2f0707f9fb6b51e3b60ab52c5c8590a923ca5",
+    "acceptance/ui_bridge/test_invocation_observation_acceptance.py": "19193e248b690cb1c9494deeec5efb0566c3470e9fc86db00daff359b44e6157",
+    "acceptance/ui_bridge/test_invocation_observation_retention_acceptance.py": "28776e38c96cf2a210d8a36c9931ff66b7a32866ee0a6cde858a11152dc7c077",
+    "acceptance/ui_bridge/test_invocation_receipt_integrity_acceptance.py": "7038b66b1d37668df40311b4426d14e9176aace0f418ee57d7e9ea52849465aa",
+    "acceptance/ui_bridge/test_invocation_transactions_acceptance.py": "6bef2d2e11e305a8fc1fd9580f085c660384babe84949f02beec5c02b2e317e5",
+    "acceptance/ui_bridge/test_jcs_acceptance.py": "8993c369b2506f9d2049965c18e1f06ba061296215a90905377ad4361855c5a3",
+    "acceptance/ui_bridge/typescript/jcs.test.ts": "33d9828c8a72130ad965aefe523b4a56ff8747336c32573d26f99e2a83bad287"
+  },
+  "shared_contract_sha256_lf": {
+    "synapse/commands/binding.schema.json": "706b44d36e583da30e2a9bb39038229d3ef260d98372f2f94aa6023bd10dcb86",
+    "synapse/commands/reconciliation.schema.json": "e24b0525c3aaaeb5f87293ebecd9fe90443195674ab97b7f292cfdc9bb891d4d",
+    "acceptance/ui_bridge/jcs-corpus.json": "fb5c82e44c2aed7914229a10cbd42d69fb0ee60253958ca1503acad0b74e6744"
+  },
+  "remaining": [
+    "Trusted application scope and authority",
+    "Canonical negotiated domain route",
+    "Native application IPC and renderer recovery",
+    "Separate delivery classes and bounded queues",
+    "New installed-artifact domain acceptance",
+    "Linux and remaining environment matrix",
+    "Complete historical branch documentation reading"
+  ]
+}

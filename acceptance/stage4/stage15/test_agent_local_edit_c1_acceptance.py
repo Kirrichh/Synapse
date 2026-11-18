@@ -10,9 +10,9 @@ import sys
 import time
 
 from synapse.canonical_values import canonical_json_bytes
-from synapse.experiments.swebench.contract import OracleResult
-from synapse.experiments.swebench.gold_attempt_writer import GoldAttemptWriter
-from synapse.experiments.swebench.gold_runner import (
+from synapse.experiments.applied_verification.contract import OracleResult
+from synapse.experiments.applied_verification.gold_attempt_writer import GoldAttemptWriter
+from synapse.experiments.applied_verification.gold_runner import (
     GoldRunnerCommandExpectation, GoldRunnerCommandPolicy, run_gold_attempt,
 )
 from synapse.worker.contract import ExternalCodingWorkerResult, ExternalWorkerStatus, ExternalWorkerUsage, ExternalWorkerTokenStatus

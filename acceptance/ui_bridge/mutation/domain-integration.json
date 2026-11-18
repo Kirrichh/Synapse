@@ -1,0 +1,196 @@
+[
+  {
+    "id": "DOMAIN-unique-key",
+    "kind": "python",
+    "target": "synapse/access/authority.py",
+    "before": "if any(old.public_key == public_key for old in transaction.registry.applications.values()):",
+    "after": "if False:",
+    "behavior": "One public key cannot identify two registered instances.",
+    "cases": [
+      "acceptance/ui_bridge/test_domain_session_acceptance.py"
+    ]
+  },
+  {
+    "id": "DOMAIN-stored-key-ambiguity",
+    "kind": "python",
+    "target": "synapse/access/registry_codec.py",
+    "before": " or any(old.public_key == app.public_key for old in apps.values())",
+    "after": "",
+    "behavior": "Persisted duplicate public keys are refused.",
+    "cases": [
+      "acceptance/ui_bridge/test_domain_session_acceptance.py"
+    ]
+  },
+  {
+    "id": "DOMAIN-grant-list-application",
+    "kind": "python",
+    "target": "synapse/access/authority.py",
+    "before": "if current != app or current.revoked:\n                raise AccessRefused()\n            now = time()",
+    "after": "if False:\n                raise AccessRefused()\n            now = time()",
+    "behavior": "Grant discovery rechecks the current registered application.",
+    "cases": [
+      "acceptance/ui_bridge/test_domain_session_acceptance.py"
+    ]
+  },
+  {
+    "id": "DOMAIN-grant-list-scope",
+    "kind": "python",
+    "target": "synapse/access/authority.py",
+    "before": "if grant.application_id == app.application_id and not grant.revoked",
+    "after": "if not grant.revoked",
+    "behavior": "Grant discovery never exposes another application's objects.",
+    "cases": [
+      "acceptance/ui_bridge/test_domain_session_acceptance.py"
+    ]
+  },
+  {
+    "id": "DOMAIN-grant-list-expiry",
+    "kind": "python",
+    "target": "synapse/access/authority.py",
+    "before": "and (grant.expires_at is None or now < grant.expires_at)",
+    "after": "and True",
+    "behavior": "Expired rights disappear from application discovery.",
+    "cases": [
+      "acceptance/ui_bridge/test_domain_session_acceptance.py"
+    ]
+  },
+  {
+    "id": "DOMAIN-close-reset",
+    "kind": "python",
+    "target": "synapse/machine/domain_session.py",
+    "before": "self.connection = None\n                    self.subscriptions",
+    "after": "self.connection = self.connection\n                    self.subscriptions",
+    "behavior": "Explicit access close starts a fresh challenge without reusing proof.",
+    "cases": [
+      "acceptance/ui_bridge/test_domain_session_acceptance.py"
+    ]
+  },
+  {
+    "id": "DOMAIN-before-ready",
+    "kind": "python",
+    "target": "synapse/machine/domain_session.py",
+    "before": "if not ready:",
+    "after": "if False:",
+    "behavior": "Domain requests before the control handshake create no authority context.",
+    "cases": [
+      "acceptance/ui_bridge/test_domain_session_acceptance.py"
+    ]
+  },
+  {
+    "id": "NATIVE-DOMAIN-correlation",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/domain_protocol.rs",
+    "before": "reply[\"request_id\"] != request[\"request_id\"]",
+    "after": "false",
+    "behavior": "Only the corresponding request can consume a reply.",
+    "case": "domain_protocol"
+  },
+  {
+    "id": "NATIVE-DOMAIN-method",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/domain_protocol.rs",
+    "before": "reply[\"method\"] != request[\"method\"]",
+    "after": "false",
+    "behavior": "A result from another method is not an answer.",
+    "case": "domain_protocol"
+  },
+  {
+    "id": "NATIVE-DOMAIN-schema",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/domain_protocol.rs",
+    "before": "!valid(&reply)",
+    "after": "false",
+    "behavior": "Unknown refusal vocabulary is rejected at the reply boundary.",
+    "case": "domain_protocol"
+  },
+  {
+    "id": "NATIVE-DOMAIN-instance-reuse",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/client_identity.rs",
+    "before": "if let Some(key) = read(&target)? { return Ok(key); }",
+    "after": "if let Some(_key) = read(&target)? { /* replace registered identity */ }",
+    "behavior": "Restart must reuse the registered private key.",
+    "case": "client_identity"
+  },
+  {
+    "id": "NATIVE-DOMAIN-credential-tag",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/client_identity.rs",
+    "before": "if &bytes[..5] != b\"SYNI\\x01\"",
+    "after": "if false",
+    "behavior": "A malformed credential is not an application identity.",
+    "case": "client_identity"
+  },
+  {
+    "id": "NATIVE-DOMAIN-credential-persistence",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/client_identity.rs",
+    "before": "item.Persist != CRED_PERSIST_LOCAL_MACHINE",
+    "after": "false",
+    "behavior": "Session-only key persistence does not satisfy restart recovery.",
+    "case": "client_identity"
+  },
+  {
+    "id": "NATIVE-DOMAIN-signature",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/client_identity.rs",
+    "before": "self.key.sign(&challenge)",
+    "after": "self.key.sign(b\"different connection\")",
+    "behavior": "A real Python verifier rejects a signature over a different challenge.",
+    "case": "application"
+  },
+  {
+    "id": "NATIVE-DOMAIN-identity-selection",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/client_identity.rs",
+    "before": "\"public_key\":self.public_key()",
+    "after": "\"public_key\":\"0\".repeat(64)",
+    "behavior": "The signed native instance must match the registered public key.",
+    "case": "application"
+  },
+  {
+    "id": "NATIVE-DOMAIN-closed-renderer",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/application.rs",
+    "before": "rename_all=\"snake_case\", deny_unknown_fields",
+    "after": "rename_all=\"snake_case\"",
+    "behavior": "Renderer fields cannot assign native context.",
+    "case": "application"
+  },
+  {
+    "id": "NATIVE-DOMAIN-read-mutation",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/application.rs",
+    "before": "if ![\"invocation.inspect\", \"invocation.snapshot\", \"invocation.changes\", \"command.status\", \"delivery.subscribe\"].contains(&method.as_str())",
+    "after": "if false",
+    "behavior": "The read API cannot submit a renderer-issued mutation identity.",
+    "case": "application"
+  },
+  {
+    "id": "NATIVE-DOMAIN-intent-permission",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/application.rs",
+    "before": "if !grant[\"methods\"].as_array().ok_or(Failure(\"PROTOCOL_ERROR\"))?.contains(&json!(\"invocation.cancel\"))",
+    "after": "if false",
+    "behavior": "Read-only grants cannot issue mutation intents.",
+    "case": "application"
+  },
+  {
+    "id": "NATIVE-DOMAIN-selected-grant",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/application.rs",
+    "before": ".find(|value| value[\"grant_id\"].as_str() == Some(grant_id))",
+    "after": ".find(|_| true)",
+    "behavior": "An unlisted grant reference cannot select another granted scope.",
+    "case": "application"
+  },
+  {
+    "id": "NATIVE-DOMAIN-retry-status",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/application.rs",
+    "before": "if previously_prepared { Self::recover_prepared(session, grant, prepared, true) }",
+    "after": "if false && previously_prepared { Self::recover_prepared(session, grant, prepared, true) }",
+    "behavior": "Repeated submission reconciles the original identity before any resend.",
+    "case": "application"
+  }
+]

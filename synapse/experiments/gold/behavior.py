@@ -14,6 +14,7 @@ import hashlib
 import re
 from typing import Any
 
+from synapse.canonical_values import scalar_text_utf8_size
 from synapse.version import LANGUAGE_VERSION
 
 from .canonicalization import (
@@ -154,12 +155,8 @@ def _exact_list(value: object, name: str) -> list[Any]:
 def _text(value: object, name: str, pattern: re.Pattern[str] | None = None) -> str:
     if type(value) is not str or not value:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, f"{name} must be non-empty exact string")
-    if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+    if scalar_text_utf8_size(value) is None:
         raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, f"{name} contains lone surrogate")
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError as exc:
-        raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, f"{name} is not valid UTF-8") from exc
     if pattern is not None and pattern.fullmatch(value) is None:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, f"{name} has invalid syntax")
     return value
@@ -181,13 +178,10 @@ def _versioned(value: object, name: str) -> str:
 def _inline_string(value: object, path: str) -> str:
     if type(value) is not str:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, f"{path} must be exact string data")
-    if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+    size = scalar_text_utf8_size(value)
+    if size is None:
         raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, f"{path} contains lone surrogate")
-    try:
-        encoded = value.encode("utf-8")
-    except UnicodeEncodeError as exc:
-        raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, f"{path} is not valid UTF-8") from exc
-    if len(encoded) > 4096:
+    if size > 4096:
         raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, "large inline string must be a hash-bound ref")
     return value
 
@@ -1086,7 +1080,7 @@ class BehaviorCore:
         raise TypeError("BehaviorCore is created only by create_behavior_unit or strict transport")
 
     def to_dict(self) -> dict[str, object]:
-        return _behavior_core_payload(self)
+        return _behavior_core_payload(self, _validate_behavior_core(self))
 
     @classmethod
     def from_dict(cls, value: object) -> BehaviorCore:
@@ -1124,15 +1118,20 @@ def _make_behavior_core(
     return core
 
 
-def _behavior_core_payload(value: BehaviorCore) -> dict[str, object]:
-    _validate_behavior_core(value)
+def _behavior_core_payload(
+    value: BehaviorCore,
+    projections: tuple[dict[str, object], dict[str, object], dict[str, object]],
+) -> dict[str, object]:
+    # Reuses the projections that validated this core in the same operation; how many
+    # times immutable sealed parts are projected is not part of the behavior contract.
+    program, input_contract, output_contract = projections
     return {
         "schema_version": value.schema_version,
         "behavior_kind": value.behavior_kind.value,
         "language_version": value.language_version,
-        "canonical_program": value.canonical_program.to_dict(),
-        "input_contract": value.input_contract.to_dict(),
-        "output_contract": value.output_contract.to_dict(),
+        "canonical_program": program,
+        "input_contract": input_contract,
+        "output_contract": output_contract,
         "capability_requirements": list(value.capability_requirements),
         "replay_contract": value.replay_contract.to_dict(),
         "verification_contract": value.verification_contract.to_dict(),
@@ -1142,7 +1141,10 @@ def _behavior_core_payload(value: BehaviorCore) -> dict[str, object]:
     }
 
 
-def _validate_behavior_core(value: BehaviorCore) -> None:
+def _validate_behavior_core(
+    value: BehaviorCore,
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    """Validate a sealed core; return the program and contract projections it checked."""
     if type(value) is not BehaviorCore:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "behavior core must be exact BehaviorCore")
     if getattr(value, "_trusted_seal", None) is not _TRUSTED_SEAL:
@@ -1154,18 +1156,18 @@ def _validate_behavior_core(value: BehaviorCore) -> None:
     if value.language_version != LANGUAGE_VERSION or type(value.language_version) is not str:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "behavior language version is unknown")
     if type(value.canonical_program) is InlineProgram:
-        value.canonical_program.to_dict()
+        program = value.canonical_program.to_dict()
         if _normalize_capabilities(value.capability_requirements):
             raise _fail(BehaviorFailureCode.CAPABILITY_MISMATCH, "pure inline IR derives an empty capability set")
     elif type(value.canonical_program) is ArtifactProgram:
-        value.canonical_program.to_dict()
+        program = value.canonical_program.to_dict()
         _normalize_capabilities(value.capability_requirements)
     else:
         raise _fail(BehaviorFailureCode.INVALID_GRANULARITY, "behavior must have exactly one canonical program")
     if type(value.input_contract) is not InputContract or type(value.output_contract) is not OutputContract:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "input/output contracts must be exact typed values")
-    value.input_contract.to_dict()
-    value.output_contract.to_dict()
+    input_contract = value.input_contract.to_dict()
+    output_contract = value.output_contract.to_dict()
     _validate_contract_context(
         value.input_contract,
         value.output_contract,
@@ -1191,6 +1193,7 @@ def _validate_behavior_core(value: BehaviorCore) -> None:
         # Its exact enum survives every transport path; there is no fact/recipe alias.
         if value.behavior_kind.value != "rejected_hypothesis_guard":
             raise _fail(BehaviorFailureCode.FAILED_HYPOTHESIS_RELABEL, "rejected hypothesis was relabeled")
+    return program, input_contract, output_contract
 
 
 def _behavior_core_from_dict(value: object) -> BehaviorCore:
@@ -1240,16 +1243,17 @@ class SynapseBehaviorUnit:
     core: BehaviorCore
     canonical_core: CanonicalBehaviorCore
     content_key: ContentKey
+    context_sha256: str
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> SynapseBehaviorUnit:
         raise TypeError("SynapseBehaviorUnit is created only by create_behavior_unit or strict transport")
 
     def to_dict(self) -> dict[str, object]:
-        validate_behavior_unit(self)
+        core_payload = _validate_behavior_unit_payload(self)
         return {
             "schema_version": self.schema_version.value,
-            "core": self.core.to_dict(),
+            "core": core_payload,
             "content_key": self.content_key.to_dict(),
         }
 
@@ -1259,13 +1263,14 @@ class SynapseBehaviorUnit:
 
 
 def _seal_unit(core: BehaviorCore) -> SynapseBehaviorUnit:
-    payload = _behavior_core_payload(core)
+    payload = _behavior_core_payload(core, _validate_behavior_core(core))
     canonical_core = _make_canonical_behavior_core(payload)
     unit = object.__new__(SynapseBehaviorUnit)
     object.__setattr__(unit, "schema_version", SchemaVersion.BEHAVIOR_UNIT_V1)
     object.__setattr__(unit, "core", core)
     object.__setattr__(unit, "canonical_core", canonical_core)
     object.__setattr__(unit, "content_key", canonical_core.content_key)
+    object.__setattr__(unit, "context_sha256", _compute_unit_context_sha256(core, canonical_core.content_key, core_payload=payload))
     object.__setattr__(unit, "_trusted_seal", _TRUSTED_SEAL)
     validate_behavior_unit(unit)
     return unit
@@ -1347,16 +1352,17 @@ def behavior_evidence_subject(proof: bytes, content_ref: HashBoundRef) -> HashBo
         profile_id=STAGE4_CANONICAL_PROFILE_V1, codec_id=STABLE_CANONICAL_CODEC_ID))
 
 
-def validate_behavior_unit(value: SynapseBehaviorUnit) -> None:
+def _validate_behavior_unit_payload(value: SynapseBehaviorUnit) -> dict[str, object]:
     if type(value) is not SynapseBehaviorUnit:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "unit must be exact SynapseBehaviorUnit")
     if getattr(value, "_trusted_seal", None) is not _TRUSTED_SEAL:
         raise _fail(BehaviorFailureCode.TRUSTED_OBJECT_FORGED, "unit is not factory sealed")
     if value.schema_version is not SchemaVersion.BEHAVIOR_UNIT_V1:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "unit schema is unknown")
-    _validate_behavior_core(value.core)
+    projections = _validate_behavior_core(value.core)
     validate_canonical_behavior_core(value.canonical_core)
-    expected = _make_canonical_behavior_core(_behavior_core_payload(value.core))
+    core_payload = _behavior_core_payload(value.core, projections)
+    expected = _make_canonical_behavior_core(core_payload)
     if (
         value.canonical_core.canonical_bytes != expected.canonical_bytes
         or value.canonical_core.payload_sha256 != expected.payload_sha256
@@ -1365,6 +1371,14 @@ def validate_behavior_unit(value: SynapseBehaviorUnit) -> None:
         raise _fail(BehaviorFailureCode.TRUSTED_OBJECT_FORGED, "unit core and canonical bundle mismatch")
     if type(value.content_key) is not ContentKey or value.content_key.value != expected.content_key.value:
         raise _fail(BehaviorFailureCode.TRUSTED_OBJECT_FORGED, "unit content key mismatch")
+    if (type(value.context_sha256) is not str
+            or value.context_sha256 != _compute_unit_context_sha256(value.core, value.content_key, core_payload=core_payload)):
+        raise _fail(BehaviorFailureCode.TRUSTED_OBJECT_FORGED, "unit context hash mismatch")
+    return core_payload
+
+
+def validate_behavior_unit(value: SynapseBehaviorUnit) -> None:
+    _validate_behavior_unit_payload(value)
 
 
 def behavior_unit_from_dict(value: object) -> SynapseBehaviorUnit:
@@ -1377,12 +1391,11 @@ def behavior_unit_from_dict(value: object) -> SynapseBehaviorUnit:
     return unit
 
 
-def _unit_context_sha256(value: SynapseBehaviorUnit) -> str:
-    validate_behavior_unit(value)
+def _compute_unit_context_sha256(core: BehaviorCore, content_key: ContentKey, *, core_payload=None) -> str:
     payload = {
-        "schema_version": value.schema_version.value,
-        "core": value.core.to_dict(),
-        "content_key": value.content_key.value,
+        "schema_version": SchemaVersion.BEHAVIOR_UNIT_V1.value,
+        "core": core.to_dict() if core_payload is None else core_payload,
+        "content_key": content_key.value,
     }
     encoded = canonicalize_stage4_payload(
         payload,
@@ -1390,6 +1403,14 @@ def _unit_context_sha256(value: SynapseBehaviorUnit) -> str:
         codec_id=STABLE_CANONICAL_CODEC_ID,
     )
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _unit_context_sha256(value: SynapseBehaviorUnit) -> str:
+    # Callers have already crossed validate_behavior_unit(). Reuse the value
+    # derived at sealing instead of rebuilding canonical core on every use.
+    if type(value) is not SynapseBehaviorUnit or getattr(value, "_trusted_seal", None) is not _TRUSTED_SEAL:
+        raise _fail(BehaviorFailureCode.TRUSTED_OBJECT_FORGED, "unit is not factory sealed")
+    return value.context_sha256
 
 
 @dataclass(frozen=True, init=False)
@@ -1425,12 +1446,16 @@ def create_behavior_blob(unit: SynapseBehaviorUnit) -> BehaviorBlob:
     object.__setattr__(blob, "payload_sha256", unit.canonical_core.payload_sha256)
     object.__setattr__(blob, "content_key", unit.content_key)
     object.__setattr__(blob, "_trusted_seal", _TRUSTED_SEAL)
-    validate_behavior_blob(blob, unit=unit)
+    _validate_behavior_blob_for_validated_unit(blob, unit=unit)
     return blob
 
 
 def validate_behavior_blob(value: BehaviorBlob, *, unit: SynapseBehaviorUnit) -> None:
     validate_behavior_unit(unit)
+    _validate_behavior_blob_for_validated_unit(value, unit=unit)
+
+
+def _validate_behavior_blob_for_validated_unit(value: BehaviorBlob, *, unit: SynapseBehaviorUnit) -> None:
     if type(value) is not BehaviorBlob:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "blob must be exact BehaviorBlob")
     if getattr(value, "_trusted_seal", None) is not _TRUSTED_SEAL:
@@ -1505,6 +1530,10 @@ def compile_behavior_unit(unit: SynapseBehaviorUnit) -> CompilerBinding:
 
 def validate_compiler_binding_for_unit(unit: SynapseBehaviorUnit, binding: CompilerBinding) -> None:
     validate_behavior_unit(unit)
+    _validate_compiler_binding_for_validated_unit(unit, binding)
+
+
+def _validate_compiler_binding_for_validated_unit(unit: SynapseBehaviorUnit, binding: CompilerBinding) -> None:
     if (
         unit.core.capability_requirements
         and type(unit.core.canonical_program) is not ArtifactProgram
@@ -1545,10 +1574,22 @@ def _manifest_identity_payload(
     binding_refs: tuple[HashBoundRef, ...],
 ) -> dict[str, object]:
     validate_behavior_unit(unit)
-    validate_behavior_blob(blob, unit=unit)
+    _validate_behavior_blob_for_validated_unit(blob, unit=unit)
+    if compiler_binding is not None:
+        _validate_compiler_binding_for_validated_unit(unit, compiler_binding)
+    return _project_manifest_identity_payload(
+        unit=unit, blob=blob, compiler_binding=compiler_binding, binding_refs=binding_refs)
+
+
+def _project_manifest_identity_payload(
+    *,
+    unit: SynapseBehaviorUnit,
+    blob: BehaviorBlob,
+    compiler_binding: CompilerBinding | None,
+    binding_refs: tuple[HashBoundRef, ...],
+) -> dict[str, object]:
     binding_descriptor: dict[str, object] | None = None
     if compiler_binding is not None:
-        validate_compiler_binding_for_unit(unit, compiler_binding)
         binding_descriptor = {
             "binding_id": compiler_binding.binding_id.to_dict(),
             "actual_program_hash": compiler_binding.actual_program_hash,
@@ -1586,7 +1627,7 @@ class BehaviorManifest:
     def to_dict(self, *, unit: SynapseBehaviorUnit, blob: BehaviorBlob) -> dict[str, object]:
         _validate_manifest(self, unit=unit, blob=blob)
         return {
-            **_manifest_identity_payload(
+            **_project_manifest_identity_payload(
                 unit=unit,
                 blob=blob,
                 compiler_binding=self.compiler_binding,
@@ -1667,7 +1708,7 @@ def create_behavior_manifest(
 
 def _validate_manifest(value: BehaviorManifest, *, unit: SynapseBehaviorUnit, blob: BehaviorBlob) -> None:
     validate_behavior_unit(unit)
-    validate_behavior_blob(blob, unit=unit)
+    _validate_behavior_blob_for_validated_unit(blob, unit=unit)
     if type(value) is not BehaviorManifest:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "manifest must be exact BehaviorManifest")
     if getattr(value, "_trusted_seal", None) is not _TRUSTED_SEAL:
@@ -1683,7 +1724,7 @@ def _validate_manifest(value: BehaviorManifest, *, unit: SynapseBehaviorUnit, bl
     if value.blob_schema_version != blob.schema_version or value.blob_payload_sha256 != blob.payload_sha256:
         raise _fail(BehaviorFailureCode.MANIFEST_MISMATCH, "manifest blob descriptor mismatch")
     if value.compiler_binding is not None:
-        validate_compiler_binding_for_unit(unit, value.compiler_binding)
+        _validate_compiler_binding_for_validated_unit(unit, value.compiler_binding)
     effective_binding_refs = _effective_manifest_binding_refs(unit, value.binding_refs)
     if value.binding_refs != effective_binding_refs:
         raise _fail(BehaviorFailureCode.MANIFEST_MISMATCH, "manifest binding refs are not canonical")
@@ -1691,7 +1732,7 @@ def _validate_manifest(value: BehaviorManifest, *, unit: SynapseBehaviorUnit, bl
         raise _fail(BehaviorFailureCode.MANIFEST_MISMATCH, "manifest source refs mismatch")
     if value.artifact_refs != _artifact_refs(unit.core.artifact_refs, "artifact_refs"):
         raise _fail(BehaviorFailureCode.MANIFEST_MISMATCH, "manifest artifact refs mismatch")
-    payload = _manifest_identity_payload(
+    payload = _project_manifest_identity_payload(
         unit=unit,
         blob=blob,
         compiler_binding=value.compiler_binding,

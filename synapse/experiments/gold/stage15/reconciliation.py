@@ -235,7 +235,7 @@ def reconcile_run_telemetry(*, run_root, cut: CaptureCut | None, through_attempt
     from ..runner.completed_delivery_codec import restore_completed_worker_delivery
     from ..stage10.worker_transport import WorkerDeliveryStatus
     from synapse.worker import ExternalWorkerUsage, ExternalWorkerTokenStatus
-    from synapse.experiments.swebench.telemetry import token_accounting_from_worker_usage, usage_source_from_worker_status
+    from synapse.experiments.applied_verification.telemetry import token_accounting_from_worker_usage, usage_source_from_worker_status
     from .telemetry import SourceReconciliationReport
 
     findings, compared, expected, observed, stage3a = [], [], [], [], []
@@ -282,7 +282,8 @@ def reconcile_run_telemetry(*, run_root, cut: CaptureCut | None, through_attempt
             expected.append(name)
             compared.append(ref.to_dict())
             captured = invocations.get(name)
-            synapse_memory = completed.worker_result.delivery_evidence.status is WorkerDeliveryStatus.SYNAPSE_EXACT_MEMORY
+            synapse_memory = completed.worker_result.delivery_evidence.status in {
+                WorkerDeliveryStatus.SYNAPSE_EXACT_MEMORY, WorkerDeliveryStatus.SYNAPSE_ADAPTIVE_MEMORY}
             if synapse_memory:
                 # Synapse interpreted admitted memory itself: no agent or provider may appear.
                 if captured is not None or completed.worker_result.usage.total_tokens != 0:

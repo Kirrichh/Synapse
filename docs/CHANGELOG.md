@@ -1,5 +1,57 @@
 # Synapse Changelog
 
+## SWE-bench and the Astropy pilot removed; the change oracle — 2026-10-22
+
+SWE-bench is no longer a dependency, an oracle or a vocabulary of the product.
+The verdict on a candidate patch now comes from Synapse's own before/after
+change oracle; everything else in the Baseline and Gold attempt path keeps its
+behaviour.
+
+- `synapse/experiments/swebench/` is `synapse/experiments/applied_verification/`
+  (one owner; the old package is gone). Its Gold attempt, evidence, writer,
+  Baseline, carry, paired-measurement and telemetry modules moved unchanged;
+  the dependency direction stays `gold/* -> applied_verification/*`, held by
+  `runner/c1_boundary.py` alone.
+- `change_oracle.py` replaces `swebench_harness_oracle.py` and
+  `swebench_reports.py`. `ChangeOracleConfig` declares fail-to-pass checks,
+  optional pass-to-pass checks, an optional evaluator patch pinned by its
+  sha256, and a command timeout. The oracle takes a fresh detached checkout of
+  the base revision (with the evaluator patch) where every fail-to-pass check
+  must fail, then a second fresh checkout with the candidate patch where every
+  check must pass. A check that passes without the change is
+  `oracle_check_passes_before_change`, an infrastructure error, never a
+  verdict; a candidate that does not apply is unresolved
+  (`candidate_patch_apply_failed`). A check that cannot start, or exits 126
+  or 127 (the shell's "cannot execute" and "command not found"), gave no
+  verdict: `oracle_check_unavailable`, an infrastructure error. The two
+  checkouts are separate so that
+  nothing the first run leaves (bytecode caches, outputs) reaches the second.
+  The instance report (`oracle_report`, schema
+  `synapse.applied_verification.change_oracle_report/v1`) is what C1 reopens.
+- `GoldChangeOracleBinding` replaces `GoldSWEbenchOracleBinding`: the patch
+  still comes from the single-parent verified commit pair, and the base the
+  oracle judges is that parent (in Gold, the C1 bridge commit).
+  `ChangeOracleRunner` is the Baseline front end over the worker's worktree.
+- The Gold run requests the oracle `change-oracle` (it requested `swebench`);
+  project grants name it. The default C1 `task_class` is `CODE_CHANGE`.
+- Fail closed for earlier records: C1 evidence and observed reuse retained
+  under the SWE-bench oracle configuration no longer match a boundary (their
+  fingerprint names `swebench_version`), so they are not reused.
+- The Astropy pilot (`acceptance/stage4/stage16/astropy_pilot.py`, its three
+  operator commands and the `Astropy Pilot Preparation` workflow) is removed;
+  the live Gemini worker check moved unchanged to `live-gemini-worker.yml`.
+- Acceptance oracles are checks for the production oracle instead of stand-in
+  `swebench.harness.run_evaluation` modules. Every acceptance input declares
+  the same command, `acceptance/stage4/stage11/oracle_check_launcher.py`,
+  which runs the check a scenario installed in that case's oracle work
+  directory, so arms and replicates keep one oracle configuration.
+- The oracle's environment fingerprint no longer names its work directory:
+  each arm keeps its own, and C1 compares the retained location separately.
+
+Tests: `tests/test_applied_verification_change_oracle.py` (new) and
+`tests/test_applied_verification_gold_oracle_binding.py` (rewritten over real
+checks) replace the SWE-bench harness and report tests.
+
 ## A live trial of the owner-decisions package: fixes — 2026-10-17
 
 Findings of a live trial of the package through the canonical CLI, installed

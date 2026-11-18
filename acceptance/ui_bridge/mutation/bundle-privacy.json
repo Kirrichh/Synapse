@@ -1,0 +1,68 @@
+[
+  {
+    "id": "PKG-local-provenance",
+    "behavior": "local installation provenance cannot ship",
+    "before": "        provenance.unlink(missing_ok=True)",
+    "after": "        pass",
+    "kind": "python",
+    "target": "scripts/ui/build_core_bundle.py",
+    "cases": [
+      "acceptance/ui_bridge/test_bundle_privacy_acceptance.py"
+    ]
+  },
+  {
+    "id": "PKG-bound-launchers",
+    "behavior": "build-interpreter console launchers cannot ship",
+    "before": "            shutil.rmtree(directory)",
+    "after": "            pass",
+    "kind": "python",
+    "target": "scripts/ui/build_core_bundle.py",
+    "cases": [
+      "acceptance/ui_bridge/test_bundle_privacy_acceptance.py"
+    ]
+  },
+  {
+    "id": "PKG-record-hashes",
+    "behavior": "removed private installation data must not survive through RECORD hashes",
+    "before": "                if row and (row[0] == removed_metadata",
+    "after": "                if False and (row[0] == removed_metadata",
+    "kind": "python",
+    "target": "scripts/ui/build_core_bundle.py",
+    "cases": [
+      "acceptance/ui_bridge/test_bundle_privacy_acceptance.py"
+    ]
+  },
+  {
+    "id": "PKG-cleanup-integration",
+    "behavior": "the actual builder must sanitize packages before inventory publication",
+    "before": "        remove_installation_artifacts(packages)",
+    "after": "        pass",
+    "kind": "python",
+    "target": "scripts/ui/build_core_bundle.py",
+    "cases": [
+      "acceptance/ui_bridge/test_bundle_privacy_acceptance.py"
+    ]
+  },
+  {
+    "id": "PKG-private-staging-location",
+    "behavior": "raw installer output must stay outside the publication tree",
+    "before": "with tempfile.TemporaryDirectory(prefix=\"synapse-core-\") as temporary:",
+    "after": "with tempfile.TemporaryDirectory(prefix=\"synapse-core-\", dir=destination.parent) as temporary:",
+    "kind": "python",
+    "target": "scripts/ui/build_core_bundle.py",
+    "cases": [
+      "acceptance/ui_bridge/test_bundle_privacy_acceptance.py"
+    ]
+  },
+  {
+    "id": "PKG-source-temp-refusal",
+    "behavior": "a source-local temporary directory must be refused before staging",
+    "before": "if Path(tempfile.gettempdir()).resolve().is_relative_to(ROOT):",
+    "after": "if False:",
+    "kind": "python",
+    "target": "scripts/ui/build_core_bundle.py",
+    "cases": [
+      "acceptance/ui_bridge/test_bundle_privacy_acceptance.py"
+    ]
+  }
+]

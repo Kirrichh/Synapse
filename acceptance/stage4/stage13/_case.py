@@ -47,7 +47,7 @@ def publication_case(root, attempt):
             AuthorityIdentity("publication-classifier"), AuthorityIdentity("publication-taint-reviewer"),
             AuthorityIdentity("publication-supersession"), AuthorityIdentity("publication-revocation"),
             ActorIdentity("publication-lifecycle"), AuthorityIdentity("publication-human")),
-        entitlements=GoldProjectEntitlements(("src",), ("read",), ("swebench",)))
+        entitlements=GoldProjectEntitlements(("src",), ("read",), ("change-oracle",)))
     connect_gold_project(declaration)
     project = open_gold_project(root)
     stores = ReusableVerificationAuthority(repository_root=attempt.world.repo,

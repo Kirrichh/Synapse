@@ -21,12 +21,12 @@ from synapse.experiments.gold.stage15.reconciliation import reconcile_telemetry,
 from synapse.experiments.gold.stage15.resource_accounting import ResourceEvidence
 from synapse.experiments.gold.stage15.run_observability import inspect_observability
 from synapse.experiments.gold.stage15.telemetry import reference, normalize_usage, UsageProfile
-from synapse.experiments.swebench.contract import (BaselineRunRecord, BaselineAttemptRecord,
+from synapse.experiments.applied_verification.contract import (BaselineRunRecord, BaselineAttemptRecord,
     OracleResult, TokenAccountingRecord, ArtifactRef, ExperimentArm, AttemptVerdict,
     UsageSource, PrimaryMetricStatus, UsageConsistencyStatus)
-from synapse.experiments.swebench.paired_measurement import (PairedMeasurementMember, MeasurementMode, CarryState,
+from synapse.experiments.applied_verification.paired_measurement import (PairedMeasurementMember, MeasurementMode, CarryState,
     ALL_ATTEMPTS_RECORDED, baseline_member_from_run)
-from synapse.experiments.swebench.telemetry import attempt_record_for_jsonl, oracle_record_for_jsonl
+from synapse.experiments.applied_verification.telemetry import attempt_record_for_jsonl, oracle_record_for_jsonl
 from synapse.worker.contract import (ExternalCodingWorkerResult, ExternalWorkerStatus,
     ExternalWorkerUsage, ExternalWorkerTokenStatus, WorkerReport)
 from synapse.llm.capture import inspect_response_inventory

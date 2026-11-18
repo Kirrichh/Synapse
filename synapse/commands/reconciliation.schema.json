@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synapse.invalid/contracts/command-reconciliation-v1",
+  "oneOf": [{"$ref":"#/$defs/absent"}, {"$ref":"#/$defs/completed"}],
+  "$defs": {
+    "commandId": {"type":"string", "format":"uuid", "minLength":36, "maxLength":36},
+    "recipient": {"type":"string", "minLength":1, "maxLength":192, "pattern":"^[A-Za-z0-9]", "not":{"pattern":"[^A-Za-z0-9._:/-]"}},
+    "scope": {"type":"string", "minLength":1, "maxLength":256},
+    "digest": {"type":"string", "minLength":64, "maxLength":64, "not":{"pattern":"[^0-9a-f]"}},
+    "query": {
+      "type":"object", "additionalProperties":false,
+      "required":["command_id", "owner", "recipient"],
+      "properties": {
+        "command_id":{"$ref":"#/$defs/commandId"},
+        "owner":{"const":"agent.invocations"}, "recipient":{"$ref":"#/$defs/recipient"}
+      }
+    },
+    "absent": {
+      "type":"object", "additionalProperties":false,
+      "required":["schema_version", "state", "command_id", "owner", "principal", "workspace", "recipient"],
+      "properties": {
+        "schema_version":{"const":"synapse.command.status/v1"}, "state":{"const":"ABSENT"},
+        "command_id":{"$ref":"#/$defs/commandId"}, "owner":{"const":"agent.invocations"},
+        "principal":{"$ref":"#/$defs/scope"}, "workspace":{"$ref":"#/$defs/scope"},
+        "recipient":{"$ref":"#/$defs/recipient"}
+      }
+    },
+    "completed": {
+      "type":"object", "additionalProperties":false,
+      "required":["schema_version", "state", "command_id", "binding_sha256", "params_hash", "invocation_id", "outcome", "replayed"],
+      "properties": {
+        "schema_version":{"const":"synapse.invocation.cancel-result/v1"}, "state":{"const":"COMPLETED"},
+        "command_id":{"$ref":"#/$defs/commandId"}, "binding_sha256":{"$ref":"#/$defs/digest"},
+        "params_hash":{"$ref":"#/$defs/digest"}, "invocation_id":{"$ref":"#/$defs/recipient"},
+        "outcome":{"enum":["CANCEL_REQUESTED", "ALREADY_TERMINAL"]}, "replayed":{"type":"boolean"}
+      }
+    }
+  }
+}

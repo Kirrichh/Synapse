@@ -1,0 +1,51 @@
+{
+  "environment": {
+    "clock_mode": "deterministic",
+    "clock_step": 1,
+    "gas_limit": null,
+    "virtual_clock_start": "2026-01-01T00:00:00Z"
+  },
+  "files": {
+    "history": "history.json",
+    "initial_vm_snapshot": "initial_vm_snapshot.json",
+    "llm_cache": "llm_cache.mock.json",
+    "source": "source.syn",
+    "vm_snapshot": "vm_snapshot.json"
+  },
+  "final": {
+    "final_history_hash": "",
+    "history_length": 0,
+    "state_sanity": {
+      "actor_log_length": 0,
+      "call_frame_depth": 0,
+      "context_stack_depth": 0,
+      "final_ip": null,
+      "guard_stack_depth": 0,
+      "guard_violation_active": false,
+      "history_hash": "",
+      "history_length": 0,
+      "locals_hash": "4539813cc1223b62148e0600f8f891e7fb0fd955513bfa46cb2b103b6668805d",
+      "locals_keys": [
+        "x"
+      ],
+      "mailbox_count": 0,
+      "memory_audit_length": 0,
+      "output_hash": "d646f2fabdd13a7ee16dfb12e59519b7b6880bf51912088c911f653b490c920f",
+      "policy_stack_depth": 0,
+      "stack_depth": 0
+    }
+  },
+  "layer": "strict",
+  "metadata": {
+    "generated_at": "2026-10-27T16:28:12.180768+00:00",
+    "generated_by": "synapse.golden_replay",
+    "host_abi_version": "2.2.0-alpha3e",
+    "language_version": "2.2.0-alpha3e",
+    "program_hash": "sha256:460d33ed44cd865ef4021954dedaca075f87bc873f0fc1b8b35cbcf1299ea0b9",
+    "run_id": "run-9466773e1899",
+    "runtime_version": "0.22.0-alpha3e",
+    "source_path": "/tmp/pr112-bench-source.syn",
+    "spec_version": "2.2.0-alpha3e"
+  },
+  "schema_version": 2
+}

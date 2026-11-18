@@ -1,0 +1,294 @@
+[
+  {
+    "id": "STREAM-boundary",
+    "kind": "python",
+    "target": "synapse/machine/subscriptions.py",
+    "before": "\"deliver_from\": stream.position",
+    "after": "\"deliver_from\": stream.position + 1 if stream.position is not None else None",
+    "behavior": "Confirmation must name the actual inclusive owner basis.",
+    "cases": [
+      "acceptance/ui_bridge/test_subscription_acceptance.py"
+    ]
+  },
+  {
+    "id": "STREAM-snapshot-first",
+    "kind": "python",
+    "target": "synapse/machine/subscriptions.py",
+    "before": "if not stream.snapshotted:",
+    "after": "if False:",
+    "behavior": "Collection before a confirmed snapshot is refused.",
+    "cases": [
+      "acceptance/ui_bridge/test_subscription_acceptance.py"
+    ]
+  },
+  {
+    "id": "STREAM-one-snapshot",
+    "kind": "python",
+    "target": "synapse/machine/subscriptions.py",
+    "before": "or stream.snapshotted:",
+    "after": "or False:",
+    "behavior": "An epoch cannot replace its baseline after beginning delivery.",
+    "cases": [
+      "acceptance/ui_bridge/test_subscription_acceptance.py"
+    ]
+  },
+  {
+    "id": "STREAM-generation",
+    "kind": "python",
+    "target": "synapse/machine/subscriptions.py",
+    "before": "if snapshot[\"generation\"] != stream.generation or snapshot[\"position\"] < stream.position:",
+    "after": "if False:",
+    "behavior": "A changed owner generation invalidates the epoch.",
+    "cases": [
+      "acceptance/ui_bridge/test_subscription_acceptance.py"
+    ]
+  },
+  {
+    "id": "STREAM-advance",
+    "kind": "python",
+    "target": "synapse/machine/subscriptions.py",
+    "before": "stream.position = payload[\"to\"]",
+    "after": "stream.position = stream.position",
+    "behavior": "Quiet coverage starts after the complete delivered producer range.",
+    "cases": [
+      "acceptance/ui_bridge/test_subscription_acceptance.py"
+    ]
+  },
+  {
+    "id": "STREAM-invalidate",
+    "kind": "python",
+    "target": "synapse/machine/subscriptions.py",
+    "before": "if not queued and source != \"connection.health\":",
+    "after": "if False:",
+    "behavior": "Loss freezes retained/state delivery until a new subscription.",
+    "cases": [
+      "acceptance/ui_bridge/test_subscription_acceptance.py"
+    ]
+  },
+  {
+    "id": "STREAM-gap",
+    "kind": "python",
+    "target": "synapse/machine/subscriptions.py",
+    "before": "\"gap\": item.gap",
+    "after": "\"gap\": False",
+    "behavior": "Live loss is visible at delivery.",
+    "cases": [
+      "acceptance/ui_bridge/test_subscription_acceptance.py"
+    ]
+  },
+  {
+    "id": "STREAM-disposal",
+    "kind": "python",
+    "target": "synapse/machine/subscriptions.py",
+    "before": "self.queue.unsubscribe(reference)",
+    "after": "pass",
+    "behavior": "Unsubscription removes queued payloads without cancelling work.",
+    "cases": [
+      "acceptance/ui_bridge/test_subscription_acceptance.py"
+    ]
+  },
+  {
+    "id": "STREAM-membership",
+    "kind": "python",
+    "target": "synapse/machine/invocations.py",
+    "before": "store.require_membership(objects)\n            yield scope, InvocationObservation(store)",
+    "after": "pass\n            yield scope, InvocationObservation(store)",
+    "behavior": "Subscribed IDs require real retained owner membership.",
+    "cases": [
+      "acceptance/ui_bridge/test_subscription_acceptance.py"
+    ]
+  },
+  {
+    "id": "STREAM-revoke",
+    "kind": "python",
+    "target": "synapse/access/authority.py",
+    "before": "grant is None or grant.revoked or grant.version != version",
+    "after": "grant is None or (grant.revoked and False) or (grant.version != version and False)",
+    "behavior": "A queued payload must recheck current authorization at consumption.",
+    "cases": [
+      "acceptance/ui_bridge/test_subscription_acceptance.py"
+    ]
+  },
+  {
+    "id": "STREAM-expiry",
+    "kind": "python",
+    "target": "synapse/access/authority.py",
+    "before": "or (grant.expires_at is not None and time() >= grant.expires_at)",
+    "after": "or False",
+    "behavior": "Expiry stops already queued protected delivery.",
+    "cases": [
+      "acceptance/ui_bridge/test_subscription_acceptance.py"
+    ]
+  },
+  {
+    "id": "STREAM-reset",
+    "kind": "python",
+    "target": "synapse/machine/domain_session.py",
+    "before": "self.subscriptions.close()\n                    self.subscriptions = Subscriptions(self.invocations)",
+    "after": "pass",
+    "behavior": "Renderer replacement disposes queued projection state.",
+    "cases": [
+      "acceptance/ui_bridge/test_subscription_acceptance.py"
+    ]
+  },
+  {
+    "id": "STREAM-native-reset",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/application.rs",
+    "before": "Self::exchange(session, \"delivery.reset\", json!({}), None)?;",
+    "after": "let _ = session;",
+    "behavior": "Native Channel replacement opens a fresh core delivery lifetime.",
+    "case": "application"
+  },
+  {
+    "id": "STREAM-native-method",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/application.rs",
+    "before": "if ![\"delivery.snapshot\", \"delivery.collect\", \"delivery.next\", \"delivery.unsubscribe\"].contains(&method.as_str())",
+    "after": "if false",
+    "behavior": "Delivery requests cannot invoke mutations.",
+    "case": "application"
+  },
+  {
+    "id": "STREAM-view-grant",
+    "kind": "typescript",
+    "target": "synapse/ui/src/application/observations.ts",
+    "before": "identity.grant_id !== grant",
+    "after": "false",
+    "behavior": "Wrong-grant source replies cannot populate this view.",
+    "cases": [
+      "acceptance/ui_bridge/typescript/application-observations.test.ts"
+    ],
+    "tsx": true
+  },
+  {
+    "id": "STREAM-view-filter",
+    "kind": "typescript",
+    "target": "synapse/ui/src/application/observations.ts",
+    "before": "identity.invocation_ids[0] !== invocation",
+    "after": "false",
+    "behavior": "The fixed invocation filter is checked on confirmation.",
+    "cases": [
+      "acceptance/ui_bridge/typescript/application-observations.test.ts"
+    ],
+    "tsx": true
+  },
+  {
+    "id": "STREAM-view-epoch",
+    "kind": "typescript",
+    "target": "synapse/ui/src/application/observations.ts",
+    "before": "canonicalCommandText(reply.identity) !== canonicalCommandText(identity)\n          || identity.delivery_class",
+    "after": "false\n          || identity.delivery_class",
+    "behavior": "A snapshot from another epoch cannot replace this view.",
+    "cases": [
+      "acceptance/ui_bridge/typescript/application-observations.test.ts"
+    ],
+    "tsx": true
+  },
+  {
+    "id": "STREAM-view-generation",
+    "kind": "typescript",
+    "target": "synapse/ui/src/application/observations.ts",
+    "before": "reply.snapshot.generation !== identity.generation",
+    "after": "false",
+    "behavior": "Snapshot data generation matches its confirmed identity.",
+    "cases": [
+      "acceptance/ui_bridge/typescript/application-observations.test.ts"
+    ],
+    "tsx": true
+  },
+  {
+    "id": "STREAM-view-boundary",
+    "kind": "typescript",
+    "target": "synapse/ui/src/application/observations.ts",
+    "before": "reply.snapshot.position < confirm.deliver_from",
+    "after": "false",
+    "behavior": "The snapshot cannot precede the confirmed opening boundary.",
+    "cases": [
+      "acceptance/ui_bridge/typescript/application-observations.test.ts"
+    ],
+    "tsx": true
+  },
+  {
+    "id": "STREAM-view-loss",
+    "kind": "typescript",
+    "target": "synapse/ui/src/application/observations.ts",
+    "before": "if (!collected.queued) throw new ApplicationError(\"CURSOR_UNAVAILABLE\");",
+    "after": "if (false) throw new ApplicationError(\"CURSOR_UNAVAILABLE\");",
+    "behavior": "Lost collection does not initiate another read or mutation.",
+    "cases": [
+      "acceptance/ui_bridge/typescript/application-observations.test.ts"
+    ],
+    "tsx": true
+  },
+  {
+    "id": "STREAM-current-ticket",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/controller.rs",
+    "before": "if !self.delivery.is_pending(&ticket)",
+    "after": "if false",
+    "behavior": "A replaced renderer ticket is rejected before dispatch.",
+    "case": "controller_delivery"
+  },
+  {
+    "id": "STREAM-command-capacity",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/controller.rs",
+    "before": "mpsc::sync_channel(PROFILE.application_request_capacity)",
+    "after": "mpsc::sync_channel(0)",
+    "behavior": "Application admission has its own bounded usable capacity independent of controls.",
+    "case": "controller_delivery"
+  },
+  {
+    "id": "APP-pending-page",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/application.rs",
+    "before": ".skip(start).take(32)",
+    "after": ".skip(start).take(33)",
+    "behavior": "A saved-command page fits the bounded delivery contract.",
+    "case": "application"
+  },
+  {
+    "id": "APP-pending-cursor",
+    "kind": "rust",
+    "target": "synapse/ui/src-tauri/src/application.rs",
+    "before": "let start = match after_intent {",
+    "after": "let start = match None::<String> {",
+    "behavior": "Resuming pages cannot repeat the first page.",
+    "case": "application"
+  },
+  {
+    "id": "STREAM-reply-budget",
+    "kind": "python",
+    "target": "synapse/machine/domain_contract.py",
+    "before": "return refusal(request, \"RESPONSE_TOO_LARGE\")",
+    "after": "raise",
+    "behavior": "An oversized owner reply preserves a named bounded refusal.",
+    "cases": [
+      "acceptance/ui_bridge/test_transport_acceptance.py"
+    ]
+  },
+  {
+    "id": "STREAM-negotiated-budget",
+    "kind": "python",
+    "target": "synapse/machine/transport.py",
+    "before": "frame = encode(domain_refusal(value, \"RESPONSE_TOO_LARGE\"), self.limit)",
+    "after": "raise",
+    "behavior": "The selected pipe limit must not turn a domain result into a fatal transport error.",
+    "cases": [
+      "acceptance/ui_bridge/test_transport_acceptance.py"
+    ]
+  },
+  {
+    "id": "STREAM-view-items",
+    "kind": "typescript",
+    "target": "synapse/ui/src/application/observations.ts",
+    "before": "reply.snapshot.items[0].invocation_id !== invocation",
+    "after": "false",
+    "behavior": "The snapshot items themselves match the confirmed object selection.",
+    "cases": [
+      "acceptance/ui_bridge/typescript/application-observations.test.ts"
+    ],
+    "tsx": true
+  }
+]

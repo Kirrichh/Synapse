@@ -1,0 +1,258 @@
+[
+  {
+    "id": "INV-claim-publication",
+    "kind": "python",
+    "behavior": "A claim publishes its state in the owner transaction.",
+    "target": "synapse/agents/retention.py",
+    "before": "            publish_change(db, invocation_id)\n        return None",
+    "after": "        return None",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-finish-publication",
+    "kind": "python",
+    "behavior": "Terminal publication also advances the owner projection.",
+    "target": "synapse/agents/retention.py",
+    "before": "            publish_change(db, invocation_id)\n\n    def cancel",
+    "after": "\n    def cancel",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_transactions_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-cancel-publication",
+    "kind": "python",
+    "behavior": "Legacy cooperative cancellation remains observable.",
+    "target": "synapse/agents/retention.py",
+    "before": "                publish_change(db, invocation_id)\n                return True",
+    "after": "                return True",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-command-publication",
+    "kind": "python",
+    "behavior": "Command cancellation and its projection commit together.",
+    "target": "synapse/agents/invocation_commands.py",
+    "before": "                if not row[4]:\n                    publish_change(db, document[\"recipient\"])",
+    "after": "",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-receipt-atomicity",
+    "kind": "python",
+    "behavior": "Failure retaining a receipt must roll back cancellation.",
+    "target": "synapse/agents/invocation_commands.py",
+    "before": "            raw = command_bytes(result)",
+    "after": "            db.commit()\n            raw = command_bytes(result)",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_commands_acceptance.py",
+      "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-projection-atomicity",
+    "kind": "python",
+    "behavior": "Projection failure cannot leave an unobservable owner change.",
+    "target": "synapse/agents/invocation_observation.py",
+    "before": "    value = _observed_item(invocation_id, row)",
+    "after": "    db.commit()\n    value = _observed_item(invocation_id, row)",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_transactions_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-snapshot-cut",
+    "kind": "python",
+    "behavior": "Snapshot items and its inclusive position describe one SQLite read cut.",
+    "target": "synapse/agents/invocation_observation.py",
+    "before": "            db.execute(\"BEGIN\")\n            generation, revision, _",
+    "after": "            generation, revision, _",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-covered-range",
+    "kind": "python",
+    "behavior": "Missing intermediate changes cannot become confirmed coverage.",
+    "target": "synapse/agents/invocation_observation.py",
+    "before": "if [row[0] for row in rows] != list(range(position + 1, end + 1)):",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-foreign-cursor",
+    "kind": "python",
+    "behavior": "Generation and retained range constrain replay cursors.",
+    "target": "synapse/agents/invocation_observation.py",
+    "before": "if generation != actual or not floor <= position <= current:",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_observation_acceptance.py",
+      "acceptance/ui_bridge/test_invocation_observation_retention_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-filter",
+    "kind": "python",
+    "behavior": "Filtered changes stay outside the selected projection.",
+    "target": "synapse/agents/invocation_observation.py",
+    "before": "if item[\"invocation_id\"] in identities:",
+    "after": "if True:",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-filtered-progress",
+    "kind": "python",
+    "behavior": "Coverage progresses through inspected changes outside the filter.",
+    "target": "synapse/agents/invocation_observation.py",
+    "before": "\"from\": position, \"to\": end, \"changes\": changes",
+    "after": "\"from\": position, \"to\": position + len(changes), \"changes\": changes",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-projection-retention",
+    "kind": "python",
+    "behavior": "Compaction bounds the change journal without erasing invocation history.",
+    "target": "synapse/agents/invocation_observation.py",
+    "before": "db.execute(\"DELETE FROM observation_changes WHERE revision<=?\", (floor,))",
+    "after": "pass",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_observation_retention_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-binding-conflict",
+    "kind": "python",
+    "behavior": "An existing command identity cannot acquire another scope or content.",
+    "target": "synapse/agents/invocation_commands.py",
+    "before": "if existing[0] != binding.body:",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-revision-conflict",
+    "kind": "python",
+    "behavior": "New cancellation requires the observed owner revision.",
+    "target": "synapse/agents/invocation_commands.py",
+    "before": "if invocation_revision(row) != document[\"expected_revision\"]:",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-cancellation-effect",
+    "kind": "python",
+    "behavior": "A successful receipt proves the cooperative flag was set.",
+    "target": "synapse/agents/invocation_commands.py",
+    "before": "\"UPDATE invocations SET cancelled=1 WHERE id=? AND state='CLAIMED'\"",
+    "after": "\"UPDATE invocations SET cancelled=0 WHERE id=? AND state='CLAIMED'\"",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-historical-replay",
+    "kind": "python",
+    "behavior": "Redelivery identifies its saved historical receipt as replayed.",
+    "target": "synapse/agents/invocation_commands.py",
+    "before": "return self._cancellation_result(existing, binding, replayed=True)",
+    "after": "return self._cancellation_result(existing, binding, replayed=False)",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-read-scope",
+    "kind": "python",
+    "behavior": "Reconciliation cannot cross principal, workspace or recipient.",
+    "target": "synapse/agents/invocation_commands.py",
+    "before": "if (retained_scope, document[\"recipient\"]) != (scope, recipient):",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-receipt-content",
+    "kind": "python",
+    "behavior": "A valid digest cannot substitute another command result.",
+    "target": "synapse/agents/invocation_commands.py",
+    "before": "if result != expected:",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_receipt_integrity_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-retained-binding",
+    "kind": "python",
+    "behavior": "A retained binding must satisfy the current declared owner contract.",
+    "target": "synapse/agents/invocation_commands.py",
+    "before": "if binding.body != row[0]:",
+    "after": "if False:",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_receipt_integrity_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-receipt-digest",
+    "kind": "python",
+    "behavior": "Changed receipt bytes are refused before replay.",
+    "target": "synapse/agents/invocation_commands.py",
+    "before": "if type(row[1]) is not bytes or hashlib.sha256(row[1]).hexdigest() != row[2]:",
+    "after": "if type(row[1]) is not bytes:",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_commands_acceptance.py",
+      "acceptance/ui_bridge/test_invocation_receipt_integrity_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-read-only-connection",
+    "kind": "python",
+    "behavior": "Read-only owners cannot mutate through execution entries.",
+    "target": "synapse/agents/retention.py",
+    "before": "result.root, result.database, result.read_only = root, database, True",
+    "after": "result.root, result.database, result.read_only = root, database, False",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_transactions_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-no-unknown-liveness",
+    "kind": "python",
+    "behavior": "An unfinished claim is not confirmed as running.",
+    "target": "synapse/agents/invocation_observation.py",
+    "before": "\"state\": \"TERMINAL\" if row[1] == \"TERMINAL\" else \"EXECUTION_STATE_UNKNOWN\"",
+    "after": "\"state\": \"TERMINAL\" if row[1] == \"TERMINAL\" else \"RUNNING\"",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+    ]
+  },
+  {
+    "id": "INV-terminal-evidence",
+    "kind": "python",
+    "behavior": "Restoration validates the existing owner evidence rather than just a result hash.",
+    "target": "synapse/agents/invocation_observation.py",
+    "before": "                self.store.restore(invocation_id)",
+    "after": "                pass",
+    "cases": [
+      "acceptance/ui_bridge/test_invocation_receipt_integrity_acceptance.py"
+    ]
+  }
+]

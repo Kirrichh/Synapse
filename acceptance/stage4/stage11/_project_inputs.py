@@ -30,10 +30,10 @@ from synapse.experiments.gold.runner.c1_boundary import command_policy_reference
 from synapse.experiments.gold.stage10.repository_scope import create_repository_scope
 from synapse.experiments.gold.runner.vocabulary import FallbackPolicy
 from synapse.experiments.gold.taint import TaintClass, classify_source_taint
-from synapse.experiments.swebench.swebench_harness_oracle import SWEbenchHarnessOracleConfig
+from acceptance.stage4.stage11._oracle_process import acceptance_oracle
 from tests.gold_write_admission import write_gate_controller
 from tests.test_stage4_gold_compatibility import _behavior, _append_admitted, _ref, _external
-from tests.test_swebench_gold_runner import build_candidate_repo, NEW_SOURCE, policy
+from tests.test_applied_verification_gold_runner import build_candidate_repo, NEW_SOURCE, policy
 from acceptance.stage4.stage11._builders import _replayed_core, _plan_profile, manifest_for
 from acceptance.agents.coding_agents import agents_configuration, create_process_agent
 
@@ -78,7 +78,7 @@ def project_input_case(root: Path, *, max_attempts=1, outcomes=("NO_PATCH",)) ->
             AuthorityIdentity("project-supersession"), AuthorityIdentity("project-revocation"),
             ActorIdentity("project-lifecycle-writer"), AuthorityIdentity("project-human"),
         ),
-        entitlements=GoldProjectEntitlements(("src",), ("read",), ("swebench",)),
+        entitlements=GoldProjectEntitlements(("src",), ("read",), ("change-oracle",)),
     )
     connect_gold_project(declaration)
     project = open_gold_project(state_root)
@@ -158,11 +158,8 @@ def project_input_case(root: Path, *, max_attempts=1, outcomes=("NO_PATCH",)) ->
     }))
     worker = create_process_agent(root / "worker", outcomes=outcomes, patch_source=NEW_SOURCE)
     config = replace(run_manifest.config,
-        oracle_name="synapse.experiments.swebench.gold_oracle_binding.GoldSWEbenchOracleBinding")
-    oracle_config = SWEbenchHarnessOracleConfig(
-        python_executable=Path(sys.executable), swebench_work_dir=root / "harness",
-        dataset_name="acceptance", split="test", instance_timeout_seconds=10, max_workers=1,
-    )
+        oracle_name="synapse.experiments.applied_verification.gold_oracle_binding.GoldChangeOracleBinding")
+    oracle_config = acceptance_oracle(root / "harness")
     input_path = root / "input.json"
     input_path.write_text(json.dumps({
         "schema_version": EXPERIMENT_INPUT_SCHEMA_V4, "run_id": run_manifest.run_id.value,

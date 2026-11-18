@@ -19,7 +19,7 @@ from synapse.experiments.gold.stage12.verification import verify_attempt
 from synapse.experiments.gold.stage12.outcome import evaluate_attempt_outcome
 from synapse.experiments.gold.stage13 import reuse, promotion
 from synapse.experiments.gold.stage13.publication import PublicationViolation
-from synapse.experiments.swebench.gold_oracle_binding import GoldSWEbenchOracleBinding
+from synapse.experiments.applied_verification.gold_oracle_binding import GoldChangeOracleBinding
 
 
 @pytest.fixture(scope="module")
@@ -67,8 +67,8 @@ def test_controlled_product_mutations_change_the_acceptance_verdict(evidence, mo
     mechanism = deepcopy(evidence.mechanism)
     if mutation == "oracle_configuration":
         boundary = arguments["boundary"]
-        arguments["boundary"] = replace(boundary, oracle=GoldSWEbenchOracleBinding(
-            replace(boundary.oracle.config, dataset_name="different-acceptance-dataset")))
+        arguments["boundary"] = replace(boundary, oracle=GoldChangeOracleBinding(
+            replace(boundary.oracle.config, command_timeout_seconds=boundary.oracle.config.command_timeout_seconds + 1)))
         exercise = lambda: reuse.verify_mechanism_use(mechanism, **arguments)
     elif mutation == "observed_fingerprint":
         mechanism["domain_fingerprint"] = "0" * 64

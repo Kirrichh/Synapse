@@ -17,7 +17,7 @@ from acceptance.stage4.stage11._builders import (
 )
 from acceptance.agents.coding_agents import create_process_agent
 from tests.gold_store_fence import fence_for
-from tests.test_swebench_gold_runner import NEW_SOURCE
+from tests.test_applied_verification_gold_runner import NEW_SOURCE
 
 
 def fresh_runtime(

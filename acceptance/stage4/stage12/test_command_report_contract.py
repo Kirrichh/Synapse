@@ -5,7 +5,7 @@ import pytest
 
 from synapse.experiments.gold.runner.c1_boundary import _verification_command_observations
 from synapse.experiments.gold.runner.vocabulary import GoldRunViolation
-from tests.test_swebench_gold_runner import policy
+from tests.test_applied_verification_gold_runner import policy
 
 
 @pytest.fixture

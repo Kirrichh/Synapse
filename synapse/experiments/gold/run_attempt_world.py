@@ -519,7 +519,7 @@ class ProjectAttemptWorlds:
             ),
             gate_probes=GateProbeBindings(knowledge.taint_probe, knowledge.provenance_probe,
                                          knowledge.lifecycle_probe, knowledge.grant_probe),
-            requested=RequestedEnvelope(scopes=grant.scopes, capabilities=("read",), oracles=("swebench",)),
+            requested=RequestedEnvelope(scopes=grant.scopes, capabilities=("read",), oracles=("change-oracle",)),
             created_at_utc=frozen_at, trusted_clock=knowledge.clock, gate_clock=knowledge.clock,
             ref_resolver=knowledge.ref_resolver, consumability_probe=knowledge.consumability_probe,
             transaction_id=manifest.manifest_sha256, retrieval_root=root / "retrieval",

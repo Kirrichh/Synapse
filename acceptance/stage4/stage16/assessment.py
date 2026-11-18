@@ -10,7 +10,7 @@ from synapse.experiments.gold.persistence import ExclusiveStoreLock
 from decimal import Decimal
 import statistics
 
-from synapse.experiments.swebench.paired_measurement import (
+from synapse.experiments.applied_verification.paired_measurement import (
     build_paired_measurement_record, ExecutionOrder, StatePolicy,
 )
 

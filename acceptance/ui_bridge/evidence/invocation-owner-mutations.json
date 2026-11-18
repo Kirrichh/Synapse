@@ -1,0 +1,545 @@
+{
+  "schema_version": 1,
+  "scope": "Invocation owner components only; no bridge, installed, or full P1 closure.",
+  "environment": {
+    "platform": "Windows x86_64",
+    "python": "3.12.14",
+    "pytest": "9.1.1"
+  },
+  "method": "Shared seeded mutation executor; serial isolated Python source copies outside the checkout.",
+  "first_round": {
+    "baseline": "PASS",
+    "mutants": [
+      {
+        "id": "INV-claim-publication",
+        "behavior": "A claim publishes its state in the owner transaction.",
+        "target": "synapse/agents/retention.py",
+        "source_sha256": "2fb585d5c1991bd63e9869352baafd50632d42fae82884d038dcc9172d283412",
+        "result": "KILLED",
+        "seconds": 0.922,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-finish-publication",
+        "behavior": "Terminal publication also advances the owner projection.",
+        "target": "synapse/agents/retention.py",
+        "source_sha256": "2fb585d5c1991bd63e9869352baafd50632d42fae82884d038dcc9172d283412",
+        "result": "KILLED",
+        "seconds": 1.0,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_transactions_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-cancel-publication",
+        "behavior": "Legacy cooperative cancellation remains observable.",
+        "target": "synapse/agents/retention.py",
+        "source_sha256": "2fb585d5c1991bd63e9869352baafd50632d42fae82884d038dcc9172d283412",
+        "result": "KILLED",
+        "seconds": 1.532,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-command-publication",
+        "behavior": "Command cancellation and its projection commit together.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "f50abe61e786790185a5fbbb50d7eaa9a5da347485ad6b8c668f1bbf29f37efd",
+        "result": "KILLED",
+        "seconds": 1.187,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-receipt-atomicity",
+        "behavior": "Failure retaining a receipt must roll back cancellation.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "f50abe61e786790185a5fbbb50d7eaa9a5da347485ad6b8c668f1bbf29f37efd",
+        "result": "KILLED",
+        "seconds": 1.265,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py",
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-projection-atomicity",
+        "behavior": "Projection failure cannot leave an unobservable owner change.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b76155e956dbfb874d2f27ea702e3b284af8046ea0fdb0476e0d6ba5e394984f",
+        "result": "KILLED",
+        "seconds": 1.25,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_transactions_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-snapshot-cut",
+        "behavior": "Snapshot items and its inclusive position describe one SQLite read cut.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b76155e956dbfb874d2f27ea702e3b284af8046ea0fdb0476e0d6ba5e394984f",
+        "result": "KILLED",
+        "seconds": 1.203,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-covered-range",
+        "behavior": "Missing intermediate changes cannot become confirmed coverage.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b76155e956dbfb874d2f27ea702e3b284af8046ea0fdb0476e0d6ba5e394984f",
+        "result": "KILLED",
+        "seconds": 1.203,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-foreign-cursor",
+        "behavior": "Generation and retained range constrain replay cursors.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b76155e956dbfb874d2f27ea702e3b284af8046ea0fdb0476e0d6ba5e394984f",
+        "result": "KILLED",
+        "seconds": 7.125,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py",
+          "acceptance/ui_bridge/test_invocation_observation_retention_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-filter",
+        "behavior": "Filtered changes stay outside the selected projection.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b76155e956dbfb874d2f27ea702e3b284af8046ea0fdb0476e0d6ba5e394984f",
+        "result": "KILLED",
+        "seconds": 1.203,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-filtered-progress",
+        "behavior": "Coverage progresses through inspected changes outside the filter.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b76155e956dbfb874d2f27ea702e3b284af8046ea0fdb0476e0d6ba5e394984f",
+        "result": "KILLED",
+        "seconds": 1.172,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-projection-retention",
+        "behavior": "Compaction bounds the change journal without erasing invocation history.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b76155e956dbfb874d2f27ea702e3b284af8046ea0fdb0476e0d6ba5e394984f",
+        "result": "KILLED",
+        "seconds": 6.969,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_retention_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-binding-conflict",
+        "behavior": "An existing command identity cannot acquire another scope or content.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "f50abe61e786790185a5fbbb50d7eaa9a5da347485ad6b8c668f1bbf29f37efd",
+        "result": "KILLED",
+        "seconds": 1.094,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-revision-conflict",
+        "behavior": "New cancellation requires the observed owner revision.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "f50abe61e786790185a5fbbb50d7eaa9a5da347485ad6b8c668f1bbf29f37efd",
+        "result": "KILLED",
+        "seconds": 1.375,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-cancellation-effect",
+        "behavior": "A successful receipt proves the cooperative flag was set.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "f50abe61e786790185a5fbbb50d7eaa9a5da347485ad6b8c668f1bbf29f37efd",
+        "result": "KILLED",
+        "seconds": 1.344,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-historical-replay",
+        "behavior": "Redelivery identifies its saved historical receipt as replayed.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "f50abe61e786790185a5fbbb50d7eaa9a5da347485ad6b8c668f1bbf29f37efd",
+        "result": "KILLED",
+        "seconds": 1.359,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-read-scope",
+        "behavior": "Reconciliation cannot cross principal, workspace or recipient.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "f50abe61e786790185a5fbbb50d7eaa9a5da347485ad6b8c668f1bbf29f37efd",
+        "result": "KILLED",
+        "seconds": 1.36,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-receipt-content",
+        "behavior": "A valid digest cannot substitute another command result.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "f50abe61e786790185a5fbbb50d7eaa9a5da347485ad6b8c668f1bbf29f37efd",
+        "result": "KILLED",
+        "seconds": 1.422,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_receipt_integrity_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-retained-binding",
+        "behavior": "A retained binding must satisfy the current declared owner contract.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "f50abe61e786790185a5fbbb50d7eaa9a5da347485ad6b8c668f1bbf29f37efd",
+        "result": "KILLED",
+        "seconds": 1.687,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_receipt_integrity_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-receipt-digest",
+        "behavior": "Changed receipt bytes are refused before replay.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "f50abe61e786790185a5fbbb50d7eaa9a5da347485ad6b8c668f1bbf29f37efd",
+        "result": "SURVIVED",
+        "seconds": 1.656,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py",
+          "acceptance/ui_bridge/test_invocation_receipt_integrity_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-read-only-connection",
+        "behavior": "Read-only owners cannot mutate through execution entries.",
+        "target": "synapse/agents/retention.py",
+        "source_sha256": "2fb585d5c1991bd63e9869352baafd50632d42fae82884d038dcc9172d283412",
+        "result": "KILLED",
+        "seconds": 1.265,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_transactions_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-no-unknown-liveness",
+        "behavior": "An unfinished claim is not confirmed as running.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b76155e956dbfb874d2f27ea702e3b284af8046ea0fdb0476e0d6ba5e394984f",
+        "result": "KILLED",
+        "seconds": 1.172,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-terminal-evidence",
+        "behavior": "Restoration validates the existing owner evidence rather than just a result hash.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b76155e956dbfb874d2f27ea702e3b284af8046ea0fdb0476e0d6ba5e394984f",
+        "result": "KILLED",
+        "seconds": 1.656,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_receipt_integrity_acceptance.py"
+        ]
+      }
+    ]
+  },
+  "final_round": {
+    "baseline": "PASS",
+    "mutants": [
+      {
+        "id": "INV-claim-publication",
+        "behavior": "A claim publishes its state in the owner transaction.",
+        "target": "synapse/agents/retention.py",
+        "source_sha256": "2fb585d5c1991bd63e9869352baafd50632d42fae82884d038dcc9172d283412",
+        "result": "KILLED",
+        "seconds": 0.922,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-finish-publication",
+        "behavior": "Terminal publication also advances the owner projection.",
+        "target": "synapse/agents/retention.py",
+        "source_sha256": "2fb585d5c1991bd63e9869352baafd50632d42fae82884d038dcc9172d283412",
+        "result": "KILLED",
+        "seconds": 1.015,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_transactions_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-cancel-publication",
+        "behavior": "Legacy cooperative cancellation remains observable.",
+        "target": "synapse/agents/retention.py",
+        "source_sha256": "2fb585d5c1991bd63e9869352baafd50632d42fae82884d038dcc9172d283412",
+        "result": "KILLED",
+        "seconds": 1.172,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-command-publication",
+        "behavior": "Command cancellation and its projection commit together.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "f50abe61e786790185a5fbbb50d7eaa9a5da347485ad6b8c668f1bbf29f37efd",
+        "result": "KILLED",
+        "seconds": 1.172,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-receipt-atomicity",
+        "behavior": "Failure retaining a receipt must roll back cancellation.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "f50abe61e786790185a5fbbb50d7eaa9a5da347485ad6b8c668f1bbf29f37efd",
+        "result": "KILLED",
+        "seconds": 1.266,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py",
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-projection-atomicity",
+        "behavior": "Projection failure cannot leave an unobservable owner change.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b0ef1a9106710abc947d249f7c683c67e778c9232421e203233cf1d0a19b534c",
+        "result": "KILLED",
+        "seconds": 1.235,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_transactions_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-snapshot-cut",
+        "behavior": "Snapshot items and its inclusive position describe one SQLite read cut.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b0ef1a9106710abc947d249f7c683c67e778c9232421e203233cf1d0a19b534c",
+        "result": "KILLED",
+        "seconds": 1.172,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-covered-range",
+        "behavior": "Missing intermediate changes cannot become confirmed coverage.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b0ef1a9106710abc947d249f7c683c67e778c9232421e203233cf1d0a19b534c",
+        "result": "KILLED",
+        "seconds": 1.188,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-foreign-cursor",
+        "behavior": "Generation and retained range constrain replay cursors.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b0ef1a9106710abc947d249f7c683c67e778c9232421e203233cf1d0a19b534c",
+        "result": "KILLED",
+        "seconds": 7.109,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py",
+          "acceptance/ui_bridge/test_invocation_observation_retention_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-filter",
+        "behavior": "Filtered changes stay outside the selected projection.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b0ef1a9106710abc947d249f7c683c67e778c9232421e203233cf1d0a19b534c",
+        "result": "KILLED",
+        "seconds": 1.172,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-filtered-progress",
+        "behavior": "Coverage progresses through inspected changes outside the filter.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b0ef1a9106710abc947d249f7c683c67e778c9232421e203233cf1d0a19b534c",
+        "result": "KILLED",
+        "seconds": 1.172,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-projection-retention",
+        "behavior": "Compaction bounds the change journal without erasing invocation history.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b0ef1a9106710abc947d249f7c683c67e778c9232421e203233cf1d0a19b534c",
+        "result": "KILLED",
+        "seconds": 6.922,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_retention_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-binding-conflict",
+        "behavior": "An existing command identity cannot acquire another scope or content.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "f50abe61e786790185a5fbbb50d7eaa9a5da347485ad6b8c668f1bbf29f37efd",
+        "result": "KILLED",
+        "seconds": 1.125,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-revision-conflict",
+        "behavior": "New cancellation requires the observed owner revision.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "f50abe61e786790185a5fbbb50d7eaa9a5da347485ad6b8c668f1bbf29f37efd",
+        "result": "KILLED",
+        "seconds": 1.36,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-cancellation-effect",
+        "behavior": "A successful receipt proves the cooperative flag was set.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "f50abe61e786790185a5fbbb50d7eaa9a5da347485ad6b8c668f1bbf29f37efd",
+        "result": "KILLED",
+        "seconds": 1.344,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-historical-replay",
+        "behavior": "Redelivery identifies its saved historical receipt as replayed.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "f50abe61e786790185a5fbbb50d7eaa9a5da347485ad6b8c668f1bbf29f37efd",
+        "result": "KILLED",
+        "seconds": 1.375,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-read-scope",
+        "behavior": "Reconciliation cannot cross principal, workspace or recipient.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "f50abe61e786790185a5fbbb50d7eaa9a5da347485ad6b8c668f1bbf29f37efd",
+        "result": "KILLED",
+        "seconds": 1.39,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-receipt-content",
+        "behavior": "A valid digest cannot substitute another command result.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "f50abe61e786790185a5fbbb50d7eaa9a5da347485ad6b8c668f1bbf29f37efd",
+        "result": "KILLED",
+        "seconds": 1.453,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_receipt_integrity_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-retained-binding",
+        "behavior": "A retained binding must satisfy the current declared owner contract.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "f50abe61e786790185a5fbbb50d7eaa9a5da347485ad6b8c668f1bbf29f37efd",
+        "result": "KILLED",
+        "seconds": 1.734,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_receipt_integrity_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-receipt-digest",
+        "behavior": "Changed receipt bytes are refused before replay.",
+        "target": "synapse/agents/invocation_commands.py",
+        "source_sha256": "f50abe61e786790185a5fbbb50d7eaa9a5da347485ad6b8c668f1bbf29f37efd",
+        "result": "KILLED",
+        "seconds": 1.765,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_commands_acceptance.py",
+          "acceptance/ui_bridge/test_invocation_receipt_integrity_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-read-only-connection",
+        "behavior": "Read-only owners cannot mutate through execution entries.",
+        "target": "synapse/agents/retention.py",
+        "source_sha256": "2fb585d5c1991bd63e9869352baafd50632d42fae82884d038dcc9172d283412",
+        "result": "KILLED",
+        "seconds": 1.25,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_transactions_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-no-unknown-liveness",
+        "behavior": "An unfinished claim is not confirmed as running.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b0ef1a9106710abc947d249f7c683c67e778c9232421e203233cf1d0a19b534c",
+        "result": "KILLED",
+        "seconds": 1.203,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_observation_acceptance.py"
+        ]
+      },
+      {
+        "id": "INV-terminal-evidence",
+        "behavior": "Restoration validates the existing owner evidence rather than just a result hash.",
+        "target": "synapse/agents/invocation_observation.py",
+        "source_sha256": "b0ef1a9106710abc947d249f7c683c67e778c9232421e203233cf1d0a19b534c",
+        "result": "KILLED",
+        "seconds": 1.703,
+        "selected_acceptance": [
+          "acceptance/ui_bridge/test_invocation_receipt_integrity_acceptance.py"
+        ]
+      }
+    ]
+  },
+  "survivor_resolution": {
+    "id": "INV-receipt-digest",
+    "cause": "Other semantic checks rejected the old malformed-receipt fixture even without the hash check.",
+    "case": "acceptance/ui_bridge/test_invocation_receipt_integrity_acceptance.py::test_changed_but_well_formed_historical_outcome_still_requires_its_retained_digest",
+    "resolution": "Change the valid historical outcome without updating its retained digest; both status and retry refuse it."
+  },
+  "acceptance_source_sha256": {
+    "acceptance/ui_bridge/test_invocation_commands_acceptance.py": "b3674810fc78f6de43049e14696c3986b9d814eb7f45decddb83519a22a30545",
+    "acceptance/ui_bridge/test_invocation_observation_acceptance.py": "19193e248b690cb1c9494deeec5efb0566c3470e9fc86db00daff359b44e6157",
+    "acceptance/ui_bridge/test_invocation_observation_retention_acceptance.py": "28776e38c96cf2a210d8a36c9931ff66b7a32866ee0a6cde858a11152dc7c077",
+    "acceptance/ui_bridge/test_invocation_receipt_integrity_acceptance.py": "7038b66b1d37668df40311b4426d14e9176aace0f418ee57d7e9ea52849465aa",
+    "acceptance/ui_bridge/test_invocation_transactions_acceptance.py": "6bef2d2e11e305a8fc1fd9580f085c660384babe84949f02beec5c02b2e317e5"
+  }
+}

@@ -20,12 +20,18 @@ from synapse.experiments.gold.source_verification import observe_source_runtime
 
 def new_recipe(tmp_path, *, grant):
     repo, state, input_path = prepare(tmp_path, execute=True)
-    original = Path(shutil.which("findstr.exe" if os.name == "nt" else "cat")).resolve()
-    executable = tmp_path / ("native-check" + original.suffix)
+    if os.name == "nt":
+        original = shutil.which("findstr.exe")
+        executable = tmp_path / "native-check.exe"
+        command_args = ["return", "calc.py"]
+    else:
+        # Multicall implementations of cat select their operation by invocation name.
+        original = shutil.which("cat")
+        executable = tmp_path / "cat"
+        command_args = ["calc.py"]
     shutil.copy2(original, executable)
-    command_args = ["return", "calc.py"] if os.name == "nt" else ["calc.py"]
     tool = RecipeExecutable(
-        "native-check", str(executable), hashlib.sha256(executable.read_bytes()).hexdigest()
+        executable.stem, str(executable), hashlib.sha256(executable.read_bytes()).hexdigest()
     )
     if grant:
         declaration = open_gold_project(state).declaration
@@ -63,8 +69,16 @@ def test_ungranted_native_recipe_is_refused(tmp_path):
     assert rc == 2 and value["status"] == "REFUSED" and "operator grant" in value["reason"]
 
 
-def test_changed_tool_cannot_reuse_an_identical_claim_or_get_a_second_receipt(tmp_path):
+def test_changed_tool_cannot_reuse_an_identical_claim_or_get_a_second_receipt(tmp_path, monkeypatch):
     state, path, tool, spec, input_path = new_recipe(tmp_path, grant=True)
+    if os.name != "nt":
+        # A PATH lookup must fail even when the host also provides a working cat.
+        search_dir = tmp_path / "search-path"
+        search_dir.mkdir()
+        ungranted = search_dir / tool.name
+        ungranted.write_text("#!/bin/sh\nexit 23\n", encoding="ascii")
+        ungranted.chmod(0o755)
+        monkeypatch.setenv("PATH", str(search_dir), prepend=os.pathsep)
     rc, value = learn(state, input_path)
     assert rc == 0 and value["status"] == "PUBLISHED", value
     spec["claim"]["operation_id"] = "known"

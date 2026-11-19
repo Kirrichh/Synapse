@@ -31,8 +31,8 @@ _T = TypeVar("_T")
 
 def read_recording(output: Path | str, load: Callable[[Path], _T]) -> _T:
     """Read one generation. Legacy bundles can be read even on read-only media."""
-    output = Path(output)
-    control = _coordination(output.absolute())
+    output = Path(output).resolve(strict=False)
+    control = _coordination(output)
     if not control.exists():
         try:
             result = load(output)

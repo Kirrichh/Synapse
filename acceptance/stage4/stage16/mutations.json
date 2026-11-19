@@ -325,6 +325,114 @@
       "after": "or any(item.is_symlink()",
       "killer": "tests/test_golden_replay_publication.py::test_replacement_preserves_foreign_files[True]",
       "expected_failure": "DID NOT RAISE"
+    },
+    {
+      "after": "    output = Path(output).absolute()\n",
+      "before": "    output = Path(output).resolve(strict=False)\n",
+      "expected_failure": "reader must acquire",
+      "id": "ALIAS-LEXICAL",
+      "killer": "tests/test_replay_reader_aliases.py::test_stable_recording_uses_publisher_lock[link-replay]",
+      "path": "synapse/recording_publication.py",
+      "requirement": "Canonical destination for a direct alias"
+    },
+    {
+      "after": "    output = Path(output).absolute()\n    if output.is_symlink():\n        output = output.parent / output.readlink()\n",
+      "before": "    output = Path(output).resolve(strict=False)\n",
+      "expected_failure": "recover at the writer destination",
+      "id": "ALIAS-ONE-HOP",
+      "killer": "tests/test_replay_reader_aliases.py::test_lock_recovery_and_loader_use_same_destination",
+      "path": "synapse/recording_publication.py",
+      "requirement": "Resolve a relative chain of aliases"
+    },
+    {
+      "after": "    output = Path(output).resolve(strict=True)\n",
+      "before": "    output = Path(output).resolve(strict=False)\n",
+      "expected_failure": "first_open.returncode",
+      "id": "ALIAS-STRICT",
+      "killer": "tests/test_replay_reader_aliases.py::test_first_replay_restores_saved_generation[link]",
+      "path": "synapse/recording_publication.py",
+      "requirement": "Recover when the recording name is temporarily absent"
+    },
+    {
+      "after": "    output = Path(output).resolve() if Path(output).exists() else Path(output).absolute()\n",
+      "before": "    output = Path(output).resolve(strict=False)\n",
+      "expected_failure": "first_open.returncode",
+      "id": "ALIAS-EXISTING-ONLY",
+      "killer": "tests/test_replay_reader_aliases.py::test_first_replay_restores_saved_generation[link]",
+      "path": "synapse/recording_publication.py",
+      "requirement": "Resolve aliases even while the target is missing"
+    },
+    {
+      "after": "    requested = Path(output)\n    output = Path(output).resolve(strict=False)\n    control = _coordination(output)\n    if not control.exists():\n        try:\n            result = load(output)\n        except Exception:\n            if not control.exists():\n                raise\n        else:\n            if not control.exists():\n                return result\n        # The first writer started during a legacy read. Read again under its lock.\n    if control.is_symlink():\n        raise ValueError(\"record transaction directory must not be symbolic\")\n    with FileLock(str(control / \"publish.lock\")):\n        _recover(requested, control)\n",
+      "before": "    output = Path(output).resolve(strict=False)\n    control = _coordination(output)\n    if not control.exists():\n        try:\n            result = load(output)\n        except Exception:\n            if not control.exists():\n                raise\n        else:\n            if not control.exists():\n                return result\n        # The first writer started during a legacy read. Read again under its lock.\n    if control.is_symlink():\n        raise ValueError(\"record transaction directory must not be symbolic\")\n    with FileLock(str(control / \"publish.lock\")):\n        _recover(output, control)\n",
+      "expected_failure": "recover at the writer destination",
+      "id": "ALIAS-RECOVERY-PATH",
+      "killer": "tests/test_replay_reader_aliases.py::test_lock_recovery_and_loader_use_same_destination",
+      "path": "synapse/recording_publication.py",
+      "requirement": "Recover the same destination used to choose the lock"
+    },
+    {
+      "after": "    requested = Path(output)\n    output = Path(output).resolve(strict=False)\n    control = _coordination(output)\n    if not control.exists():\n        try:\n            result = load(output)\n        except Exception:\n            if not control.exists():\n                raise\n        else:\n            if not control.exists():\n                return result\n        # The first writer started during a legacy read. Read again under its lock.\n    if control.is_symlink():\n        raise ValueError(\"record transaction directory must not be symbolic\")\n    with FileLock(str(control / \"publish.lock\")):\n        _recover(output, control)\n        return load(requested)\n",
+      "before": "    output = Path(output).resolve(strict=False)\n    control = _coordination(output)\n    if not control.exists():\n        try:\n            result = load(output)\n        except Exception:\n            if not control.exists():\n                raise\n        else:\n            if not control.exists():\n                return result\n        # The first writer started during a legacy read. Read again under its lock.\n    if control.is_symlink():\n        raise ValueError(\"record transaction directory must not be symbolic\")\n    with FileLock(str(control / \"publish.lock\")):\n        _recover(output, control)\n        return load(output)\n",
+      "expected_failure": "load from the same destination",
+      "id": "ALIAS-LOADER-PATH",
+      "killer": "tests/test_replay_reader_aliases.py::test_lock_recovery_and_loader_use_same_destination",
+      "path": "synapse/recording_publication.py",
+      "requirement": "Read from the same destination used for recovery"
+    },
+    {
+      "after": "    return load(output)\n",
+      "before": "        return load(output)\n",
+      "expected_failure": "reader must hold",
+      "id": "ALIAS-LOCK-LIFETIME",
+      "killer": "tests/test_replay_reader_aliases.py::test_publication_and_alias_reader_share_one_generation[replay]",
+      "path": "synapse/recording_publication.py",
+      "requirement": "Retain the writer lock until the complete read has finished"
+    },
+    {
+      "after": "        # The first writer started during a legacy read. Read again under its lock.\n    if control.is_symlink():\n        raise ValueError(\"record transaction directory must not be symbolic\")\n    with FileLock(str(control / \"publish.lock\")):\n        pass\n",
+      "before": "        # The first writer started during a legacy read. Read again under its lock.\n    if control.is_symlink():\n        raise ValueError(\"record transaction directory must not be symbolic\")\n    with FileLock(str(control / \"publish.lock\")):\n        _recover(output, control)\n",
+      "expected_failure": "first_open.returncode",
+      "id": "ALIAS-READ-RECOVERY",
+      "killer": "tests/test_replay_reader_aliases.py::test_first_replay_restores_saved_generation[link]",
+      "path": "synapse/recording_publication.py",
+      "requirement": "First reader performs recovery without waiting for another publication"
+    },
+    {
+      "after": "    output = Path(output).resolve(strict=False)\n    control = _coordination(output)\n    control.mkdir(exist_ok=True)\n",
+      "before": "    output = Path(output).resolve(strict=False)\n    control = _coordination(output)\n",
+      "expected_failure": "reading an archive must not create coordination state",
+      "id": "ALIAS-LEGACY-STATE",
+      "killer": "tests/test_replay_reader_aliases.py::test_alias_to_legacy_recording_remains_read_only",
+      "path": "synapse/recording_publication.py",
+      "requirement": "A read of an old recording creates no coordination directory"
+    },
+    {
+      "after": "read_recording(Path(artifact_dir).resolve(strict=True), _load_replay_inputs)",
+      "before": "read_recording(artifact_dir, _load_replay_inputs)",
+      "expected_failure": "FileNotFoundError",
+      "id": "ALIAS-EAGER-REPLAY",
+      "killer": "tests/test_replay_reader_aliases.py::test_first_reader_after_interruption_preserves_original[replay]",
+      "path": "synapse/golden_replay.py",
+      "requirement": "Reader reaches the recovery boundary when the target is temporarily absent"
+    },
+    {
+      "after": "read_recording(Path(artifact_dir).resolve(strict=True), lambda root:",
+      "before": "read_recording(artifact_dir, lambda root:",
+      "expected_failure": "FileNotFoundError",
+      "id": "ALIAS-EAGER-INTEGRATE",
+      "killer": "tests/test_replay_reader_aliases.py::test_first_reader_after_interruption_preserves_original[integrate]",
+      "path": "synapse/golden_replay.py",
+      "requirement": "Reader reaches the recovery boundary when the target is temporarily absent"
+    },
+    {
+      "after": "read_recording(Path(artifact_dir).resolve(strict=True), load_trace)",
+      "before": "read_recording(artifact_dir, load_trace)",
+      "expected_failure": "FileNotFoundError",
+      "id": "ALIAS-EAGER-DEBUGGER",
+      "killer": "tests/test_replay_reader_aliases.py::test_first_reader_after_interruption_preserves_original[debugger]",
+      "path": "synapse/debugger_core.py",
+      "requirement": "Reader reaches the recovery boundary when the target is temporarily absent"
     }
   ]
 }
